@@ -1,0 +1,122 @@
+# The distribution itself: an sdist, a wheel, well-formed metadata, and one
+# number that agrees with itself everywhere it is stated.
+#
+# Separate from test.yml because the two ask different questions.  test.yml
+# asks whether the installed package works; this asks whether the thing that
+# would be uploaded is the thing the repository says it is.  A cut that fails
+# only here has working code and an artefact nobody should publish.
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+# A bare `push:` fires on branch pushes AND on tag pushes, which is what
+# gives the version-against-tag gate below something to compare.  Building
+# on a tag PUBLISHES NOTHING: this workflow has no PyPI identity, no
+# `environment`, and no `id-token` permission, so it could not upload if it
+# tried.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: build the sdist and the wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine "setuptools>=77" wheel
+          python -m build
+          ls -l dist/
+
+      # THE BREAKAGE THIS PREVENTS: a wheel and an sdist whose metadata
+      # differ, or whose long description PyPI refuses to render.  Both land
+      # after the upload, where nothing can be taken back.
+      - name: the metadata is well formed
+        run: python -m twine check --strict dist/*
+
+      - name: exactly one wheel and exactly one sdist, and nothing else
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(dist/gpuwm_global-*.whl)
+          sdists=(dist/gpuwm_global-*.tar.gz)
+          everything=(dist/*)
+          if [ "${#wheels[@]}" -ne 1 ] || [ "${#sdists[@]}" -ne 1 ] || [ "${#everything[@]}" -ne 2 ]; then
+            echo "dist/ must hold exactly one wheel and one sdist for gpuwm-global" >&2
+            ls -l dist/ >&2
+            exit 1
+          fi
+
+      # The version is READ BACK from the installed distribution's metadata,
+      # not from pyproject.toml.  Reading it from the source would compare
+      # the declaration against itself and pass on a wheel built from
+      # something else.  THE BREAKAGE: the engine shipped a runtime constant
+      # that disagreed with its own wheel for four releases, because two
+      # files stated one number.
+      #
+      # The wheel is installed WITH its dependencies.  `arwen_global` imports
+      # the model at package level, and the model imports numpy and the
+      # engine, so a --no-deps install cannot be imported at all: the first
+      # public run of this job (2026-09-10) died on ModuleNotFoundError for
+      # numpy before it read a version.  Resolving the engine from PyPI here
+      # is also the first proof that the wheel's dependency table resolves.
+      - name: the version the wheel carries is the version the package reports
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/metadata-venv"
+          "$RUNNER_TEMP/metadata-venv/bin/python" -m pip install --quiet --upgrade pip
+          "$RUNNER_TEMP/metadata-venv/bin/python" -m pip install --quiet dist/gpuwm_global-*.whl
+          metadata=$("$RUNNER_TEMP/metadata-venv/bin/python" -c "from importlib.metadata import version; print(version('gpuwm-global'))")
+          runtime=$("$RUNNER_TEMP/metadata-venv/bin/python" -c "import arwen_global; print(arwen_global.__version__)")
+          echo "wheel metadata: $metadata"
+          echo "package reports: $runtime"
+          test "$metadata" = "$runtime" || {
+            echo "the wheel's metadata says $metadata and the installed package says $runtime" >&2
+            exit 1
+          }
+          echo "GPUWM_GLOBAL_VERSION=$metadata" >> "$GITHUB_ENV"
+
+      # Only meaningful on a tag, and it is the gate that stops a vX.Y.Z tag
+      # from carrying a wheel of some other version.  A tag is spent once it
+      # exists (forward commits only), so a mismatch discovered after the
+      # upload costs a version number.
+      - name: on a tag, the version equals the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          expected="${tag#v}"
+          test "$GPUWM_GLOBAL_VERSION" = "$expected" || {
+            echo "tag ${tag} expects version ${expected}; the built distribution carries ${GPUWM_GLOBAL_VERSION}" >&2
+            exit 1
+          }
+          echo "tag ${tag} and distribution ${GPUWM_GLOBAL_VERSION} agree"
+
+      - name: record the digests of what was built
+        run: |
+          cd dist
+          sha256sum -- * | tee SHA256SUMS
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: python-dists
+          path: dist/*
+          if-no-files-found: error

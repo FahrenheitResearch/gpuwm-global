@@ -1,0 +1,98 @@
+Arwen Global (Python package "arwen_global", distribution "gpuwm-global")
+Copyright 2026 ArWen contributors
+
+Licensed under the Apache License, Version 2.0. This distribution is an
+independent implementation. The upstream works, datasets and services it
+derives from, reads, or is verified against retain their own licences and
+notices, and the ones that place an obligation on a derivative are recorded
+below.
+
+This file travels with every copy of this distribution, in the source
+distribution and inside the wheel, under Apache-2.0 section 4(c).
+
+--------------------------------------------------------------------------
+
+Relationship to the gpuwm engine
+
+Arwen Global runs on the gpuwm engine, which it depends on rather than
+vendors: physics tables, the GRIB2 source engine, the observation front
+doors, the static-field builder, the NetCDF bridge, the LETKF filter core,
+the wrfout writer and the product renderer are all gpuwm's, and gpuwm carries
+its own NOTICE covering them. Nothing from that engine is copied into this
+distribution. Reading this file is therefore not a substitute for reading
+gpuwm's; both are installed together and both apply.
+
+Two modules that were part of the engine's source tree moved here when this
+package was carved out of it, because each had exactly one consumer and that
+consumer is this model: the global physics registry (now
+arwen_global.physics.registry) and the rows-grid helper (now
+arwen_global.statics_rows). They carry the same Apache-2.0 terms they carried
+there.
+
+--------------------------------------------------------------------------
+
+WRF / NCAR / UCAR
+
+This software is not affiliated with, endorsed by, or sponsored by the
+National Center for Atmospheric Research (NCAR) or the University Corporation
+for Atmospheric Research (UCAR). The Weather Research and Forecasting (WRF)
+model, developed at NCAR, is the reference for the physics parameterizations
+this model runs through its native adapters, and "WRF", "WPS" and "wrfout"
+are used nominatively to name that reference and the file format it defined.
+
+The parameterization schemes named in this model's configuration surface --
+the Noah land-surface model, the YSU planetary boundary layer, Morrison
+microphysics, Grell-Freitas and New Tiedtke convection, RRTMG and RTE+RRTMGP
+radiation -- are published schemes with their own authors and their own
+notices, reproduced in the gpuwm distribution that carries their code and
+tables. This distribution ships none of that code and none of those tables.
+
+--------------------------------------------------------------------------
+
+CRTM (Community Radiative Transfer Model)
+
+The satellite radiance legs of this model are verified against the Community
+Radiative Transfer Model, developed by the Joint Center for Satellite Data
+Assimilation (JCSDA). CRTM is a reference this model is scored against, not
+a component of it: no CRTM source, table or coefficient file is transcribed
+or redistributed here. The tools that drive a CRTM installation expect the
+reader to obtain it from JCSDA under its own terms.
+
+--------------------------------------------------------------------------
+
+Test cases from the published literature
+
+The dry dynamical-core cases this model is verified on are standard published
+test problems, implemented from their published descriptions rather than from
+anyone's code:
+
+  - the Williamson et al. (1992) shallow-water test suite;
+  - the Held and Suarez (1994) idealized forcing.
+
+--------------------------------------------------------------------------
+
+Data services (not redistributed)
+
+This software fetches data at the user's request from third-party services
+and redistributes none of it. Each service carries its own terms and the user
+is subject to them:
+
+  - NOAA: the GDAS and GFS analyses and forecasts, GOES-R ABI Level 1b
+    radiances, NDBC marine observations, and the IGRA2 radiosonde archive;
+  - NASA and NOAA jointly: ATMS microwave radiances from the JPSS series;
+  - ECMWF: the open-data global forecast set, under ECMWF's own open licence;
+  - Iowa State University Environmental Mesonet: the surface station archive;
+  - the WMO Information System 2 (WIS2) global brokers;
+  - UCAR COSMIC: GNSS radio-occultation profiles.
+
+The geography archive this model builds its static surface fields from is
+fetched through the engine and is not part of this distribution.
+
+--------------------------------------------------------------------------
+
+Rust components (not redistributed in this artefact)
+
+Every data path in this software is Rust, and none of those binaries are
+inside this wheel. They are built from the engine's own workspace and
+delivered as release assets. Their sources, and the crates they vendor,
+carry their own licences in the trees that hold them.

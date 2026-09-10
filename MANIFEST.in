@@ -1,0 +1,66 @@
+# The source distribution has to be able to REPRODUCE this package, not just
+# import it.  setuptools' default file set carries the package and the
+# metadata and nothing else, which would ship an sdist whose own README links
+# resolve to files the reader does not have and whose test suite cannot run.
+#
+# Every graft below is a directory a document in this tree points at.
+
+# The suite.  It runs against the INSTALLED engine wheel, never a checkout, so
+# an unpacked sdist plus `pip install .[dev]` is a complete verification
+# environment.  conftest.py is grafted with it: setuptools' default set picks
+# up tests/test_*.py and leaves conftest behind, and a suite whose markers and
+# fixtures went missing does not skip -- it errors, in a shape that reads as a
+# broken package rather than a missing file.
+graft tests
+
+# The driver scripts.  They live outside the wheel on purpose (they are
+# instruments, not library code) and the door pages name them by path.
+graft tools
+
+# The documents.  README and the door pages link into docs/ by relative path;
+# without this graft every one of those links is a file the reader is missing,
+# in a document that reads as though they should have it.
+graft docs
+
+# The workflows, so a reader can see what the release actually runs rather
+# than take a checklist's word for it.
+graft .github
+
+# THE BREAKAGE THIS NAMES: the release notes were the one root document
+# left off this list, and `tests/test_doors_bundle.py` reads them to hold
+# the published Rust-door count to the door table.  So the suite that ships
+# INSIDE the sdist failed from inside the sdist, on a FileNotFoundError for
+# a file the reader was never given, which reads as a broken package rather
+# than as a missing manifest line.  Measured 2026-09-07 running the CI
+# selection from an unpacked sdist.
+include LICENSE
+include NOTICE
+include README.md
+include CHANGELOG.md
+include RELEASE-NOTES-0.1.0.md
+# Which revision of the model's source this package carries.  A reader
+# of an sdist has the code and no way to place it without this.
+include SOURCE.md
+include pyproject.toml
+
+# Compiled bytecode is a build product of the sources beside it, never an
+# input; the working tree's own rule, applied to the artefact.
+global-exclude *.pyc *.pyo
+prune **/__pycache__
+
+# Run output must never travel.  `graft tools` and `graft tests` are
+# wildcards, and a wildcard is exactly how the thing nobody listed gets
+# shipped: a checkpoint is 100s of MB, a receipt names the machine that wrote
+# it, and neither helps anybody install or run this software.
+prune out
+prune runs
+global-exclude *.npz
+global-exclude *.nc
+
+# THE ONE .npz THAT IS NOT RUN OUTPUT.  The hybrid covariance's static table
+# is a shipped data file, estimated once and pinned by the receipt beside it,
+# and `--static-covariance packaged` -- the DEFAULT, at beta 0.75 -- names it.
+# The blanket exclusion above is right about every other .npz in this tree
+# (checkpoints, analyses, ensemble members) and wrong about exactly this one,
+# so it is named back in after the exclusion rather than by weakening it.
+include src/arwen_global/data/static-covariance-v1.npz

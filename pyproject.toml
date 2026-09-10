@@ -1,0 +1,203 @@
+[build-system]
+# >=77 is the PEP 639 floor, and this distribution needs it rather than
+# merely benefiting from it: `license = "Apache-2.0"` under [project] is an
+# SPDX expression, and only setuptools>=77 turns that into a
+# License-Expression metadata field with LICENSE and NOTICE placed under
+# `dist-info/licenses/`.  Below 77 the same source tree builds a wheel that
+# emits the old `License:` field and drops the licence files entirely, so a
+# correct tree produces an artefact that misstates its own licence.
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpuwm-global"
+# STATIC, and this is the ONLY place the version is stated.
+#
+# `arwen_global.__version__` reads it back out of installed metadata
+# (importlib.metadata) instead of restating it.  A hand-maintained runtime
+# constant is a promise to update two files at every cut, and the engine
+# broke exactly that promise: its wheel shipped one number for four releases
+# while its runtime constant said another.  tests/test_packaging_declaration.py
+# fails if a second version literal appears anywhere under src/.
+#
+# 0.1.0 is the first cut of the carve: the global model as a distribution of
+# its own, its spectral core inside it, every door of both previous entrances
+# on one console script.  It is not a claim that the model is new.
+version = "0.1.0"
+description = "Arwen Global: a GPU-native hydrostatic global spectral weather model with ensemble data assimilation"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+#
+# TWO dependencies, and the second one carries the rest.
+#
+#   numpy   -- 103 modules under src/arwen_global import it at module scope.
+#              Nothing in this package imports without it.  It is declared
+#              directly rather than inherited from gpuwm because a direct
+#              module-scope import is a direct dependency; inheriting it
+#              would make this package's install correctness depend on
+#              another distribution's dependency list staying still.
+#
+#   gpuwm   -- the engine.  This package imports 30 gpuwm modules at module
+#              scope (the boundary is measured, not asserted: run
+#              `python tools/measure_boundary.py` against a gpuwm tree and it
+#              prints the table).  Physics tables, the mapped GRIB2 source
+#              engine, the observation front door, the static builder, the
+#              LETKF filter core, the wrfout writer and the Rust renderer all
+#              come from it, and so do netCDF4, matplotlib, scipy and pyshp,
+#              which gpuwm declares itself.
+#
+# THE CEILING IS NOT DECORATION.  `<2.8` is exclusive at the first engine
+# minor nobody has measured this package against.  The breakage it prevents,
+# and this is measured rather than imagined: the engine's own trees are NOT
+# supersets of each other across minors.  `gpuwm/core/preflight.py` is 8,834
+# lines on the tree this package was carved from and 9,727 on the 2.7 line;
+# `gpuwm/core/rrtmgp.py` differs by 1,316 lines; `gpuwm/verify/npref.py` by
+# 491.  A package that imports 231 symbols across that boundary and states
+# no ceiling is a package that will one day resolve an engine whose symbols
+# moved and fail at the first import of a forecast, after the install
+# reported success.  (The count rose from 78 on 2026-09-09, when the physics
+# this model was graded with was carried into `arwen_global.core`: those
+# modules reach the engine from INSIDE this package, so the boundary they
+# cross is counted here, and the files on the other side of it are pinned
+# one by one in `arwen_global/data/engine-seam.json`.  It rose again on
+# 2026-09-10, when the carried sources, the decode-scratch translation and
+# the run-plan seam landed together.)
+# Widening the range means measuring an engine that passes, which is
+# what tools/measure_boundary.py is for.
+#
+# THE FLOOR IS 2.7.0 AND PIP RESOLVES IT.  Stated because a floor naming a
+# version pip cannot resolve is a defect the hex line already paid for once,
+# and this sentence said the opposite until 2026-09-09: `pip install
+# "gpuwm==2.7.0"` resolved from the public index into a venv created from
+# scratch on the desktop that day, alongside `gpuwm-data==2.7.0`, and every
+# proof in this repository now installs from the index rather than from a
+# candidate wheel.
+dependencies = [
+    "numpy>=2.0",
+    "gpuwm>=2.7.0,<2.8",
+    # DECLARED RATHER THAN INHERITED, for the same reason netCDF4 is, and the
+    # reason is sharper here: the carried radiation driver calls
+    # `data_assets.rrtmgp_data_dir()` at MODULE scope and resolves a member of
+    # the companion wheel before its first function is defined, so the data
+    # distribution is an IMPORT requirement of this package's physics, not a
+    # run requirement of the engine's.  It arrives today only through the
+    # engine's own `gpuwm-data==2.7.0`, which is exactly the transitive route
+    # the line above refuses.  The range matches the engine pin: whatever
+    # 2.7.x resolves, its companion resolves beside it.
+    "gpuwm-data>=2.7.0,<2.8",
+    # DECLARED RATHER THAN INHERITED.  The carried radiation driver reads the
+    # RRTMGP k-distribution files with `from netCDF4 import Dataset` at MODULE
+    # scope, so importing the physics driver needs it, not merely running it.
+    # The engine requires netCDF4 too and it would arrive transitively today;
+    # a transitive dependency can be dropped by its owner without anything
+    # here changing, and the failure would be an ImportError on a card, after
+    # an install that reported success.
+    "netCDF4>=1.6",
+]
+keywords = [
+    "atmospheric-model",
+    "global-model",
+    "spectral-model",
+    "data-assimilation",
+    "LETKF",
+    "CUDA",
+    "GPU",
+    "weather",
+    "numerical-weather-prediction",
+]
+# No `License ::` classifier.  PEP 639 replaced it with the License-Expression
+# field declared above, and setuptools>=77 REFUSES a build that states both.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+]
+
+[project.urls]
+# The repository name is settled; the repository is LOCAL ONLY and has no
+# remote until the owner authorises creating it.  The link is stated rather
+# than omitted because the destination is decided, and a release that flips
+# it public is the act that makes it resolve.
+Homepage = "https://github.com/FahrenheitResearch/gpuwm-global"
+Repository = "https://github.com/FahrenheitResearch/gpuwm-global"
+
+[project.optional-dependencies]
+# One extra per CUDA major, mirroring gpuwm and gpuwm-hex exactly.  A pip
+# extra cannot detect a CUDA major -- there is no environment marker for it --
+# so this table names both rather than pretending to choose, and
+# `gpuwm-global doctor` reports which one is installed against the runtime the
+# driver answers with.
+gpu-cu12 = ["cupy-cuda12x[ctk]>=14.0"]
+gpu-cu13 = ["cupy-cuda13x[ctk]>=14.0"]
+# The bare alias follows the stack this model has actually been run on: every
+# measured figure in its documentation came off Blackwell cards (sm_120) on a
+# CUDA 13 runtime.  `gpu-cu12` stays resolvable rather than being deleted,
+# because a name that vanishes turns a wrong answer into a resolver error, and
+# the doctor names the mismatch when it sees one.
+gpu = ["gpuwm-global[gpu-cu13]"]
+# `setuptools` is a dev dependency because tests/test_packaging_declaration.py
+# drives the REAL sdist template engine over the real tree; since Python 3.12
+# `ensurepip` no longer seeds setuptools, so a fresh venv does not have it and
+# the packaging gates would skip themselves into silence.
+dev = ["pytest>=8.0", "setuptools>=77"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+# Anchored patterns, never `arwen_global*`.  `find` defaults to
+# namespaces = true and a namespace finder does not need a directory name to
+# be a valid identifier: the engine's 2.5.0 wheel swallowed a sibling
+# project directory that way.  There is no sibling under src/ today; the
+# anchor is what keeps that true when one appears.
+include = ["arwen_global", "arwen_global.*"]
+
+[tool.setuptools.package-data]
+# RECURSIVE GLOBS, never an enumeration.  The engine's per-file enumeration
+# had drifted 52 files behind its own tree before it was rewritten this way,
+# and tests/test_package_data_coverage.py fails if any non-Python file lands
+# under src/arwen_global without matching one of these rows.
+arwen_global = [
+    "*.cu",
+    "*.cuh",
+    "*.json",
+    "configs/**/*",
+    # The carried engine kernels.  They are the physics, not an optional
+    # extra: the carried loader binds its own directory with no fallback to
+    # the engine's, so a wheel that ships core/*.py and not core/kernels/*.cu
+    # raises FileNotFoundError at the first radiation or surface-layer call.
+    "core/kernels/*.cu",
+    "core/kernels/*.cuh",
+    "data/**/*",
+    "radiance_tables/**/*",
+    "semilag/*.cu",
+]
+
+[project.scripts]
+# ONE console script with subcommands.  It carries every command BOTH previous
+# entrances had: the eleven the product door registered and the ten more that
+# only the module door ever exposed.  Ship only what a user can reach applies
+# to the ten as much as to the eleven.
+gpuwm-global = "arwen_global.cli:main"
+
+[tool.pytest.ini_options]
+markers = [
+    "gpu: needs a CUDA device and cupy",
+    "slow: minutes rather than seconds",
+    "network: reaches the network for observations, analyses or statics",
+    "doors: needs a staged Rust binary from a release bundle",
+    "assets: needs a byte-pinned data asset that ships with no fetch path",
+    "cpu_only: these tests must not open the local device; the switch is set per test and put back, never at import time",
+]
+testpaths = ["tests"]
+# No addopts.  Deselection is always explicit at the call site, exactly as
+# gpuwm and gpuwm-hex do it, so that nothing is silently excluded from a bare
+# `pytest`.

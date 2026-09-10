@@ -1,0 +1,125 @@
+{
+  "engine_source_rev": "857cb277c712370d14704eefd989fb4979a9e960",
+  "note": "Size and SHA-256 pins for the companion Rust bundle `gpuwm-global fetch-doors` stages into ~/.gpuwm/global-doors, beside the engine's own bundle rather than inside it.  The bundle carries exactly the doors `arwen_global.doors.doors_from_bundle('gpuwm-global')` names: six binaries no published gpuwm bridge bundle carries at all (rw_atms, rw_gnssro, rw_ndbc, rw_igra2, rw_amv, rw_wis2), and two the engine's bundle carries under the same filename in an older build that has none of the subcommands this package calls (rw_asos, rw_goes).  This file is written by tools/build_door_bundle.py from the exact bytes a release published, never by hand.  `platforms` is empty until the first release is cut, and `gpuwm-global fetch-doors` reports that as 'no companion bundle has been published yet' rather than inventing a download URL.  If the engine takes those crates onto its own line, this file goes empty permanently and every door resolves from `gpuwm fetch-bridges`.",
+  "platforms": {
+    "linux-x86_64": {
+      "binaries": [
+        {
+          "artifact": "rw_asos",
+          "bytes": 3591680,
+          "filename": "rw_asos",
+          "sha256": "949c594e618a8f5a7a4eee20d5d550dcb52472c745639eae3a569a0ec32193d2"
+        },
+        {
+          "artifact": "rw_goes",
+          "bytes": 6408560,
+          "filename": "rw_goes",
+          "sha256": "15beddefc2ee8826e99e21ec7bbb46a102bd77781ea03d5c349fffcfd3e36cd6"
+        },
+        {
+          "artifact": "rw_atms",
+          "bytes": 1501312,
+          "filename": "rw_atms",
+          "sha256": "f3f6d75fc7bdf5c2545550b38b673b20fc6f2510e67e14391503d817cb99bbb4"
+        },
+        {
+          "artifact": "rw_gnssro",
+          "bytes": 4798928,
+          "filename": "rw_gnssro",
+          "sha256": "611eb8a2d8897439a63de4d3c3372ff0af28324f24fe6f32c8863218f0f70268"
+        },
+        {
+          "artifact": "rw_ndbc",
+          "bytes": 3408984,
+          "filename": "rw_ndbc",
+          "sha256": "e83b8ba79a048f23de5738af9c500afedf287263eada8a18763b0e8269729b35"
+        },
+        {
+          "artifact": "rw_igra2",
+          "bytes": 3473296,
+          "filename": "rw_igra2",
+          "sha256": "ee89aeb39f3a9f55bff84cb52a3b0532c4daca5913e3d50c5d707da263cc2b65"
+        },
+        {
+          "artifact": "rw_amv",
+          "bytes": 4439488,
+          "filename": "rw_amv",
+          "sha256": "543b67d08c12a4305e25acea6b46e5e7802421d664be813643f6670ca49830f4"
+        },
+        {
+          "artifact": "rw_wis2",
+          "bytes": 3882920,
+          "filename": "rw_wis2",
+          "sha256": "d2f272f19b1ff2bf5b4afd8cb4bb3648b25efd0520a7b8112bca251334a3fa89"
+        }
+      ],
+      "bundle": {
+        "bytes": 13050132,
+        "filename": "arwen-global-doors-v0.1.0-linux-x86_64.zip",
+        "sha256": "cad20318240445f9801edf423f2a8071f5163a77b2f3d26c983fe6963208dabc"
+      }
+    },
+    "win-x86_64": {
+      "binaries": [
+        {
+          "artifact": "rw_asos",
+          "bytes": 3035136,
+          "filename": "rw_asos.exe",
+          "sha256": "5eecabe14c25eb2d12fe6623eb693ab1054522508c7d452852492d481d670bfe"
+        },
+        {
+          "artifact": "rw_goes",
+          "bytes": 6297088,
+          "filename": "rw_goes.exe",
+          "sha256": "1d276414d92402111c42517353e3aa0d363ed722fc1c4c89f2d593842448c074"
+        },
+        {
+          "artifact": "rw_atms",
+          "bytes": 1176064,
+          "filename": "rw_atms.exe",
+          "sha256": "f211226dd4d16f79c7c57ffca7b03e740693897ae0621b800abb6ce17d200800"
+        },
+        {
+          "artifact": "rw_gnssro",
+          "bytes": 4294656,
+          "filename": "rw_gnssro.exe",
+          "sha256": "b8fcc029cf6dd70c00b70351fc317748eb7872030b8d3a6a269535d5583ced17"
+        },
+        {
+          "artifact": "rw_ndbc",
+          "bytes": 2822144,
+          "filename": "rw_ndbc.exe",
+          "sha256": "daf15d56bc9059805f30a0e531cf84685b92e811a5cbd3bd7f965bc6a75146d3"
+        },
+        {
+          "artifact": "rw_igra2",
+          "bytes": 2899968,
+          "filename": "rw_igra2.exe",
+          "sha256": "0da15c8137519ba754db11763c32f8f977b364ab643d494080fe9d3b3159d710"
+        },
+        {
+          "artifact": "rw_amv",
+          "bytes": 3891712,
+          "filename": "rw_amv.exe",
+          "sha256": "218c402d38faf86876c410ab4d9a12d02976be960d06868bd30e5819212723f6"
+        },
+        {
+          "artifact": "rw_wis2",
+          "bytes": 3292160,
+          "filename": "rw_wis2.exe",
+          "sha256": "bf1e693fc619792203343b5534df1ce9db73b82763c1d93e6c01d7fe1b77d66f"
+        }
+      ],
+      "bundle": {
+        "bytes": 11339768,
+        "filename": "arwen-global-doors-v0.1.0-win-x86_64.zip",
+        "sha256": "07b2235a6cc92051bb0fc50c893baaad960e0a8eb13efadb6f65ed22cdad2cdf"
+      }
+    }
+  },
+  "release": "v0.1.0",
+  "schema": "gpuwm-global-door-pins-v1",
+  "unstamped": [
+    "rw_atms"
+  ]
+}

@@ -1,0 +1,177 @@
+# The surface a public cut of gpuwm-global can break on a runner with no
+# CUDA device.  Everything that genuinely needs a card carries the `gpu`
+# marker and is deselected here by name, never by an `addopts` line that
+# would make a bare `pytest` quietly shorter than it looks.
+#
+# There is no publish job in this workflow and that is deliberate.  A
+# workflow able to publish on a push or on a tag is a standing
+# pre-authorisation.  Publishing lives in publish.yml, and there it is
+# additionally gated on a repository variable that does not exist.
+#
+# WHAT IS PROVEN HERE IS THE WHEEL, NOT THE CHECKOUT.  The job builds the
+# distribution and installs it into a fresh environment, then runs the
+# suite from the repository root.  With a `src/` layout the root is not
+# importable, so `import arwen_global` can only resolve to site-packages:
+# a module that never reached the wheel, an entry point that points at
+# nothing, or a data file outside the declaration all fail here and are
+# invisible to a run against `src/`.
+name: test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  # -------------------------------------------------------------------------
+  # The publish-ordering blocker, on its own job so its failure says what it
+  # means and does not read as a defect in this repository.
+  # -------------------------------------------------------------------------
+  engine_availability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      # THE BREAKAGE THIS NAMES: gpuwm-global hard-depends on the engine
+      # range declared in pyproject.toml, whose floor is a version that is
+      # not on PyPI yet.  Until it publishes, `pip install gpuwm-global`
+      # cannot succeed for anybody, and the test job below fails inside a
+      # resolver message that reads like a network problem.  This job says
+      # the real thing once, in one place, and the specifier is READ from
+      # the declaration rather than restated: the hex line restated its
+      # engine floor in four places and the copies drifted apart.
+      - name: the declared engine ranges must be resolvable before a cut
+        run: |
+          python -m pip install --upgrade pip
+          FLOOR=$(python -c "import tomllib,pathlib;d=tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'));print(' '.join(s for s in d['project']['dependencies'] if s.split('>')[0].split('=')[0].split('<')[0].strip() in ('gpuwm','gpuwm-data')))")
+          echo "declared engine ranges: ${FLOOR}"
+          python -m pip install --dry-run --ignore-installed ${FLOOR} \
+            || { echo "BLOCKER: ${FLOOR} is not installable from PyPI. gpuwm-global cannot be published before the engine versions it depends on are published. This is not a defect in this repository."; exit 1; }
+
+  # -------------------------------------------------------------------------
+  # The artefact a user would install, exercised the way a user installs it.
+  # -------------------------------------------------------------------------
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # 3.11 is the declared floor and 3.12 is the first interpreter that
+        # no longer seeds setuptools into a fresh venv (PEP 632).  Testing
+        # only one of them means the other breaks in a user's hands, and the
+        # packaging gates in tests/ drive setuptools directly.
+        python-version: ["3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    # MEASURED, not guessed, and the estate MOVES, so the figure carries
+    # its host and its date rather than standing alone.  After the model
+    # source was re-cut (2026-09-07): 1,586 passing and 102 skipped in
+    # 12 min 16 s from the sdist on Windows against a locally built 2.7.0,
+    # 1,570 passing and 118 skipped in 7 min 33 s on a 24-core Linux box
+    # on python 3.14, and 1,570 passing in 6 min 34 s on a second Linux box
+    # on python 3.12 through the replay.  The counts differ by host because
+    # dozens of tests skip themselves by name while the engine is behind,
+    # which is why a single number here ages within a day and all three
+    # are quoted.
+    #
+    # NO TEST IN THE SELECTION IS A WALL OF ITS OWN.  The slowest single
+    # row is 87 s (an IMEX energy gate on Windows) and the slowest ten sum
+    # to under 6 minutes, so the job's wall is the suite's and not one
+    # test's.  That is worth stating because a 2,064 s reading for one of
+    # those gates was taken on a contended box on the same day and would
+    # have justified a very different budget.
+    # A hosted runner has two cores against those boxes' many, so the
+    # budget is the wall time multiplied out, not the wall time. Sixty
+    # minutes was the first number written here and it would have killed
+    # the job on the runner rather than on the box it was timed on, which
+    # is the worst place to discover a timeout.
+    timeout-minutes: 150
+    steps:
+      # Full history, because two tests in the suite compare this branch's
+      # stored bytes against `main` to refuse a commit that rewrote a file's
+      # line endings.  A single-ref checkout has no `main`, those two skip by
+      # name, and the gate that exists for a reviewer would never run where a
+      # reviewer reads.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: build the wheel this job will then install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build "setuptools>=77" wheel
+          python -m build --wheel --outdir dist
+          ls -l dist/
+
+      # The wheel's own dependency table pulls gpuwm from PyPI, which is the
+      # motion a user performs.  It is not pinned to a locally built engine
+      # here: an install proved against bytes nobody can download proves
+      # nothing about the install a user gets.  The local-engine route is
+      # tools/ci_test_replay.py, which exists precisely because 2.7.0 is not
+      # published yet and this job therefore cannot be green.
+      - name: install the built wheel, resolving the engine from PyPI
+        run: |
+          python -m pip install "$(ls dist/*.whl)"
+          python -m pip install "pytest>=8.0" "setuptools>=77"
+
+      - name: the installed distribution answers for itself
+        run: |
+          python -c "import arwen_global, sys; print(arwen_global.__version__); print(arwen_global.__file__)"
+          gpuwm-global --help
+
+      # THE BREAKAGE THESE TWO NAME: a page that names an option the parser
+      # dropped, or teaches a command line argparse refuses, sends the reader
+      # to an error and the page is the reason.  Both read the INSTALLED
+      # parser, so they measure the artefact rather than the checkout, and
+      # both rewrite nothing here: --check and the doc reader are read-only.
+      # Measured on the analysis quickstart, whose two lines were refused by
+      # the parser they documented (2026-09-07).
+      - name: the documentation matches the parser it documents
+        run: |
+          python tools/build_cli_reference.py --check
+          python tools/check_doc_examples.py
+
+      # The exact selection.  Written once here; tools/ci_test_replay.py
+      # PARSES it out of this file rather than restating it, so a local
+      # replay cannot drift behind the job it replays.
+      #
+      # `-ra`, not `-rs`.  Dozens of modules in this suite skip themselves by
+      # name while the engine is behind, and each skip names the missing
+      # symbol and the patch item that supplies it, so a run log without skip
+      # reasons cannot tell an engine that is behind from a package that is
+      # broken.  `-rs` prints those reasons -- and REPLACES pytest's default
+      # `fE`, so the run log then lists no failed test at all and a reader has
+      # to reconstruct the list from the tracebacks.  `-ra` is both.
+      - name: the CPU-runnable estate
+        env:
+          GPUWM_NO_LOCAL_GPU: "1"
+        run: |
+          python -m pytest -q -ra --durations=15 -p no:cacheprovider -m "not gpu and not slow and not network" tests
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: gpuwm-global-wheel-${{ matrix.os }}-${{ matrix.python-version }}
+          path: dist/*.whl
+          if-no-files-found: error

@@ -1,0 +1,285 @@
+{
+  "schema": "gpuwm.arwen-global-engine-seam/v1",
+  "engine": {
+    "distribution": "gpuwm",
+    "version": "2.7.0"
+  },
+  "files": [
+    {
+      "path": "gpuwm/core/constants.py",
+      "size": 2979,
+      "sha256": "76c8c11d1a75d17fd54d0a80646cec9dde04f649247ec2347d3d32e6c0500e9e",
+      "reached": "CUDA_DEFINES, the first thing every carried kernel's preamble emits, and G and CP in the flux-to-heating conversion.  The highest-value pin in this file: it reaches the assembled source of every carried kernel"
+    },
+    {
+      "path": "gpuwm/certify/kernel_manifest.py",
+      "size": 7134,
+      "sha256": "8eaa9e00cc1d1eaf46c57d00168f6691e41ad2268f0cfcadfaa4d175f524d71b",
+      "reached": "record_module, called by the carried loader on every compile; it files a second, differing image under a deterministic suffix rather than replacing the first, which is what lets the carried and engine loaders coexist under one manifest root"
+    },
+    {
+      "path": "gpuwm/config.py",
+      "size": 191956,
+      "sha256": "6e946ccd43b4d3fabe000e0aad005b9796a0071af7bdbd8044a570ef89bfa33b",
+      "reached": "DEFAULT_COLUMN_CHUNK, radiation_enabled, radiation_scheme_ids, RunConfig and SASE_PBL_SCHEME.  RunConfig IS constructed in carried npref, twice, inside its reference-state builders; no door of this package and no test calls those, and the 308 differing lines are inside the class they build"
+    },
+    {
+      "path": "gpuwm/core/state.py",
+      "size": 63229,
+      "sha256": "01dec04dbd3a7cc35335e6a53e8120cd60a551ef4b86769218f5405ffa8bd6e6",
+      "reached": "DTYPE, DomainState and the constants wdm6/sase read.  The DomainState constructor and init_at_rest are reached only from the same two reference-state builders in carried npref, which is where all 100 differing lines land"
+    },
+    {
+      "path": "gpuwm/core/grid.py",
+      "size": 28673,
+      "sha256": "730cad2e5844e4738caaabe1065f1ca54a3def36ce0ed117042897267321bfa6",
+      "reached": "BaseState, VerticalCoord and rebalance_hydrostatic, bound at module scope by staying state.py"
+    },
+    {
+      "path": "gpuwm/core/preflight.py",
+      "size": 517121,
+      "sha256": "ba33a7547ac2aceed221822a369008d0957278d461ae2db531344096e9b045a0",
+      "reached": "EXTERNAL_MARGIN_BYTES, device_memory_probe_reason, device_memory_probe_subprocess and MEASURED_LOCAL_MEMORY_PROFILE, which carried ntiedtke reads for its SM count"
+    },
+    {
+      "path": "gpuwm/physics_compat.py",
+      "size": 147377,
+      "sha256": "bcb4aed0e3281ba0353f8a5f7c73a5ddd694a93650ef754bb13536b75e5221b5",
+      "reached": "WRF_RRTMG_TO_RTE_RRTMGP and WRF_RRTMG_TO_RTE_RRTMGP_V1, two string tokens carried rrtmgp binds"
+    },
+    {
+      "path": "gpuwm/physics_vertical_contract.py",
+      "size": 6986,
+      "sha256": "4e67357a0d0a7302934ea9742d6de651c90a06fa6385dace5332fbb6749bedd6",
+      "reached": "outside_vertical_bounds and refuse_vertical_levels, bound at module scope by carried ysu.  Nothing in this package binds MAX_RRTMGP_LAYERS, and carried rrtmgp does not reach this file"
+    },
+    {
+      "path": "gpuwm/core/kf.py",
+      "size": 26039,
+      "sha256": "bb4591306f50b130e275bcef1814a42f0b60dd196a23715da24855a5b56505e1",
+      "reached": "_model_clock_dt, imported at module scope by carried gf"
+    },
+    {
+      "path": "gpuwm/core/health_ledger.py",
+      "size": 12545,
+      "sha256": "1223d255f7c9f11d8bba5d27a54d02e92479064398e28cfa76c1b3086c51de0c",
+      "reached": "the validation-flag ledger carried ysu and carried rrtmgp read and write.  NOT gpuwm/core/health.py, which differs and is not reached"
+    },
+    {
+      "path": "gpuwm/data_assets.py",
+      "size": 20557,
+      "sha256": "232fed5c0fb4ed7f8f313de9e6fff61d13eae8e316e7b2fb6e58d70ab7c8d83e",
+      "reached": "rrtmgp_data_dir and require_companion_member, called by carried rrtmgp at MODULE scope: the companion data wheel is an import requirement of the physics driver, not merely a run requirement"
+    },
+    {
+      "path": "gpuwm/local_gpu.py",
+      "size": 1988,
+      "sha256": "8fba6fdb60a4db15feca6f503a584acbaf0a48be213f32ba4fc34d46deb920d0",
+      "reached": "NO_LOCAL_GPU_ENV and no_local_gpu, read by the native suite"
+    },
+    {
+      "path": "gpuwm/core/mynn_radiation.py",
+      "size": 3137,
+      "sha256": "a26543445c32102f957a864cdc65ae15402ce836e386d6632062fb60d83293b5",
+      "reached": "merge_mynn_bl_clouds, mynn_bl_cloud_active and wrf_itimestep; the package runs icloud_bl 0 so the merge is inert, but carried rrtmgp imports it at module scope"
+    },
+    {
+      "path": "gpuwm/core/morrison_constants.py",
+      "size": 1393,
+      "sha256": "100976309f219fe2466bb35a45ed6f68df70e0dbfb903375c22158cfa7a8044e",
+      "reached": "rimed_ice_constants, which is what morr_rimed_ice = 1 selects; bound at module scope by carried morrison and carried npref"
+    },
+    {
+      "path": "gpuwm/core/microphysics.py",
+      "size": 43286,
+      "sha256": "4df5b7a3e46c348a98920c2c4b8cac46632dee955d7c8eea19136c183c8f8670",
+      "reached": "MicrophysicsDiagnostics and its siblings, reached only through morrison.apply, which this package never calls"
+    },
+    {
+      "path": "gpuwm/core/refl.py",
+      "size": 38142,
+      "sha256": "84dc9cb426f2c918e30388f19de0ab64138c1b1a422a375e5ff23cb063569f3e",
+      "reached": "the reflectivity constants carried npref's mirrors read"
+    },
+    {
+      "path": "gpuwm/core/terrain.py",
+      "size": 1062,
+      "sha256": "68538847f48f92b154e7e4a91311526e3d81f2446f1784e9aaf93e42ee7ecff3",
+      "reached": "bell_hill, reached only from carried npref's reference-case builders"
+    },
+    {
+      "path": "gpuwm/core/wdm6_constants.py",
+      "size": 8858,
+      "sha256": "e8c55cdd7eba4e8123f685ae92c0dbe1156ca4448b4630aab14d147a2776a2ea",
+      "reached": "WDM6_NUMBER_SPECIES, bound at module scope by staying state.py"
+    },
+    {
+      "path": "gpuwm/core/wsm6_constants.py",
+      "size": 6074,
+      "sha256": "4d110ed7f5a792f48d925fd0ff8e974305d870a11ebb31437ff4e6fce6d3c62d",
+      "reached": "rimed_ice_constants for the WSM6 mirrors; imports wdm6_constants and carried npref at module scope"
+    },
+    {
+      "path": "gpuwm/core/sase_limits.py",
+      "size": 1557,
+      "sha256": "d4736f79ba9704799336508a4e64faa032e003b2ef29a135e6c8389637adcf50",
+      "reached": "E_MIN, bound at module scope by staying state.py"
+    },
+    {
+      "path": "gpuwm/core/jacobi_eigh.py",
+      "size": 10977,
+      "sha256": "f018d914f2fd60a5a064eb7317b4768cc393e92d26eaa54f5a122045483902bc",
+      "reached": "the LETKF eigensolver.  jacobi_eigh.cu is identical too, so the one kernel the assimilation touches compiles through the ENGINE's loader and needs no carry"
+    },
+    {
+      "path": "gpuwm/da/letkf.py",
+      "size": 114164,
+      "sha256": "6554aa0bc9134ceb85f74149daf7e4e90571f8806d7721ba70dcd511bf217495",
+      "reached": "gaspari_cohn and the LETKF entries this package's assimilation imports; the filter runs on the engine unchanged"
+    },
+    {
+      "path": "gpuwm/__init__.py",
+      "size": 2153,
+      "sha256": "cc26cb188dd3e1e7b54b5bb8aeab1c0bce77913181ff6e69b965341c1e0df737",
+      "reached": "the engine's package init, which executes before any engine module the carried physics imports; carried rrtmgp reaches data_assets through it"
+    },
+    {
+      "path": "gpuwm/core/__init__.py",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reached": "the engine's core package init, executed by every `from gpuwm.core import ...` in the carried physics.  Empty at the pinned version, and anything that arrives in it runs on every carried import"
+    },
+    {
+      "path": "gpuwm/core/mynn_sfclay.py",
+      "size": 8669,
+      "sha256": "11a617895e64908aea2fd7b142eff7311d538267977d809c3e59ee79bc8f0602",
+      "reached": "MYNN_SURFACE_OUTPUTS, MynnSurfaceResult, launch_mynn_surface_layer and seed_mynn_surface_first_step.  This model runs sfclay, so they are bound at import and never called"
+    },
+    {
+      "path": "gpuwm/core/noahmp_runtime.py",
+      "size": 104540,
+      "sha256": "990780ab87764481c463b1fa2f8c988cd9538e0833dc390203d2a0396fee66bc",
+      "reached": "the Noah-MP state and diagnostic inventories, its cold start and its step.  This model runs Noah, so they are bound at import and never called"
+    },
+    {
+      "path": "gpuwm/core/ruc_runtime.py",
+      "size": 51193,
+      "sha256": "1ed9fd8c58c6b77a1bafa3ede826ea8855cd4024db2a1fae3c1c2b838ec8a8d9",
+      "reached": "the RUC LSM inventories, cold start and step.  This model runs Noah, so they are bound at import and never called"
+    },
+    {
+      "path": "gpuwm/core/mynn_pbl_runtime.py",
+      "size": 16872,
+      "sha256": "5b7882f3c2dce572e39400e7e153f409cbd39e15fcec4030564ad1b971bb7ca0",
+      "reached": "the MYNN PBL inventories, mynn_pbl_step and validate_mynn_tendencies.  This model runs YSU, so they are bound at import and never called"
+    },
+    {
+      "path": "gpuwm/core/myjpbl.py",
+      "size": 8145,
+      "sha256": "dabfda3bf88f9f49798da6043efb7a1d4fdbb0617ed7b5be9b023f32863a04ff",
+      "reached": "MYJ_PBL_INOUT, myj_pbl_step and validate_myj_pbl_outputs.  This model runs YSU, so they are bound at import and never called"
+    },
+    {
+      "path": "gpuwm/core/myjsfc.py",
+      "size": 4664,
+      "sha256": "7054162d08c571fc410c12a1e87920ea1632eb9aa44bbceab596e574b183e48f",
+      "reached": "MYJ_SFCLAY_INOUT, MYJ_SFCLAY_OUTPUTS and launch_myj_sfclay.  This model runs sfclay, so they are bound at import and never called"
+    },
+    {
+      "path": "gpuwm/core/shinhong.py",
+      "size": 12210,
+      "sha256": "18856af5583a999a37a9d3c5658ab174f852f141177159470751e32f34dd5e3e",
+      "reached": "the ShinHong passenger inventory, its TKE floor and its launchers.  This model runs YSU, so they are bound at import and never called"
+    },
+    {
+      "path": "gpuwm/core/sase.py",
+      "size": 108318,
+      "sha256": "f3a4a65b59bcc568c21a0dd909f4b0a80fd9c5635d1f007749ed6be20d042582",
+      "reached": "the eleven SASE launchers carried physics binds at module scope.  This model runs YSU, so they are bound at import and never called"
+    },
+    {
+      "path": "gpuwm/core/surface_forcing.py",
+      "size": 3631,
+      "sha256": "6c940561621d16f38ee15701bbf740f287b11a827278297fdd18fcb5cbb2b2dd",
+      "reached": "SURFACE_PRECIPITATION_FIELDS and SurfacePrecipitationForcing, the precipitation carrier inventory the driver binds at import"
+    },
+    {
+      "path": "gpuwm/core/radiation_carriers.py",
+      "size": 28460,
+      "sha256": "bbebbc480ab64fd6011f8aa2b173e892c1ea76d80c619329eaa4dfea3f3bf57a",
+      "reached": "the carrier-source tokens, CarrierContract, CarrierContractError and consumer_carriers, which every radiation call in this model goes through.  It differs from the graded tree by one added token (CARRIER_SOURCE_CAM_OZONE) and the two lists it appears in; every name the carried code binds is identical"
+    },
+    {
+      "path": "gpuwm/ingest/soil.py",
+      "size": 61595,
+      "sha256": "52eadb0e980646ba12ae1cc71249d5f2af0b9410a69ebe6f80e5ca8b242435b1",
+      "reached": "NOAH_LAYER_THICKNESS_M, the four Noah layer depths every land-surface step is handed.  The file differs from the graded tree by 165 lines and the array is identical in both"
+    },
+    {
+      "path": "gpuwm/verify/sase_ref.py",
+      "size": 327508,
+      "sha256": "3eee40ce14375b3887fe4f45dfb23bcf871731d5d1f2b8fcaf367d367dc0b32e",
+      "reached": "C_K, CP_AIR, E_MIN and prandtl_blend: the SASE closure constants carried physics single-sources from the NumPy authority instead of restating.  The file differs from the graded tree by 16 lines, all of them prose, and the four values are identical"
+    },
+    {
+      "path": "gpuwm/core/analytic_radiation.py",
+      "size": 6781,
+      "sha256": "8e3f3cb3dbacc5f221671667a85c179cfb85297c6f0b4283a3de664287e47417",
+      "reached": "AnalyticClearSkyRadiation, imported inside the radiation selector at ra_lw=ra_sw=90.  The native adapter admits radiation='rrtmgp' only"
+    },
+    {
+      "path": "gpuwm/core/dudhia.py",
+      "size": 15303,
+      "sha256": "076295d88c167b3c5750ecb44350e8dcb3a4c6fce9014a293a44a864e5723a8d",
+      "reached": "wrf_solar_geometry, imported inside the analytic COSZEN provider a radiation-free run needs, and DudhiaShortwaveRadiation at ra_sw=1.  This model runs RRTMGP with radiation active"
+    },
+    {
+      "path": "gpuwm/core/rrtm_lw.py",
+      "size": 50563,
+      "sha256": "be9a61a0dab7b6a324124ee69b2791cee4b32b9112ba8b0003b314954d6ac1fd",
+      "reached": "RRTMDudhiaRadiation, imported inside the radiation selector at ra_lw=ra_sw=1.  The native adapter admits radiation='rrtmgp' only, which is why its 83 differing lines are not this model's physics"
+    },
+    {
+      "path": "gpuwm/core/rrtmg_legacy.py",
+      "size": 68840,
+      "sha256": "00fad51a53b35cedde1a6d5b2184af27aab174e231f52fa6531909b20798f95a",
+      "reached": "RRTMGLegacyRadiation, imported inside the radiation selector at ra_lw=ra_sw=4 with the legacy variant.  The native adapter admits radiation='rrtmgp' only, which is why its 157 differing lines are not this model's physics"
+    },
+    {
+      "path": "gpuwm/core/nssl2_contract.py",
+      "size": 16569,
+      "sha256": "ad246e1008d6af2fc52bd4c7aaeab90149399525a2a9a6b40f8838817f10fe9f",
+      "reached": "the NSSL-2 field contract, imported inside the microphysics selector at mp_physics=18.  The native adapter admits microphysics='morrison'"
+    },
+    {
+      "path": "gpuwm/core/nssl2_default_hooks.py",
+      "size": 11802,
+      "sha256": "962e12d7e53bd5385ee843f1f8a84f782dad681f6afb7a6ec0cc385a9a024e98",
+      "reached": "the NSSL-2 default hooks, imported beside the contract at mp_physics=18.  The native adapter admits microphysics='morrison'"
+    },
+    {
+      "path": "gpuwm/core/nssl2_runtime.py",
+      "size": 21517,
+      "sha256": "9028480f4e5f7bbd3f493026e31524ded1fb47ee746f0394803c647ba1b54a02",
+      "reached": "pin_absent_nssl2_fields, imported beside the contract at mp_physics=18.  The native adapter admits microphysics='morrison'"
+    },
+    {
+      "path": "gpuwm/core/p3_tables.py",
+      "size": 19944,
+      "sha256": "e19e5ba6c2b5146c8f45ba7e32359d90469829c6ab50dab50c2d41300332646a",
+      "reached": "load_lookup_table_1 and p3_table_root, imported inside carried rrtmgp's P3 effective-radius path, which only a P3 run reaches"
+    },
+    {
+      "path": "gpuwm/core/mpas_column_batch.py",
+      "size": 78559,
+      "sha256": "6e66d59176209805bff4f8ed491b115c1155c07f7bc8f2a063a6723232bcce45",
+      "reached": "run_mpas_column_batch, served through carried physics' module-level __getattr__ for the hexagonal line's column batch; no door of this package asks for that name"
+    },
+    {
+      "path": "gpuwm/core/diagnostics.py",
+      "size": 8100,
+      "sha256": "1385ae44960ea1a00d14089fa9fbe5151d4204e1aefce721920fe63fac5285d0",
+      "reached": "update_diagnostics, imported inside carried npref's two reference-state builders.  Nothing in this package or its suite calls them, which is where all 26 differing lines live"
+    }
+  ]
+}

@@ -1,0 +1,305 @@
+# Build the Rust doors this package publishes, on both platforms, and pin
+# them.
+#
+# THIS WORKFLOW PUBLISHES NOTHING.  It has `contents: read` and no other
+# permission, no `environment`, and no `id-token`, so it holds no PyPI
+# identity and no authority to write to a release.  What it produces is two
+# build artifacts and a pins document; publish.yml is the only file that can
+# attach them to anything, and every job in that file is gated on a
+# repository variable that does not exist.
+#
+# WHY THIS FILE EXISTS AT ALL.  The wheel carries no Rust.  Eight of the
+# fourteen binaries the model runs on are published by this package rather
+# than by the engine: six have no binary in any published bundle, and two
+# (rw_asos, rw_goes) exist in the engine's bundle under the same filename in
+# an older build with none of the subcommands this package calls.  Without a
+# bundle, obtaining those eight means a Rust toolchain, a source checkout and
+# a few minutes of compiling, which by the rule that a capability a user
+# cannot reach does not exist means eight doors were never shipped.
+#
+# WHERE THE CRATES COME FROM.  Not from this repository.  They live in the
+# engine's `tools/rustwx` workspace and stay there: two copies of a decoder
+# is how the two drift.  This workflow checks the engine's public repository
+# out at the revision `src/arwen_global/data/door-pins.json` names and builds
+# only the targets the engine's own bundle does not carry.
+#
+# WHAT IS KNOWN NOT TO WORK YET, STATED HERE RATHER THAN DISCOVERED IN A RUN.
+# As of 2026-09-07 the engine's public repository does not carry the crates
+# this builds.  `FahrenheitResearch/arwen` at the 2.7.0 snapshot has a
+# `rw-obs` with four binaries (mrms, stage4, asos, opera) and no `rw-atms`
+# crate at all; the five observation binaries and the ATMS door exist only on
+# the branch this package was carved from, and the `asos.rs` and `rw-goes`
+# there are ahead of the public ones by the subcommands named above.  So the
+# `preflight` job below asks the checkout for every crate and binary it is
+# about to build and FAILS NAMING THE MISSING ONES rather than producing a
+# bundle with holes in it.  The breakage that prevents: a release page
+# carrying an eight-door bundle that holds four doors, whose users get a
+# missing-subcommand error deep inside a DA cycle.
+#
+# The day the engine takes those crates onto its own line, this workflow
+# starts passing with a revision bump and nothing else, and the bundle it
+# builds shrinks to nothing.  That is the better end state.
+
+name: bridges
+
+on:
+  workflow_call:
+    inputs:
+      engine_ref:
+        description: >-
+          The engine revision to build the doors from.  Defaults to the
+          `engine_source_rev` in the packaged pins, which is the one number
+          that says which source the shipped binaries came from.
+        type: string
+        required: false
+        default: ""
+    outputs:
+      bundle_artifact_prefix:
+        description: The artifact name prefix each platform's bundle is uploaded under.
+        value: ${{ jobs.declare.outputs.bundle_artifact_prefix }}
+      platforms:
+        description: Space-separated platform keys this run built bundles for.
+        value: ${{ jobs.declare.outputs.platforms }}
+      engine_ref:
+        description: The engine revision the doors were actually built from.
+        value: ${{ jobs.declare.outputs.engine_ref }}
+  workflow_dispatch:
+    inputs:
+      engine_ref:
+        description: Engine revision to build from (blank = the packaged pin)
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bridges-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # The engine's public repository.  The crates are read from it and never
+  # copied into this one.
+  ENGINE_REPOSITORY: FahrenheitResearch/arwen
+  ARTIFACT_PREFIX: arwen-global-doors
+
+jobs:
+  # ---------------------------------------------------------------------
+  # 1.  What this run is going to build, decided once and read by the rest.
+  #     The release string and the engine revision both come out of the
+  #     packaged pins so there is no second place to state either.
+  # ---------------------------------------------------------------------
+  declare:
+    runs-on: ubuntu-latest
+    outputs:
+      bundle_artifact_prefix: ${{ env.ARTIFACT_PREFIX }}
+      platforms: ${{ steps.read.outputs.platforms }}
+      engine_ref: ${{ steps.read.outputs.engine_ref }}
+      release: ${{ steps.read.outputs.release }}
+      doors: ${{ steps.read.outputs.doors }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - id: read
+        env:
+          REQUESTED_REF: ${{ inputs.engine_ref }}
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, sys
+          sys.path.insert(0, "tools")
+          from pathlib import Path
+          import importlib.util
+          spec = importlib.util.spec_from_file_location(
+              "doors", "src/arwen_global/doors.py")
+          doors = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(doors)
+          pins = json.loads(
+              Path("src/arwen_global/data/door-pins.json").read_text("utf-8"))
+          requested = os.environ.get("REQUESTED_REF", "").strip()
+          engine = requested or pins.get("engine_source_rev") or ""
+          if not engine:
+              raise SystemExit(
+                  "bridges: no engine revision to build from.  The packaged "
+                  "pins carry no engine_source_rev and none was passed in, "
+                  "so there is nothing that says which source these binaries "
+                  "would come from.")
+          names = [d.name for d in doors.doors_from_bundle(doors.COMPANION_BUNDLE)]
+          print(f"engine_ref={engine}")
+          print(f"release={pins.get('release') or 'v0.0.0-dev'}")
+          print("platforms=" + " ".join(doors.SUPPORTED_PLATFORMS))
+          print("doors=" + " ".join(names))
+          PY
+      - run: |
+          echo "engine   ${{ steps.read.outputs.engine_ref }}"
+          echo "release  ${{ steps.read.outputs.release }}"
+          echo "doors    ${{ steps.read.outputs.doors }}"
+
+  # ---------------------------------------------------------------------
+  # 2.  Does the engine checkout actually carry what this builds?
+  #
+  #     THE BREAKAGE THIS PREVENTS: a bundle that packs whatever targets
+  #     happened to build, published as the eight doors, whose missing
+  #     members surface as an unknown-subcommand error in the middle of a
+  #     user's DA cycle rather than at the door.  Asked once, before any
+  #     compiling, so a run that cannot succeed says why in its first
+  #     minute.
+  # ---------------------------------------------------------------------
+  preflight:
+    needs: declare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          path: package
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.ENGINE_REPOSITORY }}
+          ref: ${{ needs.declare.outputs.engine_ref }}
+          persist-credentials: false
+          path: engine
+      - name: every crate and binary target this run needs is present
+        env:
+          DOORS: ${{ needs.declare.outputs.doors }}
+        run: |
+          set -uo pipefail
+          missing=()
+          for door in $DOORS; do
+            hits=$(grep -rl "name = \"${door}\"" engine/tools/rustwx/crates/*/Cargo.toml 2>/dev/null || true)
+            if [ -z "$hits" ]; then
+              missing+=("$door")
+            else
+              echo "ok   ${door}  <-  ${hits}"
+            fi
+          done
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo >&2
+            echo "bridges: the engine checkout at ${{ needs.declare.outputs.engine_ref }} of ${ENGINE_REPOSITORY} declares no binary target for: ${missing[*]}" >&2
+            echo "bridges: those crates live only on the branch this package was carved from.  Until the engine's line carries them, this workflow cannot build the bundle, and a partial bundle is worse than none: its members would fail as an unknown subcommand inside a run rather than at the door." >&2
+            echo "bridges: the remedy is the patch series delivered with this package, which lands crates/rw-atms and the five rw-obs binaries (plus the asos.rs and rw-goes subcommands) on the engine.  Then bump engine_source_rev in src/arwen_global/data/door-pins.json." >&2
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------
+  # 3.  Build and pack, one job per platform.  `--locked --offline` against
+  #     the workspace's own vendored closure, so the bytes do not depend on
+  #     what crates.io served that morning, and GPUWM_BRIDGE_SOURCE_REV is
+  #     set explicitly because a CI checkout's HEAD is the package's, not
+  #     the engine's.
+  # ---------------------------------------------------------------------
+  build:
+    needs: [declare, preflight]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runs-on: ubuntu-latest
+          - platform: win-x86_64
+            runs-on: windows-latest
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          path: package
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.ENGINE_REPOSITORY }}
+          ref: ${{ needs.declare.outputs.engine_ref }}
+          persist-credentials: false
+          path: engine
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - name: rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+      - name: build the door targets
+        working-directory: engine/tools/rustwx
+        env:
+          GPUWM_BRIDGE_SOURCE_REV: ${{ needs.declare.outputs.engine_ref }}
+          DOORS: ${{ needs.declare.outputs.doors }}
+        run: |
+          set -euo pipefail
+          args=()
+          for door in $DOORS; do args+=(--bin "$door"); done
+          # One cargo invocation so the workspace resolves once and every
+          # door is built against the same dependency graph.
+          cargo build --release --locked --offline \
+            -p rw-obs -p rw-goes -p rw-atms "${args[@]}"
+      - name: pack the bundle
+        working-directory: package
+        env:
+          RELEASE: ${{ needs.declare.outputs.release }}
+        run: |
+          python tools/build_door_bundle.py pack \
+            --release "$RELEASE" \
+            --platform ${{ matrix.platform }} \
+            --search ../engine/tools/rustwx/target/release \
+            --out dist-doors
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ env.ARTIFACT_PREFIX }}-${{ matrix.platform }}
+          path: package/dist-doors/*.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------
+  # 4.  Pin, on one machine, from the bundles the build jobs produced.
+  #     Every number written is a hash of bytes that exist here now.  The
+  #     source-revision stamp is checked out of each member without running
+  #     it, so a bundle predating the declared engine revision is refused
+  #     before it can become a perfectly-pinned release asset.
+  # ---------------------------------------------------------------------
+  pin:
+    needs: [declare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4
+        with:
+          pattern: ${{ env.ARTIFACT_PREFIX }}-*
+          path: bundles
+          merge-multiple: true
+      - name: pin the bundles into the packaged pins document
+        env:
+          RELEASE: ${{ needs.declare.outputs.release }}
+          ENGINE_REF: ${{ needs.declare.outputs.engine_ref }}
+        run: |
+          set -euo pipefail
+          ls -l bundles/
+          # rw_atms is named here, and only rw_atms, because its crate
+          # declares the source-revision stamp as a `pub static` nothing
+          # reads, so the linker drops it and the binary carries none.  The
+          # exemption is on the command line of every cut precisely so it
+          # cannot be mistaken for a door that was checked; the one-line fix
+          # is in this release's patch series and deletes this flag.
+          python tools/build_door_bundle.py pin \
+            --release "$RELEASE" \
+            --source-rev "$ENGINE_REF" \
+            --engine-rev "$ENGINE_REF" \
+            --allow-unstamped rw_atms \
+            bundles/*.zip
+          git --no-pager diff --stat -- src/arwen_global/data/door-pins.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: door-pins
+          path: src/arwen_global/data/door-pins.json
+          if-no-files-found: error

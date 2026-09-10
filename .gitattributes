@@ -1,0 +1,18 @@
+# Line endings are stored as written.  Git converts nothing, on any platform.
+#
+# THE BREAKAGE THIS PREVENTS.  This tree is deliberately mixed: 333 of its
+# Python files are stored LF and 30 text files are stored CRLF, the four Noah
+# tables among them, and the carried device sources are LF because the tree
+# they were carved from stores them that way.  Under git's default handling a
+# clone made with core.autocrlf set rewrites all of those on checkout, and the
+# next tool that reads and rewrites a file commits the rewrite.  It happened
+# here: one commit converted a test file whole and nine other test files went
+# the other way in the same round, 7,639 added and 7,591 deleted lines of diff
+# carrying 428 real changed lines, in the branch whose whole change was test
+# assertions.  Nobody can review 428 lines inside 15,230.
+#
+# `-text` is the pin: what a writer wrote is what is stored and what comes
+# back out.  It does not stop a tool from rewriting a file's endings, which is
+# what `tools/check_line_endings.py` measures and `tests/test_line_endings.py`
+# holds.
+* -text
