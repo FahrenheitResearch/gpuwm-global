@@ -336,14 +336,20 @@ def test_every_action_is_pinned_to_a_commit() -> None:
 # the seam between this lane and the doors lane
 # ---------------------------------------------------------------------------
 def test_the_release_job_and_the_door_bundles_agree_on_their_contract() -> None:
-    """publish.yml consumes what bridges.yml declares, by name.
+    """publish.yml still calls bridges.yml, and the release page is checked
+    against the wheel's own pins rather than against that build.
 
-    THE BREAKAGE THIS PREVENTS: the release job downloads the door bundles
-    by an artifact-name prefix and checks one bundle per declared platform.
-    Both names come out of the reusable workflow's `outputs:` block.  If
-    either is renamed on one side, the download quietly matches nothing and
-    the release page carries the distributions and no binaries, which is a
-    release that installs and cannot open a single door.
+    THE BREAKAGE THIS PREVENTS, in two halves.  The doors this package
+    needs live in crates the engine's public line does not carry yet, so
+    bridges.yml cannot build them from that line and fails by name; a
+    publish whose upload waited on that job could never upload.  So the
+    upload waits on the tests and the distributions only, and the release
+    job asks the release page for one bundle per platform the pins declare
+    and re-hashes each against `door-pins.json` inside the checkout.  A
+    release page carrying a bundle for one platform and none for the other,
+    or a bundle whose bytes are not the pinned ones, is refused before the
+    distributions are attached.  bridges.yml stays called on every cut so
+    the day the engine takes the crates is visible as a green job here.
     """
 
     bridges = workflow("bridges.yml")
@@ -351,17 +357,25 @@ def test_the_release_job_and_the_door_bundles_agree_on_their_contract() -> None:
 
     assert "workflow_call:" in bridges, (
         "bridges.yml has to be callable for publish.yml to call it")
-    outputs = bridges.split("outputs:", 1)[1].split("jobs:", 1)[0]
-    for name in ("bundle_artifact_prefix", "platforms"):
-        assert re.search(rf"^\s+{name}:", outputs, re.MULTILINE), (
-            f"bridges.yml declares no `{name}` output, and publish.yml's "
-            "release job reads it")
-        assert f"needs.doors.outputs.{name}" in publish, (
-            f"publish.yml does not consume bridges.yml's `{name}` output")
-
     assert "uses: ./.github/workflows/bridges.yml" in publish, (
         "publish.yml must call the doors workflow rather than carry a "
         "second copy of the build recipe for the same binaries")
+
+    publish_jobs = jobs(directives(publish))
+    for name in ("publish", "release"):
+        needs = re.search(r"needs:\s*\[([^\]]*)\]", publish_jobs[name])
+        assert needs, f"the {name} job declares no needs list"
+        assert "doors" not in needs.group(1), (
+            f"the {name} job waits on the doors build, which the engine's "
+            "public line cannot satisfy yet; the bundles come from the pins")
+
+    release = publish_jobs["release"]
+    for needle in ("door-pins.json", "gh release view", "gh release download",
+                   "sha256sum"):
+        assert needle in release, (
+            f"the release job no longer {needle!r}: the release page's "
+            "bundles must be checked by name and by bytes against the pins")
+
 
 
 # ---------------------------------------------------------------------------

@@ -172,11 +172,17 @@ jobs:
           if-no-files-found: error
 
   # -------------------------------------------------------------------------
-  # 4.  The Rust doors.  Their crates live in the engine's workspace, not in
-  #     this repository, and bridges.yml is what checks that workspace out at
-  #     the pinned engine revision and builds the targets the engine's own
-  #     bundle does not carry.  It is CALLED rather than copied so there is
-  #     one recipe for those binaries and no second place to forget.
+  # 4.  The door bundles.  The six observation doors this package needs live
+  #     in crates the engine's PUBLIC line does not carry yet, so bridges.yml,
+  #     which checks that line out at the pinned engine revision, cannot build
+  #     them today and says so by name.  It is still CALLED on every cut so
+  #     the day the engine takes the crates is visible as a green job here and
+  #     nowhere else has to change.  Until then it gates nothing: the bundles
+  #     a release carries are built by the maintainer from the engine checkout
+  #     at the pinned revision, packed and pinned by tools/build_door_bundle.py
+  #     into the wheel's own door-pins.json, and attached to the release BEFORE
+  #     it is published.  Section 6 below checks those attached bytes against
+  #     the wheel's pins, which is a stronger check than trusting a build.
   # -------------------------------------------------------------------------
   doors:
     if: vars.GPUWM_GLOBAL_PUBLISH_AUTHORIZED == '1'
@@ -194,7 +200,7 @@ jobs:
   # -------------------------------------------------------------------------
   publish:
     if: vars.GPUWM_GLOBAL_PUBLISH_AUTHORIZED == '1'
-    needs: [cut, prepare, doors]
+    needs: [cut, prepare]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -218,51 +224,82 @@ jobs:
           packages-dir: dist/
 
   # -------------------------------------------------------------------------
-  # 6.  The GitHub release, and only after PyPI.  The failure mode of this
-  #     order is a live PyPI version whose release page has no door bundles
-  #     attached yet, which a re-run fixes.  The other order fails the other
-  #     way, with a release page advertising binaries for a version that does
-  #     not exist on PyPI, which a re-run cannot fix because the tag is spent.
+  # 6.  The GitHub release page, and only after PyPI.  The failure mode of
+  #     this order is a live PyPI version whose release page has no
+  #     distributions attached yet, which a re-run fixes.  The other order
+  #     fails the other way, with a release page advertising a version that
+  #     does not exist on PyPI, which a re-run cannot fix because the tag is
+  #     spent.
+  #
+  #     THE BREAKAGE THE BUNDLE CHECK PREVENTS: a release page that carries a
+  #     bundle for one platform and none for the other, or a bundle whose
+  #     bytes are not the ones the wheel's door-pins.json names, so a user who
+  #     follows the printed fetch-doors line gets a door that is refused by
+  #     the very pins that shipped beside it.  Every platform the pins declare
+  #     must already be on the release page with exactly the pinned bytes.
   # -------------------------------------------------------------------------
   release:
     if: vars.GPUWM_GLOBAL_PUBLISH_AUTHORIZED == '1'
-    needs: [cut, doors, publish]
+    needs: [cut, publish]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          pattern: ${{ needs.doors.outputs.bundle_artifact_prefix }}-*
-          path: door-bundles
-          merge-multiple: true
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: python-dists
           path: dist
-      # THE BREAKAGE THIS PREVENTS: a release page that carries a bundle for
-      # one platform and silently none for the other, so half the users who
-      # follow the printed fetch-doors line get a door that is not there.
-      - name: every platform bridges.yml declares has a bundle to attach
-        env:
-          PLATFORMS: ${{ needs.doors.outputs.platforms }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          ls -l door-bundles/
-          for platform in $PLATFORMS; do
-            matches=(door-bundles/*"$platform"*)
-            if [ "${#matches[@]}" -lt 1 ]; then
-              echo "bridges.yml declared platform ${platform} and attached no bundle for it" >&2
-              exit 1
-            fi
-          done
-      - name: attach the door bundles and the distributions to the release
+      - name: every platform the pins declare has its bundle on the release page, with the pinned bytes
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.cut.outputs.tag }}
         run: |
           set -euo pipefail
-          gh release upload "$RELEASE_TAG" door-bundles/* dist/* --clobber
+          mkdir -p door-bundles
+          python - <<'PY' > expected.tsv
+          import json
+          from pathlib import Path
+          pins = json.loads(Path("src/arwen_global/data/door-pins.json").read_text("utf-8"))
+          platforms = pins.get("platforms") or {}
+          if not platforms:
+              raise SystemExit("door-pins.json declares no platforms, so nothing says which bundles this release must carry")
+          for platform, record in sorted(platforms.items()):
+              bundle = record["bundle"]
+              print(f"{platform}\t{bundle['filename']}\t{bundle['sha256']}\t{bundle['bytes']}")
+          PY
+          cat expected.tsv
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' > attached.txt
+          failed=0
+          while IFS=$'\t' read -r platform filename sha256 bytes; do
+            if ! grep -qx "$filename" attached.txt; then
+              echo "platform ${platform}: the pins name ${filename} and the release page carries no asset by that name" >&2
+              failed=1
+              continue
+            fi
+            gh release download "$RELEASE_TAG" --pattern "$filename" --dir door-bundles --clobber
+            actual=$(sha256sum "door-bundles/${filename}" | cut -c1-64)
+            size=$(stat -c %s "door-bundles/${filename}")
+            if [ "$actual" != "$sha256" ] || [ "$size" != "$bytes" ]; then
+              echo "platform ${platform}: ${filename} on the release page is ${size} B ${actual}; the wheel's pins say ${bytes} B ${sha256}" >&2
+              failed=1
+            else
+              echo "ok   ${platform}  ${filename}  ${bytes} B  ${sha256}"
+            fi
+          done < expected.tsv
+          test "$failed" -eq 0
+      - name: attach the distributions to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.cut.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" dist/* --clobber
           gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name'
