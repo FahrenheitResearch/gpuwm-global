@@ -121,6 +121,12 @@ jobs:
           spec = importlib.util.spec_from_file_location(
               "doors", "src/arwen_global/doors.py")
           doors = importlib.util.module_from_spec(spec)
+          # Registered before it executes: doors.py declares dataclasses,
+          # and dataclasses resolve a field's annotation through
+          # sys.modules[cls.__module__]; a module executed from a spec and
+          # never registered is None there, and the first public run of this
+          # job died on that AttributeError before it read the pins.
+          sys.modules[spec.name] = doors
           spec.loader.exec_module(doors)
           pins = json.loads(
               Path("src/arwen_global/data/door-pins.json").read_text("utf-8"))
