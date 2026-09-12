@@ -89,10 +89,29 @@ def test_version_is_read_back_from_metadata():
 
 
 def test_licence_is_an_spdx_expression_with_both_files(declaration):
+    """The distribution's own licence, its NOTICE, and the texts it owes.
+
+    `licenses/*` joined the declaration at 0.1.1 and is not decoration.
+    Four of the works the carried physics transcribes condition
+    redistribution on their TEXT travelling with the copy rather than on
+    being named: MIT over Arm's libm cores, the FDLIBM/SunPro notice,
+    BSD-3-Clause clause 1 over RTE+RRTMGP, and UCAR's request over the four
+    WRF tables.  0.1.0 shipped all four transcriptions with LICENSE and
+    NOTICE alone and performed none of them.  The glob is asserted AS a
+    glob: the set of texts grows with what the package carries, and the pin
+    belongs on the declaration, with tests/test_licence_notices_ship.py
+    holding the inventory.
+    """
+
     project = declaration["project"]
     assert project["license"] == "Apache-2.0"
-    assert set(project["license-files"]) == {"LICENSE", "NOTICE"}
+    assert project["license-files"] == ["LICENSE", "NOTICE", "licenses/*"]
     for name in project["license-files"]:
+        if name.endswith("/*"):
+            directory = REPO / name[:-2]
+            assert directory.is_dir(), f"{name} globs a missing directory"
+            assert sorted(directory.glob("*.txt")), f"{name} globs nothing"
+            continue
         assert (REPO / name).is_file(), f"{name} is declared and missing"
     classifiers = project.get("classifiers", [])
     assert not [row for row in classifiers if row.startswith("License ::")], (
@@ -264,7 +283,10 @@ def test_manifest_carries_the_directories_the_documents_point_at():
     """An sdist whose README links resolve to nothing is a broken sdist."""
 
     manifest = (REPO / "MANIFEST.in").read_text(encoding="utf-8")
-    for directory in ("tests", "tools", "docs"):
+    # `licenses` is grafted for the same reason as the rest and for one
+    # more: NOTICE points at every file in it by path, so an sdist without
+    # the graft carries a notice whose every reference resolves to nothing.
+    for directory in ("tests", "tools", "docs", "licenses"):
         assert f"graft {directory}" in manifest, directory
     for name in ("LICENSE", "NOTICE", "README.md"):
         assert f"include {name}" in manifest, name

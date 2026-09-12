@@ -26,6 +26,12 @@ graft docs
 # than take a checklist's word for it.
 graft .github
 
+# The third-party licence texts NOTICE points at.  `license-files` puts them
+# in the wheel; without this graft the SDIST would carry a NOTICE whose every
+# reference to licenses/ resolves to a file the reader was not given, which is
+# the failure this package already fixed once for the release notes.
+graft licenses
+
 # THE BREAKAGE THIS NAMES: the release notes were the one root document
 # left off this list, and `tests/test_doors_bundle.py` reads them to hold
 # the published Rust-door count to the door table.  So the suite that ships
@@ -38,6 +44,7 @@ include NOTICE
 include README.md
 include CHANGELOG.md
 include RELEASE-NOTES-0.1.0.md
+include RELEASE-NOTES-0.1.1.md
 # Which revision of the model's source this package carries.  A reader
 # of an sdist has the code and no way to place it without this.
 include SOURCE.md

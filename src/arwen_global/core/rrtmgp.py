@@ -1,3 +1,38 @@
+# ======================================================================
+# THIRD-PARTY NOTICE.  Parts of this file are hand transcriptions of
+# third-party work.  ArWen distributes the file under the Apache License
+# 2.0; the notices below belong to the transcribed parts and are kept here
+# because their own licences require it.  Full texts are in the repository
+# NOTICE and in the licenses/ directory.
+#
+#   RTE+RRTMGP, transcribed from earth-system-radiation/rte-rrtmgp at the
+#   commit this file's own docstring cites.  BSD 3-Clause:
+#
+#       Copyright (c) 2015-2025, Atmospheric and Environmental Research,
+#         Regents of the University of Colorado,
+#         Trustees of Columbia University in the City of New York.
+#
+#   Clause 1 requires source redistributions to retain that notice, the
+#   conditions and the disclaimer; the full text is in
+#   licenses/LICENSE-RTE-RRTMGP-BSD-3-Clause.txt.
+#
+#   WRF RRTMG's McICA subcolumn cloud generator, transcribed from WRF
+#   v4.6.1 phys/module_ra_rrtmg_sw.F (module mcica_subcol_gen_sw).  The
+#   RRTMGP path is driven with WRF's generator, not rte-rrtmgp's; the
+#   device copy is arwen_global/core/kernels/rrtmgp_mcica.cu.  That routine is
+#   AER's work, not UCAR's, and WRF preserves AER's own notice over it:
+#
+#       Copyright 2002-2008, Atmospheric & Environmental Research, Inc. (AER).
+#       This software may be used, copied, or redistributed as long as it is
+#       not sold and this copyright notice is reproduced on each copy made.
+#       This model is provided as is without any express or implied warranties.
+#                             (http://www.rtweb.aer.com/)
+#
+#   ArWen takes this material under AER's own current grant instead: BSD
+#   3-Clause, "Copyright (c) 2020, Atmospheric and Environmental
+#   Research", published by AER at github.com/AER-RC/RRTMG_SW.  Text in
+#   licenses/LICENSE-AER-RRTMG-BSD-3-Clause.txt.
+# ======================================================================
 """GPU RTE+RRTMGP longwave/shortwave radiation.
 
 The coefficient loader in this first section mirrors the transformations in

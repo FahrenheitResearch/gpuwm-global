@@ -2,7 +2,7 @@
   "schema": "gpuwm.arwen-global-engine-seam/v1",
   "engine": {
     "distribution": "gpuwm",
-    "version": "2.7.0"
+    "version": "2.7.3"
   },
   "files": [
     {
@@ -19,15 +19,15 @@
     },
     {
       "path": "gpuwm/config.py",
-      "size": 191956,
-      "sha256": "6e946ccd43b4d3fabe000e0aad005b9796a0071af7bdbd8044a570ef89bfa33b",
-      "reached": "DEFAULT_COLUMN_CHUNK, radiation_enabled, radiation_scheme_ids, RunConfig and SASE_PBL_SCHEME.  RunConfig IS constructed in carried npref, twice, inside its reference-state builders; no door of this package and no test calls those, and the 308 differing lines are inside the class they build"
+      "size": 223576,
+      "sha256": "1079f1563d5e4063c67b42689001ab71467a3f2e0a3e2a8235a541a9b3b66cca",
+      "reached": "DEFAULT_COLUMN_CHUNK, radiation_enabled, radiation_scheme_ids, RunConfig and SASE_PBL_SCHEME.  RunConfig IS constructed in carried npref, twice, inside its reference-state builders; no door of this package and no test calls those.  Against the cut revision the file differs by 1,130 lines at gpuwm 2.7.3 (308 at 2.7.0), 105 of them inside RunConfig, and RunConfig's own 2.7.0-to-2.7.3 movement is comment text with no field, default or validation changed"
     },
     {
       "path": "gpuwm/core/state.py",
-      "size": 63229,
-      "sha256": "01dec04dbd3a7cc35335e6a53e8120cd60a551ef4b86769218f5405ffa8bd6e6",
-      "reached": "DTYPE, DomainState and the constants wdm6/sase read.  The DomainState constructor and init_at_rest are reached only from the same two reference-state builders in carried npref, which is where all 100 differing lines land"
+      "size": 64762,
+      "sha256": "af119974b739b51cc8ddf87e4b63321f4ce34aff8585b4da30aa2662e8f2e199",
+      "reached": "DTYPE, DomainState and the constants wdm6/sase read.  The DomainState constructor and init_at_rest are reached only from the same two reference-state builders in carried npref.  Against the cut revision the file differs by 141 lines at gpuwm 2.7.3 (100 at 2.7.0), 109 of them inside DomainState; the 2.7.0-to-2.7.3 movement is one comment in DomainState plus a scratch-arena dtype rule that widens what is accepted and an optional argument nothing here passes"
     },
     {
       "path": "gpuwm/core/grid.py",
@@ -37,20 +37,20 @@
     },
     {
       "path": "gpuwm/core/preflight.py",
-      "size": 517121,
-      "sha256": "ba33a7547ac2aceed221822a369008d0957278d461ae2db531344096e9b045a0",
+      "size": 546715,
+      "sha256": "dfa30606e4c6e3463b74d648bed0499bfe4e58d9f979d85e79327817d2aea1ec",
       "reached": "EXTERNAL_MARGIN_BYTES, device_memory_probe_reason, device_memory_probe_subprocess and MEASURED_LOCAL_MEMORY_PROFILE, which carried ntiedtke reads for its SM count"
     },
     {
       "path": "gpuwm/physics_compat.py",
-      "size": 147377,
-      "sha256": "bcb4aed0e3281ba0353f8a5f7c73a5ddd694a93650ef754bb13536b75e5221b5",
+      "size": 162755,
+      "sha256": "e65c39fd269562517d95297dcb06684982a5275d13444a997e7c38555d8341a5",
       "reached": "WRF_RRTMG_TO_RTE_RRTMGP and WRF_RRTMG_TO_RTE_RRTMGP_V1, two string tokens carried rrtmgp binds"
     },
     {
       "path": "gpuwm/physics_vertical_contract.py",
-      "size": 6986,
-      "sha256": "4e67357a0d0a7302934ea9742d6de651c90a06fa6385dace5332fbb6749bedd6",
+      "size": 8828,
+      "sha256": "e18e7756b77be3170de1f34f49dbf7e489afb78995be072d251d1b36b5aeb1d4",
       "reached": "outside_vertical_bounds and refuse_vertical_levels, bound at module scope by carried ysu.  Nothing in this package binds MAX_RRTMGP_LAYERS, and carried rrtmgp does not reach this file"
     },
     {
@@ -91,14 +91,14 @@
     },
     {
       "path": "gpuwm/core/microphysics.py",
-      "size": 43286,
-      "sha256": "4df5b7a3e46c348a98920c2c4b8cac46632dee955d7c8eea19136c183c8f8670",
+      "size": 43970,
+      "sha256": "ea51ce3767f15de7c949cf7964f512e6d9d4f32d0b91a1604d49c772f7a2d329",
       "reached": "MicrophysicsDiagnostics and its siblings, reached only through morrison.apply, which this package never calls"
     },
     {
       "path": "gpuwm/core/refl.py",
-      "size": 38142,
-      "sha256": "84dc9cb426f2c918e30388f19de0ab64138c1b1a422a375e5ff23cb063569f3e",
+      "size": 43165,
+      "sha256": "04a1f83b09b1cfb38222d55681d6c3906e261d121b13c815d076485b241d9cb8",
       "reached": "the reflectivity constants carried npref's mirrors read"
     },
     {
@@ -241,9 +241,9 @@
     },
     {
       "path": "gpuwm/core/rrtmg_legacy.py",
-      "size": 68840,
-      "sha256": "00fad51a53b35cedde1a6d5b2184af27aab174e231f52fa6531909b20798f95a",
-      "reached": "RRTMGLegacyRadiation, imported inside the radiation selector at ra_lw=ra_sw=4 with the legacy variant.  The native adapter admits radiation='rrtmgp' only, which is why its 157 differing lines are not this model's physics"
+      "size": 69559,
+      "sha256": "8951ce770e10f823d964a4f4564cc9f8989035a7fb9d3fc1448b73f6816bc928",
+      "reached": "RRTMGLegacyRadiation, imported inside the radiation selector at ra_lw=ra_sw=4 with the legacy variant.  The native adapter admits radiation='rrtmgp' only, which is why its 177 differing lines at gpuwm 2.7.3 (157 at 2.7.0) are not this model's physics"
     },
     {
       "path": "gpuwm/core/nssl2_contract.py",

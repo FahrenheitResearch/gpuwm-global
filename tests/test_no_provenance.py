@@ -109,6 +109,31 @@ SELF = Path(__file__).resolve()
 _SKIP_PARTS = {".git", "__pycache__", ".pytest_cache", "build", "dist",
                ".venv", "venv", "node_modules"}
 
+#: SOMEBODY ELSE'S WORDS, REPRODUCED BECAUSE A LICENCE ASKS FOR THEM.
+#:
+#: These files are not this project's prose and this project may not edit
+#: them.  MIT's substantive condition is that Arm's copyright notice and its
+#: permission notice appear in every copy; FDLIBM's only condition is that
+#: its notice be preserved; BSD-3-Clause clause 1 asks for the notice, the
+#: conditions and the disclaimer retained unchanged; UCAR asks that its WRF
+#: notice travel with any copy.  A house-style rule applied to one of them
+#: would be a modification of the thing the licence says must be reproduced,
+#: which is the opposite of performing it.
+#:
+#: So they are exempt from the rules below BY NAME, never by a glob: a new
+#: file under licenses/ is in scope until somebody adds it here and says
+#: whose words it is.  `test_the_third_party_texts_are_exempt_by_name`
+#: holds the list to files that exist.
+THIRD_PARTY_VERBATIM: tuple[str, ...] = (
+    "licenses/LICENSE-Arm-optimized-routines-MIT.txt",
+    "licenses/LICENSE-FDLIBM-SunPro.txt",
+    "licenses/LICENSE-RTE-RRTMGP-BSD-3-Clause.txt",
+    "licenses/LICENSE-WRF-public-domain.txt",
+    "licenses/LICENSE-AER-RRTMG-BSD-3-Clause.txt",
+    "licenses/NOTICE-AER-RRTMG-as-distributed-with-WRF.txt",
+    "src/arwen_global/data/noah_tables/LICENSE-WRF.txt",
+)
+
 
 def _walk(patterns: tuple[str, ...]) -> list[Path]:
     found: list[Path] = []
@@ -119,6 +144,8 @@ def _walk(patterns: tuple[str, ...]) -> list[Path]:
             if set(path.relative_to(ROOT).parts) & _SKIP_PARTS:
                 continue
             if path.resolve() == SELF:
+                continue
+            if path.relative_to(ROOT).as_posix() in THIRD_PARTY_VERBATIM:
                 continue
             found.append(path)
     return sorted(set(found))
@@ -170,12 +197,22 @@ def shipped_scope() -> list[Path]:
     untouched.  A scope that stops at what opens as text reports green on
     the copy nobody can read.  `_archive_documents` below opens the members
     and hands their decoded text to every rule here.
+
+    `src/**/*.txt` and `licenses/*.txt` are the fifth widening, and they
+    arrived with the third-party notices in 0.1.1.  The beside-the-code
+    notice in `src/arwen_global/core/kernels/` is this project's own prose
+    about somebody else's code: it ships inside the wheel, a reader who
+    opens the kernel directory reads it first, and every rule here applies
+    to it.  The verbatim licence texts are the exception and they are
+    excluded by name in `THIRD_PARTY_VERBATIM`, not by extension, so a new
+    file under `licenses/` is in scope until somebody says whose words it
+    is.
     """
 
     return sorted(set(_walk((
         "src/**/*.py", "tools/**/*.py", "tests/**/*.py", "*.py",
         "src/**/*.cu", "src/**/*.cuh", "src/**/*.toml", "src/**/*.json",
-        "src/**/*.npz",
+        "src/**/*.npz", "src/**/*.txt", "licenses/*.txt",
     ))) | set(prose_scope()))
 
 
@@ -789,12 +826,25 @@ def test_no_published_link_names_a_repository_a_reader_cannot_open() -> None:
     The allowed set is small and stated, rather than the pattern being a guess
     at what looks private: the repositories this family publishes are named
     here, and a link to anything else has to be argued for by adding it.
+
+    THE SECOND SET IS SOMEBODY ELSE'S, and it exists because the rule above
+    reads every link as one of ours.  A third-party notice has to say where
+    the transcribed work was published, by name and by URL, or the notice
+    does not identify what it is a notice for.  Those repositories are
+    public and a reader opens them; the failure this gate exists to prevent,
+    a 404 that advertises a private repository of ours, cannot happen with
+    one.  Each is listed with the section that cites it, so an upstream
+    arriving here has to be an upstream somebody wrote a notice for.
     """
 
     allowed = {
         "FahrenheitResearch/arwen",
         "FahrenheitResearch/gpuwm-global",
         "FahrenheitResearch/gpuwm-hex",
+        # NOTICE, "FP32 libm transcriptions -- Arm optimized-routines":
+        # where Arm published the logf/expf/exp2f/powf cores, which MIT
+        # requires this distribution to identify and attribute.
+        "ARM-software/optimized-routines",
     }
     link = re.compile(r"github[.]com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
     hits = []
@@ -997,6 +1047,24 @@ def test_the_patterns_still_match_what_they_are_written_to_match() -> None:
     assert _decode_member("<f8", bytes(8)) is None
     assert _decode_member("<i4", bytes(4)) is None
     assert "leak" in (_decode_member(None, "leak".encode("utf-16-le")) or "")
+
+
+def test_the_third_party_texts_are_exempt_by_name() -> None:
+    """An exemption naming a file that is not there exempts nothing.
+
+    The list is what keeps a licence text out of the house-style rules, so
+    a stale entry is an exemption a future file could inherit by being
+    given the same name, and a missing file is a licence this distribution
+    stopped shipping while NOTICE still points at it.  Both are caught
+    here rather than at a reader.
+    """
+
+    for name in THIRD_PARTY_VERBATIM:
+        path = ROOT / name
+        assert path.is_file(), f"exempt by name and not in the tree: {name}"
+        assert path.read_bytes().strip(), f"exempt and empty: {name}"
+        assert path not in shipped_scope(), name
+        assert path not in prose_scope(), name
 
 
 def test_the_declaration_is_inside_the_prose_scope() -> None:

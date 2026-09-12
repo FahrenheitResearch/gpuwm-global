@@ -146,10 +146,28 @@ CORE_CARVE: tuple[tuple[str, str], ...] = (
     + tuple((f"gpuwm/core/kernels/{name}", f"core/kernels/{name}")
             for name in CORE_KERNELS)
     + (
+        # THE NOTICE FOR WHAT THE KERNELS TRANSCRIBE, and it travels because
+        # the licences it performs ask it to.  Arm's MIT requires its
+        # copyright and permission notice in every copy of the code;
+        # FDLIBM's only condition is that its notice be preserved;
+        # BSD-3-Clause clause 1 requires the notice, the conditions and the
+        # disclaimer to be retained in a source redistribution.  A carried
+        # kernel with no notice beside it performs none of those, which is
+        # what 0.1.0 shipped.  The device sources cannot take the notice as
+        # a comment -- their bytes are the ``source_sha256`` a receipt
+        # records -- so it sits in their directory instead, and
+        # ``KERNEL_NOTICE_SCOPE`` below narrows the copy that lands here to
+        # the files this package actually ships.
+        ("gpuwm/core/kernels/LICENSE-third-party.txt",
+         "core/kernels/LICENSE-third-party.txt"),
         # Byte-identical to the engine's copies.  They travel because carried
         # noah.py resolves TBL_DIR relative to its own file, so without them
         # the first Noah or land-use call raises on a path that does not
-        # exist.  A packaging requirement, not a physics divergence.
+        # exist.  A packaging requirement, not a physics divergence.  The
+        # directory carries LICENSE-WRF.txt with the four tables, which is
+        # UCAR's own request: that its notice travel with any copy of WRF.
+        # It is listed in ``VERBATIM_PREFIXES``: third-party text is not
+        # this carve's to reword.
         ("gpuwm/data/noah_tables", "data/noah_tables"),
     )
 )
@@ -455,6 +473,257 @@ CORE_EXACT: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
 #
 # So the suite is merged the same way the model is, three ways, and the
 # divergence survives because that is what a merge does.
+#: THE BESIDE-THE-CODE NOTICE, NARROWED TO WHAT THIS PACKAGE SHIPS.
+#:
+#: THE BREAKAGE THIS TABLE PREVENTS.  The source tree's copy of
+#: ``LICENSE-third-party.txt`` covers its whole kernel directory: fourteen
+#: files carrying Arm's libm cores, nine more carrying FDLIBM's, eight legacy
+#: RRTMG translation units under AER's grant, and the Numerical Recipes
+#: GAMMLN coefficients in two files.  This package carries fifteen device
+#: sources and NONE of those except glibc_flt32.cuh and the five RTE+RRTMGP
+#: ones.  Carried verbatim, the notice would tell a reader that this
+#: distribution contains AER's RRTMG and Numerical Recipes' coefficients,
+#: which it does not, and would name twenty-odd files that are not in the
+#: wheel.  A notice that describes a different directory is worse than no
+#: notice: it is a false statement about what somebody received.
+#:
+#: So the carve NARROWS it, and narrowing is the only edit made: every grant
+#: the carried files do stand on keeps the source tree's own wording, because
+#: that wording is the provenance account and rewriting it would fork the two
+#: copies of the same claim.  ``CORE_EXACT``'s rule holds: a block that stops
+#: matching stops the cut, which is what happens the day the source tree
+#: rewords a section this table trims, and is exactly when somebody has to
+#: look at whether the trim is still right.
+#:
+#: ``tests/test_licence_notices_ship.py`` is the other half: it reads the
+#: CARRIED copy and fails if it names a device source this package does not
+#: ship, or if a carried kernel's transcription has no section here.
+KERNEL_NOTICE_SCOPE: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    # Where the texts land in THIS distribution's wheel.
+    ('core/kernels/LICENSE-third-party.txt',
+     ("provenance account, are in the repository's root NOTICE, and the complete",
+      "licence texts are in the repository's licenses/ directory, which ships in",
+      "the wheel under gpuwm-<version>.dist-info/licenses/."),
+     ("provenance account, are in the repository's root NOTICE, and the complete",
+      "licence texts are in the repository's licenses/ directory, which ships in",
+      "the wheel under gpuwm_global-<version>.dist-info/licenses/licenses/",
+      "(PEP 639 keeps the source path, hence the doubled component).")),
+    # Why the notice is here and not in each file.  The source tree's reason
+    # is its two frozen-digest suites, which this package does not carry; the
+    # reason that survives the carve is the receipt.
+    ('core/kernels/LICENSE-third-party.txt',
+     ("WHY THIS FILE EXISTS RATHER THAN A HEADER IN EACH .cu",
+      "-----------------------------------------------------",
+      "Every .cu in this directory is pinned by SHA-256 -- by",
+      "tests/test_mp8_frozen.py::FROZEN_MODULE_DIGESTS, which pins the file AND the",
+      "assembled compile string the loader hands nvrtc, and by",
+      "tests/test_kernel_source_freeze_per_module.py::BASELINE_PINNED, which pins",
+      "the rest.  A comment prepended to any of them would move a frozen digest and",
+      "turn a numerics gate red for a reason that has nothing to do with numerics.",
+      "So the notice sits beside the code instead of inside it, and it ships with",
+      "the code: pyproject.toml's package-data glob for arwen_global.core.kernels names",
+      "this file explicitly.",
+      "",
+      "The two .cuh headers here -- glibc_flt32.cuh and thompson_aerosol_common.cuh",
+      "-- are not themselves digest-pinned, but they are PREPENDED to pinned",
+      "translation units by the loader's _EXTRA_HEADERS table, so their bytes are",
+      "inside the assembled compile string a receipt records as source_sha256 for",
+      "gf and ntiedtke.  A notice comment in either one moves those receipts'",
+      "digests without moving a compiled image, so the notice for both stays in",
+      "this file with the rest.  The Python counterparts of the same",
+      "transcriptions, which nothing digests, do carry their notice in their own",
+      "header: gpuwm/core/noahmp_libm.py, gpuwm/core/mynn_pbl.py,",
+      "gpuwm/core/ruc.py, gpuwm/core/rrtmgp.py and gpuwm/verify/npref.py among",
+      "them."),
+     ("WHY THIS FILE EXISTS RATHER THAN A HEADER IN EACH .cu",
+      "-----------------------------------------------------",
+      "The bytes of these device sources ARE the identity a run receipt",
+      "records: the loader assembles each module's compile string out of the",
+      "files in this directory and the receipt pins its source_sha256.  A",
+      "notice comment prepended to one of them would move that digest without",
+      "moving a compiled image, and every receipt this model has published",
+      "would stop matching the code that wrote it.  So the notice sits beside",
+      "the code instead of inside it, and it ships with the code:",
+      "pyproject.toml's package-data for arwen_global.core.kernels names this",
+      "file explicitly.",
+      "",
+      "glibc_flt32.cuh is covered here for the same reason even though it is",
+      "not a compilation unit of its own: the loader prepends it to gf and to",
+      "ntiedtke, so its bytes sit inside those two modules' assembled",
+      "strings.  The Python counterparts of the same transcriptions, which",
+      "nothing digests, do carry their notice in their own header:",
+      "arwen_global/core/rrtmgp.py and arwen_global/core/npref.py.")),
+    # What is covered here, and the libm scope, both narrowed to this
+    # directory's fifteen files.
+    ('core/kernels/LICENSE-third-party.txt',
+     ("1. Arm optimized-routines (MIT)        -- logf, expf, exp2f, powf",
+      "2. FDLIBM / Sun Microsystems           -- expm1f, tanhf, atanf, log10f",
+      "3. AER RRTMG (BSD 3-Clause)            -- the RRTMG radiation kernels, legacy",
+      "                                          and the McICA generator the default",
+      "                                          radiation path is driven with",
+      "4. RTE+RRTMGP (BSD 3-Clause)           -- the default radiation kernels",
+      "5. Numerical Recipes Software          -- the GAMMLN log-gamma coefficients",
+      "",
+      "Sections 1 and 2 also state the scope of those two grants; section 6 states",
+      "what none of the five covers, and says whose work the gamma routines in",
+      "glibc_flt32.cuh are."),
+     ("1. Arm optimized-routines (MIT)        -- logf, expf, exp2f, powf",
+      "2. FDLIBM / Sun Microsystems           -- expm1f, the lgammaf reduction",
+      "3. AER RRTMG (BSD 3-Clause)            -- the McICA subcolumn generator the",
+      "                                          radiation path is driven with",
+      "4. RTE+RRTMGP (BSD 3-Clause)           -- the rest of the radiation kernels",
+      "",
+      "Sections 1 and 2 also state the scope of those two grants; section 5 states",
+      "what none of the four covers, and says whose work the gamma routines in",
+      "glibc_flt32.cuh are.")),
+    ('core/kernels/LICENSE-third-party.txt',
+     ("Scope in this directory: the logf / expf / exp2f / powf cores and their data",
+      "tables (Arm, MIT) appear in glibc_flt32.cuh, mynn_dmp_sibling.cu, mynn_pbl.cu,",
+      "noahmp_bareflux.cu, noahmp_fluxprep.cu, noahmp_leaves.cu, noahmp_radiation.cu,",
+      "noahmp_snow.cu, noahmp_soilwater.cu, noahmp_vegeflux.cu, noahmp_vegprecip.cu,",
+      "noahmp_water.cu, rrtmg_lw.cu and rrtmg_sw.cu.  The expm1f / tanhf / atanf /",
+      "log10f reductions (FDLIBM, Sun Microsystems) appear in mynn_dmp_sibling.cu,",
+      "mynn_pbl.cu, noahmp_bareflux.cu, noahmp_energy.cu, noahmp_fluxprep.cu,",
+      "noahmp_glacier.cu, noahmp_leaves.cu, noahmp_vegeflux.cu and ruc.cu.",
+      "glibc_flt32.cuh is on that second list as well, and on a third count:",
+      "besides the Arm cores above it carries FDLIBM's expm1f (s_expm1f.c) and the",
+      "positive arm of FDLIBM's lgammaf reduction (e_lgammaf_r.c), which are the",
+      "only transcriptions of those two routines in this tree.  Their Python",
+      "counterparts are in gpuwm/core/noahmp_libm.py, gpuwm/core/mynn_pbl.py and",
+      "gpuwm/core/ruc.py, each of which carries this notice in its own header.",
+      "tests/test_cuda_libm_table_copies.py enumerates the table copies and keeps",
+      "them in step, so this list is machine-checkable rather than prose."),
+     ("Scope in this directory: both libm grants are carried by one file,",
+      "glibc_flt32.cuh, which the loader prepends to gf and to ntiedtke.  It",
+      "holds the logf / expf / exp2f / powf cores and their data tables (Arm,",
+      "MIT), and FDLIBM's expm1f (s_expm1f.c) and the positive arm of FDLIBM's",
+      "lgammaf reduction (e_lgammaf_r.c).  No other device source here carries",
+      "either.  The model's own source tree transcribes the same routines in",
+      "further files -- its boundary-layer, Noah-MP and legacy-RRTMG kernels --",
+      "and its own copy of this notice names them; this package ships none of",
+      "those files, and this copy names what is here.")),
+    # AER RRTMG: not one of the eight legacy translation units is carried,
+    # but rrtmgp_mcica.cu is, and it is AER's work.  So this section is
+    # NARROWED to that one file rather than deleted.  The 0.1.0 notice filed
+    # that kernel under RTE+RRTMGP on the strength of its filename prefix;
+    # dropping the section whole would make the same mistake the other way.
+    ('core/kernels/LICENSE-third-party.txt',
+     ("3. AER RRTMG -- the RRTMG radiation kernels, legacy and McICA",
+      "-------------------------------------------------------------",
+      "",
+      "rrtmg_lw.cu, rrtmg_sw.cu, rrtmg_lw_chain.cu, rrtmg_lw_taugb02_10_11_12.cu,",
+      "rrtmg_lw_taugb03_05.cu, rrtmg_lw_taugb06_09.cu, rrtmg_lw_taugb13_16.cu and",
+      "rrtmg_mcica_wrf.cu transcribe WRF v4.6.1's phys/module_ra_rrtmg_lw.F and",
+      "phys/module_ra_rrtmg_sw.F.  That code is the work of Atmospheric and",
+      "Environmental Research, Inc., not of UCAR, and WRF says so by preserving",
+      "AER's notice -- seven times in the longwave file, nine in the shortwave:"),
+     ("3. AER RRTMG -- the McICA subcolumn generator",
+      "----------------------------------------------",
+      "",
+      "rrtmgp_mcica.cu is AER's work, and its name is the reason that has to be",
+      "said out loud.  The McICA subcolumn cloud generator the radiation path is",
+      "driven with is WRF's RRTMG generator, not rte-rrtmgp's: that file",
+      "transcribes module mcica_subcol_gen_sw in WRF v4.6.1",
+      "phys/module_ra_rrtmg_sw.F -- kissvec at lines 2008-2040, the",
+      "maximum-random overlap walk at 1778-1813 -- as its own header says.  Its",
+      "host driver in arwen_global/core/rrtmgp.py and its float64 mirror in",
+      "arwen_global/core/npref.py mirror the same routine and carry this notice",
+      "in their own headers.  Section 4 does not cover any of the three.",
+      "",
+      "That code is the work of Atmospheric and Environmental Research, Inc.,",
+      "not of UCAR, and WRF says so by preserving AER's notice -- seven times in",
+      "the longwave file, nine in the shortwave:")),
+    # The tail of the same section: the pointer to legacy coefficients this
+    # package does not ship, and the source tree's own McICA paragraph, which
+    # names its paths and now says what the narrowed heading already says.
+    ('core/kernels/LICENSE-third-party.txt',
+     ("licenses/LICENSE-AER-RRTMG-BSD-3-Clause.txt and beside the packaged",
+      "coefficients in gpuwm/data/wrf_radiation/.",
+      "",
+      "rrtmgp_mcica.cu is in this section too, and its name is the reason that has",
+      "to be said out loud.  The McICA subcolumn cloud generator that the DEFAULT",
+      "RTE+RRTMGP radiation path is driven with is WRF's RRTMG generator, not",
+      "rte-rrtmgp's: that file transcribes module mcica_subcol_gen_sw in",
+      "phys/module_ra_rrtmg_sw.F -- kissvec at lines 2008-2040, the maximum-random",
+      "overlap walk at 1778-1813 -- as its own header says.  Its host driver in",
+      "gpuwm/core/rrtmgp.py and its float64 mirror in gpuwm/verify/npref.py mirror",
+      "the same routine and carry this notice in their own headers.  It is AER's",
+      "work under the same grant, and section 4 does not cover it."),
+     ("licenses/LICENSE-AER-RRTMG-BSD-3-Clause.txt.  The model's source tree",
+      "also ships that text beside its packaged legacy-RRTMG coefficients, and",
+      "applies this section to eight legacy translation units besides; this",
+      "package carries neither those files nor those coefficients, and this copy",
+      "covers the one file it does carry.")),
+    # Numerical Recipes: neither carrier is carried.
+    ('core/kernels/LICENSE-third-party.txt',
+     ("5. Numerical Recipes Software -- the GAMMLN log-gamma coefficients",
+      "------------------------------------------------------------------",
+      "",
+      "nssl2_fused_gs.cu's wrf_gamma_dp, and the THOMPSON_AA_CC* tables in",
+      "thompson_aerosol_common.cuh that were produced with it, carry the Lanczos",
+      "g=5, n=6 coefficient set and evaluation that WRF v4.6.1 takes from Numerical",
+      "Recipes.  WRF preserves the notice immediately above and below REAL FUNCTION",
+      "GAMMLN(XX) at phys/module_mp_thompson.F:5325-5347:",
+      "",
+      "    (C) Copr. 1986-92 Numerical Recipes Software 2.02",
+      "",
+      "It is preserved here for the same reason.  ArWen's position on this material",
+      "-- taken from WRF, reproduced in order to match WRF bit for bit, and the",
+      "standard published Lanczos coefficient set -- is set out in full, including",
+      "the argument against it, in licenses/NOTICE-Numerical-Recipes.txt.",
+      "",
+      "",
+      "6. The scope of the five grants above",
+      "-------------------------------------"),
+     ("5. The scope of the four grants above",
+      "-------------------------------------")),
+    # The closing scope paragraph, over four grants rather than five.  The
+    # three sentences that follow it in the source tree, saying whose work
+    # the gamma routines are, are carried as they stand.
+    ('core/kernels/LICENSE-third-party.txt',
+     ("Each is stated by routine or by file on purpose.  They cover what sections 1",
+      "to 5 name and nothing else.  Other code in this directory -- including other",
+      "transcriptions -- takes nothing from Arm, Sun, AER, the RTE+RRTMGP copyright",
+      "holders or Numerical Recipes, and is not offered to a reader on the strength",
+      "of these notices.  Its provenance is recorded where it lives: in the",
+      "repository NOTICE, in PROVENANCE.md, and in each file's own header."),
+     ("Each is stated by routine or by file on purpose.  They cover what sections 1",
+      "to 4 name and nothing else.  Other code in this directory -- including other",
+      "transcriptions, and there are many: these kernels are transcriptions of WRF",
+      "schemes -- takes nothing from Arm, Sun, AER or the RTE+RRTMGP copyright",
+      "holders, and is not offered to a reader on the strength of these notices.",
+      "Its provenance is recorded where it lives: in the repository NOTICE, in",
+      "PROVENANCE.md, and in each file's own header.")),
+    # The FDLIBM section header and the glibc-versus-FDLIBM spelling
+    # paragraph, which prices routines no carried file holds.
+    ('core/kernels/LICENSE-third-party.txt',
+     ("2. FDLIBM -- expm1f, tanhf, atanf, log10f",
+      "------------------------------------------"),
+     ("2. FDLIBM -- expm1f and the lgammaf reduction",
+      "----------------------------------------------")),
+    ('core/kernels/LICENSE-third-party.txt',
+     ("Where ArWen must match a glibc 2.39 reference bit for bit, these",
+      "transcriptions follow glibc's versions of these files, which differ from other",
+      "FDLIBM descendants at a small number of points.  Through 2.6.5 there were",
+      "three: atanf's 2**25 large-argument threshold, the fabsf spelling in log10f's",
+      "zero path, and a redundant zero guard in tanhf.  Two of the three are gone at",
+      "2.6.6 because neither did any work -- tanhf's guard is unreachable behind the",
+      "|x| < 2**-55 branch, and log10f's zero path divided -2**25 by |x| only to",
+      "reach -inf -- and the two forms were compared on all 4,294,967,296 float32 bit",
+      "patterns with zero differing.  noahmp_energy.cu and noahmp_leaves.cu carry the",
+      "argument at the point of the edit.  lgammaf's 2**26 and 2**-30 thresholds are",
+      "on that list too, carried by the positive arm of the lgammaf reduction in",
+      "glibc_flt32.cuh.  atanf's threshold stays: it is a fact a",
+      "black-box measurement recovers rather than a spelling read from a source, and",
+      "the root NOTICE records that it was measured from the running library."),
+     ("Where ArWen must match a glibc 2.39 reference bit for bit, these",
+      "transcriptions follow glibc's versions of these files rather than another",
+      "FDLIBM descendant's.  For the two routines carried here that means",
+      "lgammaf's 2**26 and 2**-30 thresholds, which are glibc's spelling of the",
+      "same reduction.")),
+)
+
+
 TEST_CARVE: tuple[tuple[str, str], ...] = (
     ("tests", "."),
 )
@@ -676,6 +945,12 @@ def extract(worktree: Path, rev: str, dest: Path,
 #: refuse every command the day the engine finally published the row.
 VERBATIM_PREFIXES: tuple[str, ...] = (
     "data/authorities/",
+    # UCAR's notice, reproduced verbatim beside the four WRF tables it
+    # belongs to.  Third-party licence text is not this carve's to reword:
+    # the rewiring rules exist to keep OUR prose true about where OUR files
+    # landed, and a rule that edited a licence would be modifying the thing
+    # the licence asks to be reproduced unchanged.
+    "data/noah_tables/LICENSE-WRF.txt",
 )
 
 
@@ -761,7 +1036,7 @@ def rewire(tree: Path,
             for pattern, replacement in PROSE_DASH:
                 text = re.sub(pattern, replacement, text)
         rel = path.relative_to(tree).as_posix()
-        for named, old_lines, new_lines in CORE_EXACT:
+        for named, old_lines, new_lines in CORE_EXACT + KERNEL_NOTICE_SCOPE:
             if rel != named:
                 continue
             old_text = chr(10).join(old_lines)

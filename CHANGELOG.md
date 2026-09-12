@@ -1,5 +1,264 @@
 # Changelog
 
+## 0.1.1
+
+### New
+
+- `docs/CARRIED-PHYSICS-DIVERGENCE.md`, which answers "the engine changed this
+  file, does this package want the change?" by reading one page. The carried
+  physics and the engine's copies of the same files move independently, and
+  until now nothing in this repository separated a deliberate adaptation from a
+  stale copy: `SOURCE.md` says which revision was cut and
+  `arwen_global/data/engine-seam.json` pins the engine files the carried code
+  still reaches, and neither says which differences are on purpose. The
+  document carries 82 rows over the 19 carried files that differ, one section
+  per file, each row giving the carried and engine line ranges, what the common
+  ancestor says, the class of the difference, the commit on the side that
+  moved, what changes numerically, and a decision: pull, refuse, offer or none.
+  Three lists close it: what this package owes the engine, what it has that the
+  engine line may want, and what it holds a position on. Measured against the
+  published `gpuwm 2.7.3`; the rows on every file but the radiation driver, the
+  physics driver, the physics inventory and the kernel loader read the same
+  against any `2.7.x`.
+- `arwen_global/data/engine-divergence.json`, the same 375 differences keyed by
+  a fingerprint that survives a line shift: per carried file, a unified diff of
+  the engine's copy against this one at zero context with the carve's rewiring
+  applied to the engine side, then a SHA-256 over each hunk's engine-side lines
+  and another over its carried-side lines. `tools/fingerprint_engine_divergence.py`
+  computes it, documents the normalisation exactly, refuses to measure an
+  engine outside the range this package declares, and records the version it
+  did measure. All 35 carried files are measured, whatever the suffix, the
+  four WRF parameter tables among them; a pair either side of which does not
+  decode as text is compared byte for byte instead. The engine-side hash is
+  what the engine line verifies a row by: read the row's engine line range out
+  of the published engine, rewire, hash, compare.
+- `tests/test_engine_divergence.py`, the gate. Against the installed engine it
+  recomputes the fingerprints and fails, by file and by line, on a difference no
+  row covers; by row name on a row whose difference is gone; on any row left
+  unclassified; on an engine fix marked for pulling that the document's PULL
+  list does not carry, and on a name that list carries which no row owes; on a
+  row whose table in the document and whose entry in the JSON disagree about
+  the file, the class, the decision or either line range; and on a carried file
+  the measurement does not walk. Its two comparison nodes skip, naming both
+  versions, when the installed engine is not the one the rows were measured
+  against; the nodes that hold the rows, the document and the file list to each
+  other need no engine. Every failure was driven before it shipped: one changed
+  line in a carried module fails naming that module, one appended line in a
+  parameter table fails naming the table, a deleted row fails naming the hunk
+  it abandoned, a fabricated row fails naming itself, a table cell that
+  disagrees with its rows fails naming the field, and a suffix filter put back
+  into the walker fails naming the four tables it drops.
+
+### Fixed
+
+- The engine version the front page names. The index published `gpuwm 2.7.3`
+  on 2026-09-12 and it is what `gpuwm>=2.7.0,<2.8` resolves, so `README.md`
+  said the range resolved 2.7.2 while the new divergence document said 2.7.3,
+  and a reader had two records of the same thing at two baselines. The page now
+  names 2.7.3, carries the boundary reading measured against it (the same 231
+  symbols across 65 modules, no gap among the 191 a host without a CUDA runtime
+  resolves, Windows desktop 2026-09-12), and states what the engine seam does
+  and does not cover. The pins have since moved to 2.7.3 as well, in the entry
+  below this one, so the page, the document and the manifest all name the
+  engine a fresh install resolves.
+
+- The Noah FRZX fixture's hold on the mirror it imports. It compared the
+  imported module's PATH with the path the source assertions read, so a suite
+  run from an unpacked sdist against that sdist's own install -- which is how
+  the release CPU selection is measured -- errored all four of its numerical
+  nodes on two byte-identical copies of one file (a Linux CPU host, Python
+  3.14.4, `gpuwm 2.7.3`, 2026-09-12: 1,865 passed, 83 skipped, 96 deselected,
+  4 errors). The hold is now a SHA-256 on both sides and the message prints
+  both paths and both digests, so the breakage it was written for -- a
+  checkout with a different revision installed beside it, source assertions
+  reading one tree while the numbers came from the other -- still fires, and
+  a correct install stops being refused for its path.
+
+- The engine seam, re-pinned against `gpuwm 2.7.3`. The pins hold one engine
+  version at a time and were taken against 2.7.0; the index published 2.7.3 on
+  2026-09-12 and it is what a fresh install of this release resolves, so
+  `gpuwm-global doctor` printed eight files as moved and two nodes of
+  `tests/test_arwen_global_engine_seam.py` failed on the only engine anybody
+  gets from the index. The eight were read hunk by hunk against 2.7.0 before
+  the pins moved: `config.py`, `core/state.py`, `core/preflight.py`,
+  `physics_compat.py`, `physics_vertical_contract.py`, `core/microphysics.py`,
+  `core/refl.py` and `core/rrtmg_legacy.py`. Of the 41 symbols this package
+  imports out of them, 38 are byte-identical between the two engines and the
+  three that moved change no number: `RunConfig` and `DomainState` moved in
+  comment text with no field, default or validation touched, and
+  `radiation_scheme_ids` narrowed a refusal, so a configuration that writes
+  `ra_physics=4` beside `ra_lw_physics=4`/`ra_sw_physics=4` now resolves to the
+  same `(4, 4)` pair instead of raising, while a contradicting pair is still
+  refused. Reached-but-unchanged in behaviour, recorded so a later reader need
+  not re-derive it: the scratch arena accepts a same-width dtype it used to
+  reject and gained an optional argument nothing here passes; the microphysics
+  ring-guard family is now derived from the engine's registry and grew ten
+  scheme-native names behind a presence guard, on a path with no lateral
+  boundary and so no door of this package enters; `core/refl.py` replaced four
+  inline required-field literals with one published table whose rows are the
+  same species; and four pinned files now run a registry-agreement check at
+  import, which pulls `gpuwm/physics_registry.py` and
+  `gpuwm/core/noahmp_kernel_sources.py` into the set of engine modules that
+  execute when the carried physics is imported. `tools/measure_boundary.py`
+  reads the same 231 symbols across 65 modules with no gap, and
+  `tools/measure_engine_signatures.py` the same 28 signature rows, on 2.7.3 as
+  on 2.7.2. The two nodes that compare hashes now skip, naming both versions,
+  on any engine other than the pinned one, which is the rule the divergence
+  gate already followed; the version ceiling stays the refusal. Three seam
+  rationales quoted a line count against the engine and were re-measured
+  against 2.7.3 (`config.py` 308 to 1,130, `core/state.py` 100 to 141,
+  `core/rrtmg_legacy.py` 157 to 177); the first also claimed all of its
+  differing lines sat inside `RunConfig`, and the measurement says 105 of
+  1,130 do.
+
+- The third-party notices this distribution owes. 0.1.0 shipped sixteen CUDA
+  sources under `arwen_global/core/kernels/` and four WRF parameter tables
+  verbatim, and carried no licence text for any of them: its NOTICE said
+  "Nothing from that engine is copied into this distribution" and "This
+  distribution ships none of that code and none of those tables", and
+  `license-files` named `LICENSE` and `NOTICE` only. Five conditions went
+  unperformed. The RTE+RRTMGP transcriptions (`rrtmgp_gas.cu`,
+  `rrtmgp_cloud.cu`, `rrtmgp_rte.cu`, and their driver `core/rrtmgp.py` with
+  the float64 mirror in `core/npref.py`) are BSD 3-Clause, whose clause 1 asks
+  a source redistribution to retain the notice, the conditions and the
+  disclaimer. `rrtmgp_mcica.cu` is a sixth file with the same prefix and a
+  different owner: the McICA subcolumn generator the radiation is driven with
+  is WRF's RRTMG generator, which is AER's work under its own BSD 3-Clause,
+  and the same routine reaches `core/rrtmgp.py` and `core/npref.py` as well.
+  `core/kernels/glibc_flt32.cuh` carries Arm's logf, expf, exp2f
+  and powf under an MIT that asks for its copyright notice and its permission
+  notice in every copy, and FDLIBM's expm1f and lgammaf reduction under a
+  notice whose one condition is that it be preserved. UCAR asks that its
+  notice travel with any copy of WRF, and the four tables are byte copies.
+- 0.1.1 performs all five. `licenses/` holds the texts and ships in the sdist
+  and, through `license-files = ["LICENSE", "NOTICE", "licenses/*"]`, in the
+  wheel at `gpuwm_global-<version>.dist-info/licenses/licenses/`. The notices
+  also sit beside the code: `core/kernels/LICENSE-third-party.txt` covers the
+  device sources, which cannot take a comment without moving the
+  `source_sha256` a run receipt records, and
+  `data/noah_tables/LICENSE-WRF.txt` sits with the tables. `core/rrtmgp.py`
+  and `core/npref.py` open with the notice for what they transcribe. NOTICE
+  gains a section per work, each naming the carried file and the text that
+  covers it. Both beside-the-code notices are carried by
+  `tools/resync_from_owner.py`, so a re-cut cannot drop them, and the kernels'
+  notice is narrowed by rule to the files this package actually ships rather
+  than inheriting the source tree's whole-directory version.
+- `rrtmgp_mcica.cu` is filed under the work that wrote it. Its own header has
+  always said what it is, a transcription of `mcica_subcol_gen_sw` in WRF
+  v4.6.1 `phys/module_ra_rrtmg_sw.F`, and WRF preserves AER's copyright notice
+  over that module. The first pass at these notices filed it under RTE+RRTMGP
+  on the strength of its filename prefix, so the distribution transcribed an
+  AER work while shipping no AER text. NOTICE gains an RRTMG section naming
+  the kernel, its host driver and its float64 mirror;
+  `licenses/LICENSE-AER-RRTMG-BSD-3-Clause.txt` and
+  `licenses/NOTICE-AER-RRTMG-as-distributed-with-WRF.txt` ship with the other
+  texts; the beside-the-code notice covers it in its own section; and both
+  inline Python headers carry the AER notice beside the RTE+RRTMGP one. Three
+  sentences that were false went with it: the notices said all six `rrtmgp_`
+  files cite the upstream commit in their headers, when three do
+  (`rrtmgp_validation.cu` is this project's own input validation and
+  `rrtmgp_planck_common.cuh` its own in-kernel Planck derivation).
+  `tests/test_licence_notices_ship.py` now assigns every carried device source
+  to the section that covers it and checks the assignment against what the
+  file's own header says it transcribes, so a file cannot be filed by its
+  name again.
+- Said rather than left silent: the gamma routines at the end of
+  `core/kernels/glibc_flt32.cuh` (`gfk_gamma_product`, `gfk_gammaf_positive`
+  and `gfk_tgamma`) are this project's own work under its Apache-2.0 licence
+  and not a transcription of any C library. `NOTICE` and the notice beside
+  the kernels say so, and nothing in that block needs a third-party notice.
+- Noah's frozen-ground infiltration limiter did not limit, so a frozen column
+  soaked up everything that fell on it. WRF's REDPRM builds two quantities,
+  `FRZFACT = (SMCMAX/SMCREF)*(0.412/0.468)` and `FRZX = FRZK*FRZFACT`, and
+  SFLX passes the second one down. The dummy argument that receives it is
+  merely spelled `FRZFACT` at every level below SFLX, and SRT names it back to
+  `FRZX` before spending it as `ACRT = CVFRZ*FRZX/DICE`. The carried kernel and
+  the carried float64 mirror had both followed the name instead of the
+  argument and passed `FRZFACT`, so `ACRT` ran `1/FRZK` = 6.67 times large, the
+  `CVFRZ` series in `FCR` saturated at one, and the limit was inert. Both pass
+  `FRZX` now, and the carried kernel is byte-identical to the published
+  engine's copy again, which carries the same repair. Measured against the
+  unmodified WRF driver over the four switch fixtures the port is graded on,
+  the surface runoff distance falls from 60,641,303 ULP to 2,812, and soil
+  liquid water, relative soil moisture and soil moisture go from 6,508 / 4,729
+  / 1,627 ULP to exactly bitwise (RTX 3080, 2026-09-12). On the float64 mirror,
+  one wet loam column at 266 K under 5 mm of rain reads FCR 0.9653 before and
+  0.0837 after, and surface runoff 4.356 mm before and 4.488 mm after.
+- What this moves, and where. SRT reaches the limiter only where the column's
+  soil ice clears its own `DICE > 1e-2` threshold, so for an early September
+  case the change lives in Antarctica, Greenland, the high Arctic and high
+  terrain. Soil moisture, soil liquid water, surface runoff and the surface
+  fluxes that follow them move there; a column with no soil ice is unchanged
+  bit for bit. Because frozen-ground columns move, the ten-step identity
+  hashes quoted in the shipped pages are not re-quoted by hand in this entry:
+  the release step re-measures them.
+- `tests/test_arwen_global_noah_frzx.py` holds both ends. It reads the kernel's
+  three call sites and the mirror's two out of the shipped source, reads back
+  SRT's own declaration and its `ACRT` line, and runs the mirror on a frozen
+  column with the whole SRT infiltration path recomputed by hand from the
+  arguments SRT was called with, including the arm that forces the old value
+  back in and states what it was worth.
+- Morrison's sedimentation stage rebuilt two quantities WRF holds still. WRF
+  v4.6.1 `module_mp_morr_two_moment.F` builds them once per level inside its
+  column loop and then spends them, unchanged, in the sedimentation block that
+  runs after the loop closes: the cloud droplet Stokes coefficient
+  `ACN(K) = G*RHOW/(18.*MU(K))` at :1438, frozen above the warm branch's small
+  snow and graupel melt at :1504 and :1511 and read by the fall speeds at
+  :3440-3441; and the particle-size reference density
+  `DUM = PRES(K)/(287.15*T3D(K))` at :3405. That second T3D is not a
+  sedimentation-time value: the column loop closes at :3332, the sedimentation
+  block runs at :3358-3667, and the microphysics tendencies are applied at
+  :3710 below all of it, so nothing writes T3D between the melt and the apply
+  and the density :3405 reads is the one the process section's own
+  reconstruction used at :1558 and :2182. The carried kernel rebuilt both from
+  the temperature it held at sedimentation time, which is the post-process one,
+  and the carried float64 mirror did the same. The Stokes coefficient is the
+  expensive half: `d ln(ACN)/dT` is -0.288 percent per kelvin at 278 K, so both
+  cloud droplet fall speeds were wrong by about that much per kelvin of the
+  step's own temperature change, on every cloudy level. The reference density
+  was the cheap half, stale by the entry cleanup and melt alone, about 8e-4 K
+  and 2.4e-6 relative in PGAM.
+- The remedy is the one WRF's own structure names: the process stage publishes
+  both level quantities and the sedimentation stage consumes them. It is not
+  handing the sedimentation stage its current temperature, which would have
+  moved PGAM about 2,400 times further from WRF than the error it removes, in
+  the wrong direction. `morr_process_level` writes `G*MRHOW/(18*mu)` from the
+  pre-melt viscosity it already computes and `pressure/(287.15*temperature)` at
+  the moment of its own reconstruction; `morr_terminal_velocity` takes both and
+  rebuilds neither, at the Courant pass and at the sedimentation pass alike.
+  The mirror follows: `_np_morrison_apply_level` returns the pair and
+  `_np_morrison_fall_speeds` requires it instead of falling back to the air
+  density it was handed, which is the third value it used to produce.
+- `morr_bound` builds PGAM's reference density from the current temperature.
+  This is the engine's own repair, taken with the engine's text, so the two
+  copies of `morr_bound` agree again. It reaches the process section's
+  reconstruction and, at the final call, the cloud droplet effective radius the
+  radiation reads.
+- Measured against the unmodified WRF driver, over the 28 oracle columns and
+  10,948 compared values the port is graded on, desktop, NVIDIA GeForce RTX
+  3080, 2026-09-12: values disagreeing with WRF fall from 3,554 to 3,505. Cloud
+  water 228 to 195, cloud ice 333 to 327, accumulated rain 10 to 4 of 28,
+  per-call rain 22 to 21, frozen fraction 12 to 9. No field gets worse, and
+  every field's worst ULP distance is unchanged, so the three pinned per-platform
+  signatures the model source tree holds still hold. On the float64 mirror, one
+  900 hPa 285 K cloudy column that warms 4.04 K in a 60 s step reads cloud
+  droplet mass-weighted fall speed 0.044494 m/s before and 0.044986 after, and
+  number-weighted 0.020406 before and 0.020636 after, both 1.1 percent.
+- What this moves, and where. Cloud droplet sedimentation touches every column
+  that holds cloud water, so unlike the frozen-ground repair this one is not
+  confined to a climate band: it moves wherever cloud water exists and the
+  microphysics changes the temperature, which is every precipitating column and
+  most cloudy ones.
+- `tests/test_morrison_sedimentation_psd.py` holds both ends. It reads out of
+  the shipped kernel source that the sedimentation routine takes the two
+  published quantities and rebuilds neither, and that the process stage
+  publishes the Stokes coefficient above the melt and the reference density
+  below it; and it runs the float64 mirror on a column whose temperature moves
+  during the step, checking the published pair against WRF's own two formulae
+  evaluated at WRF's own two temperatures, and the cloud fall speeds against
+  WRF :3440-3441, with an arm that states what the sedimentation-time rebuild
+  was worth.
+
 ## 0.1.0
 
 The first cut of Arwen Global as a distribution of its own. Everything below

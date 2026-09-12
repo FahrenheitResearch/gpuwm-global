@@ -456,8 +456,8 @@ at its first door is not shipped, so the six travel inside this package
 does not have. The engine's copy wins the moment it publishes one.
 `gpuwm-global doctor` prints which of the two answered each row, with the
 SHA-256 of the file that answered it (measured on the Windows desktop
-2026-09-10 against `gpuwm 2.7.0`, `2.7.1` and `2.7.2`: 6 of 6 carried on all
-three), and
+2026-09-10 against `gpuwm 2.7.0`, `2.7.1` and `2.7.2`, and there
+2026-09-12 against `gpuwm 2.7.3`: 6 of 6 carried on all four), and
 `gpuwm-global sources` carries the same fact per row as `mapping.origin`. A
 spec both tables carry with DIFFERENT bytes is refused by name with both
 digests rather than chosen between: the engine's row having moved past the
@@ -614,7 +614,7 @@ installed engine's copies and prints an `engine seam` section:
 engine seam
 -----------
   ok   seam                       46/46 files proven
-                                  pinned against gpuwm 2.7.0
+                                  pinned against gpuwm 2.7.3
                                   the scope is the DIRECT engine imports of
                                   the carried physics, plus the assimilation's
                                   filter, the local-GPU switch and two files

@@ -153,6 +153,81 @@ def test_the_verbatim_suffixes_are_the_device_sources():
     assert resync.VERBATIM_SUFFIXES == {".cu", ".cuh"}
 
 
+# ------------------------------------------------------- the notices carried
+
+def test_the_two_notices_travel_with_the_code_they_belong_to():
+    """A licence that asks for its text beside the code gets it.
+
+    THE BREAKAGE.  0.1.0 shipped the carried kernels and the four verbatim
+    WRF tables with no notice in either directory and no licence text in
+    the wheel, so MIT's notice condition, FDLIBM's only condition,
+    BSD-3-Clause clause 1 and UCAR's request were all unperformed on a
+    public index.  The remedy is a carve row each, so a re-cut cannot drop
+    them back out.
+    """
+
+    carve = dict(resync.CORE_CARVE)
+    assert carve["gpuwm/core/kernels/LICENSE-third-party.txt"] == (
+        "core/kernels/LICENSE-third-party.txt")
+    assert (PACKAGE / "core" / "kernels" / "LICENSE-third-party.txt").is_file()
+    # The tables' notice rides inside the directory row rather than a row of
+    # its own, which is why it is asserted by presence here.
+    assert carve["gpuwm/data/noah_tables"] == "data/noah_tables"
+    assert (PACKAGE / "data" / "noah_tables" / "LICENSE-WRF.txt").is_file()
+
+
+def test_third_party_text_is_carried_without_rewiring():
+    """UCAR's words are not this carve's to reword.
+
+    Every other carried text goes through the import, command and path
+    rules so that what it says about where a file lives is true here.  A
+    licence text says nothing about this package's layout and its licence
+    asks for it unchanged, so it is excluded by name.
+    """
+
+    assert "data/noah_tables/LICENSE-WRF.txt" in resync.VERBATIM_PREFIXES
+
+
+def test_the_notice_scope_table_narrows_one_file_and_only_that_one():
+    """The rules that cut the notice down to what this package ships.
+
+    The source tree's copy covers its whole kernel directory: fourteen
+    files carrying Arm's libm cores, nine more carrying FDLIBM's, eight
+    legacy RRTMG translation units, AER's McICA generator and two Numerical
+    Recipes carriers.  This package ships glibc_flt32.cuh, the three
+    RTE+RRTMGP sources and that McICA generator out of the list and nothing
+    else, so the carried copy is narrowed rather than trimmed: the AER
+    section stays, because rrtmgp_mcica.cu is AER's work, and it is cut down
+    to the one file that is here.  Each row is an exact block that STOPS THE
+    CUT when it no longer matches, which is the day the source tree rewords
+    a section somebody has to re-read rather than the day a stale claim
+    ships.
+    """
+
+    assert resync.KERNEL_NOTICE_SCOPE, "the table is empty"
+    for named, old_lines, new_lines in resync.KERNEL_NOTICE_SCOPE:
+        assert named == "core/kernels/LICENSE-third-party.txt", named
+        assert old_lines and isinstance(old_lines, tuple)
+        assert isinstance(new_lines, tuple)
+    text = (PACKAGE / "core" / "kernels"
+            / "LICENSE-third-party.txt").read_text(encoding="utf-8")
+    # The two grants this package does NOT stand on are gone from the
+    # carried copy, along with every file that stays in the source tree.
+    for absent in ("Numerical Recipes", "rrtmg_lw.cu", "rrtmg_mcica_wrf.cu",
+                   "nssl2_fused_gs.cu", "noahmp_leaves.cu"):
+        assert absent not in text, absent
+    # AER's grant IS one this package stands on, for one file: the McICA
+    # generator the radiation is driven with is WRF's RRTMG generator.  The
+    # section is narrowed to it, not deleted, and the eight legacy units the
+    # source tree's copy also covers are gone from the list.
+    assert "AER RRTMG" in text
+    assert "rrtmgp_mcica.cu" in text
+    # The gamma routines are this project's own work, and the carried copy
+    # says so in the same words the source tree's does.
+    assert "not a transcription of any C library" in text
+    assert ("LG" + "PL") not in text
+
+
 # ------------------------------------------------------------- the re-cut
 
 @needs_the_source_tree
@@ -344,6 +419,31 @@ def test_every_carried_python_file_is_the_source_tree_s_under_the_stated_rules()
                               + " bytes here, " + str(len(path.read_bytes()))
                               + " from the rules)")
         assert differ == [], differ
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@needs_the_source_tree
+def test_the_carried_notices_are_what_the_rules_produce():
+    """Byte for byte, from the source tree's blob through the same rules.
+
+    The tables' notice is carried verbatim; the kernels' notice is carried
+    through the rewiring and then narrowed by `KERNEL_NOTICE_SCOPE`.  Doing
+    it here the way the tool does it is what catches a hand edit, because a
+    hand edit is not a rule.
+    """
+
+    revision = _recorded_revision()
+    tmp = Path(tempfile.mkdtemp(prefix="carve-notice-"))
+    try:
+        resync.extract(Path(SOURCE_WORKTREE), revision, tmp,
+                       resync.CORE_CARVE, None,
+                       resync.CORE_REWIRE + resync.CORE_PROSE,
+                       resync.CORE_PRESERVE, resync.SLASH_PATHS)
+        produced = tmp / "arwen_global"
+        for rel in ("core/kernels/LICENSE-third-party.txt",
+                    "data/noah_tables/LICENSE-WRF.txt"):
+            assert (produced / rel).read_bytes() == (PACKAGE / rel).read_bytes(), rel
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

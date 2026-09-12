@@ -39,13 +39,14 @@
 //    gfk_exp/gfk_pow are the audited transcriptions this tree already holds
 //    at max_ulp 0 (gpuwm/core/kernels/noahmp_leaves.cu r_log/r_exp/r_pow;
 //    renamed here because translation units cannot share device code).
-//    gfk_exp2/gfk_expm1/gfk_lgamma/gfk_gamma_product/gfk_tgamma are NEW
-//    transcriptions -- sysdeps/ieee754/flt-32/e_exp2f.c, s_expm1f.c,
-//    e_lgammaf_r.c (positive arm), dbl-64/gamma_productf.c, e_gammaf_r.c --
-//    graded bitwise against the live glibc 2.39 sweep fixtures
-//    gpuwm/data/gf/oracle/gf-libm-*.csv.
+//    gfk_exp2/gfk_expm1/gfk_lgamma are NEW transcriptions --
+//    sysdeps/ieee754/flt-32/e_exp2f.c, s_expm1f.c, e_lgammaf_r.c (positive
+//    arm) -- graded bitwise against the live glibc 2.39 sweep fixtures
+//    gpuwm/data/gf/oracle/gf-libm-*.csv.  gfk_gamma_product,
+//    gfk_gammaf_positive and gfk_tgamma over them are this project's own
+//    work, not a transcription of any C library.
 //
-// WHY tgammaf IS TRANSCRIBED AT ALL (the one place this kernel is BETTER
+// WHY tgammaf IS HAND-WRITTEN AT ALL (the one place this kernel is BETTER
 // than the CPU reference): get_zu_zd_pdf_fim normalises the beta-function
 // mass-flux shape with fzu = gamma(alpha+beta)/(gamma(alpha)*gamma(beta)).
 // Perturb fzu by ONE ULP and xmb moves by up to 7.3 per cent through the
@@ -54,8 +55,8 @@
 // test_a_one_ulp_massflux_shape_perturbation_moves_xmb_by_seven_percent).
 // So gamma cannot be a tolerance question.  The CPU reference models
 // tgammaf in float64 (0-4 ULP off glibc on the live arguments) and pins the
-// oracle's captured fzu for its bitwise gate; this kernel computes glibc's
-// own words with gfk_tgamma and needs no pin.  CUDA's builtin tgammaf is a
+// oracle's captured fzu for its bitwise gate; this kernel computes fzu with
+// its own gfk_tgamma and needs no pin.  CUDA's builtin tgammaf is a
 // DIFFERENT function and must not be used; the gate keeps a negative
 // control proving the difference is real on the live argument set.
 //

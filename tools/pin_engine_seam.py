@@ -80,13 +80,18 @@ SEAM: tuple[tuple[str, str], ...] = (
      "DEFAULT_COLUMN_CHUNK, radiation_enabled, radiation_scheme_ids, "
      "RunConfig and SASE_PBL_SCHEME.  RunConfig IS constructed in carried "
      "npref, twice, inside its reference-state builders; no door of this "
-     "package and no test calls those, and the 308 differing lines are "
-     "inside the class they build"),
+     "package and no test calls those.  Against the cut revision the file "
+     "differs by 1,130 lines at gpuwm 2.7.3 (308 at 2.7.0), 105 of them "
+     "inside RunConfig, and RunConfig's own 2.7.0-to-2.7.3 movement is "
+     "comment text with no field, default or validation changed"),
     ("gpuwm/core/state.py",
      "DTYPE, DomainState and the constants wdm6/sase read.  The DomainState "
      "constructor and init_at_rest are reached only from the same two "
-     "reference-state builders in carried npref, which is where all 100 "
-     "differing lines land"),
+     "reference-state builders in carried npref.  Against the cut revision "
+     "the file differs by 141 lines at gpuwm 2.7.3 (100 at 2.7.0), 109 of "
+     "them inside DomainState; the 2.7.0-to-2.7.3 movement is one comment "
+     "in DomainState plus a scratch-arena dtype rule that widens what is "
+     "accepted and an optional argument nothing here passes"),
     ("gpuwm/core/grid.py",
      "BaseState, VerticalCoord and rebalance_hydrostatic, bound at module "
      "scope by staying state.py"),
@@ -231,7 +236,8 @@ SEAM: tuple[tuple[str, str], ...] = (
     ("gpuwm/core/rrtmg_legacy.py",
      "RRTMGLegacyRadiation, imported inside the radiation selector at "
      "ra_lw=ra_sw=4 with the legacy variant.  The native adapter admits "
-     "radiation='rrtmgp' only, which is why its 157 differing lines are not "
+     "radiation='rrtmgp' only, which is why its 177 differing lines at "
+     "gpuwm 2.7.3 (157 at 2.7.0) are not "
      "this model's physics"),
     ("gpuwm/core/nssl2_contract.py",
      "the NSSL-2 field contract, imported inside the microphysics selector "

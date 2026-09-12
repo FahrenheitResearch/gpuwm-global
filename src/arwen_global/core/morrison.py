@@ -39,7 +39,8 @@ def launch_morrison(theta, qv, qc, qr, qi, qs, qg,
                     *, effc=None, effr=None, effi=None, effs=None,
                     qrcuten=None, qscuten=None, qicuten=None,
                     morr_rimed_ice: int = 1,
-                    _rhoa_scratch=None, _ice_to_snow_scratch=None) -> None:
+                    _rhoa_scratch=None, _ice_to_snow_scratch=None,
+                    _pgam_rho_scratch=None, _acn_scratch=None) -> None:
     """Launch one WRF Morrison call over an FP32 column batch.
 
     Atmospheric and hydrometeor arrays are ``(nz, ny, nx)``.  Accumulated,
@@ -53,6 +54,10 @@ def launch_morrison(theta, qv, qc, qr, qi, qs, qg,
     contract.  ``morr_rimed_ice`` follows WRF's scalar Registry option:
     1 = hail (default), 0 = graupel (Registry.EM_COMMON:2663-2666;
     module_mp_morr_two_moment.F:337-411).
+    The two remaining private scratch hooks carry the level quantities WRF
+    holds as column arrays across its sedimentation block: the PSD reference
+    density of module_mp_morr_two_moment.F:3405 and the cloud droplet Stokes
+    coefficient ACN(K) of :1438.
     ``qrcuten``/``qscuten``/``qicuten`` are the optional all-or-none raw KF
     mass rates used by WRF to seed rain/snow/ice number moments before process
     calculations (module_mp_morr_two_moment.F:1327-1343).
@@ -127,6 +132,16 @@ def launch_morrison(theta, qv, qc, qr, qi, qs, qg,
             raise ValueError("_ice_to_snow_scratch must be contiguous float32 "
                              f"with shape {shape}")
 
+    scratch = {"_pgam_rho_scratch": _pgam_rho_scratch,
+               "_acn_scratch": _acn_scratch}
+    for name, value in scratch.items():
+        if value is None:
+            scratch[name] = cp.empty_like(rho)
+        elif (value.shape != shape or value.dtype != DTYPE
+              or not value.flags.c_contiguous):
+            raise ValueError(f"{name} must be contiguous float32 with "
+                             f"shape {shape}")
+
     effective = {"effc": effc, "effr": effr, "effi": effi, "effs": effs}
     for name, value in effective.items():
         if value is None:
@@ -150,12 +165,15 @@ def launch_morrison(theta, qv, qc, qr, qi, qs, qg,
             (theta, qv, qc, qr, qi, qs, qg, nc, nr, ni, ns, ng,
              qrcu, qscu, qicu, rhoa_scratch, pii, pressure,
              ice_to_snow_scratch,
+             scratch["_pgam_rho_scratch"], scratch["_acn_scratch"],
              effective["effc"], effective["effi"], effective["effs"],
              DTYPE(rimed.ag), DTYPE(rimed.bg), DTYPE(rimed.rhog),
              DTYPE(dt), np.int32(has_cu_tendencies), np.int32(ncell)))
     sediment((column_blocks,), (_COLUMN_TPB,),
              (qc, qr, qi, qs, qg, nc, nr, ni, ns, ng,
-              effective["effs"], theta, pii, pressure, rhoa_scratch, dz,
+              effective["effs"],
+              scratch["_pgam_rho_scratch"], scratch["_acn_scratch"],
+              pressure, rhoa_scratch, dz,
               rainnc, rainncv, snownc, snowncv,
               graupelnc, graupelncv, sr, DTYPE(dt),
               DTYPE(rimed.ag), DTYPE(rimed.bg), DTYPE(rimed.rhog),
@@ -189,6 +207,8 @@ def apply(state: DomainState, cfg: RunConfig, dt: float, *,
     pii = state.scratch((nz, ny, nx), "morr_pii")
     dz = state.scratch((nz, ny, nx), "morr_dz")
     ice_to_snow = state.scratch((nz, ny, nx), "morr_ice_to_snow")
+    pgam_rho = state.scratch((nz, ny, nx), "morr_pgam_rho")
+    acn = state.scratch((nz, ny, nx), "morr_acn")
     z8w = state.scratch((nz + 1, ny, nx), "morr_z8w")
     theta[...] = thb + state.thp
     # launch_morrison's process stage diagnoses and overwrites every rho
@@ -229,7 +249,9 @@ def apply(state: DomainState, cfg: RunConfig, dt: float, *,
                               cu_rates["rqicuten"]),
                     morr_rimed_ice=cfg.morr_rimed_ice,
                     _rhoa_scratch=rho,
-                    _ice_to_snow_scratch=ice_to_snow)
+                    _ice_to_snow_scratch=ice_to_snow,
+                    _pgam_rho_scratch=pgam_rho,
+                    _acn_scratch=acn)
     if refl_10cm_due:
         from gpuwm.core.refl import compute_and_stash_refl_10cm
         refl_t = state.scratch((nz, ny, nx), "refl_t")

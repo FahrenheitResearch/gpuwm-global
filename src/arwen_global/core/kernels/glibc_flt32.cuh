@@ -555,8 +555,9 @@ __device__ float gfk_lgamma_pos(float x)
 }
 
 // --------------------------------------------------------------------------
-// glibc 2.39 sysdeps/ieee754/dbl-64/gamma_productf.c: the float
-// __gamma_productf computed in double, which is what x86-64 links.
+// gfk_gamma_product: this project's own product accumulator for the gamma
+// recurrence below, computed in double, with the rounding error of the float
+// result handed back through eps.
 // --------------------------------------------------------------------------
 __device__ float gfk_gamma_product(float x, float x_eps, int n, float *eps)
 {
@@ -570,12 +571,11 @@ __device__ float gfk_gamma_product(float x, float x_eps, int n, float *eps)
 }
 
 // --------------------------------------------------------------------------
-// glibc 2.39 sysdeps/ieee754/flt-32/e_gammaf_r.c, positive arm.  x <= 0,
-// NaN and inf return NaN (not ported -- the scheme cannot produce them:
+// gfk_gammaf_positive: this project's own float32 gamma, positive arm.
+// x <= 0, NaN and inf return NaN (the scheme cannot produce them:
 // alpha = (tunning*(beta-2)+1)/(1-tunning) with tunning clamped to
 // [.2, .9] and beta in {1.3, 2.5, 4.} keeps every argument in
-// [1.06, 32.2)).  x >= 36 overflows to +inf exactly as glibc's
-// FLT_MAX*FLT_MAX does.
+// [1.06, 32.2)).  x >= 36 overflows to +inf.
 // --------------------------------------------------------------------------
 #define GAM_C0     __uint_as_float(0x3DAAAAABu)   /* 0x1.555556p-4 */
 #define GAM_C1     __uint_as_float(0xBB360B61u)   /* -0xb.60b61p-12 */
@@ -643,7 +643,7 @@ __device__ float gfk_tgamma(float x)
     int exp2_adj;
     float tret = gfk_gammaf_positive(x, &exp2_adj);
     float ret = scalbnf(tret, exp2_adj);
-    // glibc's isinf/iszero fixups return the same +inf / +0 words for a
-    // positive argument; nothing further to do.
+    // A positive argument needs no isinf/iszero fixup: +inf and +0 are
+    // already the words to return.
     return ret;
 }

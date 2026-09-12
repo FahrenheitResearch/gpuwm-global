@@ -112,7 +112,8 @@ __device__ __forceinline__ void morr_bound_one(
 }
 
 __device__ __forceinline__ MorrMoments morr_bound(
-        real qc, real qr, real qi, real qs, real qg, real rhoa, real temp,
+        real qc, real qr, real qi, real qs, real qg, real rhoa,
+        real pres, real temp,
         real* nc, real* nr, real* ni, real* ns, real* ng,
         bool reset_cloud_number, real morr_rhog)
 {
@@ -121,8 +122,13 @@ __device__ __forceinline__ MorrMoments morr_bound(
     m.pg = 2.0f;
     if (reset_cloud_number) *nc = 250.0e6f / rhoa;
     if (qc >= MQSMALL) {
-        // PGAM uses WRF's separate hard-coded 287.15 reference density.
-        real rho_cloud = rhoa * RD / 287.15f;
+        // PGAM uses WRF's separate hard-coded 287.15 reference density,
+        // rebuilt from the CURRENT T3D: :1558 reads it after the small
+        // snow/graupel melt of :1504-1511, and :3920 after the tendency
+        // apply (:3710), sedimentation evaporation (:3735-3758) and the
+        // ice melt / homogeneous freezings (:3805-3843).  rhoa is
+        // PRES/(R*T3D) frozen once at :1325, before any of that.
+        real rho_cloud = pres / (287.15f * temp);
         real pp = 0.0005714f * ((*nc) / 1.0e6f * rho_cloud) + 0.2714f;
         m.pg = fminf(fmaxf(1.0f / (pp * pp) - 1.0f, 2.0f), 10.0f);
         real raw = cbrtf((MPI / 6.0f * MRHOW * (*nc)
@@ -148,8 +154,15 @@ __device__ __forceinline__ MorrMoments morr_bound(
     return m;
 }
 
+// Sedimentation consumes two per-level quantities the process stage
+// published; it rebuilds neither.  WRF's sedimentation block runs after the
+// column loop has closed and before the tendency apply at :3710, so the T3D
+// its PSD reference density reads at :3405 is the same one the process
+// section's own reconstruction used, and ACN(K) at :3440-3441 is the value
+// frozen at :1438 from the pre-melt viscosity of :1424.
 __device__ __forceinline__ void morr_terminal_velocity(
-        int kind, real q, real number, real rhoa, real temp,
+        int kind, real q, real number, real rhoa,
+        real rho_pgam, real acn,
         real* bounded_number, real* vm, real* vn,
         real morr_ag, real morr_bg, real morr_rhog)
 {
@@ -157,8 +170,7 @@ __device__ __forceinline__ void morr_terminal_velocity(
     real ll = 0.0f, pg = 2.0f;
     if (kind == 0) {
         if (q >= MQSMALL) {
-            real rho_cloud = rhoa * RD / 287.15f;
-            real pp = 0.0005714f * (nn / 1.0e6f * rho_cloud) + 0.2714f;
+            real pp = 0.0005714f * (nn / 1.0e6f * rho_pgam) + 0.2714f;
             pg = fminf(fmaxf(1.0f / (pp * pp) - 1.0f, 2.0f), 10.0f);
             ll = cbrtf((MPI / 6.0f * MRHOW * nn * tgammaf(pg + 4.0f))
                         / (q * tgammaf(pg + 1.0f)));
@@ -187,8 +199,6 @@ __device__ __forceinline__ void morr_terminal_velocity(
     if (q < MQSMALL) {
         *vm = *vn = 0.0f;
     } else if (kind == 0) {
-        real mu = 1.496e-6f * powf(temp, 1.5f) / (temp + 120.0f);
-        real acn = G * MRHOW / (18.0f * mu);
         *vm = acn * tgammaf(6.0f + pg)
               / (ll * ll * tgammaf(pg + 4.0f));
         *vn = acn * tgammaf(3.0f + pg)
@@ -228,6 +238,7 @@ __device__ __forceinline__ void morr_process_level(
         real* temp, real pressure, real rhoa, real dt,
         real qvs, real qvi, real xlv, real xls, real cpm,
         bool warm, real* stale_lami, real* cloud_nc_for_sedimentation,
+        real* pgam_rho_out, real* acn_out,
         real morr_ag, real morr_bg, real morr_rhog)
 {
     real xlf = xls - xlv;
@@ -235,6 +246,10 @@ __device__ __forceinline__ void morr_process_level(
     // small-snow/graupel melt (1498-1514).  The melt changes temperature,
     // but these transport/psychrometric coefficients stay stale.
     real mu = 1.496e-6f * powf(*temp, 1.5f) / (*temp + 120.0f);
+    // ACN(K) at :1438 is one of them, and the sedimentation block spends it
+    // unchanged at :3440-3441.  Publish it here rather than letting the
+    // sedimentation stage rebuild it from a temperature WRF never uses.
+    *acn_out = G * MRHOW / (18.0f * mu);
     real dv = 8.794e-5f * powf(*temp, 1.81f) / pressure;
     real sc = mu / (rhoa * dv);
     real kap = 1.414e3f * mu;
@@ -250,7 +265,12 @@ __device__ __forceinline__ void morr_process_level(
             *qg = 0.0f; *ng = 0.0f;
         }
     }
-    MorrMoments m = morr_bound(*qc, *qr, *qi, *qs, *qg, rhoa, *temp,
+    // The PSD reference density of :1558 and :2182.  No T3D assignment sits
+    // between the melt above and the tendency apply at :3710, so this is
+    // also the density the sedimentation block reads at :3405.
+    *pgam_rho_out = pressure / (287.15f * (*temp));
+    MorrMoments m = morr_bound(*qc, *qr, *qi, *qs, *qg, rhoa,
+                                pressure, *temp,
                                 nc, nr, ni, ns, ng, true, morr_rhog);
     *stale_lami = warm ? 0.0f : m.li;
     // INUM=1: DUMFNC=NC3D, without NC3DTEN, at WRF 3367-3374.
@@ -777,12 +797,13 @@ __device__ int morr_sediment_nstep(
         const real* nc, const real* nr, const real* ni,
         const real* ns, const real* ng,
         const real* cloud_nc_for_sedimentation,
-        const real* theta, const real* pii, const real* rho_fixed,
+        const real* pgam_rho, const real* acn, const real* rho_fixed,
         const real* dz, int j, int i, int nz, int ny, int nx, real dt,
         real morr_ag, real morr_bg, real morr_rhog)
 {
     real max_courant = 0.0f;
-    // Level-outer: rho, theta, pii and dz are one load per level instead of
+    // Level-outer: rho, the two published level quantities and dz are one
+    // load per level instead of
     // one per level per category.  The reduction is a chain of fmaxf, which
     // is exactly associative and commutative -- max rounds nothing, and
     // fmaxf(NaN, x) == x makes NaN a two-sided identity -- so regrouping it
@@ -794,7 +815,8 @@ __device__ int morr_sediment_nstep(
     for (int k = nz - 1; k >= 0; --k) {
         size_t idx = IDX3(k, j, i);
         real rhoa = fabsf(rho_fixed[idx]);
-        real temp = theta[idx] * pii[idx];
+        real rho_pgam_k = pgam_rho[idx];
+        real acn_k = acn[idx];
         real dzk = dz[idx];
 #pragma unroll
         for (int kind = 0; kind < 5; ++kind) {
@@ -805,7 +827,8 @@ __device__ int morr_sediment_nstep(
                                  (kind == 2 ? ni : (kind == 3 ? ns : ng)));
             real nn, vm, vn;
             morr_terminal_velocity(kind, fmaxf(mass[idx], 0.0f),
-                                   number[idx], rhoa, temp, &nn, &vm, &vn,
+                                   number[idx], rhoa, rho_pgam_k, acn_k,
+                                   &nn, &vm, &vn,
                                    morr_ag, morr_bg, morr_rhog);
             if (k < nz - 1) {
                 if (vm < 1.0e-10f) vm = vm_above[kind];
@@ -822,7 +845,7 @@ __device__ int morr_sediment_nstep(
 template <int KMAX>
 __device__ __forceinline__ real morr_sediment_pair(
         real* mass, real* number, const real* sediment_number,
-        const real* theta, const real* pii,
+        const real* pgam_rho, const real* acn,
         const real* pressure, const real* rho_fixed, const real* dz, int j, int i,
         int nz, int ny, int nx, int kind, real dt, int nstep,
         real morr_ag, real morr_bg, real morr_rhog)
@@ -833,13 +856,13 @@ __device__ __forceinline__ real morr_sediment_pair(
     int ktop = -1;
     for (int k = nz - 1; k >= 0; --k) {
         size_t idx = IDX3(k, j, i);
-        real temp = theta[idx] * pii[idx];
         real rhoa = fabsf(rho_fixed[idx]);
         real q = fmaxf(mass[idx], 0.0f);
         real nn;
         real nsed = sediment_number == nullptr ? number[idx]
                                                 : sediment_number[idx];
-        morr_terminal_velocity(kind, q, nsed, rhoa, temp,
+        morr_terminal_velocity(kind, q, nsed, rhoa,
+                               pgam_rho[idx], acn[idx],
                                &nn, &vm[k], &vn[k],
                                morr_ag, morr_bg, morr_rhog);
         if (k < nz - 1) {
@@ -884,7 +907,6 @@ __device__ __forceinline__ real morr_sediment_pair(
     }
     for (int k = 0; k < nz; ++k) {
         size_t idx = IDX3(k, j, i);
-        real temp = theta[idx] * pii[idx];
         real rhoa = rho_fixed[idx];
         mass[idx] = fmaxf(qd[k] / rhoa, 0.0f);
         real sedimented = fmaxf(nd[k] / rhoa, 0.0f);
@@ -921,6 +943,8 @@ void morrison_process_levels(real* __restrict__ theta,
                              const real* __restrict__ pii,
                              const real* __restrict__ pressure,
                              real* __restrict__ ice_to_snow_scratch,
+                             real* __restrict__ pgam_rho,
+                             real* __restrict__ acn,
                              real* __restrict__ effc,
                              real* __restrict__ effi,
                              real* __restrict__ effs,
@@ -986,16 +1010,20 @@ void morrison_process_levels(real* __restrict__ theta,
     bool warm = temp >= 273.15f;
     real qi_begin = qik, stale_lami = 0.0f;
     real cloud_nc_for_sedimentation = 0.0f;
+    real pgam_rho_k = 0.0f, acn_k = 0.0f;
     morr_process_level(&qvk, &qck, &qrk, &qik, &qsk, &qgk,
                        &nck, &nrk, &nik, &nsk, &ngk,
                        &temp, p, rhoa, dt, qvs, qvi, xlv, xls, cpm,
                        warm, &stale_lami,
                        &cloud_nc_for_sedimentation,
+                       &pgam_rho_k, &acn_k,
                        morr_ag, morr_bg, morr_rhog);
     bool ice_to_snow = (!warm && qi_begin >= MQSMALL
                         && stale_lami >= 1.0e-10f
                         && 1.0f / stale_lami >= 2.0f * MDCS);
     rho_in[idx] = rhoa;
+    pgam_rho[idx] = pgam_rho_k;
+    acn[idx] = acn_k;
     ice_to_snow_scratch[idx] = ice_to_snow ? 1.0f : 0.0f;
     effs[idx] = cloud_nc_for_sedimentation;
     theta[idx] = temp / piik;
@@ -1018,8 +1046,8 @@ void morrison_sediment_impl(real* __restrict__ qc,
                             real* __restrict__ ns,
                             real* __restrict__ ng,
                             const real* __restrict__ cloud_nc,
-                            const real* __restrict__ theta,
-                            const real* __restrict__ pii,
+                            const real* __restrict__ pgam_rho,
+                            const real* __restrict__ acn,
                             const real* __restrict__ pressure,
                             const real* __restrict__ rho_in,
                             const real* __restrict__ dz,
@@ -1039,26 +1067,26 @@ void morrison_sediment_impl(real* __restrict__ qc,
     int i = col - j * nx;
     int nstep = morr_sediment_nstep(qc, qr, qi, qs, qg, nc, nr, ni, ns, ng,
                                     cloud_nc,
-                                    theta, pii, rho_in, dz,
+                                    pgam_rho, acn, rho_in, dz,
                                     j, i, nz, ny, nx, dt,
                                     morr_ag, morr_bg, morr_rhog);
-    real out_c = morr_sediment_pair<KMAX>(qc, nc, cloud_nc, theta, pii, pressure,
+    real out_c = morr_sediment_pair<KMAX>(qc, nc, cloud_nc, pgam_rho, acn, pressure,
                                           rho_in, dz,
                                           j, i, nz, ny, nx, 0, dt, nstep,
                                           morr_ag, morr_bg, morr_rhog);
-    real out_r = morr_sediment_pair<KMAX>(qr, nr, nullptr, theta, pii, pressure,
+    real out_r = morr_sediment_pair<KMAX>(qr, nr, nullptr, pgam_rho, acn, pressure,
                                           rho_in, dz,
                                           j, i, nz, ny, nx, 1, dt, nstep,
                                           morr_ag, morr_bg, morr_rhog);
-    real out_i = morr_sediment_pair<KMAX>(qi, ni, nullptr, theta, pii, pressure,
+    real out_i = morr_sediment_pair<KMAX>(qi, ni, nullptr, pgam_rho, acn, pressure,
                                           rho_in, dz,
                                           j, i, nz, ny, nx, 2, dt, nstep,
                                           morr_ag, morr_bg, morr_rhog);
-    real out_s = morr_sediment_pair<KMAX>(qs, ns, nullptr, theta, pii, pressure,
+    real out_s = morr_sediment_pair<KMAX>(qs, ns, nullptr, pgam_rho, acn, pressure,
                                           rho_in, dz,
                                           j, i, nz, ny, nx, 3, dt, nstep,
                                           morr_ag, morr_bg, morr_rhog);
-    real out_g = morr_sediment_pair<KMAX>(qg, ng, nullptr, theta, pii, pressure,
+    real out_g = morr_sediment_pair<KMAX>(qg, ng, nullptr, pgam_rho, acn, pressure,
                                           rho_in, dz,
                                           j, i, nz, ny, nx, 4, dt, nstep,
                                           morr_ag, morr_bg, morr_rhog);
@@ -1081,8 +1109,8 @@ void morrison_sediment_impl(real* __restrict__ qc,
     real* __restrict__ qg, real* __restrict__ nc,                            \
     real* __restrict__ nr, real* __restrict__ ni,                            \
     real* __restrict__ ns, real* __restrict__ ng,                            \
-    const real* __restrict__ cloud_nc, const real* __restrict__ theta,       \
-    const real* __restrict__ pii, const real* __restrict__ pressure,         \
+    const real* __restrict__ cloud_nc, const real* __restrict__ pgam_rho,   \
+    const real* __restrict__ acn, const real* __restrict__ pressure,         \
     const real* __restrict__ rho_in, const real* __restrict__ dz,            \
     real* __restrict__ rainnc, real* __restrict__ rainncv,                    \
     real* __restrict__ snownc, real* __restrict__ snowncv,                    \
@@ -1091,7 +1119,8 @@ void morrison_sediment_impl(real* __restrict__ qc,
     real morr_rhog, int nz, int ny, int nx
 
 #define MORRISON_SEDIMENT_ARGUMENTS                                          \
-    qc, qr, qi, qs, qg, nc, nr, ni, ns, ng, cloud_nc, theta, pii, pressure, \
+    qc, qr, qi, qs, qg, nc, nr, ni, ns, ng, cloud_nc, pgam_rho, acn,        \
+    pressure,                                                                \
     rho_in, dz, rainnc, rainncv, snownc, snowncv, graupelnc, graupelncv, sr, \
     dt, morr_ag, morr_bg, morr_rhog, nz, ny, nx
 
@@ -1194,7 +1223,8 @@ void morrison_finalize_levels(real* __restrict__ theta,
     // Final PSD reconstruction rebounds LAMC from the transient updated
     // NC3D (WRF 3918-3947).  Fixed 250 cm-3 is restored only after EFFC.
     MorrMoments m = morr_bound(qc[idx], qr[idx], qi[idx], qs[idx], qg[idx],
-                                rhoa, temp, &nc[idx], &nr[idx], &ni[idx],
+                                rhoa, pressure[idx], temp,
+                                &nc[idx], &nr[idx], &ni[idx],
                                 &ns[idx], &ng[idx], false, morr_rhog);
     effc[idx] = qc[idx] >= MQSMALL
               ? (m.pg + 3.0f) / (2.0f * m.lc) * 1.0e6f : 25.0f;

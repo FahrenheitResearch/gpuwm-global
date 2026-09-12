@@ -1,3 +1,40 @@
+# ======================================================================
+# THIRD-PARTY NOTICE.  Parts of this file are hand transcriptions of
+# third-party work.  ArWen distributes the file under the Apache License
+# 2.0; the notices below belong to the transcribed parts and are kept here
+# because their own licences require it.  Full texts are in the repository
+# NOTICE and in the licenses/ directory.
+#
+#   RTE+RRTMGP, transcribed from earth-system-radiation/rte-rrtmgp at the
+#   commit the gas-optics section of this file cites, which is the same
+#   commit arwen_global/core/rrtmgp.py and the rrtmgp_gas.cu, rrtmgp_cloud.cu and
+#   rrtmgp_rte.cu kernels this file mirrors cite.  BSD 3-Clause:
+#
+#       Copyright (c) 2015-2025, Atmospheric and Environmental Research,
+#         Regents of the University of Colorado,
+#         Trustees of Columbia University in the City of New York.
+#
+#   Clause 1 requires source redistributions to retain that notice, the
+#   conditions and the disclaimer; the full text is in
+#   licenses/LICENSE-RTE-RRTMGP-BSD-3-Clause.txt.
+#
+#   WRF RRTMG's McICA subcolumn cloud generator, transcribed from WRF
+#   v4.6.1 phys/module_ra_rrtmg_sw.F (module mcica_subcol_gen_sw).  The
+#   RRTMGP path is driven with WRF's generator, not rte-rrtmgp's; the
+#   device copy is arwen_global/core/kernels/rrtmgp_mcica.cu.  That routine is
+#   AER's work, not UCAR's, and WRF preserves AER's own notice over it:
+#
+#       Copyright 2002-2008, Atmospheric & Environmental Research, Inc. (AER).
+#       This software may be used, copied, or redistributed as long as it is
+#       not sold and this copyright notice is reproduced on each copy made.
+#       This model is provided as is without any express or implied warranties.
+#                             (http://www.rtweb.aer.com/)
+#
+#   ArWen takes this material under AER's own current grant instead: BSD
+#   3-Clause, "Copyright (c) 2020, Atmospheric and Environmental
+#   Research", published by AER at github.com/AER-RC/RRTMG_SW.  Text in
+#   licenses/LICENSE-AER-RRTMG-BSD-3-Clause.txt.
+# ======================================================================
 """Float64 NumPy mirrors of the CUDA kernels, for verification only.
 
 Every GPU kernel test compares device FP32 output against the reference
@@ -1005,11 +1042,18 @@ def _np_morrison_polysvp(t, ice=False):
 
 
 def _np_morrison_slopes(q, n, rho, temperature, *, pressure=None,
-                        reset_cloud_number=True, morr_rimed_ice=1):
+                        dens=None, reset_cloud_number=True,
+                        morr_rimed_ice=1):
     """Return bounded lambda/number fields for the five species.
 
     This is the repeated PSD limiter at WRF source lines 1525-1638,
     2122-2267, and 3855-4000.  Number concentrations are per kg dry air.
+
+    ``dens`` is WRF's PGAM reference density ``PRES/(287.15*T3D)`` when the
+    caller already holds it for the temperature WRF reads at that site.
+    ``pressure`` builds the same quantity here instead.  With neither, the
+    limiter falls back to the air density it was handed, which is correct
+    only where the cloud branch cannot bite.
     """
     q = {name: np.asarray(value, np.float64) for name, value in q.items()}
     n = {name: np.maximum(np.asarray(value, np.float64), 0.0)
@@ -1028,10 +1072,15 @@ def _np_morrison_slopes(q, n, rho, temperature, *, pressure=None,
         n["c"] = 250.0e6 / rho
     active = q["c"] >= _MORR_QSMALL
     if np.any(active):
-        dens = (rho[active] if pressure is None else
-                np.asarray(pressure, np.float64)[active]
-                / (287.15 * np.asarray(temperature, np.float64)[active]))
-        pg = 0.0005714 * (n["c"][active] / 1.0e6 * dens) + 0.2714
+        if dens is not None:
+            reference = np.asarray(dens, np.float64)[active]
+        elif pressure is not None:
+            reference = (np.asarray(pressure, np.float64)[active]
+                         / (287.15
+                            * np.asarray(temperature, np.float64)[active]))
+        else:
+            reference = rho[active]
+        pg = 0.0005714 * (n["c"][active] / 1.0e6 * reference) + 0.2714
         pgam[active] = np.clip(1.0 / (pg * pg) - 1.0, 2.0, 10.0)
         raw = (_MORR_PI / 6.0 * _MORR_RHOW * n["c"][active]
                * np.vectorize(math.gamma)(pgam[active] + 4.0)
@@ -1071,17 +1120,23 @@ def _np_morrison_slopes(q, n, rho, temperature, *, pressure=None,
 
 
 def _np_morrison_fall_speeds(kind, q, n, rho, temperature, *,
-                             morr_rimed_ice=1):
-    """Mass/number-weighted fall speeds (source 3376-3503)."""
+                             pgam_rho, acn, morr_rimed_ice=1):
+    """Mass/number-weighted fall speeds (source 3376-3503).
+
+    ``pgam_rho`` and ``acn`` are the two per-level quantities WRF builds
+    inside the column loop and spends unchanged here: the PSD reference
+    density read at :3405 and the Stokes coefficient ACN(K) frozen at :1438
+    from the pre-melt viscosity of :1424 and read at :3440-3441.  Neither is
+    rebuilt from a sedimentation-time temperature, and both are required so
+    that no caller can silently get a third value.
+    """
     # Sedimentation clamps only the local DLAM* slopes.  It does not rebound
     # and persist the provisional number moments (WRF 3376-3432).
     lam, pgam, n = _np_morrison_slopes(
-        q, n, rho, temperature, reset_cloud_number=False,
+        q, n, rho, temperature, dens=pgam_rho, reset_cloud_number=False,
         morr_rimed_ice=morr_rimed_ice)
-    mu = 1.496e-6 * temperature ** 1.5 / (temperature + 120.0)
     dens54 = (_MORR_RHOSU / rho) ** 0.54
     if kind == "c":
-        acn = c.G * _MORR_RHOW / (18.0 * mu)
         safe_lam = np.where(q["c"] >= _MORR_QSMALL, lam["c"], 1.0)
         vm = acn * np.vectorize(math.gamma)(4.0 + 2.0 + pgam) \
             / (safe_lam ** 2.0
@@ -1329,6 +1384,9 @@ def _np_morrison_apply_level(q, n, temperature, pressure, rhoa, dt,
     # WRF 1424-1479 evaluates these before the warm branch's small-particle
     # melt at 1498-1514.  They deliberately retain the pre-melt temperature.
     mu = 1.496e-6 * temperature ** 1.5 / (temperature + 120.0)
+    # ACN(K) at :1438 is one of them and the sedimentation block spends it
+    # unchanged at :3440-3441, so it leaves this routine as a level value.
+    acn = c.G * _MORR_RHOW / (18.0 * mu)
     dv = 8.794e-5 * temperature ** 1.81 / pressure
     sc = mu / (rhoa * dv)
     kap = 1.414e3 * mu
@@ -1348,6 +1406,10 @@ def _np_morrison_apply_level(q, n, temperature, pressure, rhoa, dt,
                 temperature -= amount * xlf / cpm
 
     rimed = rimed_ice_constants(morr_rimed_ice)
+    # The PSD reference density of :1558 and :2182.  Nothing writes T3D
+    # between the melt above and the tendency apply at :3710, so this is
+    # also the density the sedimentation block reads at :3405.
+    pgam_rho = pressure / (287.15 * temperature)
     lam, pgam, n = _np_morrison_level_moments(
         q, n, rhoa, temperature, pressure, reset_cloud=True,
         morr_rimed_ice=morr_rimed_ice)
@@ -1880,7 +1942,7 @@ def _np_morrison_apply_level(q, n, temperature, pressure, rhoa, dt,
         "ng": n["ng"] + dt * tng,
     }
     return (qnew, nnew, temperature + dt * tt, stale_lami,
-            cloud_nc_for_sedimentation)
+            cloud_nc_for_sedimentation, pgam_rho, acn)
 
 
 def _np_morrison_seed_cumulus_numbers(
@@ -1982,6 +2044,8 @@ def np_morrison_column(theta, qv, qc, qr, qi, qs, qg,
     ice_to_snow = np.zeros(nz, dtype=bool)
     stale_lami = np.zeros(nz, dtype=np.float64)
     cloud_nc_for_sedimentation = np.zeros(nz, dtype=np.float64)
+    pgam_rho = np.zeros(nz, dtype=np.float64)
+    acn = np.zeros(nz, dtype=np.float64)
     xlv_stale = np.zeros(nz, dtype=np.float64)
     cpm_stale = np.zeros(nz, dtype=np.float64)
     # A mass donor that is exhausted algebraically can leave a positive
@@ -2029,7 +2093,8 @@ def np_morrison_column(theta, qv, qc, qr, qi, qs, qg,
         qk = {name: float(q[name][k]) for name in q}
         nk = {name: float(n[name][k]) for name in n}
         (qnew, nnew, tnew, stale_lami[k],
-         cloud_nc_for_sedimentation[k]) = _np_morrison_apply_level(
+         cloud_nc_for_sedimentation[k],
+         pgam_rho[k], acn[k]) = _np_morrison_apply_level(
             qk, nk, float(t[k]), float(p[k]), float(rhoa[k]), float(dt),
             float(qvs), float(qvi), float(xlv), float(xls), float(cpm), warm,
             morr_rimed_ice=morr_rimed_ice)
@@ -2067,6 +2132,7 @@ def np_morrison_column(theta, qv, qc, qr, qi, qs, qg,
                    "s": n["ns"], "g": n["ng"]}
         vm, vn, _ = _np_morrison_fall_speeds(
             kind, q_short, n_short, rhoa, t,
+            pgam_rho=pgam_rho, acn=acn,
             morr_rimed_ice=morr_rimed_ice)
         velocities[kind] = (vm, vn)
     qdens = {kind: q[mass] * rhoa for kind, mass in
@@ -5963,7 +6029,7 @@ def _noah_sflx(ffrozp, dt, nsoil, sldpth, lwdn, soldn, solnet, sfcprs,
                         cmc, cmcmax, nsoil, dt, shdfac, sbeta, q2, t1,
                         sfctmp, t24, th2, fdown, f1, emissi, stc,
                         epsca, bexp, pc, rch, rr, cfactr, sh2o, slope,
-                        kdt, frzfact, psisat, zsoil, dksat, dwsat,
+                        kdt, frzx, psisat, zsoil, dksat, dwsat,
                         tbot, zbot, nroot, rtdis, quartz, fxexp,
                         csoil, vegtyp, isurban, soiltyp, opt_thcnd,
                         flags)
@@ -5978,7 +6044,7 @@ def _noah_sflx(ffrozp, dt, nsoil, sldpth, lwdn, soldn, solnet, sfcprs,
                          q2, t1, sfctmp, t24, th2, fdown, f1, stc,
                          epsca, sfcprs, bexp, pc, rch, rr, cfactr,
                          sncovr, sneqv, sndens, snowh, sh2o, slope,
-                         kdt, frzfact, psisat, zsoil, dwsat, dksat,
+                         kdt, frzx, psisat, zsoil, dwsat, dksat,
                          tbot, zbot, shdfac, nroot, rtdis, quartz,
                          fxexp, csoil, emissi, ribb, flx2, isurban,
                          vegtyp, soiltyp, opt_thcnd, flags)

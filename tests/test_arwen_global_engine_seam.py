@@ -77,6 +77,38 @@ INDIRECT = {
 OUTSIDE_THE_CORE = {"gpuwm/da/letkf.py", "gpuwm/local_gpu.py"}
 
 
+def _installed_engine_version() -> str | None:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("gpuwm")
+    except PackageNotFoundError:
+        return None
+
+
+_INSTALLED = _installed_engine_version()
+_PINNED = load_manifest()["engine"]["version"]
+
+#: THE VERSION THIS TABLE CAN SPEAK ABOUT, and the rule is the one
+#: `tests/test_engine_divergence.py` already follows.  Every row is a SHA-256
+#: read off one published engine, and the declared range `gpuwm>=2.7.0,<2.8`
+#: legitimately resolves others: 2.7.3 moved eight of these files against
+#: 2.7.0 with nothing the package reaches changing behaviour.  A hash
+#: mismatch there is a fact about somebody else's release, not a defect in
+#: this package, and the doctor already prints it file by file as "moved".
+#: So the two nodes that COMPARE hashes run against the pinned version and
+#: skip, naming both versions, on any other; every other node here is about
+#: this repository and always runs.
+#:
+#: The refusal is elsewhere, on purpose: the dependency ceiling.
+needs_pinned_engine = pytest.mark.skipif(
+    _INSTALLED != _PINNED,
+    reason=(f"the seam rows were read off gpuwm {_PINNED} and the installed "
+            f"engine is {_INSTALLED or 'absent'}; re-pin with "
+            "`python tools/pin_engine_seam.py` to hold the table to this "
+            "one, and read `gpuwm-global doctor` for the per-file rows"))
+
+
 def _boundary_instrument():
     """`tools/measure_boundary.py`, loaded by path rather than reimplemented.
 
@@ -158,6 +190,7 @@ def test_the_manifest_names_no_file_this_package_carries():
     assert not (named & CARRIED), sorted(named & CARRIED)
 
 
+@needs_pinned_engine
 def test_the_pins_match_the_installed_engine():
     """The measurement, on this machine, against this wheel.
 
@@ -192,6 +225,7 @@ def test_the_doctor_reports_the_seam_and_never_refuses_on_it():
             "not a refusal -- the dependency ceiling is the refusal")
 
 
+@needs_pinned_engine
 def test_the_pin_tool_reads_the_engine_rather_than_the_manifest():
     """`--check` must be able to disagree, or it proves nothing."""
 

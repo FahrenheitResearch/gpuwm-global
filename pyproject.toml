@@ -23,12 +23,28 @@ name = "gpuwm-global"
 # 0.1.0 is the first cut of the carve: the global model as a distribution of
 # its own, its spectral core inside it, every door of both previous entrances
 # on one console script.  It is not a claim that the model is new.
-version = "0.1.0"
+#
+# 0.1.1 is the frozen-ground repair in the carried Noah kernel, the Morrison
+# sedimentation repair in the carried microphysics kernel, both float64
+# mirrors, and the third-party notices 0.1.0 shipped without.
+#
+# The model source this package carries is cut from revision
+# f6f1adaa3bda7a347c142544d4007cf14847db47, dated 2026-09-12.  SOURCE.md says
+# what that means and how a re-cut is done.
+version = "0.1.1"
 description = "Arwen Global: a GPU-native hydrostatic global spectral weather model with ensemble data assimilation"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
-license-files = ["LICENSE", "NOTICE"]
+# `licenses/*` is not decoration.  Five of the works the carried physics
+# transcribes condition redistribution on their TEXT travelling with the
+# copy, not on being named: MIT (Arm's libm cores), the FDLIBM/SunPro
+# notice, BSD-3-Clause clause 1 twice over (RTE+RRTMGP, and AER's RRTMG for
+# the McICA generator in rrtmgp_mcica.cu) and UCAR's request over WRF.
+# 0.1.0 shipped the transcriptions with LICENSE and NOTICE only and
+# performed none of them.  PEP 639 keeps each file's source path, so these
+# land in a wheel at gpuwm_global-<version>.dist-info/licenses/licenses/.
+license-files = ["LICENSE", "NOTICE", "licenses/*"]
 #
 # TWO dependencies, and the second one carries the rest.
 #
@@ -176,6 +192,14 @@ arwen_global = [
     # raises FileNotFoundError at the first radiation or surface-layer call.
     "core/kernels/*.cu",
     "core/kernels/*.cuh",
+    # The notice for what those kernels transcribe.  Arm's MIT asks for its
+    # text in every copy of the code, FDLIBM's one condition is that its
+    # notice be preserved, and BSD-3-Clause clause 1 asks for the notice,
+    # the conditions and the disclaimer in a source redistribution.  The
+    # device sources cannot carry a comment without moving the digest a run
+    # receipt records, so the notice ships beside them and is named here
+    # rather than left to a glob that matches only device sources.
+    "core/kernels/*.txt",
     "data/**/*",
     "radiance_tables/**/*",
     "semilag/*.cu",
