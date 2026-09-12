@@ -389,3 +389,47 @@ def test_every_stream_door_names_the_obs_command_that_reaches_it():
             missing.append(f"{name} is driven by `{command}` and its row does "
                            f"not say so: {doors.door_by_name(name).used_by}")
     assert missing == [], "\n  ".join([""] + missing)
+
+
+def test_the_doctor_names_this_programs_own_binding_as_the_companion_directory(
+        monkeypatch, tmp_path):
+    """The origin line tells the program's own binding from an operator's.
+
+    THE BREAKAGE THIS PREVENTS, read off a host whose companion directory
+    held the previous release's doors: `doctor` printed every door as
+    "resolved from the GPUWM_RW_* override" when the operator had set none
+    of those variables, because the console script binds one per companion
+    door into its own environment before any command runs.  A reader
+    upgrading is then sent to unset something the program sets again on
+    every run.  The same rule fetch-doors applies to what outranks a
+    staging applies here: an override is the operator's only when it
+    points somewhere other than the file this package's own binding would
+    have produced.
+    """
+
+    from arwen_global import doctor
+
+    staged_dir = tmp_path / "global-doors"
+    staged_dir.mkdir()
+    monkeypatch.setenv(doors.COMPANION_DIR_ENV, str(staged_dir))
+    door = doors.door_by_name("rw_atms")
+    own = staged_dir / doors.artifact_filename(door.name)
+    own.write_bytes(b"x")
+
+    # what bind_companion_doors() writes: this program's own binding
+    monkeypatch.setenv(door.env_var, str(own))
+    origin = doctor._origin(door, own)
+    assert "override" not in origin, origin
+    assert "companion door directory" in origin and door.env_var in origin
+
+    # the same variable set by the operator to somewhere else really is one
+    elsewhere = tmp_path / "mine" / doors.artifact_filename(door.name)
+    elsewhere.parent.mkdir()
+    elsewhere.write_bytes(b"y")
+    monkeypatch.setenv(door.env_var, str(elsewhere))
+    origin = doctor._origin(door, elsewhere)
+    assert "override" in origin and "outside this program" in origin, origin
+
+    # and no variable at all resolves to the directory by name
+    monkeypatch.delenv(door.env_var, raising=False)
+    assert doctor._origin(door, own) == "the companion door directory"

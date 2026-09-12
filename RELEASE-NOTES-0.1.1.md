@@ -63,6 +63,10 @@ gpuwm-global go arwen_global_gdas_t255_native_sl_si_24h --outdir out/day
   and `gfk_tgamma`) are this project's own work under its Apache-2.0 licence
   and not a transcription of any C library. `NOTICE` and the notice beside
   the kernels say so, and nothing in that block needs a third-party notice.
+  The code is unchanged since 0.1.0; the comment text around it in
+  `glibc_flt32.cuh` and `gf.cu` was rewritten to say whose work it is, so the
+  assembled-source digests a run receipt records for the `gf` and `ntiedtke`
+  modules differ from 0.1.0's for that reason alone.
 - Noah's frozen-ground infiltration limiter did not limit. WRF's REDPRM builds
   two quantities, `FRZFACT = (SMCMAX/SMCREF)*(0.412/0.468)` and
   `FRZX = FRZK*FRZFACT`, and SFLX passes the second one down. The dummy
@@ -122,9 +126,12 @@ On the float64 mirror, one wet loam column at 266 K under 5 mm of rain:
 SRT reaches the limiter only where the column's soil ice clears its own
 `DICE > 1e-2` threshold, so in an early September case the change lives in
 Antarctica, Greenland, the high Arctic and high terrain. A column with no soil
-ice is unchanged bit for bit. Because frozen-ground columns move, the ten-step
-identity hashes quoted in the shipped pages are re-measured by the release
-step rather than re-quoted by hand here.
+ice is unchanged bit for bit. Frozen-ground columns move under this repair,
+so a forecast that reaches them is not byte-identical to one 0.1.0 wrote. No
+shipped page quotes a ten-step identity hash; the ten-step comparison of this
+distribution against the model source tree at the revision it carries, the
+309-array acceptance 0.1.0 passed, was not taken for 0.1.1 and is owed as the
+next card job.
 
 Morrison, measured against the unmodified WRF driver over the 28 oracle columns
 and 10,948 compared values, RTX 3080, 2026-09-12:

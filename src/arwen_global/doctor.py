@@ -440,9 +440,21 @@ def _origin(door, staged) -> str:
     parent = staged.parent
     override = os.environ.get(door.env_var)
     if override and Path(override).resolve() == staged.resolve():
-        return f"the {door.env_var} override"
+        # The console script binds one variable per companion door into its
+        # own environment before any command runs, pointing at the file in
+        # the companion directory.  That binding is this program's, not the
+        # operator's, and printing it as an override sends a reader to unset
+        # something the program sets again on every run.  An override is the
+        # operator's only when it points somewhere other than the file this
+        # package's own binding would have produced, the same rule
+        # fetch-doors applies when it says what outranks a staging.
+        own = companion_door_dir() / artifact_filename(door.name)
+        if door.bundle == COMPANION_BUNDLE and own.resolve() == staged.resolve():
+            return ("the companion door directory, named to the engine as "
+                    f"{door.env_var}")
+        return f"the {door.env_var} override, set outside this program"
     if parent == companion_door_dir():
-        return "this package's staged doors"
+        return "the companion door directory"
     if parent == default_bridge_dir():
         return "the engine's staged bridges"
     if parent == packaged_bridge_dir():

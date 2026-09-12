@@ -167,6 +167,12 @@
   and `gfk_tgamma`) are this project's own work under its Apache-2.0 licence
   and not a transcription of any C library. `NOTICE` and the notice beside
   the kernels say so, and nothing in that block needs a third-party notice.
+  The code of that block is unchanged since 0.1.0; the comment text in
+  `glibc_flt32.cuh` and in `gf.cu` that described it was rewritten to say
+  whose work it is, so the bytes of both files differ from 0.1.0's and the
+  assembled-source digests a run receipt records for the `gf` and `ntiedtke`
+  modules differ from the ones 0.1.0 wrote, for that reason alone. The
+  `noah` and `morrison` digests move because their code moved.
 - Noah's frozen-ground infiltration limiter did not limit, so a frozen column
   soaked up everything that fell on it. WRF's REDPRM builds two quantities,
   `FRZFACT = (SMCMAX/SMCREF)*(0.412/0.468)` and `FRZX = FRZK*FRZFACT`, and
@@ -189,9 +195,12 @@
   case the change lives in Antarctica, Greenland, the high Arctic and high
   terrain. Soil moisture, soil liquid water, surface runoff and the surface
   fluxes that follow them move there; a column with no soil ice is unchanged
-  bit for bit. Because frozen-ground columns move, the ten-step identity
-  hashes quoted in the shipped pages are not re-quoted by hand in this entry:
-  the release step re-measures them.
+  bit for bit. Frozen-ground columns move under this repair, so a forecast
+  that reaches them is not byte-identical to one 0.1.0 wrote. No shipped page
+  quotes a ten-step identity hash; the ten-step comparison of this
+  distribution against the model source tree at the revision it carries, the
+  309-array acceptance 0.1.0 passed, was not taken for 0.1.1 and is owed as
+  the next card job.
 - `tests/test_arwen_global_noah_frzx.py` holds both ends. It reads the kernel's
   three call sites and the mirror's two out of the shipped source, reads back
   SRT's own declaration and its `ACRT` line, and runs the mirror on a frozen
@@ -249,15 +258,17 @@
   confined to a climate band: it moves wherever cloud water exists and the
   microphysics changes the temperature, which is every precipitating column and
   most cloudy ones.
-- `tests/test_morrison_sedimentation_psd.py` holds both ends. It reads out of
-  the shipped kernel source that the sedimentation routine takes the two
-  published quantities and rebuilds neither, and that the process stage
-  publishes the Stokes coefficient above the melt and the reference density
-  below it; and it runs the float64 mirror on a column whose temperature moves
-  during the step, checking the published pair against WRF's own two formulae
-  evaluated at WRF's own two temperatures, and the cloud fall speeds against
-  WRF :3440-3441, with an arm that states what the sedimentation-time rebuild
-  was worth.
+- `tests/test_arwen_global_morrison_sedimentation.py` holds both ends, and
+  ships in this distribution's own suite where the CPU selection runs it. It
+  reads out of the shipped kernel source that the sedimentation routine takes
+  the two published quantities and rebuilds neither, and that the process
+  stage publishes the Stokes coefficient above the melt and the reference
+  density below it; and it runs the carried float64 mirror on a column whose
+  temperature moves during the step, checking the published pair against
+  WRF's own two formulae evaluated at WRF's own two temperatures, and the
+  cloud fall speeds against WRF :3440-3441, with an arm that states what the
+  sedimentation-time rebuild was worth. The same test is maintained in the
+  model's own source tree.
 
 ## 0.1.0
 
