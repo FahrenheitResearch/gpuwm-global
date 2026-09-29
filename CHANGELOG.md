@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- A configuration has the same identity on every machine.  The hybrid
+  level weights are now computed with the C library's pow and exp one
+  element at a time.  With numpy 2.5 on an AVX-512 Linux machine, numpy's
+  vector power and exp rounded the last bit differently, so every shipped
+  configuration hashed to a different identity there than on Windows or an
+  older CPU.  Every recorded identity is unchanged.
 - The door bundles carry a licence notice.  Each zip now holds
   `THIRD-PARTY-LICENSES.txt`, generated from the engine workspace's
   `Cargo.lock` for that platform: every crate statically linked into the

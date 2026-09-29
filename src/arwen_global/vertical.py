@@ -8,6 +8,29 @@ import numpy as np
 
 from .constants import DRY_AIR_GAS_CONSTANT, GRAVITY_M_S2
 
+
+def _libm_pow(base, exponent) -> np.ndarray:
+    """``base ** exponent`` element by element through the C library's pow.
+
+    The coefficients built here feed the configuration identity, which
+    checkpoints and receipts hash.  numpy 2.5's AVX-512 power and exp loops
+    round differently in the last bit from the C library, so the same
+    configuration hashed to a different identity on an AVX-512 Linux
+    machine than on Windows or an older CPU.  Scalar pow and exp are the
+    values every recorded identity was measured with.
+    """
+    b = np.broadcast_to(np.asarray(base, dtype=np.float64), np.broadcast_shapes(
+        np.shape(base), np.shape(exponent)))
+    e = np.broadcast_to(np.asarray(exponent, dtype=np.float64), b.shape)
+    return np.array([math.pow(float(x), float(y)) for x, y in zip(b.ravel(), e.ravel())],
+                    dtype=np.float64).reshape(b.shape)
+
+
+def _libm_exp(values) -> np.ndarray:
+    """``exp`` element by element through the C library, for the reason ``_libm_pow`` gives."""
+    v = np.asarray(values, dtype=np.float64)
+    return np.array([math.exp(float(x)) for x in v.ravel()], dtype=np.float64).reshape(v.shape)
+
 #: Reference surface pressure the surface_stretched layout is designed at.
 SURFACE_STRETCHED_REFERENCE_PS_PA = 101_325.0
 #: Bottom layer thickness at the reference surface: 550 Pa puts the first
@@ -150,7 +173,7 @@ class HybridCoordinate:
         # Quadratic B packs levels toward the lower atmosphere. A contributes
         # the top pressure and fades continuously to zero at the surface.
         eta = np.linspace(0.0, 1.0, n + 1, dtype=np.float64)
-        b = eta ** 1.7
+        b = _libm_pow(eta, 1.7)
         a = float(p_top_pa) * (1.0 - b)
         a[-1] = 0.0
         b[-1] = 1.0
@@ -256,19 +279,19 @@ class HybridCoordinate:
                 "re-measured after DN-3); select coordinate = "
                 "\"pressure_blend\" for a grid this coarse"
             )
-        thickness = zeta_bottom * ratio ** np.arange(n_stretched, dtype=np.float64)
+        thickness = zeta_bottom * _libm_pow(ratio, np.arange(n_stretched, dtype=np.float64))
         thickness = np.concatenate([
             thickness, np.full(n_uniform, thickness[-1], dtype=np.float64)
         ])
         zeta_half = np.concatenate([[0.0], np.cumsum(thickness)])
         zeta_half *= zeta_top / zeta_half[-1]
-        p_ref = ps_ref * np.exp(-zeta_half[::-1])
+        p_ref = ps_ref * _libm_exp(-zeta_half[::-1])
         p_ref[0] = float(p_top_pa)
         p_ref[-1] = ps_ref
 
         p_bt = float(pure_pressure_above_pa)
         x = np.clip((p_ref - p_bt) / (ps_ref - p_bt), 0.0, 1.0)
-        b = x ** float(hybrid_exponent)
+        b = _libm_pow(x, float(hybrid_exponent))
         a = p_ref - b * ps_ref
         a = np.maximum(a, 0.0)
         a[-1] = 0.0
@@ -410,13 +433,13 @@ class HybridCoordinate:
                 high = mid
         ratio = 0.5 * (low + high)
         taper_half = band_bottom + np.cumsum(
-            band_thickness * ratio ** np.arange(1, m + 1, dtype=np.float64)
+            band_thickness * _libm_pow(ratio, np.arange(1, m + 1, dtype=np.float64))
         )
         taper_half[-1] = taper_bottom
         new_half = np.concatenate([band_half[:-1], [band_bottom], taper_half[:-1]])
         p_bt = float(pure_pressure_above_pa)
         x = np.clip((new_half - p_bt) / (ps_ref - p_bt), 0.0, 1.0)
-        b_new = x ** float(hybrid_exponent)
+        b_new = _libm_pow(x, float(hybrid_exponent))
         a_new = np.maximum(new_half - b_new * ps_ref, 0.0)
         a = np.concatenate([
             base.a_half_pa[: top_index + 1], a_new, base.a_half_pa[bottom_index:],
