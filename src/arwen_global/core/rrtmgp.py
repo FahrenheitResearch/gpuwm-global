@@ -3120,7 +3120,9 @@ class RRTMGPRadiation:
     columns are packed only at the scheme boundary.  Trace gases use RFMIP
     experiment-zero climatology plus :func:`trace_gases` date selection and
     explicit case overrides.  Water vapor comes from the model and ozone is
-    interpolated from the median RFMIP climatological profile.
+    interpolated from the median RFMIP climatological profile.  Both come
+    from the engine's :func:`gpuwm.core.rrtmgp.load_trace_climatology`,
+    the table derived from the RFMIP input file, which is not read here.
     """
 
     #: RTE resolves the full level stack, so the top level's upward
@@ -3191,25 +3193,22 @@ class RRTMGPRadiation:
                 "above-model column adapter")
         self.lw_cloud_tables = load_cloud_tables("lw")
         self.sw_cloud_tables = load_cloud_tables("sw")
-        with Dataset(_table("rfmip-clear-sky-inputs.nc"), "r") as ncfile:
-            ncfile.set_auto_mask(False)
-            for gas, rfmip_name in _RFMIP_GAS_NAMES.items():
-                variable = ncfile[rfmip_name + "_GM"]
-                scale = float(getattr(variable, "units", "1").replace(" ", ""))
-                self.trace_vmr[gas] = float(variable[0]) * scale
-            for gas, value in trace_gases(
-                    self.start_time, self.trace_gas_overrides).items():
-                if gas not in self.trace_vmr:
-                    # Defensive parity with the pure policy validation: table
-                    # and packaged RFMIP names must never drift silently.
-                    raise ValueError(
-                        f"unknown trace gas {gas!r}; known well-mixed gases: "
-                        f"{sorted(self.trace_vmr)}")
-                self.trace_vmr[gas] = value
-            pressure = np.median(
-                np.asarray(ncfile["pres_layer"][:], np.float64), axis=0)
-            ozone = np.median(
-                np.asarray(ncfile["ozone"][0], np.float64), axis=0)
+        from gpuwm.core.rrtmgp import load_trace_climatology
+
+        climatology = load_trace_climatology()
+        for gas in _RFMIP_GAS_NAMES:
+            self.trace_vmr[gas] = climatology.trace_vmr[gas]
+        for gas, value in trace_gases(
+                self.start_time, self.trace_gas_overrides).items():
+            if gas not in self.trace_vmr:
+                # Defensive parity with the pure policy validation: table
+                # and packaged RFMIP names must never drift silently.
+                raise ValueError(
+                    f"unknown trace gas {gas!r}; known well-mixed gases: "
+                    f"{sorted(self.trace_vmr)}")
+            self.trace_vmr[gas] = value
+        pressure = climatology.pressure_layer_pa
+        ozone = climatology.ozone_vmr
         order = np.argsort(pressure)
         self._ozone_logp = cp.asarray(np.log(pressure[order]), dtype=DTYPE)
         self._ozone_vmr = cp.asarray(ozone[order], dtype=DTYPE)
@@ -3353,7 +3352,7 @@ class RRTMGPRadiation:
     def _cosine_zenith(self, valid_time, *, hour_offset_seconds=0.0):
         """WRF v4.6.1 ``radconst``/``calc_coszen`` solar geometry.
 
-        This transcribes the standard real74 path in
+        This transcribes the standard path in
         ``module_radiation_driver.F:3469-3541``.  WRF deliberately uses a
         fixed 365-day orbital phase even in leap years.  The absolute UTC
         ``valid_time`` supplies WRF's zero-based fractional ``julian`` and
@@ -3362,7 +3361,7 @@ class RRTMGPRadiation:
 
         This is geometric COSZEN only.  It does not emulate optional WRF
         eclipse, slope-shadow, or shortwave-interpolation corrections, none
-        of which are selected by the frozen real74 configuration.
+        of which are selected by the frozen reference configuration.
         """
         import cupy as cp
 
@@ -3441,7 +3440,7 @@ class RRTMGPRadiation:
         else:
             p_top = float(declared_p_top)
         # Both v1.9 gas tables share their lower pressure bound.  Clamp the
-        # interface exactly as the upstream RFMIP example does.  For real74
+        # interface exactly as the upstream RFMIP example does.  For the reference case
         # this is now the appended TOA interface, not the 100-hPa model top.
         toa_floor = DTYPE(RRTMGP_TOA_PRESSURE_PA)
 
@@ -5031,10 +5030,13 @@ def _planck_sources(tables: GasTables, play, plev, tlay, tlev, tsfc,
     return PlanckSourceResult(lay, lev, sfc)
 
 
-def _rfmip_profiles(tables, sites, experiments):
+def _rfmip_profiles(tables, sites, experiments, inputs=None):
+    from gpuwm.core.rfmip_upstream import fetch_rfmip
+
     sites = np.asarray(sites, dtype=np.intp)
     experiments = np.asarray(experiments, dtype=np.intp)
-    with Dataset(_table("rfmip-clear-sky-inputs.nc"), "r") as nc:
+    source = fetch_rfmip("rfmip-clear-sky-inputs.nc", path=inputs)
+    with Dataset(source, "r") as nc:
         nc.set_auto_mask(False)
         nsite, nexp = sites.size, experiments.size
         play_site = np.asarray(nc["pres_layer"][sites], np.float64)
@@ -5072,12 +5074,18 @@ def _rfmip_profiles(tables, sites, experiments):
             np.tile(sza, nexp), np.tile(tsi, nexp))
 
 
-def rfmip_clear_sky(*, sites=None, experiments=None) -> RFMIPResult:
-    """Run the shipped RFMIP clear-sky oracle profiles on the GPU.
+def rfmip_clear_sky(*, sites=None, experiments=None,
+                    inputs=None) -> RFMIPResult:
+    """Run the RFMIP clear-sky oracle profiles on the GPU.
 
     This reproduces the upstream physics-index-1/forcing-index-1 examples:
     one-angle LW, default solar spectrum normalized to each RFMIP TSI, and
     nighttime columns explicitly zeroed after the SW solve.
+
+    The RFMIP input file is not shipped by the engine from 2.8.0 on (see
+    :mod:`gpuwm.core.rfmip_upstream`): ``inputs`` names a local copy, and
+    without it the pinned upstream file is fetched into the RFMIP cache.
+    Either way its SHA-256 is verified before a byte is read.
     """
     import cupy as cp
 
@@ -5086,7 +5094,7 @@ def rfmip_clear_sky(*, sites=None, experiments=None) -> RFMIPResult:
                    else np.asarray(experiments))
     lw = load_gas_tables("lw")
     (play, plev, tlay, tlev, tsfc, vmr, emiss, _albedo,
-     _sza, _tsi) = _rfmip_profiles(lw, sites, experiments)
+     _sza, _tsi) = _rfmip_profiles(lw, sites, experiments, inputs)
     dplay = cp.asarray(play, dtype=DTYPE)
     dplev = cp.asarray(plev, dtype=DTYPE)
     dtlay = cp.asarray(tlay, dtype=DTYPE)
@@ -5105,7 +5113,7 @@ def rfmip_clear_sky(*, sites=None, experiments=None) -> RFMIPResult:
 
     sw = load_gas_tables("sw")
     (play, plev, tlay, _tlev, _tsfc, vmr, _emiss, albedo,
-     sza, tsi) = _rfmip_profiles(sw, sites, experiments)
+     sza, tsi) = _rfmip_profiles(sw, sites, experiments, inputs)
     optics_sw = gas_optics(
         sw, cp.asarray(play, dtype=DTYPE), cp.asarray(plev, dtype=DTYPE),
         cp.asarray(tlay, dtype=DTYPE), cp.asarray(vmr, dtype=DTYPE))

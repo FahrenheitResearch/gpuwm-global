@@ -281,7 +281,7 @@ def _engine_seam_section(report: Report) -> None:
     THE BREAKAGE THIS SECTION EXISTS FOR.  Most of the physics is carried, so
     it cannot move.  The rest is reached on the installed engine, and the
     decision to leave it there was measured against ONE published engine.  A
-    resolution inside `gpuwm>=2.7.0,<2.8` can put a different one underneath
+    resolution inside `gpuwm>=2.8.0,<2.9` can put a different one underneath
     and print nothing: `gpuwm.core.constants` supplies CUDA_DEFINES to the
     preamble of every carried kernel, so moving it moves every kernel's
     assembled source, its digest, its PTX and its contraction, with no other

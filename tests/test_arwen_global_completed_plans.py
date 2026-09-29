@@ -4,10 +4,10 @@ from above (sizing.COMPLETED_PLAN_PEAKS, sizing.completed_plan_ceiling).
 The breakage these hold: MEASURED 2026-09-07, the model read 15.08 GiB
 live for T383 L40 at two bands with every slice parked and refused the
 34.7 km day on a 16 GB card that had just completed it at 12.41 GiB live
-(node-1, the 24 h day run); and read 22.81 GiB for T533 L40 at
+(RTX 5070 Ti, the 24 h day run); and read 22.81 GiB for T533 L40 at
 one band with every slice parked, at a pool ratio borrowed from another
 class, where the 25 km day completed on the RTX 5090 at 21.12 GiB live
-(node-2, the 25 km day run).
+(the 25 km day run).
 """
 from __future__ import annotations
 

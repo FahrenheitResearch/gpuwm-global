@@ -111,7 +111,7 @@ def twins():
     # CONFIGURATION ACTUALLY HAS.  `elev` is a station elevation for every
     # other family and a tangent HEIGHT for `refractivity_n`, and the
     # operator returns NaN for a target outside its column rather than
-    # extrapolating.  Measured on node-2 (RTX 5090, Linux, Python 3.14.4)
+    # extrapolating.  Measured on a Linux host (RTX 5090, Python 3.14.4)
     # 2026-09-10: this shipped smoke case has FOUR full levels, whose
     # pressures at a 1000 hPa surface are 4832, 20206, 46103 and 80679 Pa,
     # so its column spans about 1.8 km to 22 km.  Every one of the 0 to
@@ -142,7 +142,7 @@ def twins():
 #: float64.  Every other variable reaches the sampling directly and is held
 #: at the float64 floor.
 #:
-#: MEASURED on node-2 (RTX 5090, Linux, Python 3.14.4) against published
+#: MEASURED on a Linux host (RTX 5090, Python 3.14.4) against published
 #: gpuwm 2.7.2, 2026-09-10, on this fixture's members: in the float64 arm the
 #: four scalars agree to 5.2e-15, 1.5e-15, 8.4e-16 and (surface pressure)
 #: 5.2e-15 relative, while `wind_u_m_s` reads 9.36e-09 and `wind_v_m_s`
@@ -163,7 +163,7 @@ def _compare(device, host, bound, label, *, wind_bound=None, names=None):
     """`names` defaults to the COLUMN vocabulary, which is what a default
     `evaluate` computes.
 
-    THE BREAKAGE THIS PREVENTS, measured on node-2 (RTX 5090, Linux,
+    THE BREAKAGE THIS PREVENTS, measured on a Linux host (RTX 5090,
     Python 3.14.4) 2026-09-10.  This walked all of `OPERATOR_VARIABLES`
     over a call that had asked for none of `refractivity_n`:
     `evaluate(variables=None)` means `COLUMN_VARIABLES`, and that set is
@@ -229,7 +229,7 @@ def test_the_refractivity_family_is_compared_on_its_own_call(twins):
 
     The tangent heights come from `_column_height_span`, the operator's
     own hypsometric arithmetic on this model's own ladder.  MEASURED on
-    node-2 2026-09-10: the shipped smoke case's four full levels put the
+    an RTX 5090 host 2026-09-10: the shipped smoke case's four full levels put the
     column between about 2.0 km and 34.5 km at a 1000 hPa surface, and the
     fixture's original 0 to 1500 m elevations were all below its lowest
     level, so every value was NaN by construction.

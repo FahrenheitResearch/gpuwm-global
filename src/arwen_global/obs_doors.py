@@ -89,17 +89,24 @@ _ROWS: dict[str, tuple[str, str, str]] = {
         'gpuwm-obs.wis2-probe.v1\tmqtt-3.1.1\tmessages\t'
         'payloads\tcoverage\tlatency'
     ),
-    # The two the engine also has a row for.  These markers are the ones the
-    # engine's own table carries on the branch this package was carved from,
-    # and each is the engine 2.7 marker plus the tokens the subcommands this
-    # package calls declare.  That is what makes the difference visible to a
-    # probe instead of to a user, ten minutes into a cycle.
+    # The two the engine also has a row for.  From 2.8.0 on each marker here
+    # is the engine's own line, byte for byte: the engine took this
+    # package's `networks`, `table` and `awc` (rw_asos) and `bt`,
+    # `colocate`, `superobs`, `quicklook` and `forward` (rw_goes) onto its
+    # line, so one binary built from the engine's commit answers both
+    # tables.  The rw_asos line moved to the engine's v2 surface record,
+    # which adds `observation_time` and the one-minute route; the engine's
+    # observation readers accept v1 and v2 records alike.  A binary built
+    # before that (the 0.1.1 bundle's) prints the v1 line and is refused by
+    # the probe here rather than failing ten minutes into a cycle.
     'rw_asos': (
         'GPUWM_RW_ASOS',
         'the surface-station front door',
-        'gpuwm-obs.asos-surface.v1\tstations\treports\tprovenance\t'
-        'temperature_2m\tdewpoint_2m\twind_speed_10m\tmslp\tK\tm s-1\tPa\t'
-        'gpuwm-obs.asos-table.v1\tgpuwm-obs.table.v2'
+        'gpuwm-obs.asos-surface.v2\tstations\treports\tprovenance\t'
+        'observation_time\ttemperature_2m\tdewpoint_2m\twind_speed_10m\t'
+        'mslp\tK\tm s-1\tPa\t'
+        'gpuwm-obs.asos-table.v1\tgpuwm-obs.table.v2\t'
+        'iem-asos-1min'
     ),
     'rw_goes': (
         'GPUWM_RW_GOES',

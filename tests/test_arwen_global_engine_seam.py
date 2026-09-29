@@ -4,7 +4,7 @@
 not: the engine files it still reaches, pinned by path, size and SHA-256 at
 the engine version the decision to leave them was measured against.
 
-WHY THIS FILE EXISTS.  A pip resolution inside `gpuwm>=2.7.0,<2.8` can put a
+WHY THIS FILE EXISTS.  A pip resolution inside `gpuwm>=2.8.0,<2.9` can put a
 different engine underneath and print nothing about a file's contents.
 `gpuwm/core/constants.py` alone supplies CUDA_DEFINES to the preamble of every
 carried kernel, so moving it moves every kernel's assembled source, its
@@ -91,7 +91,7 @@ _PINNED = load_manifest()["engine"]["version"]
 
 #: THE VERSION THIS TABLE CAN SPEAK ABOUT, and the rule is the one
 #: `tests/test_engine_divergence.py` already follows.  Every row is a SHA-256
-#: read off one published engine, and the declared range `gpuwm>=2.7.0,<2.8`
+#: read off one published engine, and the declared range `gpuwm>=2.8.0,<2.9`
 #: legitimately resolves others: 2.7.3 moved eight of these files against
 #: 2.7.0 with nothing the package reaches changing behaviour.  A hash
 #: mismatch there is a fact about somebody else's release, not a defect in

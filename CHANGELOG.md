@@ -1,5 +1,142 @@
 # Changelog
 
+## 0.1.2
+
+### Fixed
+
+- The door bundles carry a licence notice.  Each zip now holds
+  `THIRD-PARTY-LICENSES.txt`, generated from the engine workspace's
+  `Cargo.lock` for that platform: every crate statically linked into the
+  binaries with its licence expression, and every distinct licence and notice
+  text those crates ship.  The 0.1.1 zips carried the binaries alone, while
+  the MIT, BSD, Apache-2.0, ISC and Unicode licences of the crates inside them
+  each ask for their notice to travel with a binary copy.  `fetch-doors`
+  stages the notice beside the doors, and `tools/build_door_bundle.py pin`
+  refuses a bundle without one.
+- The door binaries carry no build-machine paths.  They are built with
+  `--remap-path-prefix` for the engine checkout, the Cargo home and the rustup
+  home.  The 0.1.1 binaries embedded about 1,100 paths under the Linux build
+  host's home directory and about 1,250 under the Windows one.
+  `tools/build_door_bundle.py scan` reads every member with its NUL bytes
+  stripped, and `pin` refuses a bundle it finds any such path in.
+- The door bundles are built from public source.  `bridges.yml` builds them
+  from the engine's public `v2.8.0` tag, the first public engine release to
+  carry the `rw-atms` crate, the five global observation binaries and the
+  `rw_asos` and `rw_goes` subcommands this package calls.  Through 0.1.1 they
+  were built from a revision no public repository carried, so nobody could
+  rebuild them.  `rw_atms` keeps its source-revision stamp in that build, and
+  the release no longer exempts it.
+- No shipped file names a private machine or a private case.  Six comment
+  lines in the carried physics (`core/gf.py`, `kernels/gf.cu`,
+  `kernels/ntiedtke.cu`, `kernels/ysu.cu`), the static covariance receipt and
+  its npz twin, and the ABI fast-model table named the machines figures were
+  measured on; eight docstring lines in `core/landuse.py`, `core/npref.py`,
+  `core/physics.py` and `core/rrtmgp.py` named one private case.  They now
+  name the card, the platform or "the reference configuration".  The carried
+  files are rewritten by a rule in `tools/resync_from_owner.py`, not by hand,
+  and `tests/test_no_provenance.py` asserts both over everything that ships.
+  The three kernels change comment text only: their `source_sha256` and the
+  kernel-set digest a receipt records move, and no compiled image does.
+- `NOTICE` credits Recommendation ITU-R P.676-13, whose oxygen and water
+  vapour line tables `arwen_global/microwave/absorption.py` carries, and says
+  what of CRTM ships: a regression fitted to CRTM v3.1.1 optical depths, the
+  digests of the coefficient files that reference read, and infrared land
+  emissivities averaged from CRTM's IGBP table.  CRTM v3.1.1 is dedicated to
+  the public domain under CC0 1.0.
+- `tools/crtm_reference/`, the CRTM reference driver the ABI operator page,
+  the `abi-reference` help and the fast-model table all name, ships.  It is
+  this project's Fortran calling an installed CRTM, with no CRTM code in it.
+- RRTMGP no longer reads the RFMIP clear-sky input file.  Every radiation
+  construction opened `rfmip-clear-sky-inputs.nc` from the engine's
+  `gpuwm-data` companion for 136 numbers: sixteen trace-gas global means and
+  the median layer pressure and ozone profile.  The engine stops shipping
+  that file at 2.8.0, which would have made the first radiation call refuse
+  on that companion.  The carried driver now reads the engine's own derived
+  table through `gpuwm.core.rrtmgp.load_trace_climatology`, pinned by
+  SHA-256, and the RFMIP clear-sky oracle fetches its input through the
+  engine's pinned upstream route.  The radiation input is unchanged: every
+  value equals what the replaced code computed from the NetCDF, bit for bit.
+- The Morrison microphysics kernel takes the four engine fixes of
+  2026-09-12: vapor returned by the final condensate cleanup is stored
+  instead of dropped, cloud freezing is evaluated in log space so an ordinary
+  cloud slope no longer overflows and erases it, exceptional rain freezing
+  stays within the joint donor budget, and an in-range number moment is no
+  longer rebuilt during slope diagnosis.
+- A land cell over the water soil category keeps its land use as its
+  vegetation and takes silty clay loam, as real.exe matches it, instead of
+  becoming mixed forest in the final reconciliation (engine fix of
+  2026-09-27).  Glacier cells still take the ice soil.
+- The `rw_asos` door row carries the engine's 2.8 `--abi` line (the v2
+  surface record with the observation time and the one-minute route), so one
+  binary built from the engine's commit answers both tables.
+- Every global statics build on the 2.8 engine raised AttributeError on its
+  first sector: the static builder asks the grid for a sampling handle the
+  rows grid did not answer.  It does now.
+- The statics cache sidecar recorded the build machine's hostname, and two
+  probe tools did the same in their reports.  They record the kind of
+  machine (system and architecture) instead.
+- Six statics tests never ran against a published engine.  The suite's
+  probe for the static builder's `rows` grid kind called the bridge with a
+  signature and a spec the 2.8 engine does not accept, and read the error as
+  "no rows kind".  The probe now sends this package's own rows spec, and the
+  six run: the Gaussian-grid build through the crate and the statics door
+  that builds the cache a run reads among them.
+
+### Changed
+
+- The engine range is `gpuwm>=2.8.0,<2.9` and `gpuwm-data>=2.8.0,<2.9`.
+  The floor names a breakage: the trace-gas loader, the RFMIP fetch route,
+  the v2 `rw_asos` line and the static builder's `rows` grid kind are all
+  first in 2.8.0.
+- The engine seam is re-pinned at the published `gpuwm 2.8.0`: 47 of 47
+  files, read off the PyPI wheel and byte-identical in the Windows wheel,
+  the pure wheel and the public `v2.8.0` tag.  Eighteen of the 46 files
+  pinned at 2.7.3 moved by 2.8.0, and `gpuwm/core/rfmip_upstream.py` joins
+  the table because the RFMIP oracle fetches through it.  `tools/measure_boundary.py` reads 234 symbols
+  across 67 modules, with no gap among the 194 a CPU host can resolve.
+- The door bundles are built from the engine's public `v2.8.0` tag
+  (`0164ae0f2d70`), and `door-pins.json` pins them at release `v0.1.2`.  The
+  Windows doors are built for `x86_64-pc-windows-gnu`, and
+  `tools/build_door_bundle.py pack --triple` resolves that bundle's licence
+  notice for the target it was built for and names that target in the
+  notice.
+- The run manifest carries a `physics` block, as the engine's does from
+  2.8.0.
+- The carried-physics divergence rows are re-baselined on the published
+  `gpuwm 2.8.0`: 428 hunks, every one classified in
+  `docs/CARRIED-PHYSICS-DIVERGENCE.md`.
+
+### Measured
+
+- The ten-step acceptance 0.1.1 owed, taken.  The T255 L40 native ten-step
+  gate (semi-Lagrangian core, 300 s, the full native physics suite, GDAS
+  2026-09-01 00Z, one latitude band) ran once from the model source tree at
+  the revision `SOURCE.md` names and once from this package installed against
+  published `gpuwm 2.7.3`, on one RTX 4090, from one config file.  Every
+  member of every checkpoint is byte-identical: 42 arrays at step 0 and 132
+  at steps 5 and 10 (306 arrays, 309 members with the three metadata blobs),
+  and the three checkpoints' `self_sha256` agree.  Config hash `e76cca951a57`;
+  kernel-set digest in the package receipt `c1fd4a73a864`, the new value the
+  comment-only kernel edits above produce (0.1.1: `9e256633abc3`).
+  Measured 2026-09-26.
+- The trace-gas table swap changes no forecast number.  The same ten-step
+  config ran before and after the swap on one RTX 4090, against `gpuwm
+  2.7.3`, with RRTMGP in the physics suite.  All three checkpoint files
+  are byte-identical, 309 members in all, including the surface and
+  top-of-atmosphere radiative fluxes, the heating rates, OLR and 2 m
+  temperature.  Measured 2026-09-26.
+- On the published engine, from the installed wheel.  `gpuwm-global go` on
+  the shipped T255 L40 native semi-Lagrangian semi-implicit experiment, cut
+  to 6 h (72 steps of 300 s), from the GDAS analysis of 2026-09-01 00Z, on
+  one RTX 5090 against `gpuwm 2.8.0`, `gpuwm-data 2.8.0` and
+  `cupy-cuda13x` from PyPI: receipt pass, all eight physics modules from
+  this package, the engine seam proven 47 of 47, maximum wind 91.536 m/s
+  and total water 710.659936 kg/m2 at 6 h, 12 pictures.  Statics built
+  fresh by the engine's static builder on the rows grid give the same
+  numbers as the cached statics.  The CPU test selection from the installed
+  wheel on Python 3.12 against the same engine: 1,906 passed, 79 skipped,
+  none failed.  Measured 2026-09-29.
+
 ## 0.1.1
 
 ### New

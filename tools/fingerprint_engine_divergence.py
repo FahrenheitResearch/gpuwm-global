@@ -218,6 +218,7 @@ def rewire_engine_text(carried_rel: str, text: str) -> str:
         for pattern, replacement in carve.PROSE_DASH:
             text = re.sub(pattern, replacement, text)
     for named, old_lines, new_lines in (carve.CORE_EXACT
+                                        + carve.CORE_TRACE_CLIMATOLOGY
                                         + carve.KERNEL_NOTICE_SCOPE):
         if carried_rel == named:
             text = text.replace("\n".join(old_lines), "\n".join(new_lines))

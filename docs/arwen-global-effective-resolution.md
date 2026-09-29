@@ -147,7 +147,7 @@ sharpness a reader compares against the shape table below. The retired
 instrument returned the grid-scale bin when nothing resolved and read it
 on 20/20 no-cutoff controls. This one, before the support and
 confirmation gates, read 0/60 GLOBAL no-cutoff controls as resolved but
-17/120 HEMISPHERIC ones (the adversarial calibration's finding F1, below);
+17/120 HEMISPHERIC ones (F1 of the adversarial calibration, below);
 with the gates it reads 0/120 and 0/600.
 
 **Gridded products** (GFS, GDAS, IFS, AIFS regular lat-lon files; door

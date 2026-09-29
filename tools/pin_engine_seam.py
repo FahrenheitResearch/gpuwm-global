@@ -129,6 +129,10 @@ SEAM: tuple[tuple[str, str], ...] = (
      "morrison.apply, which this package never calls"),
     ("gpuwm/core/refl.py",
      "the reflectivity constants carried npref's mirrors read"),
+    ("gpuwm/core/rfmip_upstream.py",
+     "fetch_rfmip, called by carried rrtmgp's RFMIP clear-sky oracle: the "
+     "upstream commit, URL and SHA-256 the input file is fetched and verified "
+     "against, since the 2.8.0 companion ships no RFMIP file"),
     ("gpuwm/core/terrain.py",
      "bell_hill, reached only from carried npref's reference-case builders"),
     ("gpuwm/core/wdm6_constants.py",

@@ -183,7 +183,9 @@ licenses/LICENSE-RTE-RRTMGP-BSD-3-Clause.txt.
 The k-distribution DATA is a different work with an earlier copyright
 line. It is not in this distribution: it arrives with the engine's
 companion data package, which carries its own copy of that licence beside
-the files.
+the files. So does the trace-gas and ozone climatology RRTMGP reads, the
+136 numbers derived from the RFMIP clear-sky inputs, with its CC-BY-SA-4.0
+notice; no RFMIP file is in this distribution.
 
 --------------------------------------------------------------------------
 
@@ -263,10 +265,43 @@ CRTM (Community Radiative Transfer Model)
 
 The satellite radiance legs of this model are verified against the Community
 Radiative Transfer Model, developed by the Joint Center for Satellite Data
-Assimilation (JCSDA). CRTM is a reference this model is scored against, not
-a component of it: no CRTM source, table or coefficient file is transcribed
-or redistributed here. The tools that drive a CRTM installation expect the
-reader to obtain it from JCSDA under its own terms.
+Assimilation (JCSDA). No CRTM source file and no CRTM coefficient file is
+copied into this distribution. What does ship is derived from CRTM's output
+and its tables, and it is stated here so nobody has to infer it:
+
+  - arwen_global/radiance_tables/abi-fast-model.json is a regression fitted
+    to layer optical depths CRTM v3.1.1 computed on this model's own
+    analysed columns. It records the CRTM version and commit, the build, the
+    URL, size and SHA-256 of the coefficient archive the reference read, and
+    the size and SHA-256 of each coefficient file used (digests only, not
+    the files). Its per-class infrared land emissivities are means taken
+    from CRTM's IGBP.IRland.EmisCoeff.bin table for the model's land classes.
+  - tools/crtm_reference/abi_crtm_reference.f90 is this project's driver
+    that calls an installed CRTM library through CRTM's public module
+    interface. It contains no CRTM code; the reader builds CRTM from JCSDA.
+
+CRTM v3.1.1 (JCSDA's public CRTMv3 repository, tag v3.1.1) carries a CC0 1.0
+Universal public-domain dedication in its LICENSE file, read online on
+2026-09-26: "the author(s) have dedicated all copyright and related and
+neighboring rights to this software to the public domain worldwide. This
+software is distributed without any warranty." CC0 places no condition on
+this use; the credit above is given because it is owed as a courtesy and as
+provenance, not because the dedication asks for it.
+
+--------------------------------------------------------------------------
+
+ITU-R Recommendation P.676-13
+
+The clear-air microwave absorption in arwen_global/microwave/absorption.py
+is Annex 1 of Recommendation ITU-R P.676-13 (08/2022), "Attenuation by
+atmospheric gases and related effects", International Telecommunication
+Union, Geneva. The oxygen (44 lines) and water-vapour (35 lines)
+spectroscopic line tables in that module are Tables 1 and 2 of the
+Recommendation, transcribed from the edition published at itu.int; the
+module's docstring records the SHA-256 of the documents they were read
+from. The Recommendation text is the ITU's; this distribution carries the
+numerical line parameters and an implementation written from the published
+formulation, and names the source here and in the module.
 
 --------------------------------------------------------------------------
 

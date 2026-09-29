@@ -349,8 +349,8 @@ document is built, against the **installed** engine's authority table first
 and this package's carried copies second, and `mapping.origin` says which of
 the two answered (`engine` or `package`). So the same package answers
 differently on two engines, and `maturity.runnable` follows it. Against
-`gpuwm 2.7.0` every row reads `origin: "package"` (measured on the Windows
-desktop, 2026-09-10): the engine's table carries none of the six, the engine
+`gpuwm 2.7.0` and `gpuwm 2.8.0` every row reads `origin: "package"` (measured
+on the Windows desktop, 2026-09-10 and 2026-09-29): the engine's table carries none of the six, the engine
 is still asked first for every row, and its copy wins the day it publishes
 one. A row both tables carry with different bytes is a refusal carried in
 `mapping.refusal`, naming both digests, rather than a silent choice between

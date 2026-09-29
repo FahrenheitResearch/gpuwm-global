@@ -85,7 +85,7 @@ def engine_seam_verdict() -> dict[str, object]:
     carried module that integrated, which answers "whose physics ran" for the
     half of the physics this package carries.  It cannot see the other half.
     `gpuwm/core/constants.py` stays on the engine and supplies CUDA_DEFINES to
-    the preamble of every carried kernel, so a run against a 2.7.x that moved
+    the preamble of every carried kernel, so a run against a 2.8.x that moved
     it produces a receipt whose module hashes are identical to yesterday's
     while every compiled kernel's assembled source, its digest and its
     floating-point contraction have moved.  The same is true of the twelve

@@ -9,9 +9,8 @@ a file that says, for each place the two differ, what differs, why, and what
 should happen the next time one side changes that code.
 
 This is that file. `SOURCE.md` says which revision of the model's own source
-tree the package was cut from. `src/arwen_global/data/engine-seam.json` pins
-the engine files the carried code still reaches. Neither of those says which
-differences are on purpose, which is what this one is for.
+tree the package was cut from. It does not say which differences are on
+purpose, which is what this one is for.
 
 ## How to use it
 
@@ -70,7 +69,7 @@ over each hunk's engine-side lines and another over its carried-side lines. All
 35 carried files are measured that way, whatever their suffix; a pair either
 side of which does not decode as text has no lines to diff, so it is compared
 byte for byte instead and a difference there is one whole-file hunk.
-`src/arwen_global/data/engine-divergence.json` carries all 358 of them with the
+`src/arwen_global/data/engine-divergence.json` carries all 428 of them with the
 class and decision of the row they belong to, and the engine line keys its own
 change lists by the engine-side hash, so the same difference has the same name
 on both sides. `tools/fingerprint_engine_divergence.py` documents the
@@ -78,12 +77,16 @@ normalisation exactly and is what recomputes it.
 
 ## What this was measured against
 
-* **Engine:** the published `gpuwm 2.7.3`, dated 2026-09-12, which is what
-  `pip` resolves inside the range this package declares (`gpuwm>=2.7.0,<2.8`).
-  2.7.0, 2.7.1 and 2.7.2 are byte-identical to it in every carried file except
-  `core/rrtmgp.py`, `core/physics.py`, `core/physics_inventory.py` and the
-  kernel loader, which 2.7.3 moved. Rows on the other files therefore read the
-  same against any `2.7.x`.
+* **Engine:** the published `gpuwm 2.8.0` from PyPI, whose carried files
+  are byte-identical to the public `v2.8.0` tag (commit `0164ae0f2d70`).
+  This package declares `gpuwm>=2.8.0,<2.9`, and the two comparisons in
+  `tests/test_engine_divergence.py` run against 2.8.0 and skip, naming both
+  versions, on any other. The re-baseline from 2.7.3 carried 361 hunks
+  forward unchanged, dropped 14 whose text moved, and read 66 new ones, all
+  measured on the engine head of 2026-09-28; the tag then moved two carried
+  files again (`RRTMGP-16` and `INVENTORY-1`, four hunks read and three
+  dropped). Every new hunk is classified below, and `RRTMGP-20` stopped
+  being a difference in substance (the engine now reads the same table).
 * **This package:** the model source revision `a2a674a2757c2dfc70fc9a2b12b4412ba3b18fcd`
   of 2026-09-12, which is what `SOURCE.md` records and what `pyproject.toml`
   states beside the version.
@@ -99,10 +102,10 @@ unchanged carry their classification forward while the ones that moved come
 back as `unknown` and as failures naming themselves. Re-read those, re-check
 the rows the same commit touched, and update the three lists at the end. The gate's two comparison nodes run
 against the engine version the rows name and skip, naming both versions, on
-any other, because four of these files moved between versions that are all
-inside the declared range and a failure there would be saying nothing about
-this package. The nodes that hold the rows and this page to each other need
-no engine and always run.
+any other. In the unified distribution the engine and this package come from
+one commit, so the rows are re-baselined whenever the engine moves under them
+and the two nodes run. The nodes that hold the rows and this page to each
+other need no engine and always run.
 
 ## What does not differ at all
 
@@ -145,29 +148,32 @@ notice that travels with them.
 |---|---|---|---|---|---|---|---|
 | `RRTMGP-1` | 9-9 | 9-9 | equal to engine | no-behaviour | package cd407ae, 2026-09-12 | nothing | **none** |
 | `RRTMGP-2` | 18-34 | after 17 | not present | global-fix | package 78cad51, 2026-09-12 | nothing | **offer** |
-| `RRTMGP-3` | after 61, 1974-1974, 2084-2084, 3194-3194, 5037-5037 | 44-45, 1582-1582, 1692-1693, 2779-2780, 4338-4339 | equal to carried | engine-fix | engine 86bd301f5, 2026-09-03 | nothing to any flux | **pull** |
-| `RRTMGP-4` | after 85, after 96 | 70-101, 113-118 | equal to carried | engine-fix | engine ee3d2bac0 and 8279bdeeb, both 2026-09-10 | nothing | **pull** |
-| `RRTMGP-5` | after 120, after 188, after 190, after 314, 458-458, 467-467, 2160-2181, 2349-2352, 2356-2356, 3568-3570 | 143-180, 249-258, 261-262, 387-413, 540-541, 550-550, 1767-1780, 1943-2015, 2019-2019, 3085-3104 | equal to carried | engine-fix | engine 4a1ed7f3c, 2026-09-10 | nothing at this package's settings | **none** |
-| `RRTMGP-6` | 393-443 | 492-501 | equal to carried | engine-fix | engine 6a0713146, 2026-09-05, and 4a1ed7f3c, 2026-09-10 | nothing | **pull in part** |
-| `RRTMGP-7` | 390-391 | 489-490 | equal to carried | no-behaviour | engine 71f2b7cd1, 2026-09-10 | nothing | **none** |
-| `RRTMGP-8` | after 452 | 511-534 | equal to carried | engine-fix | engine 9d7e57f27, 2026-09-10 | nothing, and it raises at import | **refuse** |
-| `RRTMGP-9` | 1708-1715, 1758-1777, after 1966, after 3179 | 1329-1331, 1374-1374, 1564-1574, 2756-2764 | equal to carried | engine-fix | engine a679e477b, 2026-09-05 | nothing for this package | **pull** |
-| `RRTMGP-10` | 1079-1088, 1094-1540, 2113-2115, 2189-2190, 2224-2224, 2226-2227, 3131-3139, 3150-3154 | 1156-1156, after 1161, 1722-1722, after 1787, 1821-1821, 1823-1823, after 2715, after 2725 | equal to engine | global-fix | owner 4bf9f3e94, eaa150a42 and 873d73d3b, 2026-09-04; f6999e233, 2026-09-05; 6464f501b, 2026-09-06 | large for the microphysics this model runs | **offer** |
-| `RRTMGP-11` | 2270-2276 | 1866-1870 | equal to engine | deliberate | owner eaa150a42, 2026-09-04 | nothing relative to the engine | **refuse** |
-| `RRTMGP-12` | 2388-2392, 2405-2430, 2432-2433 | after 2050, after 2062, 2064-2065 | equal to engine | global-fix | owner 984c1cc61, 2026-09-04 | large where transport outruns the microphysics call | **offer** |
-| `RRTMGP-13` | 2435-2439, 2441-2455 | 2067-2068, 2070-2076 | equal to engine | global-fix | owner 4bf9f3e94 and 9cfc20654, both 2026-09-04 | large for the frozen size | **offer** |
-| `RRTMGP-14` | after 3159, after 3165, 3403-3404, 3407-3407, 3793-3795, 3925-3927 | 2731-2732, 2739-2741, 2989-2992, 2995-2995, 3246-3250, 3380-3382 | equal to carried | engine-fix | engine 267900003, 2026-09-04 | no flux moves; one refusal boundary tightens by a layer | **pull** |
-| `RRTMGP-15` | 3419-3434 | 3007-3012 | equal to engine | deliberate | owner 42c37383c, 2026-08-31, restructured by eb34dfa19, 2026-09-05 | at most 1.77 percent of a 1 to 2 hPa layer's emission, where it binds | **offer** |
-| `RRTMGP-16` | 52-52, 692-697, 701-701, 2936-2964, after 2980, 3009-3013, 3021-3022, after 3023, 3029-3033, 3040-3049, 3439-3440, 3446-3451, 3453-3512, 3527-3537, 3549-3550, after 3566, 3583-3586, 3596-3597, 3606-3609, after 3621, 3624-3700, 3709-3709, 3711-3780, 4047-4143 | after 34, after 774, 778-778, after 2556, 2573-2573, 2602-2612, after 2619, 2621-2622, 2628-2628, after 2634, 3017-3017, 3023-3024, 3026-3033, 3048-3049, 3061-3065, 3082-3083, 3117-3118, 3128-3129, 3138-3144, 3157-3158, 3161-3186, 3195-3209, 3211-3233, after 3503 | equal to engine | adaptation | owner eb34dfa19, 2026-09-05 | nothing | **none** |
-| `RRTMGP-17` | 4257-4276, 4278-4299, 4304-4306, 4308-4308, 4314-4341, 4344-4345 | after 3616, 3618-3619, 3624-3625, 3627-3627, 3633-3647, 3650-3651 | equal to engine | adaptation | owner eb34dfa19, 2026-09-05 | nothing | **none** |
-| `RRTMGP-18` | 4024-4025, 4354-4359 | 3479-3482, 3660-3660 | equal to engine | global-fix | owner 4bf9f3e94, 2026-09-04 | nothing inside a scheme | **offer** |
-| `RRTMGP-19` | 5148-5155 | after 4449 | equal to engine | no-behaviour | owner 4bf9f3e94, 9cfc20654 and 984c1cc61, 2026-09-04; 6464f501b, 2026-09-06 | nothing | **none** |
+| `RRTMGP-3` | after 61, 1974-1974, 2084-2084, 5039-5039 | 44-45, 1603-1603, 1748-1749, 4560-4560 | equal to carried | engine-fix | engine 86bd301f5, 2026-09-03 | nothing to any flux | **pull** |
+| `RRTMGP-4` | 75-75, after 85, after 96 | 60-61, 72-103, 115-120 | equal to carried | engine-fix | engine ee3d2bac0 and 8279bdeeb, both 2026-09-10 | nothing | **pull** |
+| `RRTMGP-5` | after 120, after 188, after 190, after 314, 458-458, 467-467, 2160-2181, 2349-2352, 2356-2356, 3567-3569 | 145-182, 251-260, 263-264, 389-415, 542-543, 552-552, 1823-1836, 1999-2071, 2075-2075, 3266-3285 | equal to carried | engine-fix | engine 4a1ed7f3c, 2026-09-10 | nothing at this package's settings | **none** |
+| `RRTMGP-6` | 393-443 | 494-503 | equal to carried | engine-fix | engine 6a0713146, 2026-09-05, and 4a1ed7f3c, 2026-09-10 | nothing | **pull in part** |
+| `RRTMGP-7` | 390-391 | 491-492 | equal to carried | no-behaviour | engine 71f2b7cd1, 2026-09-10 | nothing | **none** |
+| `RRTMGP-8` | after 452 | 513-536 | equal to carried | engine-fix | engine 9d7e57f27, 2026-09-10 | nothing, and it raises at import | **refuse** |
+| `RRTMGP-9` | 1708-1715, 1758-1777, after 1966, after 3181, after 5164 | 1331-1333, 1376-1376, 1566-1595, 2943-2951, 4679-4679 | equal to carried | engine-fix | engine a679e477b, 2026-09-05 | nothing for this package | **pull** |
+| `RRTMGP-10` | 1079-1088, 1094-1540, 2113-2115, 2189-2190, 2224-2224, 2226-2227, 3133-3141, 3152-3156 | 1158-1158, after 1163, 1778-1778, after 1843, 1877-1877, 1879-1879, after 2902, after 2912 | equal to engine | global-fix | owner 4bf9f3e94, eaa150a42 and 873d73d3b, 2026-09-04; f6999e233, 2026-09-05; 6464f501b, 2026-09-06 | large for the microphysics this model runs | **offer** |
+| `RRTMGP-11` | 2270-2276 | 1922-1926 | equal to engine | deliberate | owner eaa150a42, 2026-09-04 | nothing relative to the engine | **refuse** |
+| `RRTMGP-12` | 2388-2392, 2405-2430, 2432-2433 | after 2106, after 2118, 2120-2121 | equal to engine | global-fix | owner 984c1cc61, 2026-09-04 | large where transport outruns the microphysics call | **offer** |
+| `RRTMGP-13` | 2435-2439, 2441-2455 | 2123-2124, 2126-2132 | equal to engine | global-fix | owner 4bf9f3e94 and 9cfc20654, both 2026-09-04 | large for the frozen size | **offer** |
+| `RRTMGP-14` | after 3161, after 3167, 3402-3403, 3406-3406, 3792-3794, 3924-3926 | 2918-2919, 2926-2928, 3170-3173, 3176-3176, 3465-3469, 3599-3601 | equal to carried | engine-fix | engine 267900003, 2026-09-04 | no flux moves; one refusal boundary tightens by a layer | **pull** |
+| `RRTMGP-15` | 3418-3433 | 3188-3193 | equal to engine | deliberate | owner 42c37383c, 2026-08-31, restructured by eb34dfa19, 2026-09-05 | at most 1.77 percent of a 1 to 2 hPa layer's emission, where it binds | **offer** |
+| `RRTMGP-16` | 52-52, 692-697, 701-701, 2936-2964, after 2980, 3009-3013, 3021-3022, after 3023, 3029-3033, 3040-3049, 3438-3439, 3445-3450, 3452-3511, 3526-3536, 3548-3549, after 3565, 3582-3585, 3595-3596, 3605-3608, after 3620, 3623-3699, 3708-3708, 3710-3779, 4046-4142 | after 34, after 776, 780-780, after 2741, 2758-2758, 2787-2797, after 2804, 2806-2807, 2813-2813, after 2819, 3198-3198, 3204-3205, 3207-3214, 3229-3230, 3242-3246, 3263-3264, 3298-3299, 3309-3310, 3319-3325, 3338-3339, 3342-3405, 3414-3428, 3430-3452, after 3722 | equal to engine | adaptation | owner eb34dfa19, 2026-09-05 | nothing | **none** |
+| `RRTMGP-17` | 4256-4275, 4277-4298, 4303-4305, 4307-4307, 4313-4340, 4343-4344 | after 3835, 3837-3838, 3843-3844, 3846-3846, 3852-3866, 3869-3870 | equal to engine | adaptation | owner eb34dfa19, 2026-09-05 | nothing | **none** |
+| `RRTMGP-18` | 4023-4024, 4353-4358 | 3698-3701, 3879-3879 | equal to engine | global-fix | owner 4bf9f3e94, 2026-09-04 | nothing inside a scheme | **offer** |
+| `RRTMGP-19` | 5156-5163 | after 4677 | equal to engine | no-behaviour | owner 4bf9f3e94, 9cfc20654 and 984c1cc61, 2026-09-04; 6464f501b, 2026-09-06 | nothing | **none** |
+| `RRTMGP-20` | after 2077, 3124-3125, 3196-3197, 5085-5085, 5154-5154, after 5165 | 1707-1741, 2894-2895, after 2965, 4606-4606, 4675-4676, 4681-4681 | neither | adaptation | engine 3ade28599, 2026-09-25; package 2026-09-29, on the move to the 2.8 engine | nothing: every value bit-identical | **none** |
+| `RRTMGP-21` | after 71, after 2539 | 56-56, 2217-2345 | equal to carried | engine-fix | engine ed582aa45 and 74cd41bfa, both 2026-09-27 | nothing: this model's microphysics has no coupling in the radius table | **none** |
+| `RRTMGP-22` | 4730-4730 | 4251-4251 | equal to carried | no-behaviour | engine 9a2f350e7, 2026-09-14 | nothing, comment only | **none** |
 
 **`RRTMGP-1`.** Both copies now open with the same third-party notice. One word inside it differs, because this copy cites the reference commit from its docstring and the engine's cites it from its header. Take an engine rewording of the notice whenever it is convenient.
 
 **`RRTMGP-2`.** The McICA subcolumn generator this radiation is driven with is WRF's RRTMG generator, which is AER's work under AER's own grant, not rte-rrtmgp's. The engine's copy of this file files all six rrtmgp_ sources under RTE+RRTMGP on the strength of the filename prefix, so it transcribes an AER work while naming no AER text. The paragraph added here is the correction, and it applies to the engine's copy unchanged.
 
-**`RRTMGP-3`.** The shipped HDF5 is not thread safe, so every netCDF reader in the process takes one lock. This copy opens all four coefficient files outside it and carries no import of that lock's helper at all. The engine's record is three of eight concurrent runs killed at nine frames of fourteen. Two conditions ride with the pull: that lock's helper is an engine module this package does not carry, so it becomes a new entry in the engine seam manifest, and it exists at the floor this package declares, so the pin does not move.
+**`RRTMGP-3`.** The shipped HDF5 is not thread safe, so every netCDF reader in the process takes one lock. This copy opens all four coefficient files outside it and carries no import of that lock's helper at all. The engine's record is three of eight concurrent runs killed at nine frames of fourteen. One condition rides with the pull: that lock's helper is an engine module this package does not carry, and it exists at the floor this package declares.
 
 **`RRTMGP-4`.** The engine declared, in the module that opens them, the five NetCDF members radiation loads, and made the opener refuse a filename outside the set. This copy opens exactly those five, so the check can never fire on today's load path; what it buys is that a sixth member cannot be added to the load path without joining a set something checks.
 
@@ -179,7 +185,7 @@ notice that travels with them.
 
 **`RRTMGP-8`.** A module-scope check that holds this module's two scheme tables equal to the engine registry's rows. Two reasons to refuse it, either sufficient. It imports a name the pinned engine does not define, and the call is at module scope while the global model constructs this radiation on every run, so a carried copy would make every forecast die at import. And on a newer engine it would fail by design, because by the two rows above these tables deliberately lack one row and deliberately keep one exclusion. Revisit only if the engine pin moves forward and this package publishes a registry of its own to be held against.
 
-**`RRTMGP-9`.** The engine moved the gas names and the override validator into a shared module and additionally refuses an override naming a gas the SELECTED coefficient tables do not carry. The only override this package ever passes names a gas both tables carry, so the added refusal never fires; what it converts is a silently ignored override into a refusal. Like the lock above it adds an engine module to the seam manifest.
+**`RRTMGP-9`.** The engine moved the gas names and the override validator into a shared module and additionally refuses an override naming a gas the SELECTED coefficient tables do not carry. The only override this package ever passes names a gas both tables carry, so the added refusal never fires; what it converts is a silently ignored override into a refusal. Like the lock above it reaches one more engine module, which exists at the floor this package declares. The engine also added a reader for one gas table's temperature span beside the names, for its initial-state perturbation; it rides with the move.
 
 **`RRTMGP-10`.** Above the cloud tables' upper size bound the engine clips the particle size and leaves the path alone, so a 500 micrometre snow layer is radiated as 180 micrometre ice at 2.8 times its extinction, with no record that it happened. This copy scales the in-cloud path by bound over size and sets the size to the bound, which is the extinction the geometric limit gives, and it counts what it bounded. On the control checkpoints 74 percent of ice cells carrying 91 percent of the ice path sat above the bound. The bounds are read off the loaded tables rather than written as literals, and the record carries cloud-fraction-weighted shares beside the in-cloud ones because the in-cloud share overstates the radiative weight: cells at zero cloud fraction held 18 percent of the in-cloud ice path and none of the radiation. The silent clip is a defect on both lines and the record is how anyone finds out it is binding.
 
@@ -193,13 +199,19 @@ notice that travels with them.
 
 **`RRTMGP-15`.** A 1 hPa model top reaches polar-night air below the k-distribution's own temperature domain, and the alternative to bounding is a refusal in the middle of a forecast. Layer and interface temperatures in the band between the garbage threshold and the table floor are fed to the tables at the floor; the prognostic state is untouched and below the garbage threshold still refuses. The trigger was measured at 159.27 K on the top interface at hour 4.3 of a run. Nothing changes above the floor, which is every column a lower model top reaches, so the engine can take it at no cost; whether it wants a floor at all is its own call rather than a defect on its side.
 
-**`RRTMGP-16`.** The driver packs its inputs and prepares its clouds one column chunk at a time, the fused validator ORs every chunk into one flag word read once, and the record's path sums reduce once over the whole grid from the chunks' terms rather than as a sum of per-chunk sums, because the latter is not the whole-grid sum's bits in a record every checkpoint carries. The one route by which chunking could have moved bits is the subcolumn generator, and it does not: it seeds per column from that column's own bottom four pressures, never from a position in the packed array, so a chunk boundary cannot change a draw. What moves is the device peak, which is why this package carries the driver at all: the whole-grid preparation was the model's peak, and a ten-step probe at the largest truncation died inside the path routine at 19.9 GiB. This is the row that makes a future engine change to the driver body conflict. Anything the engine does between packing and the solver loops has to be re-expressed per chunk here rather than merged.
+**`RRTMGP-16`.** The driver packs its inputs and prepares its clouds one column chunk at a time, the fused validator ORs every chunk into one flag word read once, and the record's path sums reduce once over the whole grid from the chunks' terms rather than as a sum of per-chunk sums, because the latter is not the whole-grid sum's bits in a record every checkpoint carries. The one route by which chunking could have moved bits is the subcolumn generator, and it does not: it seeds per column from that column's own bottom four pressures, never from a position in the packed array, so a chunk boundary cannot change a draw. What moves is the device peak, which is why this package carries the driver at all: the whole-grid preparation was the model's peak, and a ten-step probe at the largest truncation died inside the path routine at 19.9 GiB. This is the row that makes a future engine change to the driver body conflict. Anything the engine does between packing and the solver loops has to be re-expressed per chunk here rather than merged. At the published 2.8.0 the engine hunk this row covers also carries a guard that skips the uniform-top reduction inside a CUDA graph capture (engine e5102999c); this model never captures a step as a graph, so the guard cannot fire here.
 
 **`RRTMGP-17`.** The heating rates form per chunk straight into their output arrays. The per-cell expression is unchanged and a column lands at the same index the whole-grid reshape produced; what goes away is the whole-grid difference, net-flux and convergence temporaries. A future engine edit to the flux-to-tendency mapping has to be applied inside the chunk loop.
 
 **`RRTMGP-18`.** Four optional fields appear on the result: the upward and downward shortwave at the top of the column, the upward longwave at the surface as the longwave solver formed it from skin temperature and band emissivities, and the column cloud cover under the maximum-random overlap the subcolumn generator samples. Nothing moves inside a scheme; what moves is what can be read out of one, and before this no top-of-atmosphere or surface radiation budget could be formed from what the result carried. The offer carries a condition: the four fields are declared on the carried physics driver's result type and the engine's ends one field earlier, so the radiation module and the result declaration travel together or neither does.
 
 **`RRTMGP-19`.** The exported-name list gained the public names of the rows above it. It follows them and is not a decision of its own.
+
+**`RRTMGP-20`.** The carried driver reads its trace-gas global means and ozone profile through the engine's table loader, `gpuwm.core.rrtmgp.load_trace_climatology`, and the RFMIP clear-sky oracle fetches its input file through the engine's pinned route, `gpuwm.core.rfmip_upstream.fetch_rfmip`, instead of opening it from the companion. Until this package moved onto the 2.8 engine it shipped its own copy of the 136-number table and a loader for it, because the engines it could install beside still opened the NetCDF; the engine made the same change at 2.8.0, so the copy went. What remains is shape: the engine defines and exports the loader and this copy imports it, and the oracle's docstring says since when the file is not shipped. Every value is the one the ten-step before/after run read on 2026-09-26, pinned by the same SHA-256.
+
+**`RRTMGP-21`.** The engine radiates a cloudy layer whose liquid radius is the microphysics' no-cloud background at WRF's cloudy-layer radius (10.5 um over water, 7.5 um over land, and the Kristjansson-Mitchell table for ice), after the boundary-layer cloud merge, for the schemes in its radius table. This model radiates one microphysics scheme, which is not in that table, and runs no boundary layer that supplies subgrid cloud, so neither branch can fire here. The engine's radius block also sits inside the region `RRTMGP-16` restructured per chunk, and that hunk is counted under `RRTMGP-16`; take it only with a scheme that has a radius coupling, and then re-express it per chunk.
+
+**`RRTMGP-22`.** One comment word from the engine's 2.7.5 word sweep. Nothing to decide.
 
 ### `core/gf.py`
 
@@ -209,6 +221,7 @@ notice that travels with them.
 | `GF-PY-2` | after 81 | 88-96 | equal to carried | deliberate | owner c9a5f2c88, 2026-09-12, keeps the block; engine c0ffc53b5, 2026-09-04, replaced its own copy | nothing on the shipped path | **refuse** |
 | `GF-PY-3` | 87-92, 94-128, 134-157 | 102-102, 104-108, 114-114 | equal to engine | adaptation | owner fca73b086, 2026-09-04; 957059111, 2090ac84a, e30f9fda6, c4a95bc61 and 58fd47304, 2026-09-05 | nothing at the shipped defaults | **refuse** |
 | `GF-PY-4` | 211-231, 267-270, 272-308, 353-354, 356-356, after 362, 365-365, 369-369, 374-393, 399-403, 407-407, 413-419, 422-433, 435-486, 489-496, 502-519, 526-528 | after 167, 203-203, after 204, 249-250, 252-252, 259-259, 262-262, 266-266, 271-289, 295-301, 305-305, 311-323, 326-332, 334-340, 343-351, 357-358, 365-366 | equal to engine | adaptation | owner a74805618, 2026-09-01 | nothing | **offer** |
+| `GF-PY-5` | 338-338 | 234-234 | equal to carried | no-behaviour | engine 9a2f350e7, 2026-09-14 | nothing, docstring only | **none** |
 
 **`GF-PY-1`.** The docstring of the cumulus driver. On the engine it dates and describes the engine's own gamma replacement; here it describes the gamma this package runs. No number moves. Refused with GF-CU-1, whose position it restates.
 
@@ -218,17 +231,19 @@ notice that travels with them.
 
 **`GF-PY-4`.** The seam packs and allocates one column chunk at a time. One thread still owns one complete column, the kernel never reads across columns, and the per-launch slices are contiguous views indexed exactly as before, so a column's answer does not depend on which chunk carried it. The engine already tiles the LAUNCH; what this adds is an outer loop that also bounds the ALLOCATION, and an absent driver lane stops materialising a full-batch zero array. Measured on the largest global batch, 1,283,202 columns by 40 levels on a 32 GB card, the whole-batch input block was 3.07 GB and the output block 3.28 GB and the output allocation failed with 32.2 GB already live; at the shipped chunk the two blocks are 0.65 GB. The engine's seam still builds the whole batch in one block and would hit the same wall at the same size, so it is worth offering back.
 
+**`GF-PY-5`.** One docstring word from the engine's 2.7.5 word sweep. Nothing to decide.
+
 ### `core/ntiedtke.py`
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
-| `NTIEDTKE-PY-1` | 1278-1278, 1281-1293, 1494-1495 | 1278-1278, after 1280, after 1451 | equal to engine | adaptation | owner 92e58c4ff, 2026-09-02 | nothing at the shipped default | **none** |
-| `NTIEDTKE-PY-2` | 1352-1366, 1392-1393 | 1339-1339, 1365-1368 | equal to engine | global-fix | owner 3d22c51cf, 2026-09-02 | nothing today, on either line | **offer** |
-| `NTIEDTKE-PY-3` | 1452-1469 | 1427-1427 | equal to engine | global-fix | owner 92e58c4ff, 2026-09-02 | real when the lane is bound, nothing when it is not | **offer** |
+| `NTIEDTKE-PY-1` | 1278-1278, 1281-1293, 1494-1495 | 1293-1293, after 1295, after 1470 | equal to engine | adaptation | owner 92e58c4ff, 2026-09-02 | nothing at the shipped default | **none** |
+| `NTIEDTKE-PY-2` | after 1087, 1352-1366, 1392-1393 | 1088-1102, 1354-1354, 1380-1387 | equal to engine | global-fix | owner 3d22c51cf, 2026-09-02; engine 5a6053b7a, 2026-09-27 | nothing, on either line | **none** |
+| `NTIEDTKE-PY-3` | 1452-1469 | 1446-1446 | equal to engine | global-fix | owner 92e58c4ff, 2026-09-02 | real when the lane is bound, nothing when it is not | **offer** |
 
 **`NTIEDTKE-PY-1`.** The cumulus workspace is bounded by one column-chunk option, whichever scheme fills the slot. With no cap the tile width is the engine's exactly, from constants equal on both sides. With a cap the domain is walked in more and narrower chunks; every stage is per column, so tendencies do not see the partition, except one launch scalar that is an OR over the chunk's columns, and the pipeline re-checks that hoist's precondition at the partition's own scope and refuses rather than passing a wrong scalar. A future engine change to the constructor signature or to the chunk walk needs these two regions re-applied, not dropped.
 
-**`NTIEDTKE-PY-2`.** The engine keys its one reusable pipeline on the column and level counts and reads the step and the closure flag only at construction, where the step becomes the kernels' reciprocal step and the mass-flux caps and the closure becomes a kernel scalar. This copy keys on all four. Neither carrier changes its step or its closure between calls, so the wider key never forces a rebuild the narrow key would not have; what it removes is a latent defect the engine still carries, where a carrier that varied its step would silently get the previous call's pipeline and form every tendency with the previous step, with nothing refusing.
+**`NTIEDTKE-PY-2`.** The engine keyed its one reusable pipeline on the column and level counts and read the step only at construction, so a carrier that varied its step silently got the previous call's step. This copy keys on the step and the closure flag as well, so a changed step builds a new pipeline. The engine closed the same defect its own way on 2026-09-27: it re-times the reused pipeline to each call's step. Both lines are now correct and nothing is owed either way, which is why the offer is withdrawn.
 
 **`NTIEDTKE-PY-3`.** The engine fills the spacing array with one scalar for every column; this copy reads the driver's per-column spacing when it is present and falls back to the identical scalar fill otherwise. The spacing reaches the kernel at exactly one site, the scale factors, which multiply the deep closure's adjustment time and divide the shallow closure's mass flux. On a Gaussian grid the square root of the cell area at 60 degrees is about 0.707 of the equatorial value, so for a 50 km equatorial spacing the deep factor goes 1.665 to 1.470, about 13 percent on the adjustment time. Keep it here: the native suite runs on a grid whose zonal spacing shrinks with the cosine of latitude and this closure is scale aware. Offer it: the engine's own driver already publishes that lane and its other cumulus scheme already reads it, so this is the one scheme of the two that ignores a lane the engine already has.
 
@@ -263,20 +278,21 @@ notice that travels with them.
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
-| `LANDUSE-1` | 288-297 | after 287 | equal to engine | global-fix | owner 50ac55898, 2026-09-05 | large on ice sheets and glaciers | **offer** |
+| `LANDUSE-1` | 316-326 | after 315 | equal to engine | global-fix | owner 50ac55898, 2026-09-05; comment updated 2026-09-29 for the soil match taken from engine b69ac2b52 | large on ice sheets and glaciers | **offer** |
 
-**`LANDUSE-1`.** Two lines that put a land cell of the ice vegetation class on the ice soil class before the land mask and soil reconciliation, which otherwise converts any land column on the water soil category to mixed forest on silty clay loam. Measured on the desktop with both copies of the same entry point on the same input, a land cell of the ice class on the water soil texture under 120 kg per square metre of snow: the engine gives albedo 0.2968, roughness 0.20 m, emissivity 0.93 and moisture availability 0.60; this copy gives 0.70, 0.001 m, 0.95 and 0.95. Second effect: the carried land-surface driver skips ice-class columns, so after the fix the column leaves that scheme entirely and is run by the frozen surface path instead of being integrated as a forest. On the global statics at this model's working truncation, 30,233 Antarctic columns were affected. Two caveats for the engine, and they are why this is an offer rather than a defect on its side: WRF itself has no land-ice soil rule, so this is a physics choice rather than a closer transcription; and the rule fires on every ice-class land cell, so an engine that wants the fix without the width should condition it on the soil reading the water category.
+**`LANDUSE-1`.** Two lines that put a land cell of the ice vegetation class on the ice soil class after the soil match and before the land mask and soil reconciliation. Before the engine's soil match (taken here, see PULL) the reconciliation converted any land column on the water soil category to mixed forest on silty clay loam; since the match, such a column keeps its land use and takes silty clay loam, and these two lines still put a glacier on the ice soil instead. The measurement below was taken before the match. Measured on the desktop with both copies of the same entry point on the same input, a land cell of the ice class on the water soil texture under 120 kg per square metre of snow: the engine gives albedo 0.2968, roughness 0.20 m, emissivity 0.93 and moisture availability 0.60; this copy gives 0.70, 0.001 m, 0.95 and 0.95. Second effect: the carried land-surface driver skips ice-class columns, so after the fix the column leaves that scheme entirely and is run by the frozen surface path instead of being integrated as a forest. On the global statics at this model's working truncation, 30,233 Antarctic columns were affected. Two caveats for the engine, and they are why this is an offer rather than a defect on its side: WRF itself has no land-ice soil rule, so this is a physics choice rather than a closer transcription; and the rule fires on every ice-class land cell, so an engine that wants the fix without the width should condition it on the soil reading the water category.
 
 ### `core/physics_inventory.py`
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
-| `INVENTORY-1` | after 83, 88-88 | 83-84, 89-90 | equal to carried | engine-fix | engine d4ec65c0a, 2026-09-04 | nothing in this package | **pull** |
-| `INVENTORY-2` | after 113 | 116-131 | equal to carried | engine-fix | engine 8156dd58f and d4ec65c0a, both 2026-09-04 | nothing in this package | **none** |
-| `INVENTORY-3` | 182-182 | 200-203 | equal to carried | engine-fix | engine 3669990e8, 2026-09-04 | nothing in this package today | **none** |
-| `INVENTORY-4` | 23-23, after 218, 237-269, 277-296 | after 22, 240-291, 310-319, 327-327 | equal to carried | engine-fix | engine 9d7e57f27 and ecfadd2a9, both 2026-09-10 | nothing in this package | **refuse** |
+| `INVENTORY-1` | after 79, after 83, 88-88 | 79-84, 89-92, 97-97 | equal to carried | engine-fix | engine d4ec65c0a, 2026-09-04; 25cc6013a, 2026-09-28 | nothing in this package | **pull** |
+| `INVENTORY-2` | after 113 | 123-138 | equal to carried | engine-fix | engine 8156dd58f and d4ec65c0a, both 2026-09-04 | nothing in this package | **none** |
+| `INVENTORY-3` | 182-182 | 207-210 | equal to carried | engine-fix | engine 3669990e8, 2026-09-04 | nothing in this package today | **none** |
+| `INVENTORY-4` | 23-23, after 218, 237-269, 277-296 | after 22, 281-332, 351-360, 368-368 | equal to carried | engine-fix | engine 9d7e57f27 and ecfadd2a9, both 2026-09-10 | nothing in this package | **refuse** |
+| `INVENTORY-5` | after 214, after 361 | 243-276, 434-435 | equal to carried | engine-fix | engine 2e3e315d5, 2026-09-28 | nothing in this package | **none** |
 
-**`INVENTORY-1`.** A one-conjunct correction to the predicate that says whether a boundary-layer scheme retains a raw output dictionary. It claimed one scheme retains a dictionary it never creates, which made the engine's memory estimator price buffers that do not exist. The scheme is not in this package's admitted set and the sole carried caller is inside the path a run with that scheme never enters. Taking it costs one conjunct and needs no new import. Do not take the commit whole: its other half edits the driver to merge the relocation buffers of the row below.
+**`INVENTORY-1`.** A one-conjunct correction to the predicate that says whether a boundary-layer scheme retains a raw output dictionary. It claimed one scheme retains a dictionary it never creates, which made the engine's memory estimator price buffers that do not exist. The scheme is not in this package's admitted set and the sole carried caller is inside the path a run with that scheme never enters. Taking it costs one conjunct and needs no new import. Do not take the commit whole: its other half edits the driver to merge the relocation buffers of the row below. At the published 2.8.0 the engine narrowed the predicate again, to the one scheme that creates the dictionary (`YSU_PBL_SCHEME`, engine 25cc6013a); this model runs that scheme, so the carried predicate answers the same for every run it admits, and the pull is the constant plus one comparison.
 
 **`INVENTORY-2`.** Three names for recoupling held tendencies after terrain and base state are transplanted under a moving grid. This model integrates one fixed global grid that does not move, so there is nothing for them to attach to and the names alone would be inert; the behaviour lives in the driver and the restart path, and neither of those is carried. A note for a future re-cut: the engine did not add the three names to this module's export list, which is byte-identical on both sides, so a pull inherits that asymmetry.
 
@@ -284,22 +300,30 @@ notice that travels with them.
 
 **`INVENTORY-4`.** The specified-zone ring guard's slot pricing, rewritten to derive from a registry's consumer rows. On the engine it fixes a real under-pricing for a nested run under one microphysics selector. Here the function has no consumer at all: it is exported and called from nowhere, it prices a nested-domain mechanism, and this model has no nest and runs one microphysics scheme. The rewritten body reads a registry name the pinned engine does not define and needs rows in a registry JSON this package does not ship, so taking it converts a dead but correct function into a dead function that raises if anyone ever calls it. The import sits inside the function body, so a re-cut that took this hunk would break nothing at import time and would be easy to miss, which is exactly why it is written down. Revisit if the engine pin moves and this package gains a nested-domain path.
 
+**`INVENTORY-5`.** The engine names the Eta surface layer's and MYJ's persistent fields in tuples so its VRAM estimate prices the arrays the physics allocates. This package admits neither scheme and has no estimate that reads these tuples. Its driver half is `PHYSICS-14`.
+
 ### `core/physics.py`
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
-| `PHYSICS-1` | 40-40, after 52, 1910-1911, after 2677, after 2690, 3046-3050, 3414-3414 | 40-42, 55-55, 1904-1920, 2701-2722, 2736-2740, 3081-3092, 3456-3462 | equal to carried | engine-fix | engine 1467ad9d1 and 8156dd58f, both 2026-09-04 | nothing on a fixed grid | **pull** |
-| `PHYSICS-2` | 688-688 | 691-691 | equal to carried | engine-fix | engine db9f5d5bf, 2026-09-05 | nothing here today | **pull** |
-| `PHYSICS-3` | 1164-1176 | after 1166 | equal to engine | global-fix | owner 4bf9f3e94, 2026-09-04 | nothing inside a scheme | **offer** |
-| `PHYSICS-4` | after 1344, 1356-1356, 1363-1363, 1370-1370, 1377-1384, 1394-1395, 1879-1879, 3661-3662, 4251-4251, 4584-4586 | 1335-1335, 1347-1347, 1354-1355, 1362-1365, 1372-1374, 1384-1384, 1872-1873, 3709-3710, 4299-4303, 4682-4684 | equal to carried | engine-fix | engine d4ec65c0a, 2026-09-04 | nothing reachable from this package's doors | **pull** |
-| `PHYSICS-5` | after 1762, after 1773, 4744-4744, 4793-4793, after 5352, after 5445 | 1752-1753, 1765-1766, 4843-4843, 4892-4892, 5444-5445, 5539-5541 | equal to carried | engine-fix | engine 007731bbe and 4d46b0aa0, both 2026-09-05 | nothing when no adapter is attached | **pull** |
-| `PHYSICS-6` | 1784-1784, 1791-1791, 5048-5048 | 1777-1777, 1784-1784, 5145-5145 | equal to carried | no-behaviour | engine aeddfc47f, 2026-09-10 | nothing | **none** |
-| `PHYSICS-7` | after 1980, 4309-4314, 4414-4416 | 1990-2003, 4361-4404, 4504-4514 | equal to carried | engine-fix | engine 399d95a86 and d7c5a9eca, both 2026-09-02 | zero on a fixed step, by construction | **pull** |
-| `PHYSICS-8` | 2914-2929, 5051-5054, 5088-5097 | 2964-2964, 5148-5152, after 5185 | equal to carried | engine-fix | engine 3669990e8, 2026-09-04 | nothing reachable here | **refuse** |
-| `PHYSICS-9` | after 4740, 5217-5217, after 5245, 5258-5258, after 5259 | 4839-4839, 5305-5305, 5334-5334, 5347-5348, 5350-5350 | equal to carried | engine-fix | engine da2e1dd8f, 2026-09-04 | nothing reachable here, and a real wrong answer inside the carried text | **pull** |
-| `PHYSICS-10` | 4821-4868 | 4920-4922 | equal to carried | engine-fix | engine 267900003, 2026-09-04 | nothing here, and it would silently change whose physics runs | **refuse** |
-| `PHYSICS-11` | 4902-4903 | 4956-4997 | equal to carried | engine-fix | engine b61739b71, 2026-09-10 | nothing in this package | **none** |
-| `PHYSICS-12` | 4921-4921, 4923-4926 | 5015-5015, 5017-5023 | equal to carried | engine-fix | engine aeddfc47f, 2026-09-10 | nothing in this package | **none** |
+| `PHYSICS-1` | 40-41, after 52, 1910-1911, after 2677, after 2690, 3046-3050, 3414-3414 | 40-45, 58-58, 1934-1950, 2746-2767, 2781-2785, 3126-3137, 3510-3516 | equal to carried | engine-fix | engine 1467ad9d1 and 8156dd58f, both 2026-09-04 | nothing on a fixed grid | **pull** |
+| `PHYSICS-2` | 688-688 | 719-719 | equal to carried | engine-fix | engine db9f5d5bf, 2026-09-05 | nothing here today | **pull** |
+| `PHYSICS-3` | 1164-1176 | after 1196 | equal to engine | global-fix | owner 4bf9f3e94, 2026-09-04 | nothing inside a scheme | **offer** |
+| `PHYSICS-4` | after 1344, 1356-1356, 1363-1363, 1370-1370, 1377-1384, 1394-1395, 1879-1879, 3661-3662, 4251-4251, 4584-4586 | 1365-1365, 1377-1377, 1384-1385, 1392-1395, 1402-1404, 1414-1414, 1902-1903, 3763-3764, 4371-4375, 4783-4785 | equal to carried | engine-fix | engine d4ec65c0a, 2026-09-04 | nothing reachable from this package's doors | **pull** |
+| `PHYSICS-5` | after 1762, after 1773, 4744-4744, 4793-4793, after 5352, after 5445 | 1782-1783, 1795-1796, 4944-4944, 4993-4993, 5555-5556, 5650-5652 | equal to carried | engine-fix | engine 007731bbe and 4d46b0aa0, both 2026-09-05 | nothing when no adapter is attached | **pull** |
+| `PHYSICS-6` | 1784-1784, 1791-1791, 5048-5048 | 1807-1807, 1814-1814, 5247-5247 | equal to carried | no-behaviour | engine aeddfc47f, 2026-09-10 | nothing | **none** |
+| `PHYSICS-7` | after 1980, 4309-4314, 4414-4416 | 2020-2033, 4433-4476, 4605-4615 | equal to carried | engine-fix | engine 399d95a86 and d7c5a9eca, both 2026-09-02 | zero on a fixed step, by construction | **pull** |
+| `PHYSICS-8` | 2914-2929, 5051-5054, 5088-5097 | 3009-3009, 5250-5254, after 5291 | equal to carried | engine-fix | engine 3669990e8, 2026-09-04 | nothing reachable here | **refuse** |
+| `PHYSICS-9` | after 4740, 5217-5217, after 5245, 5258-5258, after 5259 | 4940-4940, 5416-5416, 5445-5445, 5458-5459, 5461-5461 | equal to carried | engine-fix | engine da2e1dd8f, 2026-09-04 | nothing reachable here, and a real wrong answer inside the carried text | **pull** |
+| `PHYSICS-10` | 4821-4868 | 5021-5023 | equal to carried | engine-fix | engine 267900003, 2026-09-04 | nothing here, and it would silently change whose physics runs | **refuse** |
+| `PHYSICS-11` | 4902-4903 | 5057-5098 | equal to carried | engine-fix | engine b61739b71, 2026-09-10 | nothing in this package | **none** |
+| `PHYSICS-12` | 4921-4921, 4923-4926 | 5116-5116, 5118-5125 | equal to carried | engine-fix | engine aeddfc47f, 2026-09-10 | nothing in this package | **none** |
+| `PHYSICS-13` | 159-162, 567-567, 2001-2001, 2016-2016, 4013-4013, 4063-4063, 4082-4082, 4637-4637 | 165-167, 598-598, 2054-2054, 2069-2069, 4133-4133, 4183-4183, 4202-4202, 4836-4836 | equal to carried | no-behaviour | engine 9a2f350e7, 2026-09-14 | nothing, comments only | **none** |
+| `PHYSICS-14` | after 51, 5070-5073, 5075-5083, 5171-5173 | 56-56, 5270-5286, after 5287, 5365-5372 | equal to carried | engine-fix | engine 2e3e315d5, 2026-09-28 | nothing in this package | **none** |
+| `PHYSICS-15` | after 186, 222-224, 2140-2141, after 2143 | 192-198, 234-234, 2193-2203, 2206-2211 | equal to carried | engine-fix | engine 5a6053b7a, 2026-09-27 | nothing in this package | **none** |
+| `PHYSICS-16` | after 423, 914-915, 923-923, 3836-3836, 3900-3900, 3928-3928, 3961-3962, 3964-3966, 3979-3981 | 434-454, 945-948, 956-956, 3938-3944, 4008-4009, 4037-4038, 4071-4072, 4074-4079, 4092-4101 | equal to carried | engine-fix | engine 758c353d3, 2026-09-18, and fd86b13f2, 2026-09-27 | nothing in this package | **none** |
+| `PHYSICS-17` | 3234-3236, after 3246, after 3252 | 3321-3328, 3339-3340, 3347-3348 | equal to carried | engine-fix | engine 9bcf423a4, 2026-09-14 | nothing in this package | **none** |
+| `PHYSICS-18` | after 4340 | 4503-4531 | equal to carried | engine-fix | engine 7f684beb7, 2026-09-18 | nothing on this model's path; closes a false refusal inside carried code | **pull** |
 
 **`PHYSICS-1`.** Two engine commits that are one change to read: the held boundary-layer forcing is allocated once at construction and written into, instead of being left unbound and rebound to the producer's temporary arrays each call, and the raw rates are stored beside the coupled ones so a moved or relocated grid can rebuild the held tendencies on the new mass field without running a scheme or advancing a cadence. On a resident single-domain run the values are identical either way; the difference is identity, not contents, and what it removes is a tile gather or a restart left pointing at the previous call's storage. This model integrates a fixed global grid, so no number it produces moves, but the carried driver is otherwise missing a capability it is written as if it has. The pull is NOT self-contained: it needs the two names of INVENTORY-2. Take the two files together or neither.
 
@@ -325,6 +349,18 @@ notice that travels with them.
 
 **`PHYSICS-12`.** The engine narrowed a refusal: a dry boundary-layer run now reaches the driver for four schemes, and only the fifth keeps a moist requirement, for the saturated stability it forms. This model is moist on every path it ships and does not use this driver at all. Recorded so that a re-cut taking it is not mistaken for a loosened gate on this side.
 
+**`PHYSICS-13`.** Comment and docstring words from the engine's 2.7.5 word sweep, plus one sentence in the physics-constant note that names the engine's own module where this copy names the module it is carried from. Nothing to decide.
+
+**`PHYSICS-14`.** The driver half of `INVENTORY-5`: the MYJ and Eta surface fields are allocated from the priced tuples instead of literal name lists. Same fields, same cold starts. This model runs neither scheme.
+
+**`PHYSICS-15`.** The WSM6-family SR check follows the live step's minor-loop count under an adaptive clock. This model runs one microphysics scheme, not of that family, at a fixed step, and the carried driver is not its physics path (`PHYSICS-11`).
+
+**`PHYSICS-16`.** Three SASE boundary-layer changes: the closure's switches fall back to the defaults the run configuration declares instead of literals (the literal fallback dropped the additive dissipation channel, which ships on, on any configuration object without the field), and SASE runs on nested domains with the nest's boundary rows masked like a specified domain's. This package does not admit SASE.
+
+**`PHYSICS-17`.** Noah-MP options that reach no code are admitted with one warning and skipped at the driver instead of refused a second time. This model runs Noah, not Noah-MP.
+
+**`PHYSICS-18`.** A driver whose first step is not the first model step, a data-assimilation leg built fresh on an analysis, runs the radiation producer when a carrier the land surface consumes is still unsourced, instead of refusing at the first surface call. The carried driver is not this model's physics path, so nothing it produces moves; the pull closes a false refusal inside carried code, like `PHYSICS-2`.
+
 ### `core/morrison.py`
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
@@ -339,15 +375,17 @@ notice that travels with them.
 |---|---|---|---|---|---|---|---|
 | `NPREF-1` | 1-37 | after 0 | not present | global-fix | package cd407ae, 2026-09-12 | nothing | **offer** |
 | `NPREF-2` | 1045-1046, 1051-1056, 1075-1083, 1123-1132, 1136-1136, after 1137, after 1139, 1387-1389, 1409-1412, 1945-1945, 2047-2048, 2096-2097, 2135-2135 | 1008-1008, after 1012, 1031-1034, 1074-1075, 1079-1079, 1081-1081, 1084-1084, after 1331, after 1350, 1883-1883, after 1984, 2032-2032, after 2069 | equal to engine | global-fix | owner bef189b1d, 2026-09-12 | the mirror half of MORRISON-CU-1 | **offer** |
-| `NPREF-3` | 4320-4320, 4489-4491, after 4502, after 4766, 4806-4806, 4819-4821, 4828-4828, 4857-4857 | 4254-4254, 4423-4425, 4437-4437, 4685-4690, 4730-4730, 4743-4745, 4752-4754, 4777-4778 | equal to carried | engine-fix | engine 3669990e8, 2026-09-04 | nothing in any field this mirror already returns | **none** |
-| `NPREF-4` | 4736-4749, 4752-4753, 4758-4759, 4837-4844, 4859-4859, 4866-4866 | 4671-4671, after 4673, after 4677, 4763-4764, after 4779, 4786-4786 | equal to engine | deliberate | owner c3f2de9b7, corrected by 47ea9ae89, both 2026-09-04 | nothing at the three original options | **refuse** |
-| `NPREF-5` | 6365-6366, 6368-6372, 6408-6410, 6752-6753, 6756-6757 | 6285-6285, after 6286, after 6321, after 6678, after 6680 | equal to engine | deliberate | owner 36cb7cd43, 2026-09-05 | nothing at the shipped default | **refuse** |
-| `NPREF-6` | 6459-6460, 6481-6481, 6522-6523 | 6370-6377, 6398-6398, 6439-6455 | equal to carried | engine-fix | engine 4d523b793, 2026-09-04 | real, on columns that straddle the first interface | **pull** |
-| `NPREF-7` | 6547-6554, 6557-6569 | 6479-6496, after 6498 | neither | global-fix | owner 304177d6f, 2026-09-04; engine 4d523b793, same day | identical where the index is above one; the height differs in one corner | **offer** |
-| `NPREF-8` | 6580-6581 | after 6508 | equal to engine | global-fix | owner 304177d6f, 2026-09-04 | narrow but not empty | **offer** |
-| `NPREF-9` | 7435-7441, 7443-7444, 7450-7466, 7468-7471, 7485-7485, 7491-7496, 7499-7499, 7503-7503, 7518-7521, 7534-7535, 7537-7541, 7557-7557, 7559-7559 | after 7357, 7359-7359, after 7364, 7366-7368, 7382-7382, 7388-7391, 7394-7394, 7398-7398, 7413-7415, after 7427, 7429-7435, 7451-7451, 7453-7453 | equal to engine | global-fix | owner 50e109983, 2026-09-04 | up to 3.35 W/m2 of spurious absorption removed | **offer** |
-| `NPREF-10` | 7746-7746, 7751-7890, 7897-7900, 7914-7930, 7932-7933, 7965-7967, 7987-7989, 8020-8024, 8038-8048, 8050-8051, after 8052, 8054-8071 | 7640-7640, after 7644, 7651-7651, 7665-7666, after 7667, 7699-7700, 7720-7722, after 7752, after 7765, 7767-7768, 7770-7771, 7773-7777 | equal to engine | global-fix | owner 4bf9f3e94, 9cfc20654 and 984c1cc61, 2026-09-04; eaa150a42, 2026-09-04; f6999e233, 2026-09-05 | the mirror half of RRTMGP-10, RRTMGP-12 and RRTMGP-13 | **offer** |
-| `NPREF-11` | after 9331, 9333-9333, 9418-9419, 9432-9433, 9435-9437, 9439-9442, 9444-9444, 9472-9472 | 9038-9043, 9045-9045, 9130-9133, 9146-9149, 9151-9154, 9156-9159, 9161-9161, 9189-9189 | equal to carried | engine-fix | engine ab874b32e, 2026-09-04 | 1.23 percent on the shallow tendencies at a 90 s step | **pull** |
+| `NPREF-3` | 4320-4320, 4489-4491, after 4502, after 4766, 4806-4806, 4819-4821, 4828-4828, 4857-4857 | 4325-4325, 4494-4496, 4508-4508, 4756-4761, 4801-4801, 4814-4816, 4823-4825, 4848-4849 | equal to carried | engine-fix | engine 3669990e8, 2026-09-04 | nothing in any field this mirror already returns | **none** |
+| `NPREF-4` | 4736-4749, 4752-4753, 4758-4759, 4837-4844, 4859-4859, 4866-4866 | 4742-4742, after 4744, after 4748, 4834-4835, after 4850, 4857-4857 | equal to engine | deliberate | owner c3f2de9b7, corrected by 47ea9ae89, both 2026-09-04 | nothing at the three original options | **refuse** |
+| `NPREF-5` | 6365-6366, 6368-6372, 6408-6410, 6752-6753, 6756-6757 | 6356-6356, after 6357, after 6392, after 6749, after 6751 | equal to engine | deliberate | owner 36cb7cd43, 2026-09-05 | nothing at the shipped default | **refuse** |
+| `NPREF-6` | 6459-6460, 6481-6481, 6522-6523 | 6441-6448, 6469-6469, 6510-6526 | equal to carried | engine-fix | engine 4d523b793, 2026-09-04 | real, on columns that straddle the first interface | **pull** |
+| `NPREF-7` | 6547-6554, 6557-6569 | 6550-6567, after 6569 | neither | global-fix | owner 304177d6f, 2026-09-04; engine 4d523b793, same day | identical where the index is above one; the height differs in one corner | **offer** |
+| `NPREF-8` | 6580-6581 | after 6579 | equal to engine | global-fix | owner 304177d6f, 2026-09-04 | narrow but not empty | **offer** |
+| `NPREF-9` | 7435-7441, 7443-7444, 7450-7466, 7468-7471, 7485-7485, 7491-7496, 7499-7499, 7503-7503, 7518-7521, 7534-7535, 7537-7541, 7557-7557, 7559-7559 | after 7428, 7430-7430, after 7435, 7437-7439, 7453-7453, 7459-7462, 7465-7465, 7469-7469, 7484-7486, after 7498, 7500-7506, 7522-7522, 7524-7524 | equal to engine | global-fix | owner 50e109983, 2026-09-04 | up to 3.35 W/m2 of spurious absorption removed | **offer** |
+| `NPREF-10` | 7746-7746, 7751-7890, 7897-7900, 7914-7930, 7932-7933, 7965-7967, 7987-7989, 8020-8024, 8038-8048, 8050-8051, after 8052, 8054-8071 | 7711-7711, after 7715, 7722-7722, 7736-7737, after 7738, 7770-7771, 7791-7793, after 7823, after 7836, 7838-7839, 7841-7842, 7844-7848 | equal to engine | global-fix | owner 4bf9f3e94, 9cfc20654 and 984c1cc61, 2026-09-04; eaa150a42, 2026-09-04; f6999e233, 2026-09-05 | the mirror half of RRTMGP-10, RRTMGP-12 and RRTMGP-13 | **offer** |
+| `NPREF-11` | after 9331, 9333-9333, 9418-9419, 9432-9433, 9435-9437, 9439-9442, 9444-9444, 9472-9472 | 9109-9114, 9116-9116, 9201-9204, 9217-9220, 9222-9225, 9227-9230, 9232-9232, 9260-9260 | equal to carried | engine-fix | engine ab874b32e, 2026-09-04 | 1.23 percent on the shallow tendencies at a 90 s step | **pull** |
+| `NPREF-12` | 3257-3257, 3309-3309, 3421-3421, 3442-3442, 3454-3454 | 3262-3262, 3314-3314, 3426-3426, 3447-3447, 3459-3459 | equal to carried | no-behaviour | engine 9a2f350e7, 2026-09-14 | nothing, comments only | **none** |
+| `NPREF-13` | after 2300 | 2235-2305 | not present | engine-fix | engine 72f18213d, 2026-09-16 | nothing in this package | **none** |
 
 **`NPREF-1`.** The third-party notice for what this file transcribes. Its RTE+RRTMGP half matches the engine's own header for the same work; its AER half is the correction of RRTMGP-2, in the mirror rather than the driver, and applies to the engine's copy unchanged.
 
@@ -371,13 +409,20 @@ notice that travels with them.
 
 **`NPREF-11`.** WRF's shallow cumulus arm re-sets its adjustment time to exactly 2400 s, discarding the rounding applied earlier, and every feedback tendency then divides by the unrounded value while the closure and advection arithmetic above it keeps the rounded one. This copy divides all of the shallow feedback tendencies by the rounded value. Whenever the step does not divide 2400 exactly the two disagree by the rounding ratio; at common steps they are identical. The case for pulling is unusual: this package carries no kernel for this scheme, this model runs no such scheme, and the mirror function reaches the engine for its own table through an import the carve deliberately leaves pointing at the engine. So the only kernel this function can ever be checked against is the published engine's, which has carried the fix since before the pinned floor. That makes the carried mirror wrong against the only kernel it mirrors, which is the definition of a flawed instrument. The pull is bookkeeping, costs nothing because no run reaches this code, and removes a trap for anyone who calls it.
 
+**`NPREF-12`.** Comment words from the engine's 2.7.5 word sweep. Nothing to decide.
+
+**`NPREF-13`.** A float32 CPU oracle for the engine's dycore vertical-velocity diagnosis. This package carries no dycore, so there is nothing for it to check here.
+
 ### `core/kernels/__init__.py`
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
 | `LOADER-1` | after 96 | 97-112 | equal to carried | engine-fix | engine 322df3fa6 and 94f4aa331, both 2026-09-10 | nothing in this package | **refuse** |
+| `LOADER-2` | 99-99, 131-131, after 171 | 115-115, 147-147, 188-199 | equal to carried | engine-fix | engine 3845bcab9, 2026-09-24 | nothing numeric | **none** |
 
 **`LOADER-1`.** The loader gained a branch that fires only for a module name with one prefix, sending a standalone land-surface translation unit through a composition factory instead of the plain compile route. The carried loader cannot be handed such a name, and that needs spelling out, because this package DOES run that scheme: it imports the step function from an engine module, maps the selector to it and calls it. That scheme compiles on the engine's side of the seam. All thirteen engine modules that build its device code import the engine's loader, not this one, so such a name never reaches the carried one. The carried loader's own inputs say the same from the other end: the carve carries fifteen kernel files and none is one of that scheme's units, the kernel directory has no fallback to the engine's, and the three carried call sites name carried kernels only. Refuse on unreachability alone: the branch is dead code here whichever engine version is installed. On symbol availability, recorded so nobody re-derives it as a reason, the helper the branch calls is absent from the floor of this package's declared range and present from 2.7.3 up, so on an install resolving today's engine the import would succeed and nothing would raise. Reopen only if the carve ever carries one of that scheme's kernels, and then the engine's translation-unit composition has to come with it, not just this branch.
+
+**`LOADER-2`.** The engine's loader publishes a real compile, as opposed to a cache load, to a watching run as progress. Nothing numeric moves and the carried loader compiles the same images. It needs the engine's compile-notice module, present from 2.8.0; take it when this package wants the same progress line.
 
 ### `core/kernels/gf.cu`
 
@@ -446,7 +491,7 @@ notice that travels with them.
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
-| `MORRISON-CU-1` | 157-162, 164-165, 173-173, after 201, 241-241, 249-252, 268-271, 800-800, 805-806, 818-819, 830-831, 848-848, after 858, 864-865, after 909, 946-947, 1013-1013, 1019-1019, 1025-1026, 1049-1050, 1070-1070, 1073-1073, 1077-1077, 1081-1081, 1085-1085, 1089-1089, 1112-1113, 1122-1123 | after 156, 158-158, 166-167, 196-197, after 236, after 243, after 258, 787-787, 792-792, 804-804, 815-815, 832-832, 843-843, 849-849, 894-894, after 930, after 995, after 1000, after 1005, 1028-1029, 1049-1049, 1052-1052, 1056-1056, 1060-1060, 1064-1064, 1068-1068, 1091-1092, 1101-1101 | equal to engine | global-fix | owner bef189b1d, 2026-09-12 | about 1.1 percent on both cloud droplet fall speeds on a column that warms 4 K in a step | **offer** |
+| `MORRISON-CU-1` | 158-163, 165-166, 174-174, after 202, 366-366, 374-377, 393-396, 896-896, 901-902, 914-915, 926-927, 944-944, after 954, 960-961, after 1005, 1042-1043, 1109-1109, 1115-1115, 1121-1122, 1145-1146, 1166-1166, 1169-1169, 1173-1173, 1177-1177, 1181-1181, 1185-1185, 1208-1209, 1218-1219 | after 157, 159-159, 167-168, 197-198, after 361, after 368, after 383, 883-883, 888-888, 900-900, 911-911, 928-928, 939-939, 945-945, 990-990, after 1026, after 1091, after 1096, after 1101, 1124-1125, 1145-1145, 1148-1148, 1152-1152, 1156-1156, 1160-1160, 1164-1164, 1187-1188, 1197-1197 | equal to engine | global-fix | owner bef189b1d, 2026-09-12 | about 1.1 percent on both cloud droplet fall speeds on a column that warms 4 K in a step | **offer** |
 
 **`MORRISON-CU-1`.** WRF builds two quantities once per level inside its column loop and then spends them, unchanged, in the sedimentation block that runs after the loop closes and before the tendency apply: the cloud droplet Stokes coefficient, frozen above the warm branch's small melt, and the particle-size reference density. Nothing writes the temperature between the melt and the apply, so the density the sedimentation block reads is the one the process section's own reconstruction used. Both copies of this kernel rebuilt both quantities from the temperature they held at sedimentation time, which is the post-process one. The Stokes coefficient is the expensive half, minus 0.288 percent per kelvin at 278 K on every cloudy level; the density was stale by the entry cleanup and melt alone, about 8e-4 K and 2.4e-6 relative. The remedy is the one WRF's own structure names: the process stage publishes both and the sedimentation stage consumes them. It is NOT handing the sedimentation stage its current temperature, which would have moved the size distribution about 2,400 times further from WRF than the error it removes, in the wrong direction. Measured against the unmodified reference driver over the 28 oracle columns and 10,948 compared values, desktop, NVIDIA GeForce RTX 3080, 2026-09-12: values disagreeing with the reference fall from 3,554 to 3,505, no field gets worse, and every field's worst distance in units of the last place is unchanged. The engine carries the identical rebuild from the original port commit and is owed the offer. Not confined to a climate band: cloud droplet sedimentation touches every column that holds cloud water.
 
@@ -502,6 +547,21 @@ only on the package side is not what a re-cut reproduces.
   package commits `cd407ae` and `78cad51`, 2026-09-12, together with the
   licence texts, the notice beside the kernels and a root `NOTICE` with a
   section per work.
+* The four microphysics kernel fixes the engine made on 2026-09-12 after this
+  package's cut: vapor returned by the final condensate cleanup is stored
+  instead of dropped (`35077a4c1`); cloud freezing is kept across the slope
+  and exponential ranges by evaluating the gamma moments in log space, where
+  the direct sixth power overflowed at ordinary cloud slopes and erased the
+  freezing (`3f111e162`); exceptional rain freezing stays within the joint
+  donor budget (`c621693fa`); and an in-range number moment is not rebuilt
+  during slope diagnosis (`c03dcfb59`). Taken here 2026-09-29 with the
+  engine's own text on the move to the 2.8 engine; `MORRISON-CU-1` is again
+  the only difference in that kernel.
+* The land-use rulebook's soil match: a land cell over the water soil
+  category keeps its land use as its vegetation and takes silty clay loam, as
+  real.exe matches it, instead of becoming mixed forest in the final pass.
+  Engine fix `b69ac2b52`, 2026-09-27; taken here 2026-09-29 with the engine's
+  own text. It reaches this model through the global statics door.
 **Open.** In rough order of what they cost to take:
 
 1. `GF-CU-2`, one character, which moves the deep and the shallow cumulus
@@ -513,19 +573,19 @@ only on the package side is not what a re-cut reproduces.
    `INVENTORY-3`, as one three-file change or not at all.
 4. `NPREF-11`, the shallow cumulus tendency divisor, which is bookkeeping and
    closes a flawed instrument.
-5. `RRTMGP-3` and `RRTMGP-9`, each of which adds one engine module to the seam
-   manifest; `RRTMGP-4`; `RRTMGP-14`, which has to be re-applied over the
+5. `RRTMGP-3` and `RRTMGP-9`, each of which reaches one more engine module; `RRTMGP-4`; `RRTMGP-14`, which has to be re-applied over the
    chunked loops; `RRTMGP-6`, as a targeted deletion of one entry and not a
    copy of the engine's now empty table.
 6. `PHYSICS-1` with `INVENTORY-1` and `INVENTORY-2`'s names, together or
    neither; then `PHYSICS-2`, `PHYSICS-4`, `PHYSICS-5`, `PHYSICS-7` and
-   `PHYSICS-9`, none of which moves a number this model produces and all of
-   which close a wrong answer or a false refusal inside carried code.
+   `PHYSICS-9` and `PHYSICS-18`, none of which moves a number this model
+   produces and all of which close a wrong answer or a false refusal inside
+   carried code.
 
 Rows owed: `GF-CU-2`, `NPREF-6`, `YSU-CU-1`, `SFCLAY-PY-1`, `SFCLAY-CU-1`,
 `NPREF-11`, `RRTMGP-3`, `RRTMGP-4`, `RRTMGP-6`, `RRTMGP-9`, `RRTMGP-14`,
 `PHYSICS-1`, `INVENTORY-1`, `PHYSICS-2`, `PHYSICS-4`, `PHYSICS-5`,
-`PHYSICS-7`, `PHYSICS-9`. That is the whole of what is owed; every other row
+`PHYSICS-7`, `PHYSICS-9`, `PHYSICS-18`. That is the whole of what is owed; every other row
 in this document is an offer, a refusal or a no-op.
 
 ## OFFER
@@ -553,10 +613,11 @@ here is owed to this package; the list is what to send.
   Owner commit `304177d6f`, 2026-09-04.
 * `LANDUSE-1`. A land cell of the ice class keeps it on the ice soil, with the
   two caveats in the row. Owner commit `50ac55898`, 2026-09-05.
-* `NTIEDTKE-PY-2` and `NTIEDTKE-PY-3`. The cumulus pipeline cache key, which
-  closes a latent defect the engine still has, and the per-column grid spacing,
-  which the engine's own driver already publishes and its other cumulus scheme
-  already reads. Owner commits `3d22c51cf` and `92e58c4ff`, 2026-09-02.
+* `NTIEDTKE-PY-3`. The per-column grid spacing, which the engine's own driver
+  already publishes and its other cumulus scheme already reads. Owner commit
+  `92e58c4ff`, 2026-09-02. (`NTIEDTKE-PY-2`, the pipeline cache key, is no
+  longer offered: the engine closed the same defect its own way on
+  2026-09-27.)
 * `GF-PY-4`. The chunked cumulus seam, which the engine would want at the same
   batch size its own seam cannot allocate. Owner commit `a74805618`,
   2026-09-01.

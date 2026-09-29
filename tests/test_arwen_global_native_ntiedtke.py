@@ -388,7 +388,7 @@ class _Tagged(np.ndarray):
 # not carry (patch item 04).  Without the mark the import raises inside the
 # body and the test reports RED for an engine that is behind rather than
 # for anything this package did: measured on a clean venv against a 2.7.0
-# wheel on 2026-09-09, two failures here, on the desktop and on node-2.
+# wheel on 2026-09-09, two failures here, on a Windows host and on a Linux host.
 @requires_engine_module("gpuwm.verify.harness", "04")
 def test_the_device_hosting_wrapper_moves_every_array_and_nothing_else():
     from gpuwm.verify.harness.subjects import DeviceHostedSubject, _move

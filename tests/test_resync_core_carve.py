@@ -122,8 +122,15 @@ def test_no_carried_module_still_imports_a_carried_name_from_the_engine():
         text = path.read_text(encoding="utf-8")
         for match in pattern.finditer(text):
             line = text[: match.start()].count("\n") + 1
-            # The manifest namespace is the one sanctioned occurrence.
-            assert "MODULE_KEY_ROOT" in text.splitlines()[line - 1], (
+            # Two sanctioned occurrences.  The manifest namespace, and the
+            # engine's RRTMGP trace-gas table loader: that is data read
+            # against the engine's SHA-256 pin, not a scheme, and from 2.8.0
+            # it is the one copy of those 136 numbers: this package carried
+            # its own until the engine made the same change, and dropped it
+            # when it moved onto the 2.8 engine.
+            source_line = text.splitlines()[line - 1]
+            assert ("MODULE_KEY_ROOT" in source_line
+                    or "load_trace_climatology" in source_line), (
                 f"{path.name}:{line} reaches the engine's {match.group(0)}")
 
 
@@ -288,8 +295,11 @@ def test_every_carried_kernel_is_the_source_tree_s_under_the_stated_rule():
             changed.append((kernel, len(carved.encode("utf-8")) - len(blob)))
     # NAMED, so that a rule quietly growing a sixth site is a red row rather
     # than a number nobody looks at.
-    assert sorted(changed) == [("gf.cu", -2), ("glibc_flt32.cuh", -11),
-                               ("ntiedtke.cu", -4)], sorted(changed)
+    # 0.1.2: the identity rule (CORE_IDENTITY) joined the word rule, moving
+    # gf.cu by +13 bytes, ntiedtke.cu by -5 and ysu.cu by -21 on top of the
+    # word rule's -2 and -4.
+    assert sorted(changed) == [("gf.cu", 11), ("glibc_flt32.cuh", -11),
+                               ("ntiedtke.cu", -9), ("ysu.cu", -21)], sorted(changed)
 
 
 def test_no_carried_device_source_carries_what_cannot_ship():

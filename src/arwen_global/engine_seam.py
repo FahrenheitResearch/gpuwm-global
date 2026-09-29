@@ -37,7 +37,7 @@ WHY A PIN AND NOT A CARRY.  Each file here was measured and found safe to
 leave: byte-identical to the tree the model was graded in, or differing only
 in code this package never enters (`RunConfig`, which the package never
 constructs; `DomainState`, likewise; the regional allocator).  That is a fact
-about ONE published engine.  A pip resolution inside `gpuwm>=2.7.0,<2.8` can
+about ONE published engine.  A pip resolution inside `gpuwm>=2.8.0,<2.9` can
 put a different one underneath without printing anything about a file's
 contents, and `gpuwm.core.constants` alone reaches the assembled source of
 every carried kernel: move it and every kernel's `source_sha256`, PTX and

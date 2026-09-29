@@ -72,8 +72,8 @@ gpuwm-global run-plan PLAN.json --estimate
 
 The engine's own preflight door does not price a global configuration on a
 published engine. MEASURED on the Windows desktop 2026-09-10 against
-`gpuwm 2.7.0` and `gpuwm 2.7.2`: `gpuwm check` on a shipped experiment refuses
-by name with `unknown table(s) ['arwen_global', 'time', 'semilag', ...]`,
+`gpuwm 2.7.0` and `gpuwm 2.7.2`, and 2026-09-29 against `gpuwm 2.8.0`:
+`gpuwm check` on a shipped experiment refuses by name with `unknown table(s) ['arwen_global', 'time', 'semilag', ...]`,
 because the engine's sizing route recognises the regional tables and not
 these. The
 itemizing estimator is this package's (`arwen_global.sizing`) and the engine
@@ -456,8 +456,9 @@ at its first door is not shipped, so the six travel inside this package
 does not have. The engine's copy wins the moment it publishes one.
 `gpuwm-global doctor` prints which of the two answered each row, with the
 SHA-256 of the file that answered it (measured on the Windows desktop
-2026-09-10 against `gpuwm 2.7.0`, `2.7.1` and `2.7.2`, and there
-2026-09-12 against `gpuwm 2.7.3`: 6 of 6 carried on all four), and
+2026-09-10 against `gpuwm 2.7.0`, `2.7.1` and `2.7.2`, there 2026-09-12
+against `gpuwm 2.7.3`, and there 2026-09-29 against `gpuwm 2.8.0`: 6 of 6
+carried on all five), and
 `gpuwm-global sources` carries the same fact per row as `mapping.origin`. A
 spec both tables carry with DIFFERENT bytes is refused by name with both
 digests rather than chosen between: the engine's row having moved past the
@@ -613,8 +614,8 @@ installed engine's copies and prints an `engine seam` section:
 ```text
 engine seam
 -----------
-  ok   seam                       46/46 files proven
-                                  pinned against gpuwm 2.7.3
+  ok   seam                       47/47 files proven
+                                  pinned against gpuwm 2.8.0
                                   the scope is the DIRECT engine imports of
                                   the carried physics, plus the assimilation's
                                   filter, the local-GPU switch and two files
@@ -626,13 +627,13 @@ engine seam
 ```
 
 The scope is stated in the row because the row is a coverage claim, and it is
-stated as measured. The 46 rows are the 42 engine modules the carried physics
+stated as measured. The 47 rows are the 43 engine modules the carried physics
 imports DIRECTLY, plus the LETKF the assimilation runs on the engine, the
 local-GPU switch, the eigensolver kernel and the scheme-limits table those two
-reach. It is not the import closure: following every import from those 46
-reaches 109 modules, and the 63 that are not pinned are entered only through
-runtimes this package's door cannot select (measured on the Windows desktop
-2026-09-10 against `gpuwm 2.7.0`). The engine's front doors are deliberately
+reach. It is not the import closure: following every import from the 46
+pinned then reached 109 modules, and the 63 that were not pinned are entered
+only through runtimes this package's door cannot select (measured on the
+Windows desktop 2026-09-10 against `gpuwm 2.7.0`). The engine's front doors are deliberately
 not pinned by bytes: what this package depends on there is an API, measured by
 symbol in `tools/measure_boundary.py` and by signature in
 `tools/measure_engine_signatures.py`, and pinning them would print a moved
@@ -641,7 +642,7 @@ row on every engine release while saying nothing about the physics.
 A file whose bytes moved is named, with what this package reaches in it, and
 the summary row above it turns to `note` as well, so a reader scanning
 verdict tokens is not shown green over a moved file. It
-is a warning and not a refusal: the dependency ceiling (`gpuwm<2.8`) is the
+is a warning and not a refusal: the dependency ceiling (`gpuwm<2.9`) is the
 refusal, and "these bytes are not the ones I measured" does not name a
 breakage on its own. The pin that matters most is `gpuwm/core/constants.py`,
 which supplies the `#define` values to every carried kernel's preamble and so
@@ -905,9 +906,9 @@ writes a self-hashed `status = "error"` receipt and then re-raises.
 VRAM and refuse before they allocate anything;
 `gpuwm-global run-plan PLAN.json --estimate` carries the same figures as a
 `gpuwm.run-plan.estimate.v1` document, which is the way to read them without
-starting a run. On a published 2.7.0 the engine's `gpuwm check` refuses a
-global config outright (measured, desktop, 2026-09-10): its sizing route
-knows the regional tables only. `arwen_global.sizing.global_check_main` is
+starting a run. On a published 2.7.0 and 2.8.0 the engine's `gpuwm check`
+refuses a global config outright (measured, desktop, 2026-09-10 and
+2026-09-29): its sizing route knows the regional tables only. `arwen_global.sizing.global_check_main` is
 the itemizing entry the engine's door would call, and no command reaches it
 today, which `gpuwm-global doctor` prints as a gap of its own along with the
 engine symbol it also needs.

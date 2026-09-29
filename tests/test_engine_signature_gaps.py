@@ -28,7 +28,7 @@ that the carried callables take the keywords their rows used to refuse, that
 the scratch placement is translated rather than dropped, and that the
 mechanism still refuses by name for a row the next measurement adds.  The
 mechanism is kept because the question does not go away: an engine inside
-`gpuwm>=2.7.0,<2.8` can move a signature underneath the seam.
+`gpuwm>=2.8.0,<2.9` can move a signature underneath the seam.
 """
 from __future__ import annotations
 

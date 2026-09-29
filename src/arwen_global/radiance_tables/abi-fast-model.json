@@ -5200,7 +5200,7 @@
    "note": "SpcCoeff only, no TauCoeff; not used by the reference runs",
    "url": "https://bin.ssec.wisc.edu/pub/s4/CRTM/abi_g19_v8.02_for_Ivette.tgz"
   },
-  "model": "CRTM v3.1.1 (JCSDA CRTMv3, tag v3.1.1, commit bd262087acbd49866fac557444a3ab2bba9169b1), built with gfortran 15.2.0 and netCDF-Fortran 4.6.2 on node-1, OpenMP on, run single-threaded",
+  "model": "CRTM v3.1.1 (JCSDA CRTMv3, tag v3.1.1, commit bd262087acbd49866fac557444a3ab2bba9169b1), built with gfortran 15.2.0 and netCDF-Fortran 4.6.2 on Linux x86-64, OpenMP on, run single-threaded",
   "optical_depth_convention": "CRTM RTSolution%Layer_Optical_Depth is the NADIR layer optical depth of the user layers (the layers CRTM adds above the model top are not included); the emission solver applies sec(zenith); reproduced to 0.005 K (band 13) and 0.033 K rms (band 8) by the plain emission march",
   "sensor_coefficients": "abi_g16 SpcCoeff + ODPS TauCoeff (GOES-16 ABI, the closest public set; GOES-19 has a SpcCoeff but no TauCoeff), IR water Nalli, IR land IGBP table"
  },

@@ -109,6 +109,10 @@ DOOR_PINS_SCHEMA = "gpuwm-global-door-pins-v1"
 #: "can this box run those bytes", never "who is asking".
 SUPPORTED_PLATFORMS = ("linux-x86_64", "win-x86_64")
 
+#: The licence notice every companion bundle from 0.1.2 on carries beside
+#: the doors (tools/build_door_bundle.py writes it from the engine's lockfile).
+BUNDLE_NOTICE = "THIRD-PARTY-LICENSES.txt"
+
 #: Override the directory the companion doors stage into.
 COMPANION_DIR_ENV = "ARWEN_GLOBAL_DOOR_DIR"
 
@@ -751,6 +755,13 @@ def stage_from_directory(source: Path, dest: Path,
                 target = dest / filename
                 _write_verified(archive.read(filename), target, door)
                 staged.append(target)
+            if BUNDLE_NOTICE in held:
+                # The licence notice for the crates linked into these
+                # binaries travels with them into the directory they run
+                # from, which is where their binary-form conditions say it
+                # has to be.  A bundle from before 0.1.2 carries none.
+                notice = dest / BUNDLE_NOTICE
+                notice.write_bytes(archive.read(BUNDLE_NOTICE))
     elif source.is_dir():
         missing = sorted(name for name in wanted
                          if not (source / name).is_file())

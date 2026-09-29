@@ -6,7 +6,8 @@
 # There is no publish job in this workflow and that is deliberate.  A
 # workflow able to publish on a push or on a tag is a standing
 # pre-authorisation.  Publishing lives in publish.yml, and there it is
-# additionally gated on a repository variable that does not exist.
+# additionally gated on a repository variable that only a deliberate act in
+# the repository settings sets.
 #
 # WHAT IS PROVEN HERE IS THE WHEEL, NOT THE CHECKOUT.  The job builds the
 # distribution and installs it into a fresh environment, then runs the

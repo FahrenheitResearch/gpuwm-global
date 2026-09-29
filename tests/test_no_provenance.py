@@ -62,12 +62,13 @@ this file is what proves the rule ran.
 WHAT THIS GATE DELIBERATELY DOES NOT COVER, so the next reader does not
 mistake green for finished.
 
-Measurement docstrings across `src/` and `tests/` name the machines
-figures were taken on ("node-1", "node-2", "weather-node-4", and run
-directories under them).  Those are internal machine identities.  They
-are reported by `tools/provenance_sweep.py`, which prints every one with
-its file and line, and they are not asserted here because clearing them
-is an edit to another author's measurement text, not to this gate.
+Machine names used to be on this list: measurement docstrings across
+`src/` and `tests/` named the machines figures were taken on, and they were
+reported by `tools/provenance_sweep.py` rather than asserted, as another
+author's measurement text.  Since 0.1.2 they are asserted over everything
+that ships (`test_no_shipped_file_names_a_private_machine`), because the
+0.1.1 wheel carried six of them in carried physics comments on a public
+index.  The card a figure was taken on stays: it is a measurement condition.
 
 Lines that say "the <name> lane" or "the <name> lane's" name how the work
 was divided rather than what the software does.  THE TALLY IS NOT IN THIS
@@ -509,6 +510,18 @@ _PRIVATE_TOOLING_DIRECTORY = re.compile(
 #: reads only the shapes already met reports green on the next one, and
 #: nobody writes that root with a separator after it except as that root,
 #: so the whole path is refused, file or directory.
+#: THE FOURTH WIDENING: a planning document and its review.  Measured on the
+#: 0.1.2 source tree before it was published: seven comment and docstring
+#: lines across two tools and two test files cited a plan's audit and the
+#: audit's finding numbers ("finding" followed by a letter and a number) as
+#: the source of a measurement.  Neither resolves for a reader, and every
+#: alternative above passed over all seven, because they read as ordinary
+#: prose.  Refused now, and each of the seven carried both:
+#:   "plan audit" / "plan's audit", across a line break too;
+#:   "finding" or "findings" followed by a letter-and-number label.
+#: A label a page defines for its own reader is written without the word
+#: ("F1 of the calibration, below"), which is how the one such page in
+#: docs/ now spells it.
 _DEVELOPMENT_ORGANISATION = re.compile(
     r"(?<![A-Za-z])(?i:lane|integration)/[a-z0-9][a-z0-9._-]*"
     r"|\bDownloads[/\\]"
@@ -521,7 +534,9 @@ _DEVELOPMENT_ORGANISATION = re.compile(
     r"|(?<![A-Za-z])work[/\\][A-Za-z0-9_.-]+"
     r"|(?<![A-Za-z])refutation[/\\]"
     r"|(?<![A-Za-z])[a-z][a-z0-9]*-[a-z][a-z0-9]*[/\\](?:out|results|runs)"
-    r"[/\\]")
+    r"[/\\]"
+    r"|(?i:\bplan(?:'s)?\s+audit\b)"
+    r"|(?i:\bfindings?)\s+[A-Z]\d+\b")
 
 #: A MACHINE BY NAME, in anything that ships.
 #:
@@ -540,17 +555,16 @@ _DEVELOPMENT_ORGANISATION = re.compile(
 _HOSTNAME = re.compile(r"\bDESKTOP-[A-Z0-9]+\b|\b[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*-PC\b")
 
 #: What a `"host"` field in shipped data is allowed to say.  A stated set
-#: rather than a pattern for "looks private": the machines this family
-#: names in published text are the nodes, and everything else has to be a
-#: CLASS of machine, which is what a reader can act on ("does this stored
-#: measurement apply to mine?").  A hostname answers a question nobody
-#: outside one building can ask.  The class is the operating-system family
-#: with the architecture, which is what
+#: rather than a pattern for "looks private": a CLASS of machine and, since
+#: 0.1.2, nothing else (the node names this family allowed here before
+#: 0.1.2 are gone).  A class of machine is what a reader can act on ("does
+#: this stored measurement apply to mine?").  A hostname answers a question
+#: nobody outside one building can ask.  The class is the operating-system
+#: family with the architecture, which is what
 #: `tools/arwen_global_render_catalog._machine_class` writes.
 _HOST_FIELD = re.compile(r'"host"\s*:\s*"([^"]*)"')
 _ALLOWED_HOST_VALUE = re.compile(
-    r"\A(?:weather-node-\d+|node-[1-9]\d*"
-    r"|(?:windows|linux|darwin|macos)-[a-z0-9_]+)\Z")
+    r"\A(?:windows|linux|darwin|macos)-[a-z0-9_]+\Z")
 
 
 def test_no_tooling_names_reach_the_shipped_tree() -> None:
@@ -609,7 +623,7 @@ def test_no_shipped_file_names_a_machine_by_hostname() -> None:
     )
 
 
-def test_every_shipped_host_field_names_a_class_or_an_allowed_node() -> None:
+def test_every_shipped_host_field_names_a_machine_class() -> None:
     """The other direction: what a `host` field IS, not what it is not.
 
     A pattern for names that look private catches the names somebody
@@ -628,10 +642,9 @@ def test_every_shipped_host_field_names_a_class_or_an_allowed_node() -> None:
             body = lines[number - 1].strip() if number <= len(lines) else ""
             hits.append(f"{label}:{number}: {body[:160]}")
     assert hits == [], (
-        "a `host` field in shipped data says something that is neither a "
+        "a `host` field in shipped data says something that is not a "
         "machine class (an operating-system family with an architecture, "
-        "which is what a reader can act on) nor one of the node names this "
-        "family publishes:\n  " + "\n  ".join(hits)
+        "which is what a reader can act on):\n  " + "\n  ".join(hits)
     )
 
 
@@ -737,11 +750,19 @@ _SHIPPED_PROCESS_REFERENCE = re.compile(
     r"\b(conversations?|chats?|this session|a previous session|"
     r"the agent|an agent)\b|agent[-_ ]scratch", re.IGNORECASE)
 
-#: The machines the maintainer owns, by hostname.  Enforced in prose only:
-#: a reader of the README has no use for a hostname, while a measurement
-#: docstring naming the box a number came off is a different question and
-#: is reported by tools/provenance_sweep.py rather than asserted here.
+#: The machines the maintainer owns, by hostname.  Enforced in prose and,
+#: since 0.1.2, in everything that ships (see the test that names it).
 _MACHINE_NAME = re.compile(r"\b(weather-node-\d+|node-[1-9]\b)")
+
+#: The private case whose working name reached eight docstrings in the
+#: carried physics of 0.1.1.  Spelled in pieces so the detector that lists
+#: case tokens (tools/check_case_token_leakage.py, exempt by name below)
+#: is the only other file that spells it whole.
+_PRIVATE_CASE = re.compile("(?i)" + "real" + "74")
+
+#: The one file that must spell the case token: it is the detector that
+#: refuses the token in generic code positions.
+_CASE_TOKEN_DETECTOR = ROOT / "tools" / "check_case_token_leakage.py"
 
 
 def test_published_prose_uses_neither_banned_word() -> None:
@@ -802,6 +823,42 @@ def test_shipped_text_refers_to_no_process() -> None:
     assert hits == [], (
         "text that ships refers to how the work was organised rather than "
         "to what the software does:" + chr(10) + "  " + (chr(10) + "  ").join(hits))
+
+
+def test_no_shipped_file_names_a_private_machine() -> None:
+    """A private hostname in anything that reaches a wheel or an sdist.
+
+    THE BREAKAGE THIS PREVENTS, measured on the published 0.1.1 wheel: six
+    comment lines in the carried physics (`core/gf.py`, `kernels/gf.cu`,
+    `kernels/ntiedtke.cu`, `kernels/ysu.cu`)
+    and the two shipped receipts named the maintainer's machines, which no
+    reader can reach.  The carried files are cleaned by
+    `tools/resync_from_owner.CORE_IDENTITY` at the cut; this is the proof
+    that the rule ran, on the tree and on the npz members.
+    """
+
+    hits = _hits(shipped_scope(), _MACHINE_NAME)
+    assert hits == [], (
+        "a file that reaches the artefact names one of the maintainer's "
+        "machines.  Name the card or the operating system instead:\n  "
+        + "\n  ".join(hits))
+
+
+def test_no_shipped_file_names_the_private_case() -> None:
+    """A private case's working name in generic shipped text.
+
+    THE BREAKAGE THIS PREVENTS, measured on the published 0.1.1 wheel:
+    eight docstring lines across `core/landuse.py`, `core/npref.py`,
+    `core/physics.py` and `core/rrtmgp.py` named it.  The
+    case-token gate reads code positions only and skips docstrings on
+    purpose, so nothing else in this repository saw them.
+    """
+
+    scope = [p for p in shipped_scope() if p.resolve() != _CASE_TOKEN_DETECTOR]
+    hits = _hits(scope, _PRIVATE_CASE)
+    assert hits == [], (
+        "a file that reaches the artefact names a private case.  Say what "
+        "the reference configuration is instead:\n  " + "\n  ".join(hits))
 
 
 def test_published_prose_names_no_machine() -> None:
@@ -1006,6 +1063,21 @@ def test_the_patterns_still_match_what_they_are_written_to_match() -> None:
     assert _DEVELOPMENT_ORGANISATION.search("kept at work/t255-gate.toml")
     assert not _DEVELOPMENT_ORGANISATION.search("the .github/workflows page")
     assert not _DEVELOPMENT_ORGANISATION.search("the framework/library split")
+    # The planning document and its review, in the shapes the seven sites
+    # measured on the 0.1.2 source tree had (the labels here are made up).
+    assert _DEVELOPMENT_ORGANISATION.search(
+        "measured on the published wheel (the design plan audit, finding Q7)")
+    assert _DEVELOPMENT_ORGANISATION.search("with finding Q7 of the plan's audit")
+    assert _DEVELOPMENT_ORGANISATION.search("the plan's audit measured them")
+    assert _DEVELOPMENT_ORGANISATION.search("(the design plan\n    audit)")
+    assert _DEVELOPMENT_ORGANISATION.search("(findings Q2 and Q3)")
+    assert _DEVELOPMENT_ORGANISATION.search("per finding\nB12")
+    # ...and the same words where they are ordinary: a flight plan, an audit
+    # of the arrays, and the finding of a result.
+    assert not _DEVELOPMENT_ORGANISATION.search("the flight plan for the run")
+    assert not _DEVELOPMENT_ORGANISATION.search("an audit of every array")
+    assert not _DEVELOPMENT_ORGANISATION.search("the finding that T255 fits")
+    assert not _DEVELOPMENT_ORGANISATION.search("finding 3 of 5 rows")
     # The tilde spelling of a home directory: what the reader is sent to on
     # their own machine passes, a working directory on a node does not.
     assert _ALLOWED_HOME_TARGET.match("WPS_GEOG")
@@ -1030,11 +1102,14 @@ def test_the_patterns_still_match_what_they_are_written_to_match() -> None:
     assert not _HOSTNAME.search("the desktop it was measured on")
     assert not _HOSTNAME.search("over PCIe, not NVLINK")
     assert not _HOSTNAME.search("a PCI address")
-    # The host field: a class and the node names pass, a name does not.
+    # The host field: a class passes, a name does not, and since 0.1.2 that
+    # includes the node names.
     assert _ALLOWED_HOST_VALUE.match("windows-amd64")
     assert _ALLOWED_HOST_VALUE.match("linux-x86_64")
-    assert _ALLOWED_HOST_VALUE.match("weather-node-4")
-    assert _ALLOWED_HOST_VALUE.match("node-2")
+    assert not _ALLOWED_HOST_VALUE.match("weather-node-4")
+    assert not _ALLOWED_HOST_VALUE.match("node-2")
+    assert _PRIVATE_CASE.search("matching " + "REAL" + "74.")
+    assert not _PRIVATE_CASE.search("the reference WRF configuration")
     assert not _ALLOWED_HOST_VALUE.match("DESKTOP-A1B2C3D4")
     assert not _ALLOWED_HOST_VALUE.match("windows-11-0.0.00000-sp0")
     assert not _ALLOWED_HOST_VALUE.match("someones-laptop")

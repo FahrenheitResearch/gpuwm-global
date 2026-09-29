@@ -100,7 +100,7 @@ def main(argv=None) -> int:
         "gate": "FFT-1",
         "backend": args.backend,
         "precision": args.precision,
-        "host": platform.node(),
+        "host": f"{platform.system().lower()}-{platform.machine().lower()}",
         "levels": args.levels,
         "fields": fields,
         "bands": bands,

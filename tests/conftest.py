@@ -175,7 +175,7 @@ def _cpu_only_marked_tests(request, monkeypatch):
     back, because a module that sets it at import time decides it for the
     whole session.
 
-    THE BREAKAGE THIS PREVENTS, measured on node-2 (RTX 5090, Linux, Python
+    THE BREAKAGE THIS PREVENTS, measured on a Linux host (RTX 5090, Python
     3.14.4) on 2026-09-10 against published gpuwm 2.7.0.  Fourteen modules
     here used to run ``os.environ.setdefault(NO_LOCAL_GPU_ENV, "1")`` at
     module scope.  pytest imports every COLLECTED module before it runs any
@@ -254,20 +254,25 @@ def _static_fields_speaks_rows() -> bool:
         library = rust_bridge.load()
     except Exception:
         return False
-    spec = {
-        "kind": "rows",
-        "e_we": 3, "e_sn": 3,
-        "lat_deg": [-30.0, 0.0, 30.0],
-        "lon0_deg": 0.0, "dlon_deg": 120.0,
-    }
+    # The spec this package's own rows grid sends, never a hand-written
+    # subset: a subset the crate's GridSpec refuses for a missing field
+    # (`ref_lat`, at the 2.8.0 floor) reads here as "no rows kind".
+    from arwen_global.statics_rows import RowsGrid
+
+    spec = RowsGrid([-30.0, 0.0, 30.0], 0.0, 120.0, 3)._rust_spec()
+    # The call itself is NOT guarded.  Until 0.1.2 this probe called
+    # `grid_new(library, spec)`, a signature the engine's bridge does not
+    # have at the 2.8.0 floor (`grid_new(spec)`), with a spec missing fields
+    # the crate requires, and a bare `except` turned both into "this library
+    # does not know the rows kind": six statics tests skipped on the very
+    # engine that carries the kind, and the rows-grid build went unexercised
+    # by the suite.  Only the library's own refusal of a well-formed spec is
+    # the answer this probe asks for.
     try:
-        handle = rust_bridge.grid_new(library, spec)
-    except Exception:
+        handle = rust_bridge.grid_new(spec)
+    except rust_bridge.StaticBridgeError:
         return False
-    try:
-        rust_bridge.grid_free(library, handle)
-    except Exception:
-        pass
+    rust_bridge.grid_free(handle)
     return True
 
 
@@ -276,10 +281,10 @@ STATIC_FIELDS_SPEAKS_ROWS = _static_fields_speaks_rows()
 #: Skip a test that needs a static-fields library which knows the rows kind.
 requires_rows_static_fields = pytest.mark.skipif(
     not STATIC_FIELDS_SPEAKS_ROWS,
-    reason="the staged static_fields library does not know the `rows` grid "
-           "kind a Gaussian grid crosses the seam as: the crate's "
-           "src/projection/rows.rs is on the carve's source tree and in no "
-           "published engine bundle.  A door skew, patch item 06.")
+    reason="the static_fields library the installed engine loads does not "
+           "know the `rows` grid kind a Gaussian grid crosses the seam as; "
+           "the engine's own bundled library carries it from gpuwm 2.8.0, so "
+           "a library staged from an older build is shadowing it")
 
 
 # ----------------------------------- a refusal from the compat seam is a skip

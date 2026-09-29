@@ -22,7 +22,7 @@
 // the occupancy the kernel achieves, and never returns it while the
 // context lives.
 //
-// MEASURED on node-1 (weather-node-1, RTX 5070 Ti, 70 SMs x 1,536,
+// MEASURED on an RTX 5070 Ti (70 SMs x 1,536,
 // sm_120, NVRTC 13.0.48, CuPy 14.0.1) through the real launcher at nz=49:
 // the 9,232 B frame reserved 844.0 MiB.  `bl_pbl_physics = 1` is the
 // shipped default (gpuwm/domain_wizard.py:714), so every default run paid

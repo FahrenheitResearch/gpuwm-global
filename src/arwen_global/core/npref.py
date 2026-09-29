@@ -9499,7 +9499,7 @@ def np_kf_column(u, v, temperature, qv, qc, pressure, exner, dz, w, *,
 def np_cumulus_nca_driver_step(held, scheme, *, dt):
     """Advance WRF's per-column KF hold state by one model step (float64).
 
-    ``dt`` is WRF's model-CLOCK step (``cfg.clock_dt`` under the real74
+    ``dt`` is WRF's model-CLOCK step (``cfg.clock_dt`` under the reference
     compatibility substep integration, ``cfg.dt`` natively); the device
     driver gates this advance to the final internal substep of each clock
     step so every DT here matches WRF's 60 s arithmetic.

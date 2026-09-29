@@ -133,7 +133,7 @@ def test_engine_dependency_is_bounded_at_both_ends(declaration):
     deps = declaration["project"]["dependencies"]
     engine = [row for row in deps if row.split(">")[0].strip() == "gpuwm"]
     assert len(engine) == 1, deps
-    assert ">=2.7.0" in engine[0] and "<2.8" in engine[0], engine[0]
+    assert ">=2.8.0" in engine[0] and "<2.9" in engine[0], engine[0]
 
 
 def test_the_companion_data_distribution_is_declared(declaration):
@@ -144,7 +144,7 @@ def test_the_companion_data_distribution_is_declared(declaration):
     first function is defined, so `import arwen_global.core.rrtmgp` fails
     without it.  Before the carve that call lived in the engine and the
     companion was the engine's business.  It arrives today only through the
-    engine's own `gpuwm-data==2.7.0`, which is exactly the transitive route
+    engine's own `gpuwm-data==2.8.0`, which is exactly the transitive route
     this file refuses for netCDF4: a dependency the owner can drop without
     anything here changing, and the failure is an ImportError after an
     install that reported success.
@@ -155,7 +155,7 @@ def test_the_companion_data_distribution_is_declared(declaration):
                  if re.split(r"[<>=!~\[]", row, maxsplit=1)[0].strip()
                  == "gpuwm-data"]
     assert len(companion) == 1, deps
-    assert ">=2.7.0" in companion[0] and "<2.8" in companion[0], companion[0]
+    assert ">=2.8.0" in companion[0] and "<2.9" in companion[0], companion[0]
 
     source = (SRC / "core" / "rrtmgp.py").read_text(encoding="utf-8")
     module_scope = [line for line in source.splitlines()

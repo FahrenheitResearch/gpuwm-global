@@ -232,7 +232,7 @@
 // LANE INTERLEAVING, and why it is not optional.  CUDA lays local memory out
 // interleaved across the threads of a warp, so a per-thread array access is
 // coalesced by construction.  A workspace that gave each thread a contiguous
-// slab would hand that back: MEASURED on node-1 at 100,000 columns, the
+// slab would hand that back: MEASURED on an RTX 5070 Ti at 100,000 columns, the
 // contiguous form ran 42.1 ms against the pre-cut kernel's 19.3 ms at the
 // smallest tile and got WORSE as the tile grew (113.3 ms at 12 blocks/SM),
 // which is the signature of 32-way scatter, not of arithmetic.  So the
@@ -279,7 +279,7 @@ struct GfColI {
 //: them a local dummy [GF_NLEV * GF_KMAX] array instead -- 13,280 B at nz=40
 //: that only survived because a compiler chose to dead-store-eliminate it.
 //: MEASURED: NVRTC 13.3 eliminated it and NVRTC 13.0.48 did not, leaving
-//: 13,824 B of frame on the exact same source (node-1, sm_120).  So absence
+//: 13,824 B of frame on the exact same source (RTX 5070 Ti, sm_120).  So absence
 //: is spelled as a null sink instead of being left to the optimiser: the
 //: writes are all stores, none of these slabs is ever read back, and the
 //: branch is uniform across the whole launch.

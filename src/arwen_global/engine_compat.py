@@ -232,7 +232,7 @@ def interpolate_to_tape(*args, **kwargs):
 #: SO THE TABLE IS EMPTY, and that is the measurement rather than an
 #: omission: against a published 2.7.0 there is no call this package makes
 #: that the installed engine refuses.  The mechanism stays because the
-#: question does not go away -- an engine inside `>=2.7.0,<2.8` can still
+#: question does not go away -- an engine inside `>=2.8.0,<2.9` can still
 #: move a signature underneath the seam -- and a row added here is refused at
 #: the door by name, before a run prices a card.  `tools/measure_engine_signatures.py`
 #: is what finds the next one.
@@ -308,7 +308,7 @@ def require_engine_signature(module: str, name: str) -> None:
     `SIGNATURE_GAPS` is empty today, so this raises `KeyError` for every
     call: asking about a signature nobody measured must not answer "fine".
     The function stays because the question does not: an engine resolution
-    inside `gpuwm>=2.7.0,<2.8` can still move a signature under the seam, and
+    inside `gpuwm>=2.8.0,<2.9` can still move a signature under the seam, and
     `tools/measure_engine_signatures.py` is what finds it.  A row added to
     the table is refused here by name, and silently dropping the argument is
     never the alternative -- that is how a package integrates different

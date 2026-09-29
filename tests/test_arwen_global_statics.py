@@ -24,7 +24,11 @@ from gpuwm.static import rust_bridge
 from arwen_global.statics_rows import RowsGrid
 
 CONFIG = str(_shipped_configs() / "arwen_global_moist_smoke.toml")
-MAPPING = "gpuwm/authorities/rw-wps-gdas-global-analysis-grib2.mapping.json"
+#: The bare id every shipped config carries.  The checkout-relative path
+#: this line used to hold named a file only inside the engine's tree, and
+#: the test that reads it was skipped everywhere else until 0.1.2, by a
+#: rows-kind probe that could not call the 2.8 bridge.
+MAPPING = "gdas-global"
 VALID_TIME = datetime(2026, 8, 30, 18)
 
 # The MODIS 21-class land-use metadata the real index declares.
@@ -167,10 +171,10 @@ def built(geog_root, t21_grid):
     # consumer keeps the reason on the one line that actually needs the door.
     if not STATIC_FIELDS_SPEAKS_ROWS:
         pytest.skip(
-            "the staged static_fields library does not know the `rows` grid "
-            "kind a Gaussian grid crosses the seam as: the crate's "
-            "src/projection/rows.rs is on the carve's source tree and in no "
-            "published engine bundle.  A door skew, patch item 06.")
+            "the static_fields library the installed engine loads does not "
+            "know the `rows` grid kind a Gaussian grid crosses the seam as; "
+            "the engine's own bundled library carries it from gpuwm 2.8.0, "
+            "so a library staged from an older build is shadowing it")
     options = StaticsOptions(source="real", geog_root=str(geog_root))
     return statics.build_statics(t21_grid, options, sector_degrees=90.0)
 
@@ -215,9 +219,12 @@ def test_build_on_the_gaussian_grid_reads_the_archive_through_the_crate(built, t
         assert fields[name].shape[-2:] == t21_grid.shape, name
         assert fields[name].dtype == np.float32
     assert provenance["schema"] == statics.STATICS_SCHEMA
+    # `num_land_cat` is the engine's reading of the index's category_max,
+    # recorded by the 2.8 static builder beside the four class numbers.
     assert provenance["landuse"] == {
         "mminlu": "MODIFIED_IGBP_MODIS_NOAH", "iswater": ISWATER,
         "islake": ISLAKE, "isice": ISICE, "isurban": ISURBAN,
+        "num_land_cat": 21,
     }
     assert len(provenance["sectors"]) == 4
     assert set(provenance["coverage"]) == set(statics.GEOG_ROLES)
@@ -716,8 +723,11 @@ def test_statics_door_builds_the_cache_the_run_reads(geog_root, tmp_path, capsys
     assert row["convention"] == state.physics_state.metadata[statics.SURFACE_STATICS_METADATA_KEY]
     assert 0.0 <= host(state.surface.vegetation_fraction).max() <= 1.0
     assert not np.allclose(host(state.surface.albedo), 0.08 + 0.12 * host(state.surface.land_fraction))
-    # the door line names the cache it read
-    assert main(["statics", str(path)]) == 2
+    # the door line names the cache it read, and a second build without
+    # --overwrite is a refusal: exit 1, the code this package's doors give
+    # every refusal (the 2 this line used to expect is the owner tree's
+    # boundary, which this door never passes through)
+    assert main(["statics", str(path)]) == 1
     err = capsys.readouterr().err
     assert "--overwrite" in err
 
@@ -737,3 +747,50 @@ def test_run_door_prints_the_synthetic_planet(tmp_path, capsys):
         import argparse
         _statics(argparse.Namespace(config=path, out=None, overwrite=False,
                                     sector_degrees=30.0))
+
+
+def test_a_rows_grid_answers_every_handle_the_engine_static_build_asks_for(monkeypatch):
+    """The engine's routed static build calls both grid handles.
+
+    ``gpuwm.static.build._build_static_routed`` takes the Rust route for a
+    grid that has ``_rust_handle`` and then samples through
+    ``_rust_sampling_handle``; from 2.8.0 a grid with only the first raised
+    AttributeError on the first sector of every global statics build.  A
+    rows grid has no nest ancestry, so the sampling handle is the
+    coordinate handle, for the whole grid and for a sector alike.
+    """
+
+    import inspect
+    import re
+
+    from gpuwm.static import build as engine_build
+
+    from arwen_global import statics_rows
+
+    # The fake handles below must never reach the real library's free.
+    monkeypatch.setattr(statics_rows, "_free_rust_grid_handle", lambda handle: None)
+
+    source = inspect.getsource(engine_build)
+    asked = sorted(set(re.findall(r"grid\.(_rust_[a-z_]*handle)\(", source)))
+    assert asked, "the engine's static build no longer asks the grid for a handle"
+    for name in asked:
+        assert callable(getattr(RowsGrid, name, None)), name
+
+    class _Bridge:
+        def __init__(self):
+            self.calls = []
+
+        def grid_new(self, spec):
+            self.calls.append(("new", spec["e_we"]))
+            return 7
+
+        def grid_translated(self, base, di, dj, e_we, e_sn):
+            self.calls.append(("translated", base, di, dj))
+            return 11
+
+    grid = RowsGrid([-10.0, 0.0, 10.0], 0.0, 1.0, 360)
+    bridge = _Bridge()
+    assert grid._rust_sampling_handle(bridge) == grid._rust_handle(bridge) == 7
+    sector = grid.sector(4, 8)
+    assert sector._rust_sampling_handle(bridge) == 11
+    assert bridge.calls == [("new", grid.e_we), ("translated", 7, 4, 0)]

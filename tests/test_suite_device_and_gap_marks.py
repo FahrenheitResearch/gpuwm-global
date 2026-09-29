@@ -1,7 +1,7 @@
 """Two rules about the suite itself, read off the suite's own source.
 
 Both exist because a red run nobody could read hid a red test.  The card
-selection of 2026-09-10 on node-2 reported 8 failed and 4 errors against
+selection of 2026-09-10 on an RTX 5090 Linux host reported 8 failed and 4 errors against
 published gpuwm 2.7.0; nine of those rows were one environment variable set
 at import time, and under that noise a genuinely unmarked test rode a cut.
 A count by eye found two of the three tests that needed the mark.  These
@@ -31,7 +31,7 @@ TESTS = Path(__file__).resolve().parent
 #: `gpuwm.verify.harness` is the measured case: absent from published
 #: 2.7.0, imported inside the bodies of three tests in
 #: `test_arwen_global_native_ntiedtke.py`.  Two carried
-#: `@requires_engine_module`; the third did not, and on node-2 on
+#: `@requires_engine_module`; the third did not, and on a Linux host on
 #: 2026-09-10 that one file reported 1 failed, 9 passed, 2 skipped.
 GAP_MODULES: dict[str, str] = {
     "gpuwm.verify.harness": "04",
@@ -202,7 +202,7 @@ def test_no_test_module_decides_the_device_switch_for_the_session() -> None:
     pytest imports every collected module before it runs any test, so
     `os.environ.setdefault(NO_LOCAL_GPU_ENV, "1")` at module scope in one
     CPU-only file turns the device off for a card selection that file is
-    not part of.  On node-2 (RTX 5090, Linux, Python 3.14.4) on 2026-09-10,
+    not part of.  On a Linux host (RTX 5090, Python 3.14.4) on 2026-09-10,
     `pytest -m "gpu and not slow and not network" tests` gave 8 failed, 63
     passed, 34 skipped, 4 errors against published gpuwm 2.7.0; nine of
     those rows were this leak, and
@@ -313,8 +313,8 @@ def _suite_engine_checkout_reads() -> list[str]:
 def test_no_test_reads_the_engine_checkout_this_package_was_carved_from() -> None:
     """A data file read out of a directory that exists in no install.
 
-    THE BREAKAGE THIS PREVENTS, measured at the merged release tip on node-2
-    2026-09-10: `test_arwen_global_radiation_scorecard.py` read its two
+    THE BREAKAGE THIS PREVENTS, measured at the merged release tip on a Linux
+    host 2026-09-10: `test_arwen_global_radiation_scorecard.py` read its two
     source mappings from `<repo>/gpuwm/authorities`, which is the ENGINE
     checkout this model was developed in.  That directory is not in this
     repository, not in the wheel and not in the sdist, so the read could

@@ -64,8 +64,8 @@
  * frame is zero -- nothing here is a function-scope column array -- which
  * the compile-only probe confirms.  When cumastrn lands it brings 79 column
  * arrays that DO need somewhere to live, and that somewhere is a global
- * workspace in the kf.cu shape, not the stack: MEASURED on node-1 (RTX 5070
- * Ti, 70 SMs x 1,536, sm_120), those 79 as function-scope locals compile to
+ * workspace in the kf.cu shape, not the stack: MEASURED on an RTX 5070
+ * Ti (70 SMs x 1,536, sm_120), those 79 as function-scope locals compile to
  * a 15,496 B frame at nz = 49 and reserve 1,483.9 MiB, against 0 B and
  * 0.0 MiB in the workspace shape.
  */

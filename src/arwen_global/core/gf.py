@@ -168,7 +168,7 @@ def gf_kernel_capacity(nz: int) -> int:
 # gf.cu used to keep GFDRV's column arrays in the per-thread local frame, and
 # CUDA prices a local frame at the card's RESIDENT-THREAD CAPACITY -- one
 # per-context backing store of (frame - 1024) * SMs * maxThreadsPerSM, taken
-# at first launch and never returned.  MEASURED on node-1 (RTX 5070 Ti, 70
+# at first launch and never returned.  MEASURED on an RTX 5070 Ti (70
 # SMs x 1,536, sm_120, NVRTC 13.3): the 22,416 B frame took 2,196.0 MiB while
 # the kernel only ever had 384 threads/SM in flight.  The arrays now live in
 # a global workspace this adapter allocates, sized to the threads ACTUALLY in
@@ -187,7 +187,7 @@ GFWS_SLOTS = GFWS_SLOT_COUNT_COL + GFWS_SLOT_COUNT_DRV
 GF_BLOCK = 64
 
 #: Blocks per SM the tile is sized for.  MEASURED, not assumed: at 100,000
-#: columns on node-1 (RTX 5070 Ti, 70 SMs) the kernel's wall is 31.07 ms at
+#: columns on an RTX 5070 Ti (70 SMs) the kernel's wall is 31.07 ms at
 #: 2 blocks/SM, 24.18 at 4, 24.33 at 6, 25.14 at 8 and 26.63 at 12, against
 #: 19.33 ms for the pre-cut local-frame kernel.  4 is the plateau and the
 #: cheapest point on it: 422 MiB of workspace where 12 would cost 1,266 MiB

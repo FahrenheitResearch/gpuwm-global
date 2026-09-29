@@ -294,7 +294,7 @@
    -0.062400074179118366
   ]
  },
- "forecasts": "T255 imex_ssp3 forecasts at 50 s from the GDAS 0.25 degree analyses of 2026-08-30 12Z to 2026-09-02 00Z (six-hourly), the native physics suite, on the RTX 5090 (node-2) and the RTX 5070 Ti (node-1); estimated on the RTX 5090 in float64 with the sample mean of the differences removed, 2026-09-07T09:23:16+00:00",
+ "forecasts": "T255 imex_ssp3 forecasts at 50 s from the GDAS 0.25 degree analyses of 2026-08-30 12Z to 2026-09-02 00Z (six-hourly), the native physics suite, on an RTX 5090 and an RTX 5070 Ti; estimated on the RTX 5090 in float64 with the sample mean of the differences removed, 2026-09-07T09:23:16+00:00",
  "nlev": 40,
  "pairs": [
   {
@@ -395,7 +395,7 @@
   },
   {
    "earlier": {
-    "path": "<covariance-sample>/runs-node1/2026-09-01T12/out/arwen_global_step00000864.npz",
+    "path": "<covariance-sample>/runs-5070ti/2026-09-01T12/out/arwen_global_step00000864.npz",
     "self_sha256": "c4489269a885f1816712bccade5e5edbb7f0a9a4a96bad0b6da5aae154d32551",
     "sha256": "42cdb87c2adcda584445275af862c492ac9b149653970ee63b925aa115c31540",
     "step": 864,
@@ -411,7 +411,7 @@
   },
   {
    "earlier": {
-    "path": "<covariance-sample>/runs-node1/2026-09-01T18/out/arwen_global_step00000864.npz",
+    "path": "<covariance-sample>/runs-5070ti/2026-09-01T18/out/arwen_global_step00000864.npz",
     "self_sha256": "bb9a364a688a572fc8f8a54e708a5b441c7bec48ea51d65349b4df65bad2bf6d",
     "sha256": "596b78539812755aeaa49ea54756475c176dd4338490e919c80b6accebf07d42",
     "step": 864,
@@ -427,14 +427,14 @@
   },
   {
    "earlier": {
-    "path": "<covariance-sample>/runs-node1/2026-09-02T00/out/arwen_global_step00000864.npz",
+    "path": "<covariance-sample>/runs-5070ti/2026-09-02T00/out/arwen_global_step00000864.npz",
     "self_sha256": "4ee229b4d7bba29b180276f377f3647859b2181cde9ac4480479a99a575a9156",
     "sha256": "a89402354b361d5a25e14df0e418531c33dcc61cdb0b808ca3c776eee88ba909",
     "step": 864,
     "time_s": 43200.0
    },
    "later": {
-    "path": "<covariance-sample>/runs-node1/2026-09-01T12/out/arwen_global_step00001728.npz",
+    "path": "<covariance-sample>/runs-5070ti/2026-09-01T12/out/arwen_global_step00001728.npz",
     "self_sha256": "df74cd2e94cdebf42d818daecac9c90d5ead89f3db6a3ebbf727bfb5bf86c42c",
     "sha256": "89579e90ba3477a7a29c9e1744b018e96a5f71daf060e50dbd6bd578627603c1",
     "step": 1728,
@@ -450,7 +450,7 @@
     "time_s": 43200.0
    },
    "later": {
-    "path": "<covariance-sample>/runs-node1/2026-09-01T18/out/arwen_global_step00001728.npz",
+    "path": "<covariance-sample>/runs-5070ti/2026-09-01T18/out/arwen_global_step00001728.npz",
     "self_sha256": "88e5ee6161c8725f35c48ac9c09c5909ed47d86446b57d0c7d5e7aca0571c6ab",
     "sha256": "725dd27440c2e1e4b40dcc75eb2e76242f9cd0c9a1e0af1b581a09f948a6ee11",
     "step": 1728,
@@ -466,7 +466,7 @@
     "time_s": 43200.0
    },
    "later": {
-    "path": "<covariance-sample>/runs-node1/2026-09-02T00/out/arwen_global_step00001728.npz",
+    "path": "<covariance-sample>/runs-5070ti/2026-09-02T00/out/arwen_global_step00001728.npz",
     "self_sha256": "e299cf5818e110f7217b006ecc6beae0b40f801bbf145d00800dfa3ceda553b8",
     "sha256": "f40142b21e8a809d8bc2e8914480367f01cacd74a89b118999907d3058a7e594",
     "step": 1728,

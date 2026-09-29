@@ -81,7 +81,8 @@ cheapest way to size a configuration is to start it.
 starting a run, as one JSON document, and a plan's `config.path` takes a
 shipped experiment's bare name. The engine's own `gpuwm check` does NOT
 price a global config on a published engine: measured on the Windows desktop
-2026-09-10 against `gpuwm 2.7.0`, it refuses with `unknown table(s)` naming
+2026-09-10 against `gpuwm 2.7.0` and 2026-09-29 against `gpuwm 2.8.0`, it
+refuses with `unknown table(s)` naming
 this model's tables, because its sizing route knows the regional ones only.
 `gpuwm-global configs --paths` prints the full path of every shipped
 experiment, which is the file to copy and edit.
@@ -108,8 +109,8 @@ packaged authority mapping named by its bare id,
 A bare id is asked of the engine's authority table first and of this
 package's carried copies second, in both the spellings those tables use, and
 must match exactly one document in whichever answers, so it works from an
-installed wheel as well as from a checkout. Against `gpuwm 2.7.0` the
-carried copy answers, because the engine's table carries none of the six
+installed wheel as well as from a checkout. Against `gpuwm 2.7.0` and
+`gpuwm 2.8.0` the carried copy answers, because the engine's table carries none of the six
 mappings this model names; `gpuwm-global doctor` says which one answered
 each row. Adding a source here is a mapping document, not code.
 

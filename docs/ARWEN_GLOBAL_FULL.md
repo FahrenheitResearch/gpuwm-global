@@ -14,7 +14,7 @@ gpuwm-global --help
 ```
 
 This distribution carries the model and the physics the model was graded
-with, and depends on a published engine (`gpuwm>=2.7.0,<2.8`) for the source
+with, and depends on a published engine (`gpuwm>=2.8.0,<2.9`) for the source
 decoders, the observation front door, the static-field builder, the LETKF
 filter core, the tape writer and the renderer. The schemes the native suite
 integrates are inside the package as `arwen_global.core`, because a

@@ -119,6 +119,20 @@ class RowsGrid:
         weakref.finalize(self, _free_rust_grid_handle, handle)
         return handle
 
+    def _rust_sampling_handle(self, bridge) -> int:
+        """The handle the engine's static sampler reads (from gpuwm 2.8.0).
+
+        THE BREAKAGE THIS PREVENTS.  The 2.8 engine's static build asks the
+        grid for a SAMPLING handle, which keeps a nested grid's integer
+        ancestry, instead of the coordinate handle, and a grid without the
+        method raised AttributeError on the first sector of every global
+        statics build.  A rows grid has no nest ancestry: a whole grid is
+        its own spec and a sector is its reference plus an integer column
+        offset, which is exactly what :meth:`_rust_handle` already hands
+        the crate, so the two handles are the same one.
+        """
+        return self._rust_handle(bridge)
+
     # -- sectors --------------------------------------------------------------
 
     def sector(self, first_column: int, columns: int) -> "RowsGrid":

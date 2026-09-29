@@ -34,26 +34,20 @@ One extra per CUDA major, because no pip environment marker can tell them
 apart. `gpu-cu13` pulls `cupy-cuda13x[ctk]`, `gpu-cu12` pulls
 `cupy-cuda12x[ctk]`, and the bare `gpu` alias is `gpu-cu13`, the stack the
 card figures on this page came off. Either line also resolves the engine
-`gpuwm>=2.7.0,<2.8`, its data companion `gpuwm-data` beside it, numpy, scipy
-and netCDF4. That range resolves `gpuwm 2.7.3` and `gpuwm-data 2.7.3` from
-the public index today. All four versions the index carries read the same at
-the boundary: 2.7.0, 2.7.1 and 2.7.2 were installed on the Windows desktop
-2026-09-10 into virtual environments created from scratch, and 2.7.3, which
-the index published on 2026-09-12, was measured there the same day, where
-`python tools/measure_boundary.py` reads the same 231 symbols across 65
-modules with no gap among the 191 a host without a CUDA runtime can resolve.
-The engine seam is pinned against 2.7.3, the version the range resolves
-today; the paragraph below this block says what moved to get there. Without
-either extra the package installs and every CPU door runs; the forecast needs
-the card.
+`gpuwm>=2.8.0,<2.9`, its data companion `gpuwm-data` beside it, numpy, scipy
+and netCDF4. That range resolves `gpuwm 2.8.0` and `gpuwm-data 2.8.0` from
+the public index, where `python tools/measure_boundary.py` reads 234 symbols
+across 67 modules with no gap among the 194 a host without a CUDA runtime can
+resolve (node CPU, 2026-09-29). Without either extra the package installs and
+every CPU door runs; the forecast needs the card.
 
 No published engine produced the forecast and assimilation figures further
 down this page. They were taken on 2026-09-06 and 2026-09-07 in the engine
 checkout this model was developed and graded in, whose own version string
-reads 2.6.4, and no published `2.7.x` carries the physics those runs
-integrated. That physics is what `arwen_global.core` carries now, which is
-why a bare install on any `2.7.x` engine integrates the same bytes those runs
-did.
+reads 2.6.4. That physics is what `arwen_global.core` carries, which is why
+an install on the 2.8 engine integrates the same bytes those runs did, apart
+from the engine fixes this package has taken since (listed under PULL in
+[docs/CARRIED-PHYSICS-DIVERGENCE.md](docs/CARRIED-PHYSICS-DIVERGENCE.md)).
 
 The Rust binaries the model calls at run time arrive as release assets,
 verified against the size and SHA-256 pins inside the wheel before they are
@@ -66,58 +60,48 @@ gpuwm-global doctor        # what is installed, staged and missing
 ```
 
 `doctor` exits 1 while any boundary gap stands, and every line that says no
-names the command it stops and the remedy. Two gaps stand on every published
-2.7: `preflight.measured_free_vram_bytes` and
-`surface_bias.interpolate_to_tape` are absent from 2.7.0, 2.7.1 and 2.7.2
-(read on the Windows desktop 2026-09-10) and from 2.7.3 (read there
-2026-09-12), so a correct install of this release exits 1 as well. Neither stops a command this page or
+names the command it stops and the remedy. Two gaps stand on the published
+2.8.0 as on every 2.7: `preflight.measured_free_vram_bytes` and
+`surface_bias.interpolate_to_tape` are absent from it, so a correct install of
+this release exits 1 as well. Neither stops a command this page or
 [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) documents: the first stops the
 standalone card-pricing check that no subcommand is wired to, and the second
 the surface-energy scorecard's regrid onto the tape. Read the section bodies
 for install health, not the exit code.
 
-`gpuwm-global` needs `gpuwm>=2.7.0,<2.8`. The ceiling is not decoration: the
-engine's own trees are not supersets of each other across minors, and this
-package imports 231 symbols across that boundary.
-`python tools/measure_boundary.py` regenerates the measurement rather than
-trusting a table, and names the symbols it could not check on a host without a
-CUDA runtime instead of counting them clean. The physics the model was graded
-with is INSIDE this package (`arwen_global.core`: the radiation, cumulus,
-surface-layer, boundary-layer, land-surface and microphysics schemes, their
-kernels, the CUDA loader, the float64 mirror the scorecards grade against and
-the Noah tables), so any `2.7.x` engine integrates the same bytes the grading
-tree did. The engine files the carried code still reaches are pinned by path,
+`gpuwm-global` needs `gpuwm>=2.8.0,<2.9`. The floor names a breakage: the
+carried radiation reads its trace-gas and ozone table through the engine's
+loader, the `rw_asos` door row carries the engine's v2 surface line, and the
+statics build needs the static builder's `rows` grid kind, and no engine
+before 2.8.0 has any of them. The ceiling is not decoration: the engine's own
+trees are not supersets of each other across minors, and this package
+imports 234 symbols across that boundary. `python tools/measure_boundary.py`
+regenerates the measurement rather than trusting a table, and names the
+symbols it could not check on a host without a CUDA runtime instead of
+counting them clean. The physics the model was graded with is INSIDE this
+package (`arwen_global.core`: the radiation, cumulus, surface-layer,
+boundary-layer, land-surface and microphysics schemes, their kernels, the
+CUDA loader, the float64 mirror the scorecards grade against and the Noah
+tables). The engine files the carried code still reaches are pinned by path,
 size and SHA-256 in `arwen_global/data/engine-seam.json`, and
-`gpuwm-global doctor` re-hashes them and prints an `engine seam` section:
-46 of 46 files proven against `gpuwm 2.7.3` on this desktop, 2026-09-12,
-which is what a fresh install of this release resolves.
+`gpuwm-global doctor` re-hashes them and prints an `engine seam` section: 47
+of 47 files proven against `gpuwm 2.8.0`, the version a fresh install of
+this release resolves. The pins were read off the PyPI wheel and match the
+same files in the Windows wheel, the pure wheel and the public `v2.8.0` tag
+byte for byte. Eighteen of the 46 files pinned at 2.7.3 moved by 2.8.0, and
+`gpuwm/core/rfmip_upstream.py` joined the table, because the RFMIP oracle
+now fetches through it.
 
-The pins hold one version at a time, and they were moved from 2.7.0 to 2.7.3
-after the eight files 2.7.3 changed were read hunk by hunk: `config.py`,
-`core/state.py`, `core/preflight.py`, `physics_compat.py`,
-`physics_vertical_contract.py`, `core/microphysics.py`, `core/refl.py` and
-`core/rrtmg_legacy.py`. Every symbol this package imports out of those eight
-is byte-identical between the two engines except three, and all three are
-prose or a widened acceptance rather than a different number: `RunConfig` and
-`DomainState` moved in comments only, with no field, default or validation
-changed, and `radiation_scheme_ids` narrowed a refusal so that writing
-`ra_physics=4` beside `ra_lw_physics=4`/`ra_sw_physics=4` resolves to the
-same `(4, 4)` pair instead of raising. The scratch arena now accepts a
-same-width dtype it used to reject, and the microphysics ring-guard family
-grew ten scheme-native names behind a presence guard on a path no door of
-this package enters. `tools/measure_boundary.py` and
-`tools/measure_engine_signatures.py` read the same 231 symbols and the same
-28 signature rows on 2.7.3 as on 2.7.2, with no new gap. The two nodes of
-`tests/test_arwen_global_engine_seam.py` that compare hashes now run against
-the pinned version and skip, naming both versions, on any other published
-2.7; a file whose bytes moved is reported by name as unproven, and the
-version ceiling is the refusal. Where the carried physics
-differs from the engine's own copy of the same file, and whether a future
-engine change to that code should be taken, refused or offered back, is one
-row per difference in
+The two nodes of `tests/test_arwen_global_engine_seam.py` that compare
+hashes run against the pinned version and skip, naming both versions, on any
+other; a file whose bytes moved is reported by name as unproven, and the
+version ceiling is the refusal. Where the carried physics differs from the
+engine's own copy of the same file, and whether a future engine change to
+that code should be taken, refused or offered back, is one row per
+difference in
 [docs/CARRIED-PHYSICS-DIVERGENCE.md](docs/CARRIED-PHYSICS-DIVERGENCE.md), held
 to the installed engine by `tests/test_engine_divergence.py`, which is
-baselined on 2.7.3 and skips its two comparisons on any other.
+baselined on 2.8.0 and skips its two comparisons on any other.
 
 ---
 
@@ -280,11 +264,9 @@ the row is a capability row rather than a timing.
 Every row was measured on the date in its last column, in the engine checkout
 this model was developed and graded in, whose version string reads 2.6.4. No
 published engine produced them. The physics those runs integrated is carried
-inside this package as `arwen_global.core`, so a bare install on any `2.7.x`
-engine integrates the same bytes; what the published 2.7.0, 2.7.1 and 2.7.2
-were measured for is the boundary reading, the engine seam and the source
-mappings, all read on 2026-09-10, and 2.7.3 for the boundary reading and the
-carried-physics rows, read on 2026-09-12.
+inside this package as `arwen_global.core`, so an install on the 2.8 engine
+integrates the same bytes apart from the engine fixes taken since, which the
+divergence document lists.
 
 | Truncation | Gaussian grid | Equator spacing | Card | A forecast day | Device peak | Measured |
 |---|---|---|---|---|---|---|

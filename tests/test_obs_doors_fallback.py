@@ -116,3 +116,23 @@ def test_an_override_is_only_ever_a_door_this_package_publishes():
             assert name in published_here, (
                 f"{name} overrides the engine's row and no bundle of this "
                 "package publishes it")
+
+
+@pytest.mark.parametrize("name", ["rw_asos", "rw_goes"])
+def test_a_door_both_tables_carry_has_the_engines_line(name):
+    """One binary built from the engine's commit answers both tables.
+
+    THE BREAKAGE THIS PREVENTS: this package publishes `rw_asos` and
+    `rw_goes` in its own bundle while the engine carries rows for the same
+    binaries.  From 2.8.0 the engine's rows carry every subcommand this
+    package calls, and the doors are built from the engine's source.  A
+    marker here that differs from the engine's by one token makes the probe
+    refuse the binary the engine itself accepts, so the surface or radiance
+    stream is lost on a correct install.
+    """
+
+    from gpuwm.obs import frontdoor
+
+    engine = {door.name: door for door in frontdoor.FRONT_DOORS.values()}
+    assert name in engine
+    assert obs_doors._ROWS[name][2] == engine[name].abi_marker

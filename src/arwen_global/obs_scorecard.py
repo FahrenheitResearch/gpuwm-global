@@ -6,7 +6,7 @@ What it measures
 ----------------
 Two instruments, one sampling rule.
 
-*Surface.*  ASOS station reports (the ``gpuwm-obs.asos-surface.v1`` record
+*Surface.*  ASOS station reports (the ``gpuwm-obs.asos-surface.v2`` or ``.v1`` record
 ``rw_asos`` decodes) at one valid time, four variables in the seam's units:
 2 m temperature (K), 2 m dewpoint (K), 10 m wind speed (m/s) and mean sea
 level pressure (Pa; the tables print hPa).  Every model is a
@@ -1528,7 +1528,7 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--out", type=Path, required=True)
         if name == "surface":
             p.add_argument("--valid", required=True, help="seam instant, e.g. 2026-09-01T18:00:00")
-            p.add_argument("--obs", type=Path, required=True, help="gpuwm-obs.asos-surface.v1 record")
+            p.add_argument("--obs", type=Path, required=True, help="gpuwm-obs.asos-surface.v2 (or v1) record")
             p.add_argument("--csv", type=Path)
         else:
             p.add_argument("--valid", required=True, help="nominal instant, e.g. 2026-09-01T12:00:00Z")

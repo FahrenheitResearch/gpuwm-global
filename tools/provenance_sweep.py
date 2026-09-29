@@ -2,19 +2,17 @@
 
 `tests/test_no_provenance.py` ASSERTS the leaks that must never ship: a
 home-directory path, a private network address, a personal name, the name
-of a tool a file was written with.  This script REPORTS a fifth class that
-the gate deliberately does not assert, because clearing it is an edit to
-somebody's measurement text rather than to the gate: the hostnames of the
-machines figures were taken on.
+of a tool a file was written with, and since 0.1.2 the hostnames of the
+machines figures were taken on as well (the published 0.1.1 wheel carried
+six in carried physics comments).  This script still REPORTS that class
+over the whole tree, including files that do not ship, one line per hit:
 
-    src/arwen_global/runner.py:636: node-1 RTX 5070 Ti, T255 L40 ...
+    <file>:<line>: <the sentence, with the machine's name in it>
 
 A hostname in a measurement docstring is not dangerous the way a private
 subnet is, but it is not useful to a reader either: they cannot reach the
 machine, and the fact that matters (which card, which operating system,
-which interpreter) is usually in the same sentence. This script exists so
-the debt is countable and shrinking rather than discovered later by
-somebody reading the published source.
+which interpreter) is usually in the same sentence.
 
     python tools/provenance_sweep.py            # report
     python tools/provenance_sweep.py --count    # one number

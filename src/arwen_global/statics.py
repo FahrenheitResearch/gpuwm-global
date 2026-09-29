@@ -36,7 +36,7 @@ import json
 import math
 import os
 from pathlib import Path
-import socket
+import platform
 import time
 
 import numpy as np
@@ -540,16 +540,17 @@ def build_statics(grid, options: StaticsOptions, *,
         },
         "built_at_utc": datetime.now(timezone.utc).replace(microsecond=0)
         .isoformat().replace("+00:00", "Z"),
-        # THE ONE PLACE A HOSTNAME IS DELIBERATE, and the boundary is what
-        # the file does.  This sidecar is written into the user's OWN cache
-        # directory beside their own arrays and travels nowhere: a geog
-        # cache is often built on one machine and copied to another, and the
-        # name of the machine that built it is how its owner tells two of
-        # them apart.  Nothing that ships as package data records a name:
-        # the render catalog, which does travel inside the wheel, records
-        # the KIND of machine instead, and `tools/arwen_global_render_catalog
-        # ._machine_class` is where that is done and why.
-        "host": socket.gethostname(),
+        # The KIND of machine that built the cache, never its name.  Until
+        # 0.1.2 this field carried the hostname, on the reasoning that the
+        # sidecar stays in the user's own cache.  It does not stay there: a
+        # geog cache is built once and copied between machines, attached to
+        # support requests and published beside a run, and every copy named
+        # the machine it came from.  The kind is what a reader can act on
+        # (whether a stored build applies to theirs), the same rule the
+        # render catalog follows in `tools/arwen_global_render_catalog
+        # ._machine_class`; two caches are told apart by `built_at_utc` and
+        # their array digests, which the name never added to.
+        "host": machine_class(),
         "wall_seconds": float(wall),
         "arrays": {
             name: {"shape": list(value.shape), "dtype": value.dtype.str,
@@ -559,6 +560,15 @@ def build_statics(grid, options: StaticsOptions, *,
         "coverage": coverage,
     }
     return out, provenance
+
+
+def machine_class() -> str:
+    """The kind of machine this process runs on: system and architecture.
+
+    Never a hostname, a user name or an operating-system build number.
+    """
+
+    return f"{platform.system().lower()}-{platform.machine().lower()}"
 
 
 def write_cache(npz_path: Path, fields: dict[str, np.ndarray],
@@ -741,8 +751,8 @@ def resolve_surface_statics(fields: dict[str, np.ndarray], provenance: dict, *,
     ivgtyp = np.asarray(north.ivgtyp, dtype=np.int32)
     isltyp = np.asarray(north.isltyp, dtype=np.int32)
     # The rulebook keeps the crate's land/water split (lake folds to
-    # water on water cells, a land cell carrying water soil becomes WRF's
-    # category 5 / soil 8) and freezes the sea-ice columns over (the ice
+    # water on water cells, a land cell carrying water soil keeps its land
+    # use and takes soil 8, as real.exe matches it) and freezes the sea-ice columns over (the ice
     # class on water cells at or above the threshold), so the category
     # water test and the runtime's xland test name the same columns.
     # Checked, not assumed: a column on the wrong side would be

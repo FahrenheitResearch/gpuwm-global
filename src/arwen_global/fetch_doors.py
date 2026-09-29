@@ -82,6 +82,7 @@ from .doors import (
     current_platform,
     doors_from_bundle,
     sha256_file,
+    BUNDLE_NOTICE,
     stage_from_directory,
 )
 
@@ -209,6 +210,9 @@ def _stage(source: Path, dest: Path, platform_key: str, origin: str,
           f"{dest} from {origin}")
     for path in staged:
         print(f"  {path.name:<16} {path.stat().st_size:,} B")
+    notice = dest / BUNDLE_NOTICE
+    if notice.is_file():
+        print(f"  licence notice for the crates inside them: {notice}")
     _report_what_outranks(dest, doors)
     return 0
 

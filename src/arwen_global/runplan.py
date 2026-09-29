@@ -2033,6 +2033,32 @@ def probe_environment(*, readiness: bool = True) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def manifest_physics(plan: RunPlan) -> dict[str, Any]:
+    """The physics this plan runs, for the manifest, before any work starts.
+
+    The engine's manifest carries a ``physics`` block from 2.8.0 on, so a
+    client that reads a run's physics off the manifest finds it on this one
+    too.  It is this package's own snapshot, the one the resolved document
+    already carries, plus who stated it.  It never raises: a manifest that
+    failed to write because a config could not be read would lose the run's
+    attach point, so the error is recorded as ``unresolved`` instead, the
+    same way the engine records it.
+    """
+
+    try:
+        if plan.config_path is not None:
+            cfg, _ = _config_from_plan(plan)
+        else:
+            with tempfile.TemporaryDirectory(prefix="arwen-global-manifest-") as scratch:
+                cfg, _ = _config_from_plan(plan, into=Path(scratch))
+        document = dict(_physics_snapshot(cfg))
+    except Exception as error:  # noqa: BLE001 - the manifest is never lost to this
+        return {"stated_by": f"the {plan.config_kind} configuration",
+                "unresolved": f"{type(error).__name__}: {error}"}
+    document["stated_by"] = f"the {plan.config_kind} configuration's [physics] table"
+    return document
+
+
 def write_manifest(plan: RunPlan, *, run_dir: Path, run_id: str,
                    superseded: Mapping[str, Any] | None = None,
                    started_at_utc: str) -> Path:
@@ -2046,6 +2072,7 @@ def write_manifest(plan: RunPlan, *, run_dir: Path, run_id: str,
     distribution replied.
     """
 
+    from gpuwm import proc_identity
     from gpuwm.provenance_gate import receipt_block
     from gpuwm.supervisor import (FAILURE_CAPSULE_NAME, FAILURE_CAPSULE_SCHEMA,
                                   HEARTBEAT_NAME, HEARTBEAT_SCHEMA,
@@ -2065,6 +2092,11 @@ def write_manifest(plan: RunPlan, *, run_dir: Path, run_id: str,
         "route": plan.route,
         "run_id": run_id,
         "pid": os.getpid(),
+        # The pid names a process only until it ends; its creation time and
+        # boot, from the engine's own identifier, let a client tell this run
+        # from a later program that reused the pid before it reports the run
+        # alive or signals it.
+        "process": proc_identity.identify(os.getpid()),
         "started_at_utc": started_at_utc,
         "plan_source": plan.source,
         "plan_sha256": plan.sha256,
@@ -2092,6 +2124,7 @@ def write_manifest(plan: RunPlan, *, run_dir: Path, run_id: str,
             "byte zero for HISTORY, then tail it for live detail; the "
             "heartbeat is the durable anchor, the event stream is the "
             "fine-grained feed"),
+        "physics": manifest_physics(plan),
     }
     path = run_dir / MANIFEST_FILENAME
     atomic_write_json(path, document)

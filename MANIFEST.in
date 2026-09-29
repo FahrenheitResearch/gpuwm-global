@@ -45,6 +45,7 @@ include README.md
 include CHANGELOG.md
 include RELEASE-NOTES-0.1.0.md
 include RELEASE-NOTES-0.1.1.md
+include RELEASE-NOTES-0.1.2.md
 # Which revision of the model's source this package carries.  A reader
 # of an sdist has the code and no way to place it without this.
 include SOURCE.md

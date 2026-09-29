@@ -653,7 +653,7 @@ def _model_clock_dt(cfg) -> float:
     """WRF's model-clock ``dt`` for clock-defined cumulus arithmetic.
 
     KF's driver formulas (0.5*DT hold boundary, NINT(NCA/DT) expiry,
-    RAINC += PRATEC*DT) are defined on the model clock; the real74
+    RAINC += PRATEC*DT) are defined on the model clock; the reference
     compatibility integrator advances internal substeps
     (``cfg.clock_dt > cfg.dt``), the same idiom handled by
     ``lateral_boundary_clock_dt`` and the clock-scaled diff_6th factor.
@@ -3311,7 +3311,7 @@ class PhysicsDriver:
         WRF therefore calls SFCDIAGS after the LSM and before the PBL driver
         (module_surface_driver.F:2983-3000; module_sf_sfcdiags.F:45-72).
         gpuwm does not expose WRF's UA_PHYS or HWRF compile-time branches, so
-        this is their standard false/non-HWRF formulation used by real74.
+        this is their standard false/non-HWRF formulation used by the reference configuration.
 
         One documented divergence, on the lower bound only.  WRF's flux
         inversion ``Q2 = QSFC - QFX/(RHO*CQS2)`` (module_sf_sfcdiags.F:56)

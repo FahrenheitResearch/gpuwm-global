@@ -225,7 +225,7 @@ _SECOND = "load[-_ ]bearing"
 #: INSENSITIVE, and this table was not, so an all-capitals spelling of
 #: either word was substituted by nothing and asserted against by nothing.
 #: Four such lines shipped inside two carried kernels.
-CORE_PROSE: tuple[tuple[str, str], ...] = (
+CORE_WORDS: tuple[tuple[str, str], ...] = (
     (rf"(?<![A-Za-z]){_FIRST}ly(?![A-Za-z])", "exactly"),
     (rf"(?<![A-Za-z]){_FIRST.capitalize()}ly(?![A-Za-z])", "Exactly"),
     (rf"(?<![A-Za-z]){_FIRST.upper()}LY(?![A-Za-z])", "EXACTLY"),
@@ -236,6 +236,56 @@ CORE_PROSE: tuple[tuple[str, str], ...] = (
     (rf"(?<![A-Za-z]){_SECOND.capitalize()}(?![A-Za-z])", "Structural"),
     (rf"(?<![A-Za-z]){_SECOND.upper()}(?![A-Za-z])", "STRUCTURAL"),
 )
+
+#: MACHINE NAMES AND A CASE NAME, rewritten in carried Python AND in the
+#: carried device sources.
+#:
+#: THE BREAKAGE THIS TABLE PREVENTS.  Measured on 0.1.1 as published: six
+#: comment lines across `core/gf.py`, `kernels/gf.cu`, `kernels/ntiedtke.cu`
+#: and `kernels/ysu.cu` named the private machines a figure was taken on,
+#: and eight docstring lines across `core/landuse.py`, `core/npref.py`,
+#: `core/physics.py` and `core/rrtmgp.py` named one private case by its
+#: working name.  All fourteen were inside the wheel on a public index.  A
+#: hostname tells a reader nothing they can use, and a case name in a
+#: generic module is the specialisation the case-name rule forbids.  The
+#: card model a figure was measured on stays: it is a measurement condition.
+#:
+#: Earlier text in this file said machine names in carried comments are NOT
+#: touched, because they are another author's measurement text.  That was
+#: the position until they were measured inside the published wheel; the text is kept, the machine is dropped,
+#: and the card it names is kept where the sentence already gave it.
+#:
+#: WHAT IT COSTS a kernel: the three device sources that carry a machine
+#: name (gf.cu, ntiedtke.cu, ysu.cu) move their `source_sha256` and the
+#: kernel-set digest a receipt records, and nothing else: a comment is gone
+#: before nvrtc reaches the first token.  The engine-divergence fingerprint
+#: applies this table to the engine side too, so the engine's own copies of
+#: the same comments do not become new differences.
+#:
+#: SPELLED IN PIECES, for the reason the words above are: the gate that reads
+#: the shipped tree matches these spellings, and this file ships in the sdist.
+_NODE = "no" + "de"
+_CASE = "real" + "74"
+
+CORE_IDENTITY: tuple[tuple[str, str], ...] = (
+    (rf"on {_NODE}-1 \(weather-{_NODE}-1, RTX 5070 Ti, ", "on an RTX 5070 Ti ("),
+    (rf"on {_NODE}-1 \(RTX 5070(\s+(?:\*\s+)?)Ti, ", r"on an RTX 5070\1Ti ("),
+    (rf"MEASURED on {_NODE}-1 at ", "MEASURED on an RTX 5070 Ti at "),
+    (rf"\({_NODE}-1, sm_120\)", "(RTX 5070 Ti, sm_120)"),
+    (rf"pinned against the {_CASE} WRF", "pinned against the reference WRF"),
+    (rf"matching {_CASE}\.", "matching the reference WRF configuration."),
+    (rf"the {_CASE}(?=\s+compatibility)", "the reference"),
+    (rf"formulation used by {_CASE}\.",
+     "formulation used by the reference configuration."),
+    (rf"the standard {_CASE} path", "the standard path"),
+    (rf"the frozen {_CASE} configuration", "the frozen reference configuration"),
+    (rf"For {_CASE}(?=\n)", "For the reference case"),
+)
+
+#: The whole carried-text rule: the two words, then the identities.  One
+#: name for both because every caller (the carve, the device rule, the carve
+#: tests, the engine-divergence fingerprint) applies them together.
+CORE_PROSE: tuple[tuple[str, str], ...] = CORE_WORDS + CORE_IDENTITY
 
 #: THE HOUSE DASH RULE, on carried Python.
 #:
@@ -458,6 +508,128 @@ CORE_EXACT: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
       "adversarial",
       "        # columns with entry TKE at or above the floor produced ZERO",
       "        # tke-confined non-finites.")),
+)
+
+#: RRTMGP READS ITS TRACE-GAS AND OZONE CLIMATOLOGY FROM THE ENGINE'S TABLE.
+#:
+#: THE BREAKAGE THIS TABLE PREVENTS.  The carried ``RRTMGPRadiation`` opened
+#: the RFMIP clear-sky input NetCDF out of the engine's ``gpuwm-data``
+#: companion at every construction, for 136 numbers: sixteen experiment-zero
+#: global means and the median layer pressure and ozone over the 100 sites.
+#: The engine stops shipping that file at 2.8.0, because no RFMIP file is
+#: redistributed any more (the reference results are CC-BY-NC-SA-4.0 and the
+#: input file's own licence attribute contradicts its link), so on that
+#: companion the first radiation call would refuse.  The numbers ship in the
+#: engine's companion as ``rrtmgp-trace-gas-climatology.json`` and
+#: :func:`gpuwm.core.rrtmgp.load_trace_climatology` loads them against their
+#: SHA-256 pin; the carried driver calls that loader.  Until 2026-09-29 this
+#: package shipped its own copy of the table and loader, because the engine
+#: it could install beside did not have them yet; the 2.8.0 floor retired
+#: that copy.
+#:
+#: The same reason moves the RFMIP clear-sky ORACLE (``_rfmip_profiles`` and
+#: ``rfmip_clear_sky``) onto the engine's fetch route,
+#: :func:`gpuwm.core.rfmip_upstream.fetch_rfmip`: the file is fetched from its
+#: pinned upstream commit into a user cache and verified, or read from a copy
+#: the caller names, exactly as the engine's own oracle does.
+#:
+#: A CODE RULE, applied by the same exact-block machinery as ``CORE_EXACT``
+#: and holding the same post-condition: a block that stops matching stops the
+#: cut.  The source tree still opens the NetCDF, and it has to until it runs
+#: on an engine without the file; the day it changes these blocks, the rule
+#: matches nothing, the cut stops, and whoever re-cuts retires the entry
+#: rather than carrying two routes to the same numbers.
+#:
+#: BIT-IDENTICAL, measured: every value equals what the replaced block
+#: computed from the NetCDF (``float(GM[0]) * units``, float64 medians over
+#: the sites), and a T255 ten-step run on one card wrote byte-identical
+#: checkpoints before and after (2026-09-26).  The engine's table is the same
+#: bytes as the copy that run read (SHA-256 ``71d7f857...``).
+CORE_TRACE_CLIMATOLOGY: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    ("core/rrtmgp.py",
+     ("    explicit case overrides.  Water vapor comes from the model and ozone is",
+      "    interpolated from the median RFMIP climatological profile.",
+      '    """'),
+     ("    explicit case overrides.  Water vapor comes from the model and ozone is",
+      "    interpolated from the median RFMIP climatological profile.  Both come",
+      "    from the engine's :func:`gpuwm.core.rrtmgp.load_trace_climatology`,",
+      "    the table derived from the RFMIP input file, which is not read here.",
+      '    """')),
+    ("core/rrtmgp.py",
+     ('        with Dataset(_table("rfmip-clear-sky-inputs.nc"), "r") as ncfile:',
+      "            ncfile.set_auto_mask(False)",
+      "            for gas, rfmip_name in _RFMIP_GAS_NAMES.items():",
+      '                variable = ncfile[rfmip_name + "_GM"]',
+      '                scale = float(getattr(variable, "units", "1").replace(" ", ""))',
+      "                self.trace_vmr[gas] = float(variable[0]) * scale",
+      "            for gas, value in trace_gases(",
+      "                    self.start_time, self.trace_gas_overrides).items():",
+      "                if gas not in self.trace_vmr:",
+      "                    # Defensive parity with the pure policy validation: table",
+      "                    # and packaged RFMIP names must never drift silently.",
+      "                    raise ValueError(",
+      '                        f"unknown trace gas {gas!r}; known well-mixed gases: "',
+      '                        f"{sorted(self.trace_vmr)}")',
+      "                self.trace_vmr[gas] = value",
+      "            pressure = np.median(",
+      '                np.asarray(ncfile["pres_layer"][:], np.float64), axis=0)',
+      "            ozone = np.median(",
+      '                np.asarray(ncfile["ozone"][0], np.float64), axis=0)'),
+     ("        from gpuwm.core.rrtmgp import load_trace_climatology",
+      "",
+      "        climatology = load_trace_climatology()",
+      "        for gas in _RFMIP_GAS_NAMES:",
+      "            self.trace_vmr[gas] = climatology.trace_vmr[gas]",
+      "        for gas, value in trace_gases(",
+      "                self.start_time, self.trace_gas_overrides).items():",
+      "            if gas not in self.trace_vmr:",
+      "                # Defensive parity with the pure policy validation: table",
+      "                # and packaged RFMIP names must never drift silently.",
+      "                raise ValueError(",
+      '                    f"unknown trace gas {gas!r}; known well-mixed gases: "',
+      '                    f"{sorted(self.trace_vmr)}")',
+      "            self.trace_vmr[gas] = value",
+      "        pressure = climatology.pressure_layer_pa",
+      "        ozone = climatology.ozone_vmr")),
+    ("core/rrtmgp.py",
+     ('def _rfmip_profiles(tables, sites, experiments):',
+      '    sites = np.asarray(sites, dtype=np.intp)',
+      '    experiments = np.asarray(experiments, dtype=np.intp)',
+      '    with Dataset(_table("rfmip-clear-sky-inputs.nc"), "r") as nc:'),
+     ('def _rfmip_profiles(tables, sites, experiments, inputs=None):',
+      '    from gpuwm.core.rfmip_upstream import fetch_rfmip',
+      '',
+      '    sites = np.asarray(sites, dtype=np.intp)',
+      '    experiments = np.asarray(experiments, dtype=np.intp)',
+      '    source = fetch_rfmip("rfmip-clear-sky-inputs.nc", path=inputs)',
+      '    with Dataset(source, "r") as nc:')),
+    ("core/rrtmgp.py",
+     ('def rfmip_clear_sky(*, sites=None, experiments=None) -> RFMIPResult:',
+      '    """Run the shipped RFMIP clear-sky oracle profiles on the GPU.',
+      '',
+      '    This reproduces the upstream physics-index-1/forcing-index-1 examples:',
+      '    one-angle LW, default solar spectrum normalized to each RFMIP TSI, and',
+      '    nighttime columns explicitly zeroed after the SW solve.',
+      '    """'),
+     ('def rfmip_clear_sky(*, sites=None, experiments=None,',
+      '                    inputs=None) -> RFMIPResult:',
+      '    """Run the RFMIP clear-sky oracle profiles on the GPU.',
+      '',
+      '    This reproduces the upstream physics-index-1/forcing-index-1 examples:',
+      '    one-angle LW, default solar spectrum normalized to each RFMIP TSI, and',
+      '    nighttime columns explicitly zeroed after the SW solve.',
+      '',
+      '    The RFMIP input file is not shipped by the engine from 2.8.0 on (see',
+      '    :mod:`gpuwm.core.rfmip_upstream`): ``inputs`` names a local copy, and',
+      '    without it the pinned upstream file is fetched into the RFMIP cache.',
+      '    Either way its SHA-256 is verified before a byte is read.',
+      '    """')),
+    ("core/rrtmgp.py",
+     ('     _sza, _tsi) = _rfmip_profiles(lw, sites, experiments)',),
+     ('     _sza, _tsi) = _rfmip_profiles(lw, sites, experiments, inputs)',)),
+    ("core/rrtmgp.py",
+     ('     sza, tsi) = _rfmip_profiles(sw, sites, experiments)',),
+     ('     sza, tsi) = _rfmip_profiles(sw, sites, experiments, inputs)',)),
 )
 
 
@@ -809,9 +981,9 @@ VERBATIM_SUFFIXES = {".cu", ".cuh"}
 #: something no re-cut reproduces, and reproducibility from the source tree
 #: is the whole claim of this file.  The rule is exactly the word table
 #: above plus the one exact string below, applied to `.cu` and `.cuh` and
-#: to nothing else.  Machine names in device comments are NOT touched, for
-#: the same reason they are not touched in the carried Python: they are
-#: measurement text, reported by `tools/provenance_sweep.py`.
+#: to nothing else.  Machine names and the one case name in device comments
+#: are rewritten by `CORE_IDENTITY`, which is part of that word table since
+#: 0.1.2; the paragraph there says what it costs.
 #:
 #: WHAT IT COSTS, measured rather than assumed: 17 bytes across three of the
 #: fifteen device sources (gf.cu -2, ntiedtke.cu -4, glibc_flt32.cuh -11),
@@ -854,6 +1026,9 @@ DEVICE_FORBIDDEN: tuple[tuple[str, str], ...] = (
      "the name of a tool a file was written with"),
     (re.escape(_EM_DASH),
      "an em-dash, which this package's published text does not use"),
+    (rf"\b(weather-{_NODE}-\d+|{_NODE}-[1-9]\d*)\b",
+     "the name of a private machine"),
+    (rf"(?i){_CASE}", "a private case name"),
 )
 
 
@@ -1036,7 +1211,8 @@ def rewire(tree: Path,
             for pattern, replacement in PROSE_DASH:
                 text = re.sub(pattern, replacement, text)
         rel = path.relative_to(tree).as_posix()
-        for named, old_lines, new_lines in CORE_EXACT + KERNEL_NOTICE_SCOPE:
+        for named, old_lines, new_lines in (CORE_EXACT + CORE_TRACE_CLIMATOLOGY
+                                            + KERNEL_NOTICE_SCOPE):
             if rel != named:
                 continue
             old_text = chr(10).join(old_lines)

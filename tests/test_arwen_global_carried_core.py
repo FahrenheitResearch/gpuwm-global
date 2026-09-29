@@ -166,7 +166,7 @@ def test_the_carried_mirror_takes_the_keywords_the_scorecards_pass():
 #: so a reader of a run log knows what a green run would have meant.
 needs_a_card = pytest.mark.skipif(
     importlib.util.find_spec("cupy") is None,
-    reason="needs a CUDA device and cupy; measured on node-2's RTX 5090 "
+    reason="needs a CUDA device and cupy; measured on an RTX 5090 "
            "(sm_120, CUDA 13 driver) on 2026-09-10, where the carried core "
            "compiled and integrated three T255 L40 steps")
 

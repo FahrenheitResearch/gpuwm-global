@@ -6,11 +6,11 @@
 #
 #     if: vars.GPUWM_GLOBAL_PUBLISH_AUTHORIZED == '1'
 #
-# and no repository variable of that name exists.  A missing variable
-# evaluates to the empty string, so every job is skipped, the workflow
-# completes having done nothing, and no upload is attempted.  Creating that
-# variable is a deliberate act in the repository settings, performed by the
-# owner, and it is the only thing between this file and a live publisher.  It
+# and a missing variable evaluates to the empty string, so without it every
+# job is skipped, the workflow completes having done nothing, and no upload
+# is attempted.  Setting that variable to 1 is a deliberate act in the
+# repository settings, performed by the owner, and it is the only thing
+# between this file and a live publisher.  It
 # is not a secret, it holds no credential, and it grants none: it is a switch
 # that has to be thrown by hand, once, by somebody who meant to.
 #
@@ -172,17 +172,18 @@ jobs:
           if-no-files-found: error
 
   # -------------------------------------------------------------------------
-  # 4.  The door bundles.  The six observation doors this package needs live
-  #     in crates the engine's PUBLIC line does not carry yet, so bridges.yml,
-  #     which checks that line out at the pinned engine revision, cannot build
-  #     them today and says so by name.  It is still CALLED on every cut so
-  #     the day the engine takes the crates is visible as a green job here and
-  #     nowhere else has to change.  Until then it gates nothing: the bundles
-  #     a release carries are built by the maintainer from the engine checkout
-  #     at the pinned revision, packed and pinned by tools/build_door_bundle.py
-  #     into the wheel's own door-pins.json, and attached to the release BEFORE
-  #     it is published.  Section 6 below checks those attached bytes against
-  #     the wheel's pins, which is a stronger check than trusting a build.
+  # 4.  The door bundles.  bridges.yml checks the engine's public line out at
+  #     ENGINE_TAG (v2.8.0, the first public engine tag that carries the door
+  #     crates) and builds the eight doors on Linux and Windows, which proves
+  #     on every cut that they build from public source.  It gates nothing:
+  #     the bundles a release carries are built from the same tag, packed and
+  #     pinned by tools/build_door_bundle.py into the wheel's own
+  #     door-pins.json, and attached to the release BEFORE it is published.
+  #     A runner's toolchain is not that build's, and its Windows job links
+  #     with MSVC where the released Windows doors are x86_64-pc-windows-gnu,
+  #     so the bytes it produces are informational.  Section 6 below checks
+  #     the attached bytes against the wheel's pins, which is a stronger
+  #     check than trusting a build.
   # -------------------------------------------------------------------------
   doors:
     if: vars.GPUWM_GLOBAL_PUBLISH_AUTHORIZED == '1'

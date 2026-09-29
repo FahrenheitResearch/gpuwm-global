@@ -128,7 +128,7 @@ def main(argv=None) -> int:
     report = {
         "probe": "R4-resident-floor",
         "config": str(args.config),
-        "host": platform.node(),
+        "host": f"{platform.system().lower()}-{platform.machine().lower()}",
         "card": props["name"].decode(),
         "card_total_gib": round(total_bytes / GIB, 3),
         "card_free_at_start_gib": round(free_bytes / GIB, 3),

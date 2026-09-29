@@ -3,10 +3,11 @@
 Three things about `.github/workflows/` are asserted here rather than
 trusted, because each one fails silently and each one has a cost:
 
-1.  **The publisher cannot fire.**  Every job in `publish.yml` is gated on
-    a repository variable that does not exist.  A missing variable is the
-    empty string, so every job is skipped and the run completes having
-    done nothing.  If that guard is ever dropped from one job, the file
+1.  **The publisher cannot fire by accident.**  Every job in
+    `publish.yml` is gated on a repository variable that only a deliberate
+    act in the repository settings sets.  A missing variable is the empty
+    string, so every job is skipped and the run completes having done
+    nothing.  If that guard is ever dropped from one job, the file
     goes from "reviewable" to "armed" without anything else changing, and
     nothing in a diff review reliably catches a deleted `if:` line.
 2.  **The selections agree.**  `test.yml` and `publish.yml` run the same
@@ -339,17 +340,19 @@ def test_the_release_job_and_the_door_bundles_agree_on_their_contract() -> None:
     """publish.yml still calls bridges.yml, and the release page is checked
     against the wheel's own pins rather than against that build.
 
-    THE BREAKAGE THIS PREVENTS, in two halves.  The doors this package
-    needs live in crates the engine's public line does not carry yet, so
-    bridges.yml cannot build them from that line and fails by name; a
-    publish whose upload waited on that job could never upload.  So the
-    upload waits on the tests and the distributions only, and the release
+    THE BREAKAGE THIS PREVENTS, in two halves.  bridges.yml builds the
+    doors from the engine's public tag on a runner whose toolchain is not
+    the release build's, so its bytes are never the released ones, and
+    before that tag carried the crates it failed by name; a publish whose
+    upload waited on that job would gate PyPI on a build that proves only
+    that the source compiles, and before the tag could never upload.  So
+    the upload waits on the tests and the distributions only, and the release
     job asks the release page for one bundle per platform the pins declare
     and re-hashes each against `door-pins.json` inside the checkout.  A
     release page carrying a bundle for one platform and none for the other,
     or a bundle whose bytes are not the pinned ones, is refused before the
     distributions are attached.  bridges.yml stays called on every cut so
-    the day the engine takes the crates is visible as a green job here.
+    a public tag that stops building the doors is visible as a red job here.
     """
 
     bridges = workflow("bridges.yml")
@@ -366,8 +369,8 @@ def test_the_release_job_and_the_door_bundles_agree_on_their_contract() -> None:
         needs = re.search(r"needs:\s*\[([^\]]*)\]", publish_jobs[name])
         assert needs, f"the {name} job declares no needs list"
         assert "doors" not in needs.group(1), (
-            f"the {name} job waits on the doors build, which the engine's "
-            "public line cannot satisfy yet; the bundles come from the pins")
+            f"the {name} job waits on the doors build, whose bytes are not "
+            "the released ones; the bundles come from the pins")
 
     release = publish_jobs["release"]
     for needle in ("door-pins.json", "gh release view", "gh release download",

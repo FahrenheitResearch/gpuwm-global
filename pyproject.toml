@@ -31,7 +31,7 @@ name = "gpuwm-global"
 # The model source this package carries is cut from revision
 # f6f1adaa3bda7a347c142544d4007cf14847db47, dated 2026-09-12.  SOURCE.md says
 # what that means and how a re-cut is done.
-version = "0.1.1"
+version = "0.1.2"
 description = "Arwen Global: a GPU-native hydrostatic global spectral weather model with ensemble data assimilation"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -64,13 +64,13 @@ license-files = ["LICENSE", "NOTICE", "licenses/*"]
 #              come from it, and so do netCDF4, matplotlib, scipy and pyshp,
 #              which gpuwm declares itself.
 #
-# THE CEILING IS NOT DECORATION.  `<2.8` is exclusive at the first engine
+# THE CEILING IS NOT DECORATION.  `<2.9` is exclusive at the first engine
 # minor nobody has measured this package against.  The breakage it prevents,
 # and this is measured rather than imagined: the engine's own trees are NOT
 # supersets of each other across minors.  `gpuwm/core/preflight.py` is 8,834
 # lines on the tree this package was carved from and 9,727 on the 2.7 line;
 # `gpuwm/core/rrtmgp.py` differs by 1,316 lines; `gpuwm/verify/npref.py` by
-# 491.  A package that imports 231 symbols across that boundary and states
+# 491.  A package that imports 234 symbols across that boundary and states
 # no ceiling is a package that will one day resolve an engine whose symbols
 # moved and fail at the first import of a forecast, after the install
 # reported success.  (The count rose from 78 on 2026-09-09, when the physics
@@ -83,26 +83,29 @@ license-files = ["LICENSE", "NOTICE", "licenses/*"]
 # Widening the range means measuring an engine that passes, which is
 # what tools/measure_boundary.py is for.
 #
-# THE FLOOR IS 2.7.0 AND PIP RESOLVES IT.  Stated because a floor naming a
-# version pip cannot resolve is a defect the hex line already paid for once,
-# and this sentence said the opposite until 2026-09-09: `pip install
-# "gpuwm==2.7.0"` resolved from the public index into a venv created from
-# scratch on the desktop that day, alongside `gpuwm-data==2.7.0`, and every
-# proof in this repository now installs from the index rather than from a
-# candidate wheel.
+# THE FLOOR IS 2.8.0, AND IT NAMES A BREAKAGE.  The carried radiation reads
+# its trace-gas and ozone table through `gpuwm.core.rrtmgp
+# .load_trace_climatology` and the RFMIP oracle fetches through
+# `gpuwm.core.rfmip_upstream`, the `rw_asos` door row carries the engine's
+# v2 surface line, and the statics build needs the static builder's `rows`
+# grid kind.  No engine before 2.8.0 has any of the four: an older one fails
+# at the first radiation construction, refuses the surface stream at its
+# probe, or refuses every global statics build.  pip resolves the floor:
+# `gpuwm==2.8.0` and `gpuwm-data==2.8.0` install from the public index, and
+# every proof of this release installed them from there.
 dependencies = [
     "numpy>=2.0",
-    "gpuwm>=2.7.0,<2.8",
+    "gpuwm>=2.8.0,<2.9",
     # DECLARED RATHER THAN INHERITED, for the same reason netCDF4 is, and the
     # reason is sharper here: the carried radiation driver calls
     # `data_assets.rrtmgp_data_dir()` at MODULE scope and resolves a member of
     # the companion wheel before its first function is defined, so the data
     # distribution is an IMPORT requirement of this package's physics, not a
     # run requirement of the engine's.  It arrives today only through the
-    # engine's own `gpuwm-data==2.7.0`, which is exactly the transitive route
+    # engine's own `gpuwm-data==2.8.0`, which is exactly the transitive route
     # the line above refuses.  The range matches the engine pin: whatever
-    # 2.7.x resolves, its companion resolves beside it.
-    "gpuwm-data>=2.7.0,<2.8",
+    # 2.8.x resolves, its companion resolves beside it.
+    "gpuwm-data>=2.8.0,<2.9",
     # DECLARED RATHER THAN INHERITED.  The carried radiation driver reads the
     # RRTMGP k-distribution files with `from netCDF4 import Dataset` at MODULE
     # scope, so importing the physics driver needs it, not merely running it.
