@@ -452,6 +452,11 @@ workspace.
 
 ## The first real arm, and what ships
 
+The analysis-time station scores in this section reuse reports from the
+METAR/ASOS record the cycle assimilated. They measure fit to assimilated data,
+not independent forecast accuracy. The subsequent forecasts are scored at
+later observation times and are reported separately below.
+
 Measured on the case (2026-09-06, the merged system): `gpuwm-global da fresh` from the GDAS
 2026-08-31 18Z analysis, six hourly letkf cycles to 2026-09-01 00Z with the METAR, IGRA2, NDBC and
 GOES derived-motion-wind tables of record, 32 T127 members under the T255 control, 600 s bins, the
@@ -473,11 +478,11 @@ default filter the successive correction, and
 gpuwm-global da fresh BASE.toml --outdir DIR --analysis-cycle 2026-08-31T18:00:00Z     --until-utc 2026-09-01T00:00:00Z --stream local-tables:paths=...     --filter letkf --members 32 --ensemble-truncation 127 --observation-bin-s 600     --increment-application iau
 ```
 
-is the configuration the numbers above belong to. The same system cycled for 24 hours (the second
-arm, to 2026-09-01 18Z) does not drift: the METAR surface-pressure O-B rms rises from 121 to 173 Pa
+is the configuration the numbers above belong to. In one 24-hour arm (the second
+arm, to 2026-09-01 18Z), the system did not drift over that day: the METAR surface-pressure O-B rms rises from 121 to 173 Pa
 over the first twelve analyses and returns to 144 Pa over the next twelve with the O-A between 72
-and 89 Pa throughout, and the 18Z analysis after a day of cycling reads closer to the 18Z stations
-than the GDAS 18Z analysis on temperature (2.43 against 2.56 K rmse), dewpoint (2.78 against 3.79 K)
+and 89 Pa throughout. The 18Z analysis after that day fits the 18Z station reports,
+which it assimilated, more closely than the GDAS 18Z analysis on temperature (2.43 against 2.56 K rmse), dewpoint (2.78 against 3.79 K)
 and sea-level pressure (1.94 against 2.58 hPa, a -0.9 hPa bias where the v1 door's cycle read -3.3);
 its 500 hPa height bias at the soundings is 0.0 m six hours later where every cold-started column
 carries -6 to -8 m, and the 250 hPa wind stays its weakest row. The full scorecards, the per-cycle
@@ -495,9 +500,11 @@ start on 2 m dewpoint (2.96 and 3.53 against 3.91 and 4.32 K rmse at 18 and 24 h
 (2.69 and 2.77 against 2.84 and 3.13 K), worse beyond the rule on sea-level pressure (2.63 and 3.33
 against 2.39 and 2.62 hPa, the forecast's bias reaching -2.5 hPa by 24 h), on 10 m wind (2.01 and 2.04
 against 1.74 and 1.91 m/s), on 500 hPa height at 12 h (16.90 against 14.24 m) and on every sounding
-temperature and wind row; the handed-back analysis beats the GDAS analysis of its own instant at the
-stations (2 m temperature 2.10 against 2.35 K, dewpoint 2.60 against 4.10, sea-level pressure 2.44
-against 2.79 hPa) and not at the soundings (500 hPa height 15.67 against 14.33 m). The verdict above
+temperature and wind row. The handed-back analysis fits the assimilated station reports more
+closely than the same-instant GDAS analysis on the three quoted surface variables: 2 m temperature
+2.10 against 2.35 K, dewpoint 2.60 against 4.10, and sea-level pressure 2.44 against 2.79 hPa.
+This is fit to assimilated data, not independent accuracy. It does not fit the soundings better
+(500 hPa height 15.67 against 14.33 m). The verdict above
 stands: selectable, the same losses by stream.
 
 ## The wall budget

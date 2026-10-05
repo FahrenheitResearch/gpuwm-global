@@ -95,7 +95,18 @@ forms the model integrates (dynamics.rhs, vertical.py):
   explicit step carries inside its advective budget; both one-sided
   branches still give real positive mode spectra (354.9 / 232.3 and 357.6
   / 252.1 m/s for the leading pair on the 20-level stack against the
-  averaged 356.2 / 242.6).
+  averaged 356.2 / 242.6).  Since DYC-1 the coded flux gives the top and
+  bottom layers the one-sided gradient to their neighbour instead of zero
+  (the zero gradient carried the top layer's own theta out under descent
+  and cooled the lid), and the operator deliberately KEEPS the
+  zero-gradient average above: the descent branch now sits 35.7 K per unit
+  D from it at level 0 on the default stack (40.4 K on the 20-level one),
+  the ascent branch where it was, so the residual speeds stay at or below
+  the figures above (17.6 / 7.7 and 20.7 / 7.7 m/s, 40-level).  Mirroring
+  the one-sided faces into gamma was MEASURED and refused: the linearized
+  rest ceiling of the split at off-centring 0.55 on the audit column fell
+  from 1822 s to 391 s at T533 (12308 s from 69361 s at T21), against
+  1689 s and 65040 s with the operator left as it is.
   divergence      D_t = k^2 (phi' + R Tv_k factor_k ln ps'), the
                   Laplacian of the Bernoulli geopotential plus the
                   divergence of the pressure-gradient force with

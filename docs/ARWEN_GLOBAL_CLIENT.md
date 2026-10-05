@@ -99,7 +99,8 @@ answer at its own cost.
   `present`. A hole is a `warnings` row in a query mode and a refusal on the
   route that starts work.
 * **Will the pictures be drawn.** `render.will_run` is false when
-  `run_options.render` is false or `start_date` is absent, with
+  `run_options.render` is false, or `start_date` is absent and the config
+  has no date of its own (no analysis, no `start_time_utc`), with
   `render.skipped_reason` naming which, and a `warnings` row saying the run
   will write no pictures. A slug the installed renderer does not carry is in
   `render.unknown_products`, and it is **refused** rather than warned when a
@@ -133,7 +134,7 @@ refuses, under `routes`.
 | `latitude_bands` | both | override the sizer's band count; null lets it choose |
 | `host_spill` | both | `auto`, `on` or `off`; null keeps the config's `[memory]` |
 | `overwrite` | both | this run owns the directory and replaces the artifacts of a previous run in it, including its event stream |
-| `start_date` | `go` | the analysis valid time the render stage stamps tapes with. Without it **the render stage skips itself**, and `--resolve` says so |
+| `start_date` | `go` | the analysis valid time the render stage stamps tapes with. Optional for a config that starts from an analysis (or states `start_time_utc`): its tapes take the run's own forecast clock, and a value that disagrees with it is refused. Without it an idealized config with no date **skips the render stage**, and `--resolve` says so |
 | `render_products` | `go` | comma-separated product slugs, or `all`. Every token is checked against the renderer's own catalog at resolve time |
 | `geog_root` | `go` | the `WPS_GEOG` archive the statics stage builds from |
 | `statics` | `go` | false skips the statics stage |

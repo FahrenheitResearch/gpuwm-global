@@ -30,7 +30,10 @@ arrive, and the area-weighted sum over latitude runs once when the suite
 closes the call (:meth:`ComponentCapture.close_call`), in grid order --
 the same operand the whole-grid mark reduces, so the number does not
 depend on the band count.  The max-abs stage is exactly associative and
-folds as it goes.  A whole-grid mark (``band=None``, a hand-driven suite)
+folds as it goes.  On P cards a card marks only the bands it runs, so the
+call's close fills the other cards' rows of each buffer and folds their
+maxima over the run's row exchange before it reduces, and the vector is
+the one-card vector.  A whole-grid mark (``band=None``, a hand-driven suite)
 records as it always did, immediately.
 """
 from __future__ import annotations
@@ -48,8 +51,10 @@ START_MARK = "start"
 
 
 class ComponentCapture:
-    def __init__(self, quadrature_weights):
+    def __init__(self, quadrature_weights, *, exchange=None):
         self._weights_host = np.asarray(quadrature_weights, dtype=np.float64)
+        #: The run's row exchange (cards.RowExchange), or None on one card.
+        self._exchange = exchange
         self._weights_by_module: dict[int, object] = {}
         self._nlat = int(self._weights_host.shape[0])
         self.active = True
@@ -173,8 +178,30 @@ class ComponentCapture:
         if not self.active or not self._open:
             return
         started = time.perf_counter()
+        exchange = self._exchange
+        cards = exchange is not None and int(getattr(exchange, "world", 1)) > 1
         for name in self._pending_order:
             covered, buffers, maxima = self._pending[name]
+            if cards:
+                first, last = exchange.owned_rows()
+                if covered != last - first:
+                    raise ValueError(
+                        f"component {name!r} marked {covered} of the "
+                        f"{last - first} rows this card owns in this physics "
+                        "call; a component that marks on some bands and not "
+                        "others cannot be reported as the call's"
+                    )
+                for key in CAPTURE_FIELDS:
+                    exchange.fill_rows(
+                        xp, buffers[key], 0, name=f"capture_{name}_{key}")
+                folded = exchange.fold(
+                    xp, xp.stack([maxima[key] for key in CAPTURE_FIELDS]),
+                    "max", name=f"capture_{name}_max")
+                maxima = {
+                    key: folded[index]
+                    for index, key in enumerate(CAPTURE_FIELDS)
+                }
+                covered = self._nlat
             if covered != self._nlat:
                 raise ValueError(
                     f"component {name!r} marked {covered} of {self._nlat} rows "

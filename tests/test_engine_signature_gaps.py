@@ -230,13 +230,20 @@ def _boundary_rows():
 
 
 def test_the_doctor_carries_the_boundary_and_grades_it_the_way_the_seam_does():
-    """A carried contract is a note; a refused computation is a gap.
+    """Every standing gap is printed; a gap only where a documented command stops.
 
     THE BREAKAGE THIS PREVENTS.  The doctor's last line used to read "No gaps.
     Every documented command can run on this machine" on a box where `sizing`
     could not price a card and a scorecard could not regrid its reference,
     because the report looked at Rust doors and versions and never at the
-    symbols the package imports out of the engine.
+    symbols the package imports out of the engine.  So every standing row is
+    printed, with what it stops.
+
+    THE VERDICT IS THE EXIT CODE'S QUESTION.  A carried contract is a note.
+    A refused computation is a gap when a documented command reaches it and
+    an optional note when none does: until 0.1.3 every refused row was a gap,
+    and a correct 0.1.2 install against the published 2.8.0 exited 1 on two
+    rows that stop no documented command.
     """
 
     from arwen_global.engine_compat import engine_gaps
@@ -245,9 +252,301 @@ def test_the_doctor_carries_the_boundary_and_grades_it_the_way_the_seam_does():
     for gap in engine_gaps():
         label = f"{gap.module.split('.')[-1]}.{gap.symbol}"
         assert label in rows, (label, sorted(rows))
-        expected = "note" if gap.handling == "carried" else "gap"
+        refused_and_stopping = (gap.handling == "refused"
+                                and gap.stops_a_documented_command)
+        expected = "gap" if refused_and_stopping else "note"
         assert rows[label].verdict == expected, (label, rows[label].verdict)
         assert rows[label].detail, label
+        assert any(gap.stops in line for line in rows[label].detail), label
+
+
+def _symbol_gap(symbol: str, *, documented: bool) -> engine_compat.EngineGap:
+    return engine_compat.EngineGap(
+        module="gpuwm.core.preflight",
+        symbol=symbol,
+        stops="nothing: this row exists only where a test puts it",
+        handling="refused",
+        stops_a_native_forecast=False,
+        stops_a_documented_command=documented)
+
+
+def test_a_refused_symbol_is_a_gap_exactly_when_a_documented_command_stops(
+        monkeypatch):
+    """Both directions of the verdict, on rows the engine cannot carry.
+
+    A verdict that can only answer one way is not a measurement: the row a
+    documented command reaches must still move the exit code, and the row
+    none reaches must not.
+    """
+
+    from arwen_global.doctor import build_report
+
+    stopping = _symbol_gap("a_symbol_no_engine_carries_" + "stopping",
+                           documented=True)
+    optional = _symbol_gap("a_symbol_no_engine_carries_" + "optional",
+                           documented=False)
+    monkeypatch.setattr(engine_compat, "GAPS", (stopping, optional))
+    report = build_report()
+    rows = {row.label: row for row in _boundary_rows()}
+    stop_row = rows[f"preflight.{stopping.symbol}"]
+    optional_row = rows[f"preflight.{optional.symbol}"]
+    assert stop_row.verdict == "gap"
+    assert stop_row.finding == "absent"
+    assert optional_row.verdict == "note"
+    assert optional_row.finding == "absent (optional)"
+    assert any("no documented command reaches it" in line
+               for line in optional_row.detail)
+    gap_labels = {row.label for row in report.gaps}
+    assert stop_row.label in gap_labels
+    assert optional_row.label not in gap_labels
+
+
+def test_the_absent_symbols_of_a_published_engine_leave_the_boundary_clean(
+        monkeypatch):
+    """The A124 regression: a correct install is not failed by optional rows.
+
+    Measured 2026-09-29: `gpuwm-global doctor` on a correct 0.1.2 install
+    against the published 2.8.0 printed both rows of `GAPS` as gaps and
+    exited 1.  Every row is made to stand here whatever engine this suite
+    runs on, so the assertion does not depend on which one is installed.
+    """
+
+    monkeypatch.setattr(engine_compat.EngineGap, "present",
+                        lambda self: False)
+    assert set(engine_compat.engine_gaps()) == set(engine_compat.GAPS)
+    rows = _boundary_rows()
+    for gap in engine_compat.GAPS:
+        label = f"{gap.module.split('.')[-1]}.{gap.symbol}"
+        matching = [row for row in rows if row.label == label]
+        assert len(matching) == 1, (label, [row.label for row in rows])
+        if not gap.stops_a_documented_command:
+            assert matching[0].verdict == "note", label
+            assert matching[0].finding == "absent (optional)", label
+    documented = [gap for gap in engine_compat.GAPS
+                  if gap.stops_a_documented_command]
+    assert not documented, (
+        "a row now stops a documented command, so the published engine's "
+        "doctor exits 1 on it; carry the symbol in the engine")
+    assert not [row for row in rows if row.verdict == "gap"]
+
+
+# ------------------------- and what a row says it stops is measured, not said
+
+#: The modules whose functions are the console script: `gpuwm-global`
+#: (`cli.main`), the engine's `gpuwm global` (`cli.register_cli`), the
+#: `python -m arwen_global` door and the detached terminal job's worker.
+_ENTRY_MODULES = frozenset({
+    "arwen_global.cli", "arwen_global.__main__", "arwen_global.tui_worker",
+})
+
+
+def _package_nodes():
+    """Each top-level definition of the package and the names it references.
+
+    Returns ``{dotted node: set of dotted references}``.  A module's
+    statements outside any definition are one node, ``<module>``, because
+    they run at import.  Imports are resolved through every binding a module
+    makes, at any depth, which over-approximates reachability rather than
+    missing an edge; an attribute on an object that is not an imported
+    module is not followed, and a caller that constructs the object names
+    its class, which is followed.
+    """
+
+    import ast
+    from pathlib import Path
+
+    import arwen_global
+
+    root = Path(arwen_global.__file__).resolve().parent
+    nodes: dict[str, set[str]] = {}
+    for path in sorted(root.rglob("*.py")):
+        parts = list(path.relative_to(root.parent).with_suffix("").parts)
+        is_package = parts[-1] == "__init__"
+        if is_package:
+            parts = parts[:-1]
+        module = ".".join(parts)
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        package = module if is_package else module.rpartition(".")[0]
+        bindings: dict[str, set[str]] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.asname:
+                        bindings.setdefault(alias.asname, set()).add(alias.name)
+                    else:
+                        head = alias.name.split(".")[0]
+                        bindings.setdefault(head, set()).add(head)
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                if node.level:
+                    anchor = package
+                    for _ in range(node.level - 1):
+                        anchor = anchor.rpartition(".")[0]
+                    base = f"{anchor}.{base}" if base else anchor
+                for alias in node.names:
+                    bindings.setdefault(alias.asname or alias.name, set()).add(
+                        f"{base}.{alias.name}")
+        defined = {statement.name for statement in tree.body
+                   if isinstance(statement, (ast.FunctionDef,
+                                             ast.AsyncFunctionDef,
+                                             ast.ClassDef))}
+
+        def resolve(name: str) -> set[str]:
+            found = set(bindings.get(name, ()))
+            if name in defined:
+                found.add(f"{module}.{name}")
+            return found
+
+        def references(statement) -> set[str]:
+            out: set[str] = set()
+            for node in ast.walk(statement):
+                if isinstance(node, ast.Attribute):
+                    chain = []
+                    head = node
+                    while isinstance(head, ast.Attribute):
+                        chain.append(head.attr)
+                        head = head.value
+                    if isinstance(head, ast.Name):
+                        tail = ".".join(reversed(chain))
+                        out.update(f"{target}.{tail}"
+                                   for target in resolve(head.id))
+                elif isinstance(node, ast.Name):
+                    out.update(resolve(node.id))
+            return out
+
+        for statement in tree.body:
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                      ast.ClassDef)):
+                key = f"{module}.{statement.name}"
+            elif isinstance(statement, (ast.Import, ast.ImportFrom)):
+                continue
+            elif _is_main_guard(statement):
+                key = f"{module}.<main>"
+            else:
+                key = f"{module}.<module>"
+            nodes.setdefault(key, set()).update(references(statement))
+    return nodes
+
+
+def _is_main_guard(statement) -> bool:
+    """``if __name__ == "__main__":``, which runs only as ``python -m``."""
+
+    import ast
+
+    test = getattr(statement, "test", None)
+    return (isinstance(statement, ast.If)
+            and isinstance(test, ast.Compare)
+            and isinstance(test.left, ast.Name)
+            and test.left.id == "__name__"
+            and len(test.comparators) == 1
+            and isinstance(test.comparators[0], ast.Constant)
+            and test.comparators[0].value == "__main__")
+
+
+def _documented_module_entries() -> set[str]:
+    """Every ``python -m arwen_global...`` a shipped page tells a reader to run."""
+
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    pages = [root / "README.md", *sorted((root / "docs").glob("*.md"))]
+    found: set[str] = set()
+    for page in pages:
+        if page.is_file():
+            found.update(re.findall(r"python -m (arwen_global[\w.]*)",
+                                    page.read_text(encoding="utf-8")))
+    return found
+
+
+def _callers_of(seed: str, nodes) -> set[str]:
+    """Every node that reaches ``seed`` through the references above."""
+
+    reached = {seed}
+    changed = True
+    while changed:
+        changed = False
+        for key, refs in nodes.items():
+            if key in reached:
+                continue
+            if any(ref == hit or ref.startswith(hit + ".")
+                   for ref in refs for hit in reached):
+                reached.add(key)
+                changed = True
+    return reached
+
+
+def _reaches_an_entry(closure, documented_modules) -> list[str]:
+    """The documented entries in ``closure``.
+
+    The console script's modules always count.  Code a module runs at
+    import counts, because every importer runs it.  A ``python -m`` block
+    counts when a shipped page documents that module: an undocumented
+    research entry such as `python -m arwen_global.surface_energy` is not a
+    command the doctor answers for, and its row names it instead.
+    """
+
+    def module_of(key: str) -> str:
+        module = key.rsplit(".", 1)[0]
+        return module.removesuffix(".__main__")
+
+    return sorted(
+        key for key in closure
+        if key.rsplit(".", 1)[0] in _ENTRY_MODULES
+        or key.endswith(".<module>")
+        or (key.endswith(".<main>") and module_of(key) in documented_modules))
+
+
+def test_the_call_graph_walk_finds_a_path_the_console_script_takes():
+    """The instrument, on a path known to be reached, must answer yes.
+
+    `run` and `go` price the card through `sizing.run_memory_gate`, which
+    the console script imports inside its handlers.
+    """
+
+    nodes = _package_nodes()
+    documented = _documented_module_entries()
+    closure = _callers_of("arwen_global.sizing.run_memory_gate", nodes)
+    assert any(key.startswith("arwen_global.cli.") for key in closure), (
+        sorted(closure))
+    assert _reaches_an_entry(closure, documented)
+    # And a documented `python -m` scorecard: docs/ARWEN_GLOBAL_LEVEL5.md
+    # tells a reader to run `python -m arwen_global.radiation_scorecard`,
+    # whose regrid is its own function.
+    assert "arwen_global.radiation_scorecard" in documented
+    closure = _callers_of("arwen_global.radiation_scorecard.regrid_reference",
+                          nodes)
+    assert "arwen_global.radiation_scorecard.<main>" in _reaches_an_entry(
+        closure, documented), sorted(closure)
+
+
+def test_a_row_that_stops_no_documented_command_is_reached_by_none():
+    """`stops_a_documented_command=False` is what the doctor grades on.
+
+    THE BREAKAGE THIS PREVENTS.  The doctor reports a refused row that no
+    documented command reaches as optional, and exits 0 over it.  Wiring a
+    subcommand to the check it stops, without flipping the row, would ship
+    a doctor that says "every documented command can run" above a command
+    that refuses.  Each row must also still have a caller in this package,
+    because a row nothing calls is a guard with no defect.
+    """
+
+    nodes = _package_nodes()
+    documented = _documented_module_entries()
+    for gap in engine_compat.GAPS:
+        seed = f"arwen_global.engine_compat.{gap.symbol}"
+        assert seed in nodes, f"{seed} is no longer defined"
+        closure = _callers_of(seed, nodes)
+        callers = sorted(closure - {seed})
+        assert callers, (
+            f"nothing in this package calls {seed}; retire the row")
+        if gap.stops_a_documented_command:
+            continue
+        entries = _reaches_an_entry(closure, documented)
+        assert not entries, (
+            f"{gap.module}.{gap.symbol} says it stops no documented command, "
+            f"and {entries} reach it through {callers}; set "
+            "stops_a_documented_command=True so the doctor reports it as a gap")
 
 
 def test_a_signature_gap_reaches_the_doctor_as_a_gap(monkeypatch):

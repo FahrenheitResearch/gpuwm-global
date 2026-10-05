@@ -20,7 +20,7 @@ dealias_factor = 1.5
 # spectral CFL is measured and written into the receipt's `cfl` block as a
 # reading (about 1.55 at 300 s on the 2026-09-01 00Z day); it is not a bound
 # on this core, whose trajectories are gathered and not stepped, and the
-# Lipschitz gate refuses instead where the trajectory map would fold.
+# trajectory fold gate refuses instead where the trajectory map would fold.
 [time]
 duration_s = 86400.0
 output_interval_s = 10800.0

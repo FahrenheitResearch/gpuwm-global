@@ -1,0 +1,10 @@
+{
+  "schema": "arwen-global-soil-level-depths-v1",
+  "description": "Interface depths (m) of GRIB soil-level indices (code table 4.5 type 151) per source mapping name; the layer between soil levels a and b spans interfaces_m[name][a] to interfaces_m[name][b].",
+  "interfaces_m": {
+    "ecmwf-open-data-ifs-oper-0p25-grib2-global-forecast": [0.0, 0.07, 0.28, 1.0, 2.89]
+  },
+  "sources": {
+    "ecmwf-open-data-ifs-oper-0p25-grib2-global-forecast": "IFS land surface (HTESSEL) soil layers 0-7, 7-28, 28-100 and 100-289 cm, IFS documentation Part IV, chapter 8"
+  }
+}

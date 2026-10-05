@@ -85,16 +85,19 @@ def _transport_kernel(xp):
     return kernel
 
 
-def _arrival_trigonometry(tables: SphericalGridTables, *, xp=None, dtype=None):
+def _arrival_trigonometry(tables: SphericalGridTables, *, xp=None, dtype=None,
+                          rows: slice | None = None):
     """``(sin phi, cos phi, sin lambda, cos lambda)`` of the grid points,
-    shaped to broadcast over a ``(nlev, nlat, nlon)`` volume."""
+    shaped to broadcast over a ``(nlev, nlat, nlon)`` volume, or over a
+    band's ``rows`` cut out of the whole grid's values."""
     xp = tables.xp if xp is None else xp
     dtype = tables.dtype if dtype is None else dtype
     nlat, nlon = tables.shape
+    rows = slice(0, nlat) if rows is None else rows
     lat = xp.asarray(tables.lat_ext_host[2:nlat + 2], dtype=dtype)
     lon = xp.asarray(np.arange(nlon) * tables.dlam, dtype=dtype)
     return (
-        xp.sin(lat)[None, :, None], xp.cos(lat)[None, :, None],
+        xp.sin(lat)[None, :, None][:, rows], xp.cos(lat)[None, :, None][:, rows],
         xp.sin(lon)[None, None, :], xp.cos(lon)[None, None, :],
     )
 
@@ -113,7 +116,10 @@ def transport_to_arrival(
                 f"{name} is {tuple(int(s) for s in field.shape)} where the "
                 f"stencil is {stencil.shape}"
             )
-    sph, cph, sla, cla = _arrival_trigonometry(tables, xp=xp, dtype=dtype)
+    sph, cph, sla, cla = _arrival_trigonometry(
+        tables, xp=xp, dtype=dtype,
+        rows=None if stencil.window is None else stencil.window.arrival,
+    )
     if fused and hasattr(xp, "ElementwiseKernel"):
         return _transport_kernel(xp)(
             vx, vy, vz, stencil.xi, stencil.phi, sph, cph, sla, cla,

@@ -349,6 +349,26 @@ def spectral_cfl_refusal(cfl: float, dt_s: float, maximum_cfl: float,
     )
 
 
+def sum_fixer_ledgers(*ledgers):
+    """Sum the column filler's vertical ledgers (``None`` entries are the
+    clamps that did not run); None when none ran."""
+    present = [ledger for ledger in ledgers if ledger is not None]
+    if not present:
+        return None
+    nlev = len(present[0]["level_gain_kg_m2"])
+    return {
+        "level_gain_kg_m2": [
+            sum(ledger["level_gain_kg_m2"][k] for ledger in present)
+            for k in range(nlev)
+        ],
+        "level_loss_kg_m2": [
+            sum(ledger["level_loss_kg_m2"][k] for ledger in present)
+            for k in range(nlev)
+        ],
+        "neighbour_kg_m2": sum(ledger["neighbour_kg_m2"] for ledger in present),
+    }
+
+
 @dataclass
 class MoistHybridModel:
     transform: object
@@ -421,6 +441,9 @@ class MoistHybridModel:
     sponge_base_pa: float = 5000.0
     sponge_lid_relaxation_time_s: float = 900.0
     initial_provenance: dict | None = None
+    # The instant model time zero stands for (arwen_global.clock.ForecastClock),
+    # set by runner.build_model_and_cold_state; None on a model built by hand.
+    forecast_clock: object | None = None
     # Widest stack a single transform call may carry.  Full-width stacks at
     # T533 fp32 materialize ~2.5 GB complex Fourier temporaries per operand
     # and ran a 32 GB RTX 5090 out of memory; chunks of six keep the batching
@@ -459,11 +482,14 @@ class MoistHybridModel:
     # within a step are served from it.  Same bits either way; False
     # recomputes every synthesis (the memory-tightest form).
     synthesis_memo: bool = True
-    # The Lipschitz ceiling of the semi-Lagrangian core (semilag/), read
-    # by no other integrator.  It REPLACES the advective CFL gate on that
-    # path: a semi-Lagrangian advection has no advective CFL limit, and
-    # what does bound it is the flow deformation (semilag.trajectory).
-    maximum_lipschitz: float = 0.75
+    # The fold floor of the semi-Lagrangian core (semilag/), read by no
+    # other integrator.  It REPLACES the advective CFL gate on that path:
+    # a semi-Lagrangian advection has no advective CFL limit, and what
+    # does bound it is the fold of the trajectory map, the minimum over
+    # the grid of det(I -+ (dt/2) J) (semilag.trajectory).  It replaced a
+    # ceiling on the deformation NORM, which refused shear and rotation
+    # that never fold and stopped a T533 forecast at 66.3 h.
+    minimum_fold_determinant: float = 0.2
     # The [semilag] options of the same core; defaults everywhere else.
     semilag: SemiLagrangianOptions = SemiLagrangianOptions()
     # How many latitude bands grid space is streamed through (bands.py).
@@ -1079,7 +1105,21 @@ class MoistHybridModel:
 
     def trajectory_state(self):
         """The second time level the semi-Lagrangian core carries, or
-        None before its first step (semilag.state.TrajectoryState)."""
+        None before its first step (semilag.state.TrajectoryState).
+
+        Always whole-grid arrays: a card of a multi-card run that holds
+        only its own rows (semilag.state.RowTrajectory) lays them into the
+        globe here, and the checkpoint's card gather fills the rest.
+        """
+        held = getattr(self, "_trajectory", None)
+        whole = getattr(held, "whole", None)
+        if whole is not None:
+            return whole(self.transform.backend.xp)
+        return held
+
+    def trajectory_held(self):
+        """The second time level as this card holds it: whole, or its own
+        rows on a card of a multi-card run.  The step reads this one."""
         return getattr(self, "_trajectory", None)
 
     def set_trajectory_state(self, trajectory) -> None:
@@ -1174,8 +1214,14 @@ class MoistHybridModel:
         (the geometric-mean full level sits above the layer's arithmetic
         centre, so an unbounded MUSCL extrapolation can overshoot by up to
         4% where the ln-p spacing shrinks toward the surface).  The top and
-        bottom layers have no second neighbour and keep a zero gradient
-        (first order at their one interior interface).
+        bottom layers have no second neighbour and take the ONE-SIDED
+        gradient to their one neighbour, so their single interior face is
+        the linear interpolation between the two layers.  Until DYC-1
+        they kept a zero gradient, which carried the top layer's own
+        value out through its bottom face under descent (no warming) and
+        the colder layer's reconstruction in under ascent (cooling): the
+        Eulerian half of the one-sided lid drift, -79 K a day at level 0
+        on the documented T255 day.
 
         Replaces the first-order donor-cell flux, whose modified equation
         carried a vertical diffusivity ``|omega| dp / 2`` on theta and every
@@ -1204,7 +1250,7 @@ class MoistHybridModel:
             )
             return out
         # Van Leer limited gradient (per Pa) of the interior layers; the
-        # boundary layers keep zero.
+        # boundary layers take the one-sided gradient to their neighbour.
         gradient_above = (
             scalar[..., 1:-1, :, :] - scalar[..., :-2, :, :]
         ) / (p_full[1:-1] - p_full[:-2])
@@ -1218,6 +1264,13 @@ class MoistHybridModel:
         gradient[..., 1:-1, :, :] = xp.where(
             monotone, 2.0 * product / denominator, 0.0
         )
+        if nlev >= 2:
+            gradient[..., 0, :, :] = (
+                scalar[..., 1, :, :] - scalar[..., 0, :, :]
+            ) / (p_full[1] - p_full[0])
+            gradient[..., -1, :, :] = (
+                scalar[..., -1, :, :] - scalar[..., -2, :, :]
+            ) / (p_full[-1] - p_full[-2])
         # Interfaces j = 1..nlev-1 sit between layer j-1 (above) and j
         # (below); omega >= 0 is downward, so its upstream layer is above.
         interior = omega_half[1:nlev]
@@ -1629,7 +1682,7 @@ class MoistHybridModel:
             # EVERY y when alpha >= 0.5, and alpha < 0.5 is already
             # refused by VerticalModeSemiImplicit.__post_init__.  So this
             # path has no wave-number ceiling at all and the binding
-            # constraint is the trajectory, which the Lipschitz gate in
+            # constraint is the trajectory, which the fold gate in
             # step() reads.  Returning here without saying so would make
             # a future integrator inherit a silent skip.
             return
@@ -1839,13 +1892,16 @@ class MoistHybridModel:
         return self._level_water_mass_total(accumulator)
 
     def _column_hole_accumulators(self):
-        """The column-hole filler's three resident readings.
+        """The column-hole filler's resident readings.
 
-        The two mass readings are flat sums over a horizontal plane, and a
+        The mass readings are flat sums over a horizontal plane, and a
         flat sum cannot be folded band by band without changing its last
         bits, so the PLANE is the accumulator (5.13 MB at T533) and the
         flat sum runs once over it.  The rescale reading is a maximum,
-        exact in any order.
+        exact in any order.  The level ledger (what the fill added to and
+        took from each level) is a zonal mean per (gain/loss, level,
+        latitude row), reduced once over latitude in grid order like the
+        level water masses.
         """
         xp = self.transform.backend.xp
         shape = self.transform.grid.shape
@@ -1855,37 +1911,95 @@ class MoistHybridModel:
                 xp, shape, dtype, name="column_holes_created", exchange=self.pipeline.exchange),
             "unfillable": PlaneAccumulator(
                 xp, shape, dtype, name="column_holes_unfillable", exchange=self.pipeline.exchange),
+            "neighbour": PlaneAccumulator(
+                xp, shape, dtype, name="column_holes_neighbour", exchange=self.pipeline.exchange),
             "rescale": AssociativeAccumulator(
                 xp, "max", name="column_holes_rescale", exchange=self.pipeline.exchange),
+            "levels": LatitudeAccumulator(
+                xp, (2, int(self.nlev), self.transform.grid.nlat), dtype,
+                name="column_holes_levels", exchange=self.pipeline.exchange),
         }
+
+    @staticmethod
+    def _borrow_from_neighbours(xp, mass):
+        """Pay each negative layer mass from its two adjacent layers first.
+
+        ``mass`` is (nlev, ...) layer water mass ``q * dp``, top first; it
+        is updated in place.  One sweep from the top: a negative layer
+        takes what it needs, up to what they hold, from the layer above
+        and then from the layer below.  Every transfer is a pair of equal
+        and opposite updates inside one column, so the column integral is
+        unchanged, and a negative lobe is paid by the layer next to it
+        rather than by wherever the column holds most of its vapor.
+        Returns the plane of water moved this way.
+        """
+        nlev = int(mass.shape[0])
+        moved = xp.zeros(mass.shape[1:], dtype=mass.dtype)
+        for k in range(nlev):
+            for j in (k - 1, k + 1):
+                if j < 0 or j >= nlev:
+                    continue
+                give = xp.minimum(
+                    xp.maximum(mass[j], 0.0), xp.maximum(-mass[k], 0.0))
+                mass[j] -= give
+                mass[k] += give
+                moved += give
+        return moved
 
     def _fill_column_holes_band(self, q, dp, accumulators, rows: slice):
         """One band of :meth:`_fill_column_holes`.
 
-        Every expression here is column-local: the two level sums, the
-        fillable test, the per-column scale and the rescaled field all
-        read one column and write it, so a band's rows are the rows the
-        whole call would have written there.  Only the three readings
-        cross a band edge, and they cross it through the accumulators.
+        Every expression here is column-local: the neighbour sweep, the
+        level sums, the fillable test, the per-column scale and the
+        rescaled field all read one column and write it, so a band's rows
+        are the rows the whole call would have written there.  Only the
+        readings cross a band edge, and they cross it through the
+        accumulators.
         """
         xp = self.transform.backend.xp
         weighted = q * dp
         negative = xp.sum(xp.minimum(weighted, 0.0), axis=0)
-        positive = xp.sum(xp.maximum(weighted, 0.0), axis=0)
-        del weighted
-        fillable = (positive > 0.0) & (positive + negative > 0.0)
+        positive_before = xp.sum(xp.maximum(weighted, 0.0), axis=0)
+        # Stage one, local: each negative layer is paid by the layers
+        # beside it.  Stage two pays what they could not hold out of the
+        # rest of the column in proportion, as the filler always did.
+        mass = xp.array(weighted, copy=True)
+        neighbour = self._borrow_from_neighbours(xp, mass)
+        touched = mass != weighted
+        q_local = xp.where(touched, mass / xp.where(touched, dp, 1.0), q)
+        del touched
+        remaining = xp.sum(xp.minimum(mass, 0.0), axis=0)
+        positive = xp.sum(xp.maximum(mass, 0.0), axis=0)
+        fillable = (positive > 0.0) & (positive + remaining > 0.0)
         scale = xp.where(
             fillable,
-            (positive + negative) / xp.where(fillable, positive, 1.0),
+            (positive + remaining) / xp.where(fillable, positive, 1.0),
             1.0,
         )
-        del positive
-        filled = xp.maximum(q, 0.0) * scale[None]
+        del positive, mass
+        filled = xp.maximum(q_local, 0.0) * scale[None]
+        del q_local
+        # The ledger: what the fill added to and took from each level.
+        change = filled * dp - weighted
+        del weighted
+        accumulators["levels"].add_band(rows, xp.stack([
+            xp.mean(xp.maximum(change, 0.0), axis=-1),
+            xp.mean(xp.maximum(-change, 0.0), axis=-1),
+        ]))
+        lost = xp.sum(xp.maximum(-change, 0.0), axis=0)
+        del change
         accumulators["created"].add_band(rows, negative)
         accumulators["unfillable"].add_band(
-            rows, xp.where(fillable, 0.0, negative)
+            rows, xp.where(fillable, 0.0, remaining)
         )
-        accumulators["rescale"].add_band(1.0 - scale)
+        accumulators["neighbour"].add_band(rows, neighbour)
+        # The largest fraction of its own positive vapor any column paid,
+        # over both stages (stage two alone is the former 1 - scale).
+        accumulators["rescale"].add_band(xp.where(
+            positive_before > 0.0,
+            lost / xp.where(positive_before > 0.0, positive_before, 1.0),
+            0.0,
+        ))
         return filled
 
     def _fill_column_holes_readings(self, accumulators):
@@ -1909,6 +2023,28 @@ class MoistHybridModel:
             float(readings[2]),
             max(0.0, float(readings[1]) / GRAVITY_M_S2),
         )
+
+    def _fill_column_holes_ledger(self, accumulators) -> dict[str, object]:
+        """The filler's vertical ledger for one call: ``level_gain_kg_m2``
+        and ``level_loss_kg_m2`` (global-mean water the fill added to and
+        took from each model level, top first) and ``neighbour_kg_m2``
+        (the global-mean water an adjacent layer paid rather than the
+        column at large)."""
+        cell = self.transform.backend.asarray(
+            self.transform.grid.quadrature_weights,
+            dtype=self.transform.backend.float_dtype,
+        )[:, None] / (2.0 * self.transform.grid.nlon)
+        levels = np.asarray(self.transform.backend.to_numpy(
+            self._level_water_mass_total(accumulators["levels"])
+        ), dtype=np.float64)
+        neighbour = float(self.transform.backend.to_numpy(
+            accumulators["neighbour"].total(cell)
+        ))
+        return {
+            "level_gain_kg_m2": [float(v) for v in levels[0]],
+            "level_loss_kg_m2": [float(v) for v in levels[1]],
+            "neighbour_kg_m2": max(0.0, neighbour / GRAVITY_M_S2),
+        }
 
     def _fill_column_holes(self, q, dp):
         """Column-local, conservative hole filling of a spectral water field.
@@ -2152,6 +2288,7 @@ class MoistHybridModel:
             ), 0.0, largest_negative_tracer, {
                 "water_kg_m2": 0.0, "max_rescale": 0.0,
                 "unfillable_kg_m2": 0.0, "atmospheric_water_kg_m2": 0.0,
+                "ledger": None,
             }
         # ONE BAND LOOP for the whole repair.  The vapor minimum is a
         # maximum's mirror and folds in any order; the filler's three
@@ -2194,6 +2331,7 @@ class MoistHybridModel:
         created, max_fraction, unfillable = self._fill_column_holes_readings(
             holes
         )
+        ledger = self._fill_column_holes_ledger(holes)
         del holes
         atmospheric_water = float(host(xp.sum(
             self._level_water_mass_total(water_rows)
@@ -2223,6 +2361,7 @@ class MoistHybridModel:
             "max_rescale": max_fraction,
             "unfillable_kg_m2": unfillable,
             "atmospheric_water_kg_m2": atmospheric_water,
+            "ledger": ledger,
         }
 
 
@@ -2322,60 +2461,64 @@ class MoistHybridModel:
     def whole_globe_slices(self):
         """The bands an operator runs when it must produce the GLOBE.
 
-        Two operators need this rather than
-        :meth:`BandPipeline.local_slices`, and both leave every card
-        holding the whole result out of inputs that are the same on every
-        card:
+        One operator needs this rather than
+        :meth:`BandPipeline.local_slices`: ``_transport_fluxes``, because
+        the flux-form transport takes the globe and its four driving
+        fields are synthesised from the REPLICATED spectral state, so a
+        card that builds all of them duplicates arithmetic and moves no
+        bytes where a card that built a partition would have to gather it.
 
-        - the physics half-step, whose OUTPUTS (the grid tracers, the
-          surface reservoirs, the native physics namespace) are read whole
-          by everything downstream -- the water fixer's global mean, the
-          guards, the diagnostics, the checkpoint, the exports, the DA
-          door;
-        - ``_transport_fluxes``, because the transport takes the globe and
-          its four driving fields are synthesised from the REPLICATED
-          spectral state.
-
-        THE SUITE IS BANDED (:meth:`apply_physics` runs it a band at a
-        time, and a band's half-step holds that band's working set), so on
-        one card this is the same loop every other operator runs and the
-        band count is what bounds the physics' memory.  On two cards the
-        physics is still DUPLICATED rather than split, and the reason is
-        its consumers, not the suite: a card that ran only its own bands
-        would hold only its own rows of the surface and the namespace,
-        and every consumer above reads a whole plane of them.  Splitting
-        it costs either a per-half-step gather of the namespace (2.3 GiB
-        at T533, 0.8 s over 25 GbE, slower than the duplicated physics)
-        or the two-stage rewrite of every one of those consumers, and
-        neither is in this tree.  What a second card buys is therefore
-        the dynamics, the transport and the right-hand sides, and the
-        receipt says so rather than leaving a reader to infer it from a
-        disappointing wall clock.
+        The physics half-step is NOT one of them.  It runs this card's
+        bands only (:meth:`apply_physics`), and what its consumers read
+        whole comes back over the row exchange once per call
+        (:meth:`_gather_card_rows`).
         """
         return self.pipeline.slices()
 
-    def gather_grid_tracers(self, atmosphere):
-        """ Bring the ten grid tracers whole before the suite reads them.
-
-        The tracers are the one part of the physics half-step's input that
-        is genuinely partitioned: the transport sweeps them band by band
-        and the positivity repair floors them band by band, so on a
-        two-card run each card holds its own rows and stale values
-        elsewhere.  Everything else the exchange is built from -- the
-        pressures, the temperatures, the geopotential, the winds -- is
-        synthesised from the REPLICATED spectral state, so each card
-        computes it whole for itself and no byte crosses the wire for it.
-
-        One gather per physics half-step, ten volumes: 453 MB at T255 L40
-        float32 per card per half-step.  It exists because the physics
-        half-step is duplicated on every card (:meth:`whole_globe_slices`).
-        """
+    def _card_world(self) -> int:
+        """How many cards share this run's band schedule (one on one card)."""
         exchange = self.pipeline.exchange
-        if exchange is None or int(getattr(exchange, "world", 1)) <= 1:
+        return 1 if exchange is None else int(getattr(exchange, "world", 1))
+
+    def _gather_card_rows(self, arrays, *, prefix: str) -> None:
+        """Fill, in place, the rows of each array that other cards computed.
+
+        The physics runs a card's own bands, so the grid tracers, the
+        surface reservoirs and the native namespace it returns hold this
+        card's rows and nothing else.  Every consumer downstream of the
+        call reads them whole -- the suite's own ``finish`` (the radiation
+        budget planes), the positivity floor, the water fixer's global
+        mean, the guards, the semi-Lagrangian departure gather, the
+        diagnostics, the checkpoint, the exports, the DA door -- so the
+        missing rows are gathered here, once per physics call, as the
+        bytes the card that owns them produced.  That is the ``gather``
+        argument the Fourier waist already rests on (cards.CardSession.
+        gather_rows), so P cards hand every consumer the one-card arrays
+        bit for bit (gate BIT-6).
+
+        Every array is latitude-by-longitude in its last two axes (the
+        band loop writes ``[..., rows, :]`` of each), and the arrays are
+        visited in the order the call assembled them, which is the same on
+        every card because every card runs the same code.  A parked array
+        is filled in its host slot directly (spill.HostTier.fill_host): the
+        rows arrive as host bytes and the slot is a host buffer.
+
+        One card has nothing to gather and returns at once.
+        """
+        if self._card_world() <= 1:
             return
+        exchange = self.pipeline.exchange
         xp = self.transform.backend.xp
-        for name, value in atmosphere.grid_tracers().items():
-            exchange.fill_rows(xp, value, value.ndim - 2, name=f"tracer_{name}")
+        for name, value in arrays.items():
+            tag = f"{prefix}_{name}"
+            if isinstance(value, SpilledArray):
+                value.tier.fill_host(
+                    value,
+                    lambda host, _tag=tag: exchange.fill_rows(
+                        np, host, host.ndim - 2, name=_tag),
+                )
+            else:
+                exchange.fill_rows(xp, value, value.ndim - 2, name=tag)
 
     #: What the physics exchange reads of the grid state.  The exchange
     #: never reads grid vorticity or divergence (winds come from the
@@ -2416,8 +2559,9 @@ class MoistHybridModel:
         lat = xp.broadcast_to(lat, self.transform.grid.shape)
         lon = xp.broadcast_to(lon, self.transform.grid.shape)
         top = PlaneAccumulator(
-            xp, (nlat, nlon), xp.float32, name="physics_model_top")
-        for rows in self.whole_globe_slices():
+            xp, (nlat, nlon), xp.float32, name="physics_model_top",
+            exchange=self.pipeline.exchange)
+        for rows in self.pipeline.local_slices():
             block = self._pressure_band(sources.pressure, rows)
             top.add_band(rows, xp.asarray(block["p_half"][0], dtype=xp.float32))
             del block
@@ -2538,6 +2682,7 @@ class MoistHybridModel:
             "water_kg_m2": created,
             "max_rescale": max_fraction,
             "unfillable_kg_m2": unfillable,
+            "ledger": self._fill_column_holes_ledger(ps.holes),
             "atmospheric_water_kg_m2": float(
                 self.transform.backend.to_numpy(xp.sum(
                     self._level_water_mass_total(ps.water_rows)
@@ -2578,10 +2723,16 @@ class MoistHybridModel:
         host = self.transform.backend.to_numpy
         eps = float(xp.finfo(self.transform.backend.float_dtype).eps)
         names = list(minima)
-        readings = host(xp.stack(
-            [minima[name].total() for name in names]
-            + [maxima[name].total() for name in names]
-        ))
+        lows = xp.stack([minima[name].total() for name in names])
+        highs = xp.stack([maxima[name].total() for name in names])
+        if self._card_world() > 1:
+            # This card folded its own bands; the globe's extrema are the
+            # cards' folded together, exact in any order, in two
+            # exchanges rather than one per tracer.
+            exchange = self.pipeline.exchange
+            lows = exchange.fold(xp, lows, "min", name="physics_tracer_minima")
+            highs = exchange.fold(xp, highs, "max", name="physics_tracer_maxima")
+        readings = host(xp.concatenate([lows, highs]))
         largest = 0.0
         for index, name in enumerate(names):
             minimum = float(readings[index])
@@ -2748,7 +2899,7 @@ class MoistHybridModel:
         # synthesised so a deep-lid configuration pays nothing.
         pressure = self._pressure_sources(bundle.atmosphere)
         inside = AssociativeAccumulator(xp, "any", name="sponge_any_ring", exchange=self.pipeline.exchange)
-        for rows in self.whole_globe_slices():
+        for rows in self.pipeline.local_slices():
             block = self._pressure_band(pressure, rows)
             inside.add_band(
                 xp.mean(block["p_full"], axis=-1, keepdims=True)
@@ -2763,7 +2914,7 @@ class MoistHybridModel:
         waist = self.transform.open_waist(
             (2, self.nlev), bands=self.pipeline.bands
         )
-        for rows in self.whole_globe_slices():
+        for rows in self.pipeline.local_slices():
             g, _stack, _names = self.grid_band(sources, rows)
             u, v = self._top_sponge(
                 g["u"], g["v"], g["p_full"], g["p_half"], float(dt_s)
@@ -2785,6 +2936,31 @@ class MoistHybridModel:
         return ArwenGlobalState(
             atmosphere, bundle.surface.copy(), bundle.physics_state.copy()
         ), {"physics_mode": "none"}
+
+    def _gather_band_records(self, records: list[dict]) -> list[dict]:
+        """Every band's record of one physics call, in band order.
+
+        A card holds the records of the bands it ran; the suite's
+        ``finish`` merges the readings of EVERY band of the call (the
+        same-on-every-band checks included), so on P cards the records are
+        all-gathered and ordered by each band's first row -- the order the
+        one-card loop produced them in.  One card returns its own.
+        """
+        if self._card_world() <= 1:
+            return records
+        gathered = self.pipeline.exchange.gather_records(
+            records, name="physics_band_records")
+        merged = [record for rank in gathered for record in rank]
+        merged.sort(key=lambda record: record["start"])
+        starts = [record["start"] for record in merged]
+        expected = [int(rows.start) for rows in self.pipeline.slices()]
+        if starts != expected:
+            raise ValueError(
+                f"the physics call's band records start at rows {starts}, "
+                f"not at the schedule's {expected}: a band ran on no card or "
+                "on two, so the merged readings would not be the globe's"
+            )
+        return merged
 
     #: The four physics-record rows the step SUMS over a half's suite calls;
     #: every other row is the last call's (the diagnostics of the state the
@@ -2819,15 +2995,18 @@ class MoistHybridModel:
         summed = {name: 0.0 for name in self._PHYSICS_SUMMED_ROWS}
         largest = {name: 0.0 for name in self._PHYSICS_MAX_ROWS}
         record: dict = {}
+        ledgers = []
         for _ in range(count):
             bundle, record = self.apply_physics(bundle, slab)
             for name in summed:
                 summed[name] += float(record.get(name, 0.0))
             for name in largest:
                 largest[name] = max(largest[name], float(record.get(name, 0.0)))
+            ledgers.append(record.get("exchange_fixer_ledger"))
         record = dict(record)
         record.update(summed)
         record.update(largest)
+        record["exchange_fixer_ledger"] = sum_fixer_ledgers(*ledgers)
         record["physics_substeps"] = int(count)
         return bundle, record
 
@@ -2856,6 +3035,19 @@ class MoistHybridModel:
         radiation size-bounding record is assembled from per-column sums,
         and anything else is checked equal across the bands.  At one band
         the loop runs once over the globe and is the resident call.
+
+        THE BANDS ARE THIS CARD'S BANDS (:meth:`BandPipeline.local_slices`).
+        On P cards each card runs the suite on the rows it owns, so the
+        physics is split across the cards rather than repeated on each.
+        What crosses afterwards is what the call cannot finish alone: the
+        two Fourier waists fill their other rows at their close, as every
+        analysis does; the plane accumulators fill theirs at their read;
+        the extrema fold; the grid tracers, the surface and the namespace
+        are gathered whole once (:meth:`_gather_card_rows`); and every
+        band's diagnostics and metadata reach every card, in band order,
+        before the suite's ``finish`` merges them
+        (cards.CardSession.gather_records).  So the merge, and every
+        reading it reports, sees the bands the one-card call sees.
         """
         if float(dt_s) == 0.0:
             return bundle, {"physics_mode": "none"}
@@ -2887,10 +3079,10 @@ class MoistHybridModel:
             self, "physics", bundle.physics_state.arrays,
             parked=self._spills("physics"))
         planes: dict[str, PlaneAccumulator] = {}
-        band_diagnostics: list[dict] = []
-        band_metadata: list[dict] = []
-        columns: list[int] = []
-        adapter_receipt: dict = {}
+        # One record per band this card runs: the band's first row, its
+        # diagnostics, its namespace metadata, its column count and the
+        # suite's adapter receipt.
+        band_records: list[dict] = []
         wind_waist = self.transform.open_waist(
             (2, self.nlev), bands=self.pipeline.bands
         )
@@ -2901,7 +3093,7 @@ class MoistHybridModel:
             ))
             for start in range(0, 2, limit)
         ]
-        for rows in self.whole_globe_slices():
+        for rows in self.pipeline.local_slices():
             with prof.section("exchange"):
                 # The grid tracers reach the physics as they are:
                 # nonnegative by construction, no clamp, no rescale, no
@@ -2972,12 +3164,16 @@ class MoistHybridModel:
                         accumulator = planes[name] = PlaneAccumulator(
                             xp, (*value.shape[:-2], nlat, int(value.shape[-1])),
                             value.dtype, name=f"physics_plane_{name}",
+                            exchange=self.pipeline.exchange,
                         )
                     accumulator.add_band(rows, value)
-                band_diagnostics.append(dict(result.diagnostics))
-                band_metadata.append(dict(result.physics_state.metadata))
-                columns.append((rows.stop - rows.start) * nlon)
-                adapter_receipt = result.adapter_receipt
+                band_records.append({
+                    "start": int(rows.start),
+                    "diagnostics": dict(result.diagnostics),
+                    "metadata": dict(result.physics_state.metadata),
+                    "columns": int((rows.stop - rows.start) * nlon),
+                    "adapter_receipt": result.adapter_receipt,
+                })
                 del result, exchange
         with prof.section("return"):
             largest_negative = self._refuse_floored_tracers(out_min, out_max)
@@ -3001,9 +3197,20 @@ class MoistHybridModel:
                 analyzed[start : start + piece.shape[0]] = piece
                 del piece
             del scalar_waists
-            surface = SurfaceState(**out_surface.finish())
+            surface_arrays = out_surface.finish()
             physics_arrays = out_physics.finish()
             tracers = out_tracers.finish()
+        with prof.section("cards"):
+            # The rows the other cards ran, once per call; nothing on one
+            # card.  Before the finish, which reads the surface and the
+            # namespace whole.
+            self._gather_card_rows(tracers, prefix="physics_tracer")
+            self._gather_card_rows(surface_arrays, prefix="physics_surface")
+            self._gather_card_rows(physics_arrays, prefix="physics_namespace")
+            band_records = self._gather_band_records(band_records)
+        with prof.section("return"):
+            surface = SurfaceState(**surface_arrays)
+            del surface_arrays
             atmosphere = bundle.atmosphere.with_fields(
                 (
                     zeta,
@@ -3024,7 +3231,8 @@ class MoistHybridModel:
 
                 finish = default_finish
             diagnostics, metadata = finish(
-                band_diagnostics, band_metadata,
+                [record["diagnostics"] for record in band_records],
+                [record["metadata"] for record in band_records],
                 {name: accumulator.plane for name, accumulator in planes.items()},
                 surface,
                 PhysicsState(
@@ -3032,9 +3240,11 @@ class MoistHybridModel:
                     metadata=_copy_json(bundle.physics_state.metadata),
                 ),
                 metadata_in=bundle.physics_state.metadata,
-                columns=columns, dt_s=dt,
+                columns=[record["columns"] for record in band_records],
+                dt_s=dt,
             )
-            del planes
+            adapter_receipt = band_records[-1]["adapter_receipt"]
+            del planes, band_records
         physics_state = PhysicsState(
             schema=bundle.physics_state.schema, arrays=physics_arrays,
             metadata=metadata,
@@ -3058,6 +3268,7 @@ class MoistHybridModel:
                 exchange_fixer["atmospheric_water_kg_m2"]
             ),
             "physics_result_floored_negative": float(largest_negative),
+            "exchange_fixer_ledger": exchange_fixer["ledger"],
         }
 
     def enforce(self, bundle: ArwenGlobalState) -> None:
@@ -3359,6 +3570,7 @@ class MoistHybridModel:
             first_fixer = {
                 "water_kg_m2": 0.0, "max_rescale": 0.0,
                 "unfillable_kg_m2": 0.0, "atmospheric_water_kg_m2": 0.0,
+                "ledger": None,
             }
             if mark is not None:
                 mark("physics_first", first.atmosphere)
@@ -3390,7 +3602,7 @@ class MoistHybridModel:
         # explicit Eulerian advection, which the semi-Lagrangian core does
         # not have: at T255 with a 100 m/s jet this number refuses any dt
         # above 187 s, and the step this integrator exists to take is 300.
-        # The refusal that replaces it is the Lipschitz gate inside
+        # The refusal that replaces it is the trajectory fold gate inside
         # semilag_step, which names the breakage this one cannot see (a
         # folded trajectory map, which does not blow the model up, it
         # mislocates it silently).  The value is still measured and still
@@ -3507,6 +3719,14 @@ class MoistHybridModel:
             float(first_physics.get("exchange_atmospheric_water_kg_m2", 0.0)),
             float(second_physics.get("exchange_atmospheric_water_kg_m2", 0.0)),
         )
+        # Where in the column the four clamps' fill put water and where it
+        # took it from: the filler's vertical ledger, summed over the
+        # clamps (positivity_fixer_level_gain/loss_kg_m2, top first).
+        fixer_ledger = sum_fixer_ledgers(
+            first_fixer.get("ledger"), second_fixer.get("ledger"),
+            first_physics.get("exchange_fixer_ledger"),
+            second_physics.get("exchange_fixer_ledger"),
+        )
         metrics = {
             "spectral_cfl": float(cfl),
             "mass_fixer_log_offset": float(mass_offset),
@@ -3517,6 +3737,15 @@ class MoistHybridModel:
             ),
             "positivity_fixer_max_rescale": float(fixer_max_rescale),
             "positivity_fixer_unfillable_kg_m2": float(fixer_unfillable),
+            "positivity_fixer_neighbour_kg_m2": float(
+                0.0 if fixer_ledger is None else fixer_ledger["neighbour_kg_m2"]
+            ),
+            "positivity_fixer_level_gain_kg_m2": (
+                None if fixer_ledger is None else fixer_ledger["level_gain_kg_m2"]
+            ),
+            "positivity_fixer_level_loss_kg_m2": (
+                None if fixer_ledger is None else fixer_ledger["level_loss_kg_m2"]
+            ),
             "maximum_repaired_negative_mixing_ratio": float(
                 max(first_negative_water, negative_water)
             ),

@@ -462,3 +462,224 @@ def test_every_shipped_global_analysis_config_names_the_bare_id():
         # And the GRIB each names is relative, so the config is runnable
         # from a working directory the fetch door wrote into.
         assert not Path(cfg.analysis_grib).is_absolute(), path
+
+
+# GI-4 (audit 2026-10-05): an analysis whose top lies below the model's top
+# full level held the top value constant up into the lid, so the IFS
+# open-data start (14 levels topping at 10 hPa) put 228.6 K at 1, 2, 5 and
+# 10 hPa where the standard atmosphere has 270.7, 260 and 245 K.
+_IFS_LEVELS_PA = np.asarray([
+    1000.0, 5000.0, 10000.0, 15000.0, 20000.0, 25000.0, 30000.0, 40000.0,
+    50000.0, 60000.0, 70000.0, 85000.0, 92500.0, 100000.0,
+])
+
+
+def test_temperature_above_the_analysis_top_follows_the_standard_atmosphere():
+    from arwen_global.analysis_initial import analysis_to_model_levels
+    from arwen_global.vertical import standard_atmosphere_temperature_k
+
+    standard = standard_atmosphere_temperature_k(_IFS_LEVELS_PA)
+    # A column 6 K colder than the standard atmosphere everywhere (a winter
+    # stratosphere): the departure at the analysis top is carried upward.
+    source = (standard - 6.0)[:, None, None] * np.ones((1, 2, 3))
+    targets = np.asarray([100.0, 200.0, 500.0, 2000.0, 50000.0])
+    p_full = targets[:, None, None] * np.ones((1, 2, 3))
+    remapped, record = analysis_to_model_levels(
+        {"air_temperature": source, "specific_humidity": np.full_like(source, 3.0e-6),
+         "eastward_wind": np.full_like(source, 12.0)},
+        _IFS_LEVELS_PA, p_full,
+    )
+    expected = standard_atmosphere_temperature_k(targets[:3]) - 6.0
+    np.testing.assert_allclose(remapped["air_temperature"][:3, 0, 0], expected, atol=1.0e-9)
+    # Inside the analysis the remap is the ln p interpolation it always was.
+    np.testing.assert_allclose(
+        remapped["air_temperature"][4, 0, 0],
+        np.interp(np.log(50000.0), np.log(_IFS_LEVELS_PA), source[:, 0, 0]), atol=1.0e-9)
+    # 1 hPa is about 270 K in the standard atmosphere, not the 10 hPa value.
+    assert remapped["air_temperature"][0, 0, 0] > 260.0
+    # Vapour and wind are held at the analysis top value.
+    np.testing.assert_array_equal(remapped["specific_humidity"][:3], 3.0e-6)
+    np.testing.assert_array_equal(remapped["eastward_wind"][:3], 12.0)
+    assert record["analysis_top_pa"] == 1000.0
+    assert record["model_full_levels_above_analysis_top"] == 3
+    assert "standard atmosphere" in record["temperature_above_top"]
+
+
+def test_a_float32_column_below_the_analysis_top_keeps_its_bits(monkeypatch):
+    """The GI-4 extension must not move a level it does not extend.  The
+    remap took ln p in the model's own pressure dtype; casting a float32
+    run's p_full to float64 before the log moved every level of the
+    default float32 GDAS configs by up to about 1e-4 K."""
+    import arwen_global.analysis_initial as analysis_initial
+    from coldstart_oracle import numpy_to_model_levels
+
+    monkeypatch.setattr(analysis_initial, "_to_model_levels", numpy_to_model_levels)
+    levels = np.asarray([1000.0, 5000.0, 10000.0, 25000.0, 50000.0,
+                         70000.0, 85000.0, 100000.0])
+    rng = np.random.default_rng(7)
+    source = (np.linspace(220.0, 290.0, levels.size)[:, None, None]
+              + rng.normal(0.0, 3.0, (levels.size, 4, 5)))
+    p_full = (np.geomspace(2000.0, 98000.0, 31)[:, None, None]
+              * (1.0 + 0.01 * rng.random((1, 4, 5)))).astype(np.float32)
+    remapped, record = analysis_initial.analysis_to_model_levels(
+        {"air_temperature": source}, levels, p_full)
+    assert record["model_full_levels_above_analysis_top"] == 0
+    expected = numpy_to_model_levels(
+        source, np.log(levels), np.log(p_full), extrapolate_below=True)
+    np.testing.assert_array_equal(remapped["air_temperature"], expected)
+
+
+def test_an_analysis_reaching_the_lid_records_no_extension():
+    from arwen_global.analysis_initial import analysis_to_model_levels
+
+    levels = np.asarray([50.0, 1000.0, 10000.0, 50000.0, 100000.0])
+    source = np.linspace(260.0, 290.0, levels.size)[:, None, None] * np.ones((1, 1, 1))
+    p_full = np.asarray([120.0, 5000.0, 90000.0])[:, None, None]
+    remapped, record = analysis_to_model_levels(
+        {"air_temperature": source}, levels, p_full)
+    assert record["model_full_levels_above_analysis_top"] == 0
+    assert np.all(np.isfinite(remapped["air_temperature"]))
+
+
+def test_the_analysis_receipt_names_the_levels_above_the_analysis_top(tmp_path):
+    from arwen_global.vertical import standard_atmosphere_temperature_k
+
+    cfg = _analysis_cfg(tmp_path)
+    transform = build_transform(cfg)
+    state, _phi, provenance = analysis_initial_state(
+        cfg, transform, frame=_synthetic_frame()
+    )
+    record = provenance["analysis_top"]
+    # The synthetic frame tops at 100 hPa under a 1 hPa lid.
+    assert record["analysis_top_pa"] == 10000.0
+    assert record["model_full_levels_above_analysis_top"] > 0
+    grid_theta = transform.backend.to_numpy(transform.inverse(state.atmosphere.theta))
+    ps = np.exp(transform.backend.to_numpy(
+        transform.inverse(state.atmosphere.log_surface_pressure)))
+    p_full = transform.backend.to_numpy(
+        cfg.vertical.pressure(ps, transform.backend)["p_full"])
+    temperature = grid_theta * (p_full / 100000.0) ** (287.0 / 1004.0)
+    # The top full level is warmer than the 100 hPa analysis by the
+    # standard atmosphere's warming between them (spectral truncation of
+    # theta costs a fraction of a kelvin here).
+    top_level = p_full[0].mean()
+    rise = standard_atmosphere_temperature_k(top_level) - standard_atmosphere_temperature_k(10000.0)
+    assert rise > 5.0
+    analysed_top = 220.0 + 70.0 * 0.1 * np.cos(np.deg2rad(transform.grid.latitude_deg))[:, None] ** 2
+    np.testing.assert_allclose(
+        temperature[0], np.broadcast_to(analysed_top + rise, temperature[0].shape), atol=1.5)
+
+
+# GI-7 (audit 2026-10-05): the IFS open-data soil layers are 0-7, 7-28,
+# 28-100 and 100-289 cm; Noah's are 0-10, 10-40, 40-100 and 100-200 cm.
+_IFS_MAPPING_FILE = (
+    Path(__file__).resolve().parents[1] / "src" / "arwen_global" / "data"
+    / "authorities" / "rw-wps-ecmwf-open-data-global-forecast-grib2.mapping.json"
+)
+
+
+def _layered_soil_frame():
+    frame = _synthetic_frame()
+    land = np.asarray(frame.fields["land_fraction"].values) > 0.5
+    layer_t = np.asarray([280.0, 285.0, 290.0, 295.0])[:, None, None]
+    layer_m = np.asarray([0.10, 0.20, 0.30, 0.40])[:, None, None]
+    frame.fields["soil_temperature"] = _Field(np.where(land[None], layer_t, np.nan))
+    frame.fields["volumetric_soil_moisture"] = _Field(np.where(land[None], layer_m, np.nan))
+    return frame
+
+
+def _cfg_with_mapping(tmp_path, mapping):
+    cfg = _analysis_cfg(tmp_path)
+    import dataclasses
+
+    return dataclasses.replace(cfg, analysis_mapping=str(mapping))
+
+
+def test_ifs_soil_layers_reach_noah_by_depth_not_by_position(tmp_path):
+    cfg = _cfg_with_mapping(tmp_path, _IFS_MAPPING_FILE)
+    transform = build_transform(cfg)
+    state, _phi, provenance = analysis_initial_state(
+        cfg, transform, frame=_layered_soil_frame())
+    host = transform.backend.to_numpy
+    land = host(state.surface.land_fraction) >= 1.0
+    assert land.any()
+    soil_t = host(state.surface.soil_temperature_k)[:, land]
+    soil_m = host(state.surface.soil_water_fraction)[:, land]
+    # Noah 0-10 cm: 7 cm of the 0-7 layer and 3 cm of the 7-28 layer;
+    # 10-40 cm: 18 cm of 7-28 and 12 cm of 28-100; 40-100 cm inside 28-100;
+    # 100-200 cm inside 100-289.
+    expected_t = [0.7 * 280 + 0.3 * 285, (18 * 285 + 12 * 290) / 30, 290.0, 295.0]
+    expected_m = [0.7 * 0.1 + 0.3 * 0.2, (18 * 0.2 + 12 * 0.3) / 30, 0.30, 0.40]
+    for k in range(4):
+        np.testing.assert_allclose(soil_t[k], expected_t[k], atol=1.0e-6)
+        np.testing.assert_allclose(soil_m[k], expected_m[k], atol=1.0e-9)
+    record = provenance["soil_layers"]["soil_temperature"]
+    assert record["remapped"] is True
+    assert record["source_bounds_m"] == [[0.0, 0.07], [0.07, 0.28], [0.28, 1.0], [1.0, 2.89]]
+    assert record["model_bounds_m"] == [[0.0, 0.1], [0.1, 0.4], [0.4, 1.0], [1.0, 2.0]]
+
+
+def test_gdas_soil_layers_match_noah_and_pass_unchanged(tmp_path):
+    cfg = _analysis_cfg(tmp_path)
+    transform = build_transform(cfg)
+    state, _phi, provenance = analysis_initial_state(
+        cfg, transform, frame=_layered_soil_frame())
+    host = transform.backend.to_numpy
+    land = host(state.surface.land_fraction) >= 1.0
+    soil_t = host(state.surface.soil_temperature_k)[:, land]
+    for k, value in enumerate([280.0, 285.0, 290.0, 295.0]):
+        np.testing.assert_allclose(soil_t[k], value, atol=1.0e-9)
+    assert provenance["soil_layers"]["soil_temperature"]["remapped"] is False
+
+
+def test_soil_layer_remap_keeps_column_water_and_refuses_an_unknown_index():
+    from arwen_global.analysis_initial import (
+        noah_soil_layer_bounds_m, remap_soil_layers, soil_layer_bounds_m,
+    )
+
+    gdas = resolve_analysis_mapping(MAPPING)
+    assert soil_layer_bounds_m(gdas) == noah_soil_layer_bounds_m()
+    ifs = soil_layer_bounds_m(_IFS_MAPPING_FILE, "volumetric_soil_moisture")
+    rng = np.random.default_rng(7)
+    stack = rng.uniform(0.05, 0.45, size=(4, 3, 5))
+    out, record = remap_soil_layers(stack, ifs, noah_soil_layer_bounds_m())
+    # Water in the top 2 m is kept: the source's 0-2 m water equals Noah's.
+    source_dz = np.asarray([0.07, 0.21, 0.72, 1.0])
+    noah_dz = np.asarray([0.1, 0.3, 0.6, 1.0])
+    np.testing.assert_allclose(
+        np.tensordot(source_dz, stack, axes=1), np.tensordot(noah_dz, out, axes=1),
+        rtol=1.0e-12)
+    np.testing.assert_allclose(np.sum(record["weights"], axis=1), 1.0)
+
+
+def test_a_soil_level_index_without_a_depth_row_is_refused(tmp_path):
+    import json
+
+    from arwen_global.analysis_initial import soil_layer_bounds_m
+
+    document = json.loads(_IFS_MAPPING_FILE.read_text(encoding="utf-8"))
+    document["name"] = "a-source-with-no-depth-row"
+    path = tmp_path / "unknown.mapping.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="by position"):
+        soil_layer_bounds_m(path)
+
+
+@pytest.mark.parametrize("change", ["other_type", "mixed_types"])
+def test_a_soil_selector_without_a_depth_names_the_breakage(tmp_path, change):
+    """Every soil-depth refusal names what it prevents: layers handed to
+    Noah by position (the refusal law: a refusal names its breakage)."""
+    import json
+
+    from arwen_global.analysis_initial import soil_layer_bounds_m
+
+    document = json.loads(_IFS_MAPPING_FILE.read_text(encoding="utf-8"))
+    selector = document["fields"]["soil_temperature"]["selectors"][0]
+    if change == "other_type":
+        selector["level_type"] = selector["second_level_type"] = 1
+    else:
+        selector["second_level_type"] = 106
+    path = tmp_path / "changed.mapping.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="by position"):
+        soil_layer_bounds_m(path)

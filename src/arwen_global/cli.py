@@ -292,7 +292,12 @@ def _add_memory_lever_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--card-rank", type=int, default=None, metavar="R",
-        help="this process's rank, 0-based, inside --cards",
+        help="this process's rank, 0-based, inside --cards.  On a CUDA "
+             "backend the rank runs on its own card: its local rank among "
+             "the ranks whose --card-addresses name the same host picks the "
+             "card (CUDA_VISIBLE_DEVICES is narrowed to it; a single entry "
+             "already set is kept, a list is indexed), and two ranks on one "
+             "card are refused by device UUID",
     )
     parser.add_argument(
         "--card-addresses", default=None, metavar="H:P,H:P",
@@ -302,9 +307,13 @@ def _add_memory_lever_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--card-transport", choices=("auto", "tcp", "nccl"), default=None,
-        help="'auto' (default) takes NCCL where it imports and TCP "
-             "otherwise; the two measured within 1 percent of each other on "
-             "this link",
+        help="'auto' (default) carries the device exchanges on NCCL when "
+             "every rank runs on a CUDA device and can open it (in one box: "
+             "NVLink or PCIe peer traffic, no host staging), and on the TCP "
+             "mesh otherwise; it never refuses.  The TCP mesh is always the "
+             "rendezvous and the host channel.  Both move bytes only, so the "
+             "answer is the same on either; 'nccl' refuses by name where it "
+             "cannot be built, 'tcp' never tries NCCL",
     )
     parser.add_argument(
         "--card-weights", default=None, metavar="W,W",
@@ -601,8 +610,10 @@ def _add_cycle_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--start-utc", default=None,
         help="ISO-8601 instant model time zero stands for, so each analysis "
-             "time is this plus its model time; default is the config's "
-             "physics start_time_utc, refused when neither exists",
+             "time is this plus its model time; default is the run's forecast "
+             "clock (the analysis valid time, else the config's physics "
+             "start_time_utc), a value that disagrees with that clock is "
+             "refused, and an undated run without one is refused",
     )
     parser.add_argument(
         "--until-s", type=float, default=None,
@@ -881,8 +892,10 @@ def _add_da_cycle_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--start-utc", default=None,
-        help="ISO-8601 instant model time zero stands for; default the "
-             "config's physics start_time_utc, refused when neither exists",
+        help="ISO-8601 instant model time zero stands for; default the run's "
+             "forecast clock (the analysis valid time, else the config's "
+             "physics start_time_utc), refused when it disagrees with that "
+             "clock or when the run has neither",
     )
     parser.add_argument(
         "--until-s", type=float, default=None,
@@ -1168,8 +1181,12 @@ def _add_export_wrfout_arguments(parser: argparse.ArgumentParser) -> None:
         help="longitude points of the regular output grid (default 720)",
     )
     parser.add_argument(
-        "--start-date", required=True,
-        help="analysis valid time as YYYY-MM-DD_HH:MM:SS; checkpoint times offset from it",
+        "--start-date", default=None,
+        help="analysis valid time as YYYY-MM-DD_HH:MM:SS.  Optional: a run "
+             "that starts from an analysis (or states start_time_utc) stamps "
+             "its tapes from its own forecast clock, and a value that "
+             "disagrees with that clock is refused; required only for an "
+             "idealized run with no date",
     )
     parser.add_argument(
         "--overwrite", action="store_true", help="replace tapes that already exist")
@@ -1367,6 +1384,17 @@ def build_parser() -> argparse.ArgumentParser:
         "fetch-analysis",
         help="fetch one whole-globe GDAS analysis, the object a global cold "
              "start needs, and print the run command it feeds"))
+    # `score` is the verification of record as one command: a run against
+    # ASOS and radiosondes through the two observation doors above, with
+    # the GFS and IFS analyses as secondary references.  Before it the
+    # observation scores were two module entrances and a hand-assembled
+    # IGRA2 extract, so a T383 or T533 run had no observation score at all.
+    from .forecast_scorecard import add_score_arguments
+
+    add_score_arguments(sub.add_parser(
+        "score",
+        help="score a run against ASOS stations and radiosondes (rw_asos, rw_igra2), "
+             "with the GFS and IFS analyses as secondary references"))
     observations = sub.add_parser(
         "obs",
         help="the observation streams the assimilation reads: fetch and decode "
@@ -1582,6 +1610,20 @@ def _size_the_run(args: argparse.Namespace, cfg, door: str):
         print(f"{door}: memory levers " + ", ".join(
             f"{key}={value}" for key, value in sorted(overrides.items())),
             flush=True)
+    # PLACED BEFORE IT IS SIZED.  A rank of a multi-card run narrows
+    # CUDA_VISIBLE_DEVICES to its own card here, so the gate's probe
+    # subprocess reads the card this rank will run on rather than device 0
+    # (MG-4: eight ranks in one box used to be admitted eight times
+    # against one card's free memory).
+    from .runner import place_rank_for
+
+    placement = place_rank_for(cfg)
+    if placement.get("placed"):
+        print(f"{door}: card rank {cfg.card_rank} is local rank "
+              f"{placement['local_rank']} of {placement['ranks_on_host']} on "
+              f"its host, on CUDA_VISIBLE_DEVICES="
+              f"{placement['cuda_visible_devices']} "
+              f"({placement['placed_by']})", flush=True)
     # SIZED BEFORE ANYTHING IS ALLOCATED.  The first thing a run does is
     # build the Legendre tables, which at T533 are 2.55 GiB and are the
     # largest single allocation of the whole forecast; a card that cannot
@@ -2722,6 +2764,10 @@ def main(argv: list[str] | None = None) -> int:
             from .analysis_fetch import fetch_analysis_main
 
             return fetch_analysis_main(args)
+        if args.command == "score":
+            from .forecast_scorecard import score_main
+
+            return score_main(args)
         if args.command == "obs":
             return args.func(args)
         if args.command == "run-plan":

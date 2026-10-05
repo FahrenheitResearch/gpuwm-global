@@ -33,9 +33,10 @@ dealias_factor = 1.5
 
 # The step is NOT bound by the advective Courant number on this core: the
 # semi-Lagrangian advection has no such bound and the runner's CFL refusal is
-# replaced on this path by the Lipschitz gate below (dt times the largest
-# singular value of the flow's own 3x3 Jacobian, refused above 0.75, which is
-# the number that says the trajectory map is still invertible).  The advective
+# replaced on this path by the trajectory fold gate below (the minimum over
+# the grid of det(I -+ (dt/2) J) of the flow's own 3x3 Jacobian, refused
+# below 0.2, which is the number that says the trajectory map is still
+# invertible).  The advective
 # Courant number is still measured and written to the receipt every step; at
 # this rung it reads well above 1 by design.
 [time]
@@ -43,7 +44,7 @@ dt_s = 100.0
 duration_s = 86400.0
 output_interval_s = 21600.0
 integrator = "sl_si"
-maximum_lipschitz = 0.75
+minimum_fold_determinant = 0.2
 
 [semilag]
 quasi_monotone = true

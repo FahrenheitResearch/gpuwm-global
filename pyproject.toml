@@ -31,7 +31,7 @@ name = "gpuwm-global"
 # The model source this package carries is cut from revision
 # f6f1adaa3bda7a347c142544d4007cf14847db47, dated 2026-09-12.  SOURCE.md says
 # what that means and how a re-cut is done.
-version = "0.1.2"
+version = "0.1.3"
 description = "Arwen Global: a GPU-native hydrostatic global spectral weather model with ensemble data assimilation"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -156,8 +156,16 @@ Repository = "https://github.com/FahrenheitResearch/gpuwm-global"
 # so this table names both rather than pretending to choose, and
 # `gpuwm-global doctor` reports which one is installed against the runtime the
 # driver answers with.
-gpu-cu12 = ["cupy-cuda12x[ctk]>=14.0"]
-gpu-cu13 = ["cupy-cuda13x[ctk]>=14.0"]
+#
+# NCCL rides beside CuPy because CuPy's `ctk` extra does not carry it (read
+# off the cupy-cuda13x 14 metadata: cublas, cudart, cufft, curand,
+# cusolver, cusparse and nvrtc, no nccl).  Without it `cupy.cuda.nccl`
+# is unavailable on a stock install, `card_transport = "auto"` falls back
+# to host bytes over TCP for every in-box exchange (MG-2), and the device
+# path the multi-card transport ships is reached only by an operator who
+# knows to add the wheel by hand.
+gpu-cu12 = ["cupy-cuda12x[ctk]>=14.0", "nvidia-nccl-cu12>=2.27.7,<3"]
+gpu-cu13 = ["cupy-cuda13x[ctk]>=14.0", "nvidia-nccl-cu13>=2.27.7,<3"]
 # The bare alias follows the stack this model has actually been run on: every
 # measured figure in its documentation came off Blackwell cards (sm_120) on a
 # CUDA 13 runtime.  `gpu-cu12` stays resolvable rather than being deleted,
@@ -218,7 +226,7 @@ gpuwm-global = "arwen_global.cli:main"
 [tool.pytest.ini_options]
 markers = [
     "gpu: needs a CUDA device and cupy",
-    "slow: minutes rather than seconds",
+    "slow: the full CPU tier only; minutes rather than seconds, or a whole-model gate named in tests/conftest.py FULL_TIER with its measured time",
     "network: reaches the network for observations, analyses or statics",
     "doors: needs a staged Rust binary from a release bundle",
     "assets: needs a byte-pinned data asset that ships with no fetch path",

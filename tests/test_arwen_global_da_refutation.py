@@ -10,8 +10,8 @@ metric); RTPS on a planted spread deficit relaxes the posterior spread to
 ``(1 - alpha) sigma_a + alpha sigma_b`` pointwise, and the Desroziers
 background ratio reads the deficit in the deficit direction (a spread half
 as large reads four); the neutral operators reproduce the closed forms of
-the door's reductions at one Gaussian column (station pressure, 2 m
-temperature, ln p interpolation); a foreign stream the analysis cannot
+the door's reductions at one Gaussian column (station pressure, the
+surface layer's 2 m temperature, ln p interpolation); a foreign stream the analysis cannot
 re-evaluate reads INCOMPLETE and fails the engineering gate; the recentring
 shift keeps every member's global-mean surface pressure (the raw shift
 moved it); the spread is area-weighted like the rmse it is set beside.
@@ -53,7 +53,7 @@ from arwen_global.da.letkf_point import (
     flatten_batches,
 )
 from arwen_global.da.operators import MemberOperators, batches_from_rows
-from arwen_global.assimilate import SURFACE_LAPSE_K_M, _interp_ln_pressure
+from arwen_global.assimilate import SURFACE_LAPSE_K_M, _interp_ln_pressure, _screen_level
 from arwen_global.obs_table import ObsRow
 from arwen_global.runner import build_model_and_cold_state, build_transform
 
@@ -259,12 +259,14 @@ def test_the_operators_reproduce_the_closed_forms_at_a_gaussian_column(smoke):
     grid = transform.grid
     j, i = 3, 5
     lat, lon = float(grid.latitude_deg[j]), float(grid.longitude_deg[i])
-    g = model.grid_state(cold.atmosphere, only=("ps", "theta", "qv", "p_full", "temperature"))
+    g = model.grid_state(cold.atmosphere, only=("ps", "theta", "qv", "p_full", "temperature", "u", "v"))
     ps = float(np.asarray(g["ps"])[j, i])
     theta_low = float(np.asarray(g["theta"])[-1, j, i])
     qv_low = max(float(np.asarray(g["qv"])[-1, j, i]), 0.0)
     p_full = np.asarray(g["p_full"])[:, j, i]
     t_profile = np.asarray(g["temperature"])[:, j, i]
+    u_low = float(np.asarray(g["u"])[-1, j, i])
+    v_low = float(np.asarray(g["v"])[-1, j, i])
     model.release_syntheses()
     # The operator's terrain reference is the SPECTRAL projection of the
     # model's grid terrain sampled at the station (the door's _ModelSpace
@@ -290,7 +292,24 @@ def test_the_operators_reproduce_the_closed_forms_at_a_gaussian_column(smoke):
     tv_low = t_low * (1.0 + 0.61 * qv_low)
     z_low = z_model + DRY_AIR_GAS_CONSTANT * tv_low / GRAVITY_M_S2 * math.log(ps / p_low)
     p_station = ps * math.exp(-GRAVITY_M_S2 * (elevation - z_model) / (DRY_AIR_GAS_CONSTANT * tv_low))
-    t_2m = t_low + SURFACE_LAPSE_K_M * (z_low - (elevation + 2.0))
+    # 2 m temperature: the surface layer's t2 at the column (GI-6, the
+    # similarity diagnostic the 10 m wind uses, from the lowest level, the
+    # skin and the surface state at this Gaussian node), with only the
+    # model-terrain to station difference lapsed.
+    surface = cold.surface
+    host = transform.backend.to_numpy
+    screen = _screen_level(
+        np.array([u_low]), np.array([v_low]), np.array([t_low]), np.array([qv_low]),
+        np.array([p_low]), np.array([ps]),
+        np.array([float(host(surface.temperature_k)[j, i])]),
+        np.array([min(max(float(host(surface.land_fraction)[j, i]), 0.0), 1.0)]),
+        np.array([min(max(float(host(surface.soil_water_fraction)[0, j, i])
+                          / ecfg.reference_physics.soil_wetness_capacity, 0.0), 1.0)]),
+        np.array([float(host(surface.roughness_m)[j, i])]),
+    )
+    t_2m = float(screen["t2"][0]) + SURFACE_LAPSE_K_M * (z_model - elevation)
+    # The lapse form this replaced, 6.5 K/km from the lowest level, is not it.
+    assert abs(t_2m - (t_low + SURFACE_LAPSE_K_M * (z_low - (elevation + 2.0)))) > 1.0e-3
     assert values["surface_pressure_pa"][0, 0] == pytest.approx(p_station, rel=1.0e-9)
     assert values["temperature_k"][0, 0] == pytest.approx(t_2m, rel=1.0e-9)
     assert ln_pressure[0] == pytest.approx(math.log(ps), rel=1.0e-9)

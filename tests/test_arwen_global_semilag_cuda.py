@@ -262,6 +262,15 @@ def test_fused_lipschitz_norms_match_their_numpy_specification(cupy_module):
         assert fused.lipschitz_balanced == pytest.approx(
             plain.lipschitz_balanced, rel=rel)
         assert fused.lipschitz > 0.0
+        # The fold determinant the gate reads, on the same two paths, at a
+        # step long enough that it is well away from one.
+        fused = lipschitz(wind, tables, 3600.0, fused_norms=True)
+        plain = lipschitz(wind, tables, 3600.0, fused_norms=False)
+        assert plain.fold_determinant < 0.99
+        assert fused.fold_determinant_arrival == pytest.approx(
+            plain.fold_determinant_arrival, rel=rel)
+        assert fused.fold_determinant_departure == pytest.approx(
+            plain.fold_determinant_departure, rel=rel)
 
 
 def _cartesian_polynomial(lam, phi):
@@ -436,3 +445,39 @@ def test_the_deficit_kernel_matches_the_specification_and_the_plain_gather(
         assert float(np.max(np.abs(host_cut - cupy.asnumpy(cut)))) < tol
         clipped += int((cupy.asnumpy(cut) != 0.0).sum())
     assert clipped > 0
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_the_trilinear_kernel_matches_the_numpy_specification(cupy_module,
+                                                              dtype):
+    """The low-order interpolant the default tracer mass fixer weighs by
+    (DYC-5) answers on the card what its numpy specification answers,
+    poles and the zonal wrap included, and is exact at zero displacement."""
+    from arwen_global.semilag.interpolate import gather_linear_batch
+
+    cupy = cupy_module
+    grid = GaussianGrid.create(31)
+    nlev = 6
+    shape = (nlev, grid.nlat, grid.nlon)
+    rng = np.random.default_rng(777)
+    fields = [rng.standard_normal(shape).astype(dtype) for _ in range(3)]
+    coords = {
+        "xi": rng.uniform(-3.0, grid.nlon + 3.0, shape).astype(dtype),
+        "phi": rng.uniform(-math.pi / 2, math.pi / 2, shape).astype(dtype),
+        "level": rng.uniform(-0.5, nlev + 0.5, shape).astype(dtype),
+    }
+    host_tables = SphericalGridTables.create(grid, xp=np, dtype=dtype)
+    host = gather_linear_batch(fields, Stencil(tables=host_tables, **coords))
+    dev_tables = SphericalGridTables.create(grid, xp=cupy, dtype=dtype)
+    dev_stencil = Stencil(
+        tables=dev_tables,
+        **{k: cupy.asarray(v) for k, v in coords.items()},
+    )
+    device = gather_linear_batch([cupy.asarray(f) for f in fields],
+                                 dev_stencil, batch=2)
+    tol = 3e-6 if dtype == np.float32 else 1e-12
+    for a, b in zip(host, device):
+        assert float(np.max(np.abs(a - cupy.asnumpy(b)))) < tol
+    zero = zero_stencil(dev_tables, nlev, xp=cupy, dtype=dtype)
+    field = cupy.asarray(fields[0])
+    assert bool((gather_linear_batch([field], zero)[0] == field).all())

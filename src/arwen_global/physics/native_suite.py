@@ -65,20 +65,23 @@ class ArwenCudaColumnSuite:
     #: they enter no checkpoint, and the merge is stated here.
     DIAGNOSTIC_MERGE = {
         "frozen_surface_columns": COUNT,
+        "lake_surface_columns": COUNT,
         "maximum_native_water_residual_kg_m2": MAX,
         "native_water_residual_exceeds_tolerance": MAX,
         "maximum_native_energy_change_j_m2": MAX,
         "native_energy_change_exceeds_advisory": MAX,
         "maximum_local_water_repair_kg_m2": MAX,
+        "stratospheric_floor_points": COUNT,
     }
     #: Namespace metadata keys that are NOT the same on every band: the
-    #: two call counters a band without the columns they count does not
-    #: bump (a band with no frozen column, no partial pack), and the
+    #: three call counters a band without the columns they count does not
+    #: bump (a band with no frozen column, no partial pack, no lake), and the
     #: radiation size-bounding record, which ``finish`` assembles from the
     #: bands' counts and the whole-grid path-sum planes.
     METADATA_MERGE = {
         "frozen_surface_calls": MAX,
         "lead_tile_calls": MAX,
+        "lake_surface_calls": MAX,
         "radiation_size_bounding_last": SKIP,
         "radiation_size_bounding_sum": SKIP,
     }
@@ -98,6 +101,11 @@ class ArwenCudaColumnSuite:
     }
     _SIZE_BOUNDING_PLANE = "radiation_size_bounding__"
     _FLOOR_PLANE = "stratospheric_floor_heating_j_m2"
+    #: cos(latitude) of every column, beside the floor's heating plane, so
+    #: its grid mean is an AREA mean: a flat mean over the Gaussian grid's
+    #: rows weighs a polar column, where the floor acts, as much as an
+    #: equatorial one.
+    _FLOOR_WEIGHT_PLANE = "stratospheric_floor_area_weight"
 
     def __init__(
         self,
@@ -353,11 +361,12 @@ class ArwenCudaColumnSuite:
     def _stratospheric_floor_pull(self, batch, dt_s: float) -> float:
         """One-sided pull toward the stratospheric floor, in theta.
 
-        Same scaffold as reference.py _stratospheric_floor_pull, standing in
-        for the residual-circulation warming a 20-level hydrostatic top
-        cannot supply (defect citation on the options: the 384 h native
-        baseline arm's hour-83.4 polar-sag death through the 140 K research
-        bound).  Points above stratospheric_floor_pa colder than the floor
+        Same scaffold as reference.py _stratospheric_floor_pull.  Off by
+        default since 2026-10-05: the top-sag death it was installed for
+        does not reproduce in a 240 h floor-off run on this tree (the
+        measurement is on the options), so it runs only in an arm that
+        turns it on, at the 5 hPa reach.  Points above
+        stratospheric_floor_pa colder than the floor
         gain max(floor - T, 0) * dt / tau per call; nothing is ever cooled,
         nothing at or above the floor is touched.  The added enthalpy is
         measured and returned as the column plane (J/m2 this call, one
@@ -386,7 +395,8 @@ class ArwenCudaColumnSuite:
         heating = (
             pull * batch.arrays["dp"] * (DRY_AIR_CP / GRAVITY_M_S2)
         ).sum(axis=0)
-        return heating
+        points = int(self._host(xp, (pull > 0.0).sum()))
+        return heating, points
 
     def _validate_result(self, batch):
         xp = batch.xp
@@ -501,7 +511,12 @@ class ArwenCudaColumnSuite:
             self._validate_result(batch)
         closure = prof.section("ledger_after")
         closure.__enter__()
-        floor_heating = self._stratospheric_floor_pull(batch, exchange.dt_s)
+        floor = self._stratospheric_floor_pull(batch, exchange.dt_s)
+        floor_heating, floor_points = (None, 0) if floor is None else floor
+        floor_weight = None
+        if floor_heating is not None:
+            floor_weight = xp.cos(xp.deg2rad(
+                batch.arrays["latitude_deg"].astype(xp.float64)))
         after_water = self._water_column(batch, persistent)
         water_residual = after_water - before_water
         maximum_water_residual = float(
@@ -550,6 +565,7 @@ class ArwenCudaColumnSuite:
         planes: dict[str, object] = {}
         if floor_heating is not None:
             planes[self._FLOOR_PLANE] = floor_heating
+            planes[self._FLOOR_WEIGHT_PLANE] = floor_weight
         bounding_columns = self._runtime.last_radiation_bounding_columns
         if bounding_columns is not None:
             for name, plane in bounding_columns.items():
@@ -565,6 +581,9 @@ class ArwenCudaColumnSuite:
                 maximum_energy_change > self.options.energy_change_advisory_j_m2
             ),
             "maximum_local_water_repair_kg_m2": maximum_water_residual,
+            # How many grid points the floor warmed this call (zero with
+            # it off): with the heating, the floor's bill on every call.
+            "stratospheric_floor_points": float(floor_points),
         }
         if floor_heating is None:
             diagnostics["mean_stratospheric_floor_heating_j_m2"] = 0.0
@@ -618,10 +637,12 @@ class ArwenCudaColumnSuite:
             surface, physics_state.arrays, metadata))
         heating = planes.get(self._FLOOR_PLANE)
         if heating is not None:
-            # The same reading the one-call form took: the float32 plane's
-            # own mean, over the whole globe.
+            # The area mean over the whole globe, J/m2 this call.
+            weight = np.asarray(
+                to_host(planes[self._FLOOR_WEIGHT_PLANE]), dtype=np.float64)
             diagnostics["mean_stratospheric_floor_heating_j_m2"] = float(
-                np.asarray(to_host(heating)).mean())
+                (np.asarray(to_host(heating), dtype=np.float64) * weight).sum()
+                / weight.sum())
         if self.observer is not None and hasattr(self.observer, "close_call"):
             self.observer.close_call(
                 self._xp if self._xp is not None else self._array_module())

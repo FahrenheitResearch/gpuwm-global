@@ -268,3 +268,166 @@ class SphericalGridTables:
         term inheriting the polar collapse of the local zonal spacing.
         """
         return self.radius_m * self.dlam
+
+    def window(self, source: slice, arrival: slice) -> "BandWindow":
+        """The tables of one latitude band read through its row halo.
+
+        ``arrival`` is the band (the rows whose departure points are
+        computed) and ``source`` the rows the band holds, the band plus
+        its halo clipped at the poles.  See :class:`BandWindow`.
+
+        Built once per (held rows, band rows) and kept: a step asks for the
+        same windows every step, and rebuilding one is a host pass over
+        the row tables and two uploads per band per step.
+        """
+        key = (int(source.start), int(source.stop),
+               int(arrival.start), int(arrival.stop))
+        cache = _WINDOW_CACHE.setdefault(id(self), (self, {}))[1]
+        window = cache.get(key)
+        if window is None:
+            window = cache[key] = BandWindow.create(self, source, arrival)
+        return window
+
+
+#: Band windows by the identity of the tables they were cut from (the
+#: tables object is held in the entry so its id cannot be recycled).
+_WINDOW_CACHE: dict[int, tuple] = {}
+
+
+#: The row-offset value a band window writes for an extended-table row
+#: whose data row lies outside the rows the band holds.  Every real offset
+#: is ``row * nlon >= 0``, so the value cannot be mistaken for one.
+OUTSIDE_WINDOW = -1
+
+
+def _window_offsets(rowoff_host: np.ndarray, nlon: int, s0: int, s1: int
+                    ) -> np.ndarray:
+    data_row = rowoff_host.astype(np.int64) // int(nlon)
+    inside = (data_row >= s0) & (data_row < s1)
+    return np.where(
+        inside, (data_row - s0) * int(nlon), OUTSIDE_WINDOW
+    ).astype(np.int32)
+
+
+@dataclass(frozen=True)
+class BandWindow:
+    """One latitude band of the semi-Lagrangian step and the rows it reads.
+
+    The departure points of the ``arrival`` rows are searched for and read
+    out of fields that hold only the ``source`` rows, the band plus a row
+    halo.  Nothing in the weights changes: the bracket, the Lagrange
+    weights and the polar reflection are read off the WHOLE grid's tables
+    exactly as the whole-grid gather reads them, and only the address of
+    a data row moves, from ``row * nlon`` in a whole plane to
+    ``(row - source.start) * nlon`` in the band's plane.  So a value the
+    band computes is the value the whole-grid gather computes at that
+    point, bit for bit, which is what makes the band schedule (a pure
+    function of ``(nlat, bands)``) and not the card count decide the
+    answer.
+
+    A row the band does not hold is mapped to :data:`OUTSIDE_WINDOW`, and
+    a read of it is an ESCAPE: the kernels flag it and the gather refuses
+    it by name (:class:`HaloEscape`), because the alternative is to read
+    a row of some other array and return a plausible wrong number.
+    """
+
+    tables: SphericalGridTables
+    source: slice
+    arrival: slice
+    rowoff: Any
+    rowoff6: Any
+    rowoff_host: np.ndarray
+    rowoff6_host: np.ndarray | None
+    #: The device escape flag the band kernels raise (one int32), or None
+    #: on the host backend, whose specification raises at once.
+    escape: Any = None
+
+    @classmethod
+    def create(cls, tables: SphericalGridTables, source: slice,
+               arrival: slice) -> "BandWindow":
+        nlat = int(tables.nlat)
+        s0, s1 = int(source.start), int(source.stop)
+        a0, a1 = int(arrival.start), int(arrival.stop)
+        if not (0 <= s0 <= a0 < a1 <= s1 <= nlat):
+            raise ValueError(
+                f"a band window holds rows [{s0}, {s1}) and computes rows "
+                f"[{a0}, {a1}); the computed rows must lie inside the held "
+                f"rows and both inside the {nlat} rows of the grid"
+            )
+        xp = tables.xp
+        host = _window_offsets(tables.rowoff_host, tables.nlon, s0, s1)
+        host6 = (None if tables.rowoff6_host is None
+                 else _window_offsets(tables.rowoff6_host, tables.nlon, s0, s1))
+        return cls(
+            tables=tables,
+            source=slice(s0, s1),
+            arrival=slice(a0, a1),
+            rowoff=xp.asarray(host, dtype=np.int32),
+            rowoff6=None if host6 is None else xp.asarray(host6, dtype=np.int32),
+            rowoff_host=host,
+            rowoff6_host=host6,
+            escape=(xp.zeros(1, dtype=np.int32)
+                    if getattr(xp, "__name__", "") == "cupy" else None),
+        )
+
+    def clear_escape(self) -> None:
+        """Lower the escape flag before a band's kernels run."""
+        if self.escape is not None:
+            self.escape.fill(0)
+
+    def raise_if_escaped(self, what: str) -> None:
+        """Refuse by name if any band kernel since :meth:`clear_escape` read
+        a row the band does not hold.  One device read, so a caller that
+        launches several kernels per band checks once, after the last."""
+        if self.escape is not None and int(self.escape.get()[0]):
+            raise HaloEscape(self, what)
+
+    @property
+    def source_rows(self) -> int:
+        return int(self.source.stop - self.source.start)
+
+    @property
+    def arrival_rows(self) -> int:
+        return int(self.arrival.stop - self.arrival.start)
+
+    @property
+    def lead(self) -> int:
+        """The band's first row's index inside the held rows."""
+        return int(self.arrival.start - self.source.start)
+
+    @property
+    def local(self) -> slice:
+        """The band's rows as a slice of the held rows."""
+        return slice(self.lead, self.lead + self.arrival_rows)
+
+    def arrival_shape(self, nlev: int) -> tuple[int, int, int]:
+        return int(nlev), self.arrival_rows, int(self.tables.nlon)
+
+    def source_shape(self, nlev: int) -> tuple[int, int, int]:
+        return int(nlev), self.source_rows, int(self.tables.nlon)
+
+
+class HaloEscape(ValueError):
+    """A departure point, or a trajectory iterate, read a latitude row the
+    band does not hold.
+
+    Named breakage: the band's fields hold only the band's rows and its
+    halo, so the read would land in a row of some other field (or past the
+    end of this one) and return a plausible, wrong number with no other
+    symptom.  The semi-Lagrangian step catches it and recomputes the band
+    behind a wider halo, which is exact because every row a band reads is
+    synthesized from the replicated spectral state or read from a grid
+    field every card holds whole; past the widest halo the step allows it
+    is refused for good (:mod:`arwen_global.semilag.step`).
+    """
+
+    def __init__(self, window: BandWindow, what: str):
+        self.window = window
+        super().__init__(
+            f"the semi-Lagrangian {what} of latitude rows "
+            f"{window.arrival.start}..{window.arrival.stop} read a row "
+            f"outside the rows {window.source.start}..{window.source.stop} "
+            "the band holds: a departure point left the band's row halo, "
+            "and reading on would return a value from a row the band does "
+            "not have"
+        )

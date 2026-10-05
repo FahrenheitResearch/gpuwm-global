@@ -40,7 +40,7 @@ dt_s = 300.0
 duration_s = 21600.0
 output_interval_s = 10800.0
 integrator = "sl_si"
-maximum_lipschitz = 0.75
+minimum_fold_determinant = 0.2
 
 [semilag]
 quasi_monotone = true

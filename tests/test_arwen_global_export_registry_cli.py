@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from arwen_global.configs_dir import config_root as _shipped_configs
+import hashlib
 import json
 from pathlib import Path
 
@@ -113,14 +114,44 @@ def test_registry_records_the_contract_and_never_promotes_on_digests_alone():
     assert bridge.identity["admission_status"] == "experimental"
 
 
-def test_registry_refuses_validated_status_without_device_evidence():
+@pytest.mark.parametrize("status", ["device-qualified", "validated"])
+def test_registry_refuses_device_qualification_without_device_evidence(status):
     with pytest.raises(ValueError, match="nonzero device evidence"):
         register_global_physics_adapter(
-            "unit-test-validated-adapter",
+            f"unit-test-{status}-adapter",
             lambda options: _Dummy(),
-            _v2_contract(admission_status="validated"),
+            _v2_contract(admission_status=status),
             replace=True,
         )
+
+
+@pytest.mark.parametrize("status", ["device-qualified", "validated"])
+def test_qualified_status_alias_displays_canonically_without_rewriting_contract(status, capsys):
+    from types import SimpleNamespace
+    from arwen_global.runplan import _physics_snapshot
+
+    name = f"unit-test-qualified-alias-{status}"
+    contract = _v2_contract(admission_status=status, device_evidence_sha256="3" * 64)
+    expected_hash = hashlib.sha256(json.dumps(
+        contract, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode()).hexdigest()
+    registration = register_global_physics_adapter(
+        name, lambda options: _Dummy(), contract, replace=True)
+    assert registration.admission_status == "device-qualified"
+    assert registration.contract == contract
+    assert registration.contract_hash == expected_hash
+    bridge = NativeArwenPhysicsBridge(name, {})
+    assert bridge.identity["admission_status"] == status
+    assert bridge.identity["contract_hash"] == expected_hash
+
+    assert main(["physics-manifest"]) == 0
+    shown = json.loads(capsys.readouterr().out)[name]
+    assert shown["admission_status"] == "device-qualified"
+    assert shown["contract"] == contract
+    assert shown["contract_hash"] == expected_hash
+    config = SimpleNamespace(physics_mode="arwen-native", native_adapter_name=name,
+                             native_adapter_options={})
+    assert _physics_snapshot(config)["admission_status"] == "device-qualified"
 
 
 def test_run_receipt_from_another_pin_document_is_refused(tmp_path):

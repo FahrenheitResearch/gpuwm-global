@@ -83,7 +83,11 @@ SEAM: tuple[tuple[str, str], ...] = (
      "package and no test calls those.  Against the cut revision the file "
      "differs by 1,130 lines at gpuwm 2.7.3 (308 at 2.7.0), 105 of them "
      "inside RunConfig, and RunConfig's own 2.7.0-to-2.7.3 movement is "
-     "comment text with no field, default or validation changed"),
+     "comment text with no field, default or validation changed.  From "
+     "2.8.0 to 2.8.5 RunConfig flips moist_cq to True and appends regional "
+     "fields with off defaults; the native suite hands its schemes a "
+     "namespace, never a RunConfig, and the four functions it binds here "
+     "are unchanged"),
     ("gpuwm/core/state.py",
      "DTYPE, DomainState and the constants wdm6/sase read.  The DomainState "
      "constructor and init_at_rest are reached only from the same two "
@@ -91,7 +95,10 @@ SEAM: tuple[tuple[str, str], ...] = (
      "the file differs by 141 lines at gpuwm 2.7.3 (100 at 2.7.0), 109 of "
      "them inside DomainState; the 2.7.0-to-2.7.3 movement is one comment "
      "in DomainState plus a scratch-arena dtype rule that widens what is "
-     "accepted and an optional argument nothing here passes"),
+     "accepted and an optional argument nothing here passes.  From 2.8.0 "
+     "to 2.8.5 DomainState gains a device face-mass kernel and a host copy "
+     "option, and init_at_rest an admission refusal; DTYPE is unchanged "
+     "and the two builders still have no caller"),
     ("gpuwm/core/grid.py",
      "BaseState, VerticalCoord and rebalance_hydrostatic, bound at module "
      "scope by staying state.py"),
@@ -107,7 +114,10 @@ SEAM: tuple[tuple[str, str], ...] = (
      "scope by carried ysu.  Nothing in this package binds "
      "MAX_RRTMGP_LAYERS, and carried rrtmgp does not reach this file"),
     ("gpuwm/core/kf.py",
-     "_model_clock_dt, imported at module scope by carried gf"),
+     "_model_clock_dt, imported at module scope by carried gf, unchanged "
+     "at 2.8.5.  KainFritsch moved (an adaptive-step cumulus period and "
+     "uncleared output buffers) and is bound by carried physics only at "
+     "cu_physics=1, which the native suite never selects"),
     ("gpuwm/core/health_ledger.py",
      "the validation-flag ledger carried ysu and carried rrtmgp read and "
      "write.  NOT gpuwm/core/health.py, which differs and is not reached"),
@@ -172,7 +182,12 @@ SEAM: tuple[tuple[str, str], ...] = (
 
     ("gpuwm/__init__.py",
      "the engine's package init, which executes before any engine module the "
-     "carried physics imports; carried rrtmgp reaches data_assets through it"),
+     "carried physics imports; carried rrtmgp reaches data_assets through it.  "
+     "From 2.8.5 it reads its version from the distribution that owns the "
+     "package, and installs the engine's strict-arithmetic compile hook "
+     "(gpuwm.wrf_exact) when a GPUWM_WRF_EXACT=1 variable is set; that hook "
+     "patches CuPy's compiler for the whole process, carried kernels "
+     "included, and nothing in this package sets it"),
     ("gpuwm/core/__init__.py",
      "the engine's core package init, executed by every `from gpuwm.core "
      "import ...` in the carried physics.  Empty at the pinned version, and "

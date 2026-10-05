@@ -363,3 +363,54 @@ def test_the_engine_checkout_sweep_sees_the_shape_and_ignores_the_source_tree(
     hits = _engine_checkout_reads(tree, "test_planted.py")
     assert len(hits) == 1, hits
     assert hits[0].startswith("test_planted.py:4:"), hits
+
+
+# ------------------------------------------------------- the two CPU tiers
+
+def test_every_full_tier_row_names_a_test_that_exists() -> None:
+    """A row in conftest's FULL_TIER that names no test is a dead row.
+
+    THE BREAKAGE THIS PREVENTS: a renamed whole-model gate drops out of the
+    table without a sound and walks back into the quick tier, and the quick
+    tier's 10 minute budget erodes one rename at a time.
+    """
+
+    from conftest import FULL_TIER
+
+    defined = set()
+    for path in _test_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                defined.add(f"{path.name}::{node.name}")
+    dead = sorted(set(FULL_TIER) - defined)
+    assert not dead, dead
+    assert all(seconds > 5.0 for seconds in FULL_TIER.values()), FULL_TIER
+
+
+def test_the_quick_tier_deselects_a_full_tier_row_and_keeps_its_neighbours() -> None:
+    """Measured through pytest's own selection, not by reading the table.
+
+    The hook adds `slow` at collection time, so the only proof that the
+    quick tier's expression drops a row is a collection under it.
+    """
+
+    import subprocess
+    import sys
+
+    target = TESTS / "test_arwen_global_imex.py"
+    gate = "test_gate_h_rotational_kinetic_energy_is_not_damped"
+    collected = {}
+    for tier, expression in (("quick", "not gpu and not slow and not network"),
+                             ("full", "not gpu")):
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "--collect-only",
+             "-p", "no:cacheprovider", "-m", expression, str(target)],
+            cwd=TESTS.parent, capture_output=True, text=True, timeout=120)
+        assert result.returncode == 0, result.stdout + result.stderr
+        collected[tier] = [line for line in result.stdout.splitlines()
+                           if "::" in line]
+    assert any(gate in line for line in collected["full"]), collected["full"]
+    assert not any(gate in line for line in collected["quick"])
+    assert collected["quick"], "the quick tier kept nothing of the file"
+    assert set(collected["quick"]) < set(collected["full"])

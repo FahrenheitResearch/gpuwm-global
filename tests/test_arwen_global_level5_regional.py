@@ -11,6 +11,8 @@ import sys
 import numpy as np
 import pytest
 
+from conftest import requires_render_kernels  # noqa: E402
+
 from arwen_global.config import load_config
 from arwen_global.constants import NUMBER_MOMENTS, WATER_SPECIES
 from arwen_global.export import export_parent
@@ -180,6 +182,7 @@ def _install_fake_lbc_module(monkeypatch):
     monkeypatch.setitem(sys.modules, "gpuwm.ingest.lateral_bc", lbc)
 
 
+@requires_render_kernels
 def test_periodic_interpolation_and_boundary_outermost_order():
     lat = np.array([-10.0, 10.0])
     lon = np.array([0.0, 90.0, 180.0, 270.0])
@@ -194,6 +197,7 @@ def test_periodic_interpolation_and_boundary_outermost_order():
     assert np.array_equal(sides["north"], source[:, -2:, :][:, ::-1, :])
 
 
+@requires_render_kernels
 def test_global_export_translates_to_exact_arwen_coupled_units(tmp_path):
     cfg, target, _exports, frames, _series = _build_artifacts(tmp_path)
     target_meta, target_arrays = read_regional_target(target)
@@ -219,6 +223,7 @@ def test_global_export_translates_to_exact_arwen_coupled_units(tmp_path):
     }
 
 
+@requires_render_kernels
 def test_parent_series_builds_existing_lbc_contract_and_installs_transactionally(tmp_path, monkeypatch):
     _cfg, target, _exports, frames, series = _build_artifacts(tmp_path)
     _install_fake_lbc_module(monkeypatch)
@@ -261,6 +266,7 @@ def test_parent_series_builds_existing_lbc_contract_and_installs_transactionally
     assert install["model_time_s"] == state.elapsed_seconds
 
 
+@requires_render_kernels
 def test_install_receipt_model_time_agrees_with_the_state_clock(tmp_path, monkeypatch):
     _cfg, target, _exports, frames, series = _build_artifacts(tmp_path)
     _install_fake_lbc_module(monkeypatch)
@@ -280,6 +286,7 @@ def test_install_receipt_model_time_agrees_with_the_state_clock(tmp_path, monkey
     assert install["model_time_s"] == state.elapsed_seconds
 
 
+@requires_render_kernels
 def test_parent_series_binds_every_frame_to_its_declared_target(tmp_path):
     cfg, target, _exports, frames, series = _build_artifacts(tmp_path)
     other = tmp_path / "other-target.npz"
@@ -326,6 +333,7 @@ def test_target_refuses_a_mub2d_its_own_coefficients_cannot_carry(tmp_path):
         read_regional_target(path)
 
 
+@requires_render_kernels
 def test_translate_refuses_a_base_column_mass_that_is_not_this_column(tmp_path):
     cfg = load_config(CONFIG)
     run_dir = tmp_path / "global"
@@ -344,6 +352,7 @@ def test_translate_refuses_a_base_column_mass_that_is_not_this_column(tmp_path):
         translate_parent_to_regional_frame(parent, path, tmp_path / "frame.npz")
 
 
+@requires_render_kernels
 def test_poleward_target_latitude_is_refused_not_clamped():
     lat = regular_latlon_coordinates(17, 36, include_poles=False)[0]
     lon = regular_latlon_coordinates(17, 36, include_poles=False)[1]
@@ -364,6 +373,7 @@ def test_non_monotonic_parent_latitude_is_refused():
         periodic_bilinear(lat, lon, field, np.array([[-30.0]]), np.array([[0.0]]))
 
 
+@requires_render_kernels
 def test_theta_below_the_parent_bottom_follows_the_standard_lapse():
     source_p = np.array([200.0, 500.0, 850.0, 985.0])[:, None, None] * 100.0
     theta = np.array([400.0, 330.0, 300.0, 289.0])[:, None, None]
@@ -387,6 +397,7 @@ def test_theta_below_the_parent_bottom_follows_the_standard_lapse():
     assert (held_t[-1] - bottom_t) / depth_m[-1] > 9.0e-3
 
 
+@requires_render_kernels
 def test_extrapolation_past_one_parent_bottom_layer_is_refused():
     source_p = np.array([200.0, 500.0, 850.0, 985.0])[:, None, None] * 100.0
     theta = np.array([400.0, 330.0, 300.0, 289.0])[:, None, None]
@@ -416,6 +427,7 @@ def test_rotation_gate_sits_at_the_float32_round_trip_bound(tmp_path):
         read_regional_target(bad)
 
 
+@requires_render_kernels
 def test_target_and_series_tampering_is_detected(tmp_path):
     _cfg, target, _exports, _frames, series = _build_artifacts(tmp_path)
     with np.load(target, allow_pickle=False) as archive:
@@ -427,3 +439,37 @@ def test_target_and_series_tampering_is_detected(tmp_path):
         read_regional_target(target)
     with pytest.raises(ValueError, match="target file hash"):
         read_parent_series(series)
+
+
+def test_the_regional_frame_installs_dry_mixing_ratios_from_the_parent_specific_humidity(
+    tmp_path, monkeypatch,
+):
+    """GI-5 (audit 2026-10-05): the parent export carries the model's
+    specific humidities; the regional engine's qv, its dry column mass and
+    its dry specific volume are mixing-ratio quantities, so the translation
+    converts with the model's own r = q / (1 - q_v)."""
+    import arwen_global.regional.translate as translate
+    from arwen_global.export import read_parent_export
+
+    cfg, target, exports, _frames, _series = _build_artifacts(tmp_path)
+    parent_meta, _ = read_parent_export(exports[1])
+    assert parent_meta["water_species"].startswith("specific")
+    metadata, arrays = read_regional_frame(_frames[1][0])
+    assert "dry-mixing-ratio" in metadata["methods"]["water"]
+    # The same translation with the water left as the parent's q (the
+    # pre-fix frame).
+    monkeypatch.setattr(
+        translate, "mixing_ratio_from_specific_humidity", lambda species: dict(species))
+    raw_path = tmp_path / "raw-frame.npz"
+    translate.translate_parent_to_regional_frame(exports[1], target, raw_path)
+    _raw_meta, raw = read_regional_frame(raw_path)
+    q = raw["qv"]
+    assert float(q.max()) > 1.0e-3
+    np.testing.assert_allclose(arrays["qv"], q / (1.0 - q), rtol=1.0e-12, atol=0.0)
+    for name in WATER_SPECIES:
+        np.testing.assert_allclose(arrays[name], raw[name] / (1.0 - q), rtol=1.0e-12, atol=0.0)
+    for name in NUMBER_MOMENTS:
+        np.testing.assert_array_equal(arrays[name], raw[name])
+    # The dry column now removes w, which is larger than q: less dry mass.
+    assert np.all(arrays["dry_mu"] <= raw["dry_mu"])
+    assert float(np.max(raw["dry_mu"] - arrays["dry_mu"])) > 0.0

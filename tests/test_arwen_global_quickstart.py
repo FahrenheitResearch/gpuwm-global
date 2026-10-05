@@ -38,6 +38,8 @@ import tomllib
 
 import pytest
 
+from conftest import requires_render_kernels  # noqa: E402
+
 from gpuwm import cli, fetch
 from arwen_global import analysis_fetch
 from arwen_global.analysis_initial import resolve_analysis_mapping
@@ -350,6 +352,7 @@ def test_the_documented_fetch_command_is_the_one_the_config_needs() -> None:
     assert fetch.parse_cycle(args.cycle, "gdas") == CYCLE
 
 
+@requires_render_kernels
 def test_the_three_doors_compose_from_run_to_rendered_image(tmp_path) -> None:
     """The demo leg's only real claim, run as three real subprocesses.
 

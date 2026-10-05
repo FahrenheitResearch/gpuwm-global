@@ -52,6 +52,11 @@ def test_every_gap_names_what_it_stops():
         assert gap.stops and gap.stops[0].islower() or gap.stops[0] == "`"
         assert gap.handling in ("carried", "refused")
         assert gap.module.startswith("gpuwm.")
+        assert isinstance(gap.stops_a_documented_command, bool)
+        # A native forecast is `run` or `go`, both documented, so a row that
+        # stops one and claims to stop no documented command contradicts
+        # itself and the doctor would exit 0 over a refused forecast.
+        assert gap.stops_a_documented_command or not gap.stops_a_native_forecast
 
 
 def test_the_gap_list_is_measured_not_asserted():

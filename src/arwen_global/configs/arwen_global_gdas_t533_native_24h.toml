@@ -10,10 +10,12 @@
 # `..._t533_native_imex_24h.toml` is this suite on `imex_ssp3` at its
 # rule step (config.default_eulerian_step_s).  What this file leaves out
 # reads the semi-Lagrangian core's own defaults, the values every graded arm
-# ran at: [semi_implicit] off_centring_weight 0.55, [time] maximum_lipschitz
-# 0.75, the six-point quintic gather with three trajectory iterations, and
+# ran at: [semi_implicit] off_centring_weight 0.55, the six-point quintic
+# gather with three trajectory iterations, and
 # the order 16 / 12 min hyperdiffusion (config.SEMILAG_DIFFUSION_*, set on
-# the dry ladder of 2026-09-07).
+# the dry ladder of 2026-09-07).  The trajectory gate is [time]
+# minimum_fold_determinant 0.2, which replaced the 0.75 norm ceiling those
+# arms ran under (semilag.trajectory.DEFAULT_MINIMUM_FOLD_DETERMINANT).
 #
 # 86400/300 = 288 whole steps; 3600/300 = 12-step output cadence.
 # (T533 at dealias 1.5 quadrature is 801 x 1602: grid spacing about

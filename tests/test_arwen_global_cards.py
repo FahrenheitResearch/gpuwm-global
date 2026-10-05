@@ -433,6 +433,52 @@ def test_the_deep_halo_fills_exactly_the_rows_past_the_boundary():
         assert np.isnan(mine[:lo]).all() or lo == 0
 
 
+def test_mg5_the_halo_goes_to_the_two_neighbours_only():
+    """MG-5: each edge is posted to the one rank that reads it.
+
+    At four cards every rank used to post both of its edges to all three
+    peers (the 2026-10-05 audit: 3.0x the neighbour-only need at world 4,
+    7x at 8), so the halo bytes grew with the card count.  Now an interior
+    rank posts exactly two edges and a polar rank one, at any world, and
+    the window each rank fills is still the globe's own rows."""
+    nlat, cols, width, world = 40, 2, 3, 4
+    whole = np.arange(nlat * cols, dtype=np.float64).reshape(nlat, cols)
+    edge = width * cols * 8
+
+    def body(rank, transport):
+        session = cards.CardSession(transport, nlat, 8, weights=(1.0,) * world)
+        first, last = session.local_rows()
+        mine = np.full_like(whole, np.nan)
+        mine[first:last] = whole[first:last]
+        session.exchange_halo(np, mine, 0, width, name="halo")
+        transport.drain()
+        posted = transport.ledger.receipt()["posted_by_exchange"]["halo"]["posted_bytes"]
+        return mine, (first, last), posted
+
+    out = _two_rank_tcp(body, world=world)
+    for rank in range(world):
+        mine, (first, last), posted = out[rank]
+        neighbours = (rank > 0) + (rank < world - 1)
+        assert posted == neighbours * edge, (rank, posted)
+        lo, hi = max(0, first - width), min(nlat, last + width)
+        assert np.array_equal(mine[lo:hi], whole[lo:hi])
+        assert np.isnan(mine[:lo]).all() and np.isnan(mine[hi:]).all()
+
+
+def test_mg5_a_halo_too_wide_for_any_card_is_refused_on_every_rank():
+    """The width is checked against the narrowest card, so a neighbour that
+    owns fewer rows than the halo refuses on EVERY rank instead of leaving
+    the wider rank waiting on a peer that refused alone."""
+    def body(rank, transport):
+        # weights 3:1 over 40 rows: rank 1 owns 10 rows, rank 0 owns 30.
+        session = cards.CardSession(transport, 40, 8, weights=(3.0, 1.0))
+        with pytest.raises(ValueError, match="wider than the 10 rows card rank 1"):
+            session.exchange_halo(np, np.zeros((40, 2)), 0, 12, name="halo")
+        return True
+
+    assert _two_rank_tcp(body) == {0: True, 1: True}
+
+
 def test_a_halo_wider_than_a_card_is_refused_by_name():
     def body(rank, transport):
         session = cards.CardSession(transport, 40, 4, weights=(1.0, 1.0))
@@ -533,6 +579,7 @@ def _gate_fixture(tmp_path, **overrides):
                        "maximum_semilag_tracer_mass_fixer_relative": 0.0,
                        "maximum_semilag_tracer_mass_fixer_water_relative": 0.0,
                        "maximum_semilag_trajectory_move_cells": 0.0,
+                       "minimum_semilag_fold_determinant": 1.0,
                        },
     )
     payload.update(overrides)
@@ -569,8 +616,13 @@ def test_wire1_passes_above_the_floor_and_every_other_row_is_a_ceiling(tmp_path)
     rows = run_gates(**_gate_fixture(tmp_path), cards=_wire_block(2.3124))
     assert rows["two_card_wire_achieved_gb_s"]["passed"] is True
     assert all(row["passed"] for row in rows.values())
+    # Two rows are floors: the wire's, and the semi-Lagrangian core's
+    # trajectory fold determinant (the smallest det(I -+ (dt/2) J) met).
+    floors = {n for n, r in rows.items() if r["direction"] == "floor"}
+    assert floors == {"two_card_wire_achieved_gb_s",
+                      "semilag_trajectory_fold_determinant"}
     ceilings = [n for n, r in rows.items() if r["direction"] == "ceiling"]
-    assert len(ceilings) == len(rows) - 1
+    assert len(ceilings) == len(rows) - 2
 
 
 def test_a_single_card_run_has_no_wire_gate_to_fail(tmp_path):
@@ -905,3 +957,507 @@ def test_card_agreement_is_a_named_choice_outside_every_identity(tmp_path):
     bad.write_text(text + chr(10) + '[memory]' + chr(10) + 'card_agreement = "ignore"' + chr(10), encoding="utf-8")
     with pytest.raises(ValueError, match="card_agreement must be one of"):
         load_config(bad)
+
+
+# -- transport selection (MG-3) ----------------------------------------------
+
+def _free_addresses(world):
+    import socket as _socket
+
+    ports = []
+    holders = []
+    for _ in range(world - 1):
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        ports.append(sock.getsockname()[1])
+        holders.append(sock)
+    for sock in holders:
+        sock.close()
+    ports.append(0)
+    return [f"127.0.0.1:{p}" for p in ports]
+
+
+def _on_threads(world, run):
+    results, errors = {}, {}
+
+    def wrap(rank):
+        try:
+            results[rank] = run(rank)
+        except BaseException as exc:  # noqa: BLE001
+            errors[rank] = exc
+
+    threads = [threading.Thread(target=wrap, args=(r,)) for r in range(world)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(120.0)
+    if errors:
+        raise errors[sorted(errors)[0]]
+    return results
+
+
+def test_mg3_auto_runs_where_nccl_imports_instead_of_refusing(monkeypatch):
+    """MG-3: ``auto`` used to raise NotImplementedError the moment
+    ``cupy.cuda.nccl`` imported, which a rented CUDA image normally does, so
+    every default multi-card run there died at the door.  ``auto`` now opens
+    a transport that carries the exchange and the receipt names it."""
+    monkeypatch.setattr(cards.NcclCards, "available", staticmethod(lambda: True))
+    addresses = _free_addresses(2)
+
+    def run(rank):
+        transport = cards.open_transport(rank, 2, addresses, prefer="auto")
+        try:
+            pieces = transport.all_gather("t", bytes([rank + 1]) * 3)
+            return pieces, transport.receipt()
+        finally:
+            transport.close()
+
+    out = _on_threads(2, run)
+    for rank in (0, 1):
+        pieces, receipt = out[rank]
+        assert pieces == [b"\x01" * 3, b"\x02" * 3]
+        assert receipt["transport_requested"] == "auto"
+        assert receipt["transport"] in ("tcp", "nccl")
+        assert receipt["transport_reason"]
+
+
+def test_mg3_an_explicit_nccl_that_cannot_be_honoured_is_refused_by_name(monkeypatch):
+    monkeypatch.setattr(cards.NcclCards, "available", staticmethod(lambda: False))
+    with pytest.raises(RuntimeError, match="cupy.cuda.nccl is not importable"):
+        cards.open_transport(0, 2, ["127.0.0.1:1", "127.0.0.1:2"], prefer="nccl")
+
+
+# -- one rank, one card (MG-4) -----------------------------------------------
+
+_BOX8 = [f"127.0.0.1:{29500 + r}" for r in range(8)]
+
+
+def test_mg4_eight_ranks_in_one_box_land_on_eight_cards():
+    """MG-4: nothing chose the card, so eight ranks in one box all opened
+    device 0.  Each rank now narrows CUDA_VISIBLE_DEVICES to its local rank."""
+    chosen = []
+    for rank in range(8):
+        env = {}
+        record = cards.place_rank(rank, 8, _BOX8, "cupy", env=env)
+        assert record["placed"] and record["placed_by"] == "rank"
+        assert env["CUDA_VISIBLE_DEVICES"] == str(rank)
+        chosen.append(env["CUDA_VISIBLE_DEVICES"])
+    assert len(set(chosen)) == 8
+
+
+def test_mg4_two_hosts_count_local_ranks_per_host():
+    addresses = ["10.0.0.1:1", "10.0.0.1:2", "10.0.0.2:1", "10.0.0.2:2"]
+    assert [cards.local_rank_of(r, addresses) for r in range(4)] == [
+        (0, 2), (1, 2), (0, 2), (1, 2)]
+    env = {}
+    cards.place_rank(3, 4, addresses, "cupy", env=env)
+    assert env["CUDA_VISIBLE_DEVICES"] == "1"
+
+
+def test_mg4_an_operator_choice_is_kept_and_a_short_list_is_refused():
+    env = {"CUDA_VISIBLE_DEVICES": "5"}
+    assert cards.place_rank(2, 8, _BOX8, "cupy", env=env)["placed_by"] == "operator"
+    assert env["CUDA_VISIBLE_DEVICES"] == "5"
+    env = {"CUDA_VISIBLE_DEVICES": "4,5,6,7"}
+    cards.place_rank(1, 4, _BOX8[:4], "cupy", env=env)
+    assert env["CUDA_VISIBLE_DEVICES"] == "5"
+    env = {"CUDA_VISIBLE_DEVICES": "0,1"}
+    with pytest.raises(ValueError, match="names 2 cards"):
+        cards.place_rank(2, 4, _BOX8[:4], "cupy", env=env)
+
+
+def test_mg4_an_empty_visible_device_list_is_the_operator_hiding_every_card():
+    """Set and empty hides every card; placement used to read it as unset
+    and write the local rank, turning a deliberate "no card" into a card."""
+    env = {"CUDA_VISIBLE_DEVICES": ""}
+    record = cards.place_rank(1, 2, _BOX8[:2], "cupy", env=env)
+    assert record["placed"] is False and "hidden" in record["reason"]
+    assert env == {"CUDA_VISIBLE_DEVICES": ""}
+
+
+def test_mg4_a_cpu_run_and_a_one_card_run_are_untouched():
+    env = {}
+    assert cards.place_rank(1, 2, _BOX8[:2], "numpy", env=env)["placed"] is False
+    assert cards.place_rank(0, 1, _BOX8[:1], "cupy", env=env)["placed"] is False
+    assert env == {}
+
+
+def test_mg4_two_ranks_on_one_card_are_refused_by_uuid():
+    def ident(rank, uuid):
+        return {"device_index": 0, "name": "card",
+                "uuid": uuid, "pci_bus_id": f"0000:0{rank}:00.0",
+                "cuda_visible_devices": None}
+
+    def same(rank, transport):
+        with pytest.raises(ValueError, match="card ranks 0 and 1 both run on"):
+            cards.check_card_placement(transport, ident(rank, "aa"))
+        return True
+
+    assert _two_rank_tcp(same) == {0: True, 1: True}
+
+    def distinct(rank, transport):
+        return cards.check_card_placement(transport, ident(rank, f"u{rank}"))
+
+    out = _two_rank_tcp(distinct)
+    assert [row["uuid"] for row in out[0]] == ["u0", "u1"]
+
+    def cpu(rank, transport):
+        return cards.check_card_placement(transport, None)
+
+    assert _two_rank_tcp(cpu)[1] == [None, None]
+
+
+def test_mg4_the_door_places_the_rank_before_the_sizer_reads_the_card(monkeypatch):
+    """The gate's probe subprocess inherits the environment, so the rank's
+    card has to be chosen before the gate runs, or every rank in a box is
+    sized against device 0's free memory."""
+    import argparse
+    import os as _os
+    from dataclasses import replace
+    from arwen_global import cli, sizing
+    from arwen_global.config import load_config
+
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_gate(cfg, **_kw):
+        seen["visible"] = _os.environ.get("CUDA_VISIBLE_DEVICES")
+        raise Stop()
+
+    import sys as _sys
+
+    monkeypatch.setattr(sizing, "run_memory_gate", fake_gate)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    # No device is touched: the placement is the environment alone.
+    monkeypatch.delitem(_sys.modules, "cupy", raising=False)
+    monkeypatch.setattr(cards, "_host_card_count", lambda: 8)
+    cards._PLACED.clear()
+    cfg = load_config(str(_shipped_configs() / "arwen_global_moist_smoke.toml"))
+    cfg = replace(cfg, backend="cupy", cards=4, card_rank=3,
+                  card_addresses=tuple(_BOX8[:4]))
+    args = argparse.Namespace(config="x.toml")
+    try:
+        with pytest.raises(Stop):
+            cli._size_the_run(args, cfg, "gpuwm global run")
+        assert seen["visible"] == "3"
+    finally:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        cards._PLACED.clear()
+
+
+# -- the in-box device transport (MG-2) --------------------------------------
+#
+# A stand-in for cupy.cuda.nccl that moves REAL bytes between threads with
+# memmove on the arrays' pointers, so the transport's grouped broadcasts and
+# neighbour send/receive are exercised end to end on the CPU: the pieces,
+# their order and their sizes are what a real communicator is handed.
+
+class _FakeNccl:
+    NCCL_UINT8 = 1
+
+    def __init__(self, world, fail_rank=None, uid_bytes=False):
+        self.world = world
+        self.fail_rank = fail_rank
+        # CuPy 14 returns the unique id as bytes and wants bytes back;
+        # older CuPy used a tuple of ints.  Both must survive the mesh.
+        self.uid = bytes(range(128)) if uid_bytes else tuple(range(-64, 64))
+        self.barrier = threading.Barrier(world)
+        self.groups = {}
+        self.tls = threading.local()
+        self.calls = {r: [] for r in range(world)}
+
+    def get_unique_id(self):
+        return self.uid
+
+    def get_version(self):
+        return 22800
+
+    def NcclCommunicator(self, ndev, uid, rank):
+        assert ndev == self.world and type(uid) is type(self.uid) and uid == self.uid
+        if rank == self.fail_rank:
+            raise RuntimeError("fake: ncclInternalError")
+        self.tls.rank = rank
+        return _FakeComm(self, rank)
+
+    def groupStart(self):
+        self.tls.ops = []
+
+    def groupEnd(self):
+        import ctypes
+
+        rank = self.tls.rank
+        ops = list(self.tls.ops)
+        self.calls[rank].append([op[0] for op in ops])
+        self.groups[rank] = ops
+        self.barrier.wait()
+        mine_b = [op for op in ops if op[0] == "bcast"]
+        for k, (_, root, ptr, n) in enumerate(mine_b):
+            if root == rank:
+                continue
+            theirs = [op for op in self.groups[root] if op[0] == "bcast"][k]
+            assert theirs[1] == root and theirs[3] == n
+            ctypes.memmove(ptr, theirs[2], n)
+        for _, peer, ptr, n in (op for op in ops if op[0] == "recv"):
+            sent = [op for op in self.groups[peer] if op[0] == "send" and op[1] == rank]
+            assert len(sent) == 1 and sent[0][3] == n
+            ctypes.memmove(ptr, sent[0][2], n)
+        self.barrier.wait()
+
+
+class _FakeComm:
+    def __init__(self, fake, rank):
+        self.fake, self.rank = fake, rank
+
+    def broadcast(self, send, recv, n, dtype, root, stream):
+        assert dtype == 1 and send == recv
+        self.fake.tls.ops.append(("bcast", root, recv, n))
+
+    def send(self, ptr, n, dtype, peer, stream):
+        self.fake.tls.ops.append(("send", peer, ptr, n))
+
+    def recv(self, ptr, n, dtype, peer, stream):
+        self.fake.tls.ops.append(("recv", peer, ptr, n))
+
+    def destroy(self):
+        pass
+
+
+def _on_fake_nccl(world, body, *, fake=None, device=lambda r: True, prefer="auto"):
+    fake = fake or _FakeNccl(world)
+    addresses = _free_addresses(world)
+
+    def run(rank):
+        transport = cards.open_transport(
+            rank, world, addresses, prefer=prefer, device=device(rank),
+            nccl=fake, device_xp=np)
+        try:
+            return body(rank, transport)
+        finally:
+            transport.close()
+
+    return _on_threads(world, run), fake
+
+
+def test_mg2_device_exchanges_ride_nccl_and_assemble_the_one_card_bytes():
+    """MG-2: the row gather, the partial sum, the order columns and the halo
+    take the device communicator, and every rank assembles exactly the
+    bytes a one-card run holds.  Host payloads still cross the TCP mesh."""
+    nlat, cols, world = 36, 3, 3
+    rng = np.random.default_rng(11)
+    whole = rng.standard_normal((nlat, cols))
+    partials = [rng.standard_normal((4, 5)) for _ in range(world)]
+
+    def body(rank, transport):
+        session = cards.CardSession(transport, nlat, 6, weights=(1.0,) * world)
+        first, last = session.local_rows()
+        rows = np.full_like(whole, np.nan)
+        rows[first:last] = whole[first:last]
+        session.gather_rows(np, rows, 0, name="rows")
+        halo = np.full_like(whole, np.nan)
+        halo[first:last] = whole[first:last]
+        session.exchange_halo(np, halo, 0, 2, name="halo")
+        total = session.gather_partials(np, partials[rank], name="partial")
+        host = transport.all_gather("host", bytes([rank]))
+        return transport.name, rows, halo, (first, last), total, host, transport.receipt()
+
+    out, fake = _on_fake_nccl(world, body, fake=_FakeNccl(world, uid_bytes=True))
+    reference_total = cards.sum_in_rank_order(partials)
+    for rank in range(world):
+        name, rows, halo, (first, last), total, host, receipt = out[rank]
+        assert name == "nccl"
+        assert np.array_equal(rows, whole)
+        lo, hi = max(0, first - 2), min(nlat, last + 2)
+        assert np.array_equal(halo[lo:hi], whole[lo:hi])
+        assert np.isnan(halo[:lo]).all() and np.isnan(halo[hi:]).all()
+        assert total.tobytes() == reference_total.tobytes()
+        assert host == [b"\x00", b"\x01", b"\x02"]
+        assert receipt["transport"] == "nccl" and receipt["host_channel"] == "tcp"
+        assert receipt["device_exchanges"] == 3
+        # The first groups are the link probe at session open (a broadcast
+        # from every root per repeat), kept out of the exchange count.
+        probes = cards.NcclCards.LINK_PROBE_REPEATS
+        assert fake.calls[rank][:probes] == [["bcast"] * world] * probes
+        assert receipt["link_probe_gb_s"] is not None
+        # gather and partial are broadcasts from every root; the halo is the
+        # neighbours only: one send and one receive per neighbour
+        assert fake.calls[rank][probes] == ["bcast"] * world
+        neighbours = (rank > 0) + (rank < world - 1)
+        assert sorted(fake.calls[rank][probes + 1]) == sorted(
+            ["send", "recv"] * neighbours)
+
+
+def test_mg2_the_transform_over_nccl_is_the_transform_over_tcp_bit_for_bit():
+    """BIT-5 across transports: the same three-rank gather analysis returns
+    one card's bits over the TCP mesh and over the device communicator,
+    and so does the order-split analysis and synthesis."""
+    from arwen_global.spectral.transform import SphericalHarmonicTransform
+
+    whole = SphericalHarmonicTransform.create(42, backend="numpy", precision="float64")
+    rng = np.random.default_rng(3)
+    field = rng.standard_normal((3, whole.grid.nlat, whole.grid.nlon))
+    one_card = whole.forward(field)
+    world = 3
+
+    def rows(rank, transport):
+        session = cards.CardSession(
+            transport, whole.grid.nlat, 6, weights=(1.0,) * world)
+        tr = SphericalHarmonicTransform.create(42, backend="numpy", precision="float64")
+        tr.row_exchange = cards.RowExchange(session)
+        return tr.forward(field)
+
+    over_tcp = _two_rank_tcp(rows, world=world)
+    over_nccl, _ = _on_fake_nccl(world, rows)
+    for rank in range(world):
+        assert over_tcp[rank].tobytes() == one_card.tobytes()
+        assert over_nccl[rank].tobytes() == one_card.tobytes()
+
+    owhole, ofield, ref_coeff, ref_grid = _order_split_reference(85, 1)
+
+    def orders(rank, transport):
+        session = cards.CardSession(transport, owhole.grid.nlat, 4, weights=(1.0, 1.0))
+        exchange = cards.order_exchange_for(session, owhole, weights=(1.0, 1.0))
+        tr = SphericalHarmonicTransform.create(
+            85, backend="numpy", precision="float64",
+            order_partition=exchange.owned_bounds())
+        tr.order_exchange = exchange
+        return tr.forward(ofield), tr.inverse(ref_coeff)
+
+    out, _ = _on_fake_nccl(2, orders)
+    for rank in (0, 1):
+        coeff, grid = out[rank]
+        assert coeff.tobytes() == ref_coeff.tobytes()
+        assert grid.tobytes() == ref_grid.tobytes()
+
+
+def test_mg2_auto_falls_back_to_the_mesh_when_one_rank_cannot_open_nccl():
+    def body(rank, transport):
+        return transport.name, transport.receipt()["transport_reason"], \
+            transport.all_gather("x", b"y")
+
+    out, fake = _on_fake_nccl(3, body, device=lambda r: r != 1)
+    for rank in range(3):
+        name, reason, pieces = out[rank]
+        assert name == "tcp" and "card ranks [1] cannot open NCCL" in reason
+        assert pieces == [b"y"] * 3
+    out, _ = _on_fake_nccl(2, body, fake=_FakeNccl(2, fail_rank=0))
+    for rank in range(2):
+        assert out[rank][0] == "tcp"
+        assert "did not build on card ranks [0]" in out[rank][1]
+
+
+def test_mg2_an_explicit_nccl_refuses_on_every_rank_when_one_cannot():
+    def body(rank, transport):
+        return transport.name
+
+    with pytest.raises(RuntimeError, match="card_transport='nccl' was asked for"):
+        _on_fake_nccl(2, body, device=lambda r: r == 0, prefer="nccl")
+
+
+def test_mg4_more_ranks_than_the_host_has_cards_is_refused_by_name(monkeypatch):
+    """Rank 1 of two on a one-card host used to be pointed at a device that
+    does not exist (or, before placement, at the one card rank 0 holds)."""
+    import sys as _sys
+
+    monkeypatch.delitem(_sys.modules, "cupy", raising=False)
+    monkeypatch.setattr(cards, "_host_card_count", lambda: 1)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    cards._PLACED.clear()
+    try:
+        with pytest.raises(ValueError, match="2 card ranks share host 'loopback' and it has 1 card:"):
+            cards.place_rank(1, 2, _BOX8[:2], "cupy")
+    finally:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        cards._PLACED.clear()
+
+
+# -- the device path keeps the mesh's two safety properties ------------------
+
+
+class _StuckEvent:
+    done = False
+
+
+class _AbortableComm:
+    def __init__(self):
+        self.aborted = False
+
+    def abort(self):
+        self.aborted = True
+
+    def destroy(self):
+        pass
+
+
+class _MeshStub:
+    rank, world = 0, 2
+
+    def __init__(self):
+        self.ledger = cards.WireLedger()
+
+    def drain(self, timeout_s=None):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_mg2_a_device_exchange_that_never_finishes_aborts_and_names_its_tag():
+    """R17 on NCCL: a peer that died leaves a collective unfinished, which
+    no NCCL call times out on.  The watchdog aborts the communicator past
+    the timeout and the next exchange refuses naming the tag, instead of
+    every survivor hanging in its next stream synchronise."""
+    import time as _time
+
+    comm = _AbortableComm()
+    transport = cards.NcclCards(_MeshStub(), comm, _FakeNccl(2),
+                                device_xp=np, timeout_s=0.2, probe=False)
+    try:
+        with transport._watch_lock:
+            transport._watching.append(
+                (_StuckEvent(), "semilag_tracer_qc#7", _time.monotonic()))
+        deadline = _time.monotonic() + 10.0
+        while transport._aborted is None and _time.monotonic() < deadline:
+            _time.sleep(0.05)
+        assert comm.aborted
+        with pytest.raises(TimeoutError, match="semilag_tracer_qc#7"):
+            transport.drain()
+        with pytest.raises(TimeoutError, match="R17"):
+            transport._group("next", [], 0, 0)
+    finally:
+        transport.close()
+
+
+def test_mg2_ranks_running_different_device_exchanges_are_refused_by_name(
+        monkeypatch):
+    """Equal byte counts under different tags would swap bytes silently on
+    NCCL; the running tag digest catches it at the next check."""
+    monkeypatch.setattr(cards.NcclCards, "TAG_CHECK_EVERY", 1)
+    payload = np.arange(6.0)
+
+    def body(rank, transport):
+        name = "waist_rows" if rank == 0 else "tracer_rows"
+        try:
+            transport.all_gather_arrays(name, np, payload, [payload.shape] * 2,
+                                        payload.dtype)
+        except RuntimeError as refusal:
+            return str(refusal)
+        return None
+
+    out, _fake = _on_fake_nccl(2, body)
+    for rank in range(2):
+        assert out[rank] is not None and "different device exchanges" in out[rank]
+
+
+def test_wire1_reads_the_device_link_probe_on_nccl_and_the_run_rate_on_tcp():
+    from arwen_global.runner import wire_gate_row
+
+    wire = {"achieved_gb_s": 0.03, "wire_floor_gb_s": 2.4}
+    nccl = wire_gate_row({"cards": 2, "transport": "nccl",
+                          "link_probe_gb_s": 21.5, "wire": wire})
+    assert nccl["value"] == 21.5 and nccl["passed"]
+    assert "probe" in nccl["measured"]
+    tcp = wire_gate_row({"cards": 2, "transport": "tcp", "wire": wire})
+    assert tcp["value"] == 0.03 and not tcp["passed"]
+    assert wire_gate_row({"cards": 1, "wire": wire}) is None

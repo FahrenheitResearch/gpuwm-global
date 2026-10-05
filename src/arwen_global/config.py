@@ -155,10 +155,19 @@ SEMILAG_OFF_CENTRING_WEIGHT = 0.55
 DEFAULT_TIME_INTEGRATOR = "sl_si"
 #: [time] dt_s when the key is omitted under the semi-Lagrangian core:
 #: 300 s is the step the core exists to take at T255 and T383 (its
-#: Lipschitz number reads 0.23 of its 0.75 gate on the day of record),
+#: Lipschitz number read 0.23 against the retired 0.75 norm gate on the
+#: day of record; the trajectory fold gate that replaced it reads a
+#: determinant of 0.95 against its 0.2 floor on the first six hours of
+#: GDAS 2026-09-25 12Z),
 #: chosen on the observation scorecard over its dt ladder (the grade of
-#: 2026-09-06).  An omitted step under an Eulerian integrator reads the
-#: CFL rule below (default_eulerian_step_s), not a fixed number.
+#: 2026-09-06).  The same 300 s at every truncation: a truncation-scaled
+#: step (225 s at T533) stood here for one day of 2026-10-05 as the remedy
+#: for the 0.75 norm gate's refusal of a T533 forecast at 66.3 h, and was
+#: retired with that gate (DYC-2): under the fold gate the T533 300 s
+#: forecast from GDAS 2026-09-25 12Z completes 120 h with every gate
+#: passing (smallest fold determinant 0.808).  An omitted step under an
+#: Eulerian integrator reads the CFL rule below (default_eulerian_step_s),
+#: not a fixed number.
 DEFAULT_SEMILAG_STEP_S = 300.0
 #: [time] integrator names: the two explicit steppers of the split era,
 #: the IMEX tableaux of imex.py, and the two-time-level semi-Lagrangian
@@ -184,15 +193,25 @@ TIME_INTEGRATORS = ("ssprk3", "rk4", *IMEX_INTEGRATORS, *SEMILAG_INTEGRATORS)
 #: DEFAULT_TIME_INTEGRATOR are one value under two names (the two lanes
 #: that made the core the default named it from each side); both stay.
 SHIPPED_INTEGRATOR = DEFAULT_TIME_INTEGRATOR
-#: [time] maximum_lipschitz default.  The trajectory map folds above one:
-#: two arrival points share a departure point, the fixed-point search
-#: stops contracting and the interpolation samples a folded field, and
-#: the model does not blow up when this happens, it silently mislocates.
-#: 0.75 keeps 25 percent of margin to folding and about 2.7x to the loss
-#: of contraction of the trapezoidal iteration, whose derivative is
-#: dt |grad V| / 2.  MEASURED on a real T255 state (2026-09-06, forecast
-#: time 1500 s): Frobenius 0.33 at dt = 300 s and 0.99 at 900 s.
-DEFAULT_MAXIMUM_LIPSCHITZ = 0.75
+#: [time] minimum_fold_determinant default: the floor of the
+#: semi-Lagrangian core's trajectory fold gate
+#: (semilag.trajectory.refuse_trajectory_fold, whose constant
+#: DEFAULT_MINIMUM_FOLD_DETERMINANT carries the derivation of 0.2).  The
+#: gate reads det(I -+ (dt/2) J) of the flow Jacobian, which reaches zero
+#: exactly where two arrival points share a departure point.
+DEFAULT_MINIMUM_FOLD_DETERMINANT = 0.2
+#: The RETIRED [time] maximum_lipschitz key and its old default.  It was a
+#: ceiling on dt times a NORM of the flow Jacobian, which reads vorticity
+#: and shear as folding: a pure shear u(y) has the norm |du/dy| and a fold
+#: determinant of exactly one.  It refused a T533 forecast at 66.3 h (norm
+#: 0.7511, 2026-09-30) on a flow the trajectory map did not fold, and the
+#: fold gate above replaced it.  The value stays here for two reasons only:
+#: a config that spells the old default is a copy of a shipped config and
+#: is accepted as a no-op, and every semi-Lagrangian config identity
+#: written before the replacement carried "maximum_lipschitz": 0.75, so
+#: the identity keeps that constant and every checkpoint bound to one of
+#: those hashes (the 66.3 h forecast's included) still restarts.
+RETIRED_MAXIMUM_LIPSCHITZ = 0.75
 #: The Eulerian core's shipped step is chosen against its own refusal with a
 #: margin.  The refusal is the spectral CFL dt |V|max sqrt(N(N+1))/a against
 #: [time] maximum_cfl (0.75); the shipped step is the largest whole step (a
@@ -408,7 +427,7 @@ class ArwenGlobalConfig:
     # carries the statics it was started with rather than re-reading a
     # cache; the receipt records the cache's own hashes beside the run.
     statics: StaticsOptions = StaticsOptions()
-    # [time] maximum_lipschitz and the [semilag] table: read only under
+    # [time] minimum_fold_determinant and the [semilag] table: read only under
     # the semi-Lagrangian integrator, appended at the END of the
     # dataclass with defaults so no existing positional index moves (the
     # tree's own precedent: a field inserted mid-dataclass in another
@@ -416,7 +435,9 @@ class ArwenGlobalConfig:
     # identity under every other integrator so every config hash written
     # before this lane -- and every checkpoint and receipt bound to one --
     # stays byte-identical.
-    maximum_lipschitz: float = DEFAULT_MAXIMUM_LIPSCHITZ
+    # (The slot held the retired maximum_lipschitz ceiling; the fold floor
+    # replaced it in place, so no positional index moved.)
+    minimum_fold_determinant: float = DEFAULT_MINIMUM_FOLD_DETERMINANT
     semilag: SemiLagrangianOptions = SemiLagrangianOptions()
     # [memory] the four engine memory levers.  Each one exists in the
     # engine and had no door until now: runner.build_transform passed
@@ -668,10 +689,18 @@ class ArwenGlobalConfig:
             del payload["analysis_fill_grib"]
             del payload["analysis_fill_mapping"]
         if payload["integrator"] not in SEMILAG_INTEGRATORS:
-            del payload["maximum_lipschitz"]
+            del payload["minimum_fold_determinant"]
             del payload["semilag"]
         else:
             payload["semilag"] = self.semilag.identity
+            # The retired norm ceiling's constant, so every semi-Lagrangian
+            # hash written before the fold gate replaced it (and every
+            # checkpoint bound to one) is unchanged.  The fold floor joins
+            # the identity only off its default, the precedent of
+            # spectral_chunk above: a run that sets nothing keeps its hash.
+            payload["maximum_lipschitz"] = RETIRED_MAXIMUM_LIPSCHITZ
+            if payload["minimum_fold_determinant"] == DEFAULT_MINIMUM_FOLD_DETERMINANT:
+                del payload["minimum_fold_determinant"]
         if payload["semi_implicit_scheme"] == "external":
             for key in (
                 "semi_implicit_scheme",
@@ -809,7 +838,7 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
     time = _table(raw, "time")
     _unknown(time, {
         "dt_s", "duration_s", "output_interval_s", "maximum_cfl",
-        "integrator", "maximum_lipschitz",
+        "integrator", "maximum_lipschitz", "minimum_fold_determinant",
     }, "time")
     # The semi-Lagrangian core is the default (DEFAULT_TIME_INTEGRATOR,
     # the ruling of 2026-09-06).  The IMEX pair of imex.py is the Eulerian
@@ -850,26 +879,41 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         raise ValueError("output_interval_s cannot exceed duration_s")
     if not 0.0 < maximum_cfl <= 1.0:
         raise ValueError("time.maximum_cfl must lie in (0,1]")
-    maximum_lipschitz = _finite(
-        time.get("maximum_lipschitz", DEFAULT_MAXIMUM_LIPSCHITZ),
-        "time.maximum_lipschitz",
+    for key in ("maximum_lipschitz", "minimum_fold_determinant"):
+        if key in time and not semilagrangian:
+            raise ValueError(
+                f"time.{key} is read only by the semi-Lagrangian "
+                f"integrator ({', '.join(SEMILAG_INTEGRATORS)}); this run "
+                f"integrates {integrator!r}, whose step is bounded by the "
+                "advective CFL and not by the trajectory.  A key that is "
+                "parsed and silently ignored produces the same run whether it "
+                "is set or not, and the operator has no way to learn which "
+                "happened, so it is refused rather than dropped"
+            )
+    if "maximum_lipschitz" in time:
+        retired = _finite(time["maximum_lipschitz"], "time.maximum_lipschitz")
+        if retired != RETIRED_MAXIMUM_LIPSCHITZ:
+            raise ValueError(
+                f"time.maximum_lipschitz = {retired:g} is no longer read: the "
+                "norm ceiling it set was retired because a norm of the flow "
+                "Jacobian reads vorticity and shear as folding and refused "
+                "forecasts the trajectory map did not fold.  The gate that "
+                "replaced it is time.minimum_fold_determinant (default "
+                f"{DEFAULT_MINIMUM_FOLD_DETERMINANT:g}), the floor under "
+                "det(I -+ (dt/2) J).  The old default 0.75 is still accepted "
+                "as a no-op so copies of shipped configs keep running; any "
+                "other value would be a setting the run silently ignores"
+            )
+    minimum_fold_determinant = _finite(
+        time.get("minimum_fold_determinant", DEFAULT_MINIMUM_FOLD_DETERMINANT),
+        "time.minimum_fold_determinant",
     )
-    if "maximum_lipschitz" in time and not semilagrangian:
+    if not 0.0 <= minimum_fold_determinant < 1.0:
         raise ValueError(
-            "time.maximum_lipschitz is read only by the semi-Lagrangian "
-            f"integrator ({', '.join(SEMILAG_INTEGRATORS)}); this run "
-            f"integrates {integrator!r}, whose step is bounded by the "
-            "advective CFL and not by the flow deformation.  A key that is "
-            "parsed and silently ignored produces the same run whether it "
-            "is set or not, and the operator has no way to learn which "
-            "happened, so it is refused rather than dropped"
-        )
-    if not 0.0 < maximum_lipschitz <= 1.0:
-        raise ValueError(
-            "time.maximum_lipschitz must lie in (0, 1]: above one the "
-            "trajectory map is not invertible at all, so two arrival "
-            "points share a departure point and the interpolation samples "
-            "a folded field"
+            "time.minimum_fold_determinant must lie in [0, 1): zero is the "
+            "fold itself, where two arrival points share a departure point "
+            "and the interpolation samples a folded field, and one would "
+            "refuse every flow with any divergence or strain at all"
         )
 
     vertical = _table(raw, "vertical")
@@ -1342,14 +1386,13 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
             "MEASURED 2026-09-06 on a two-card T127 run, the Fourier waist "
             "is 219.9 of 333 MiB posted per card per step (66 percent), so "
             "trading whole waist rows for partial Legendre sums would take "
-            "roughly a third off the largest item.  What it does NOT touch "
-            "is the ceiling: the physics half-step runs whole on both cards "
-            "(banded, but duplicated rather than split, because every "
-            "consumer of the surface and the namespace reads a whole plane; "
-            "dynamics.whole_globe_slices), which caps a second card near "
-            "1.3x however cheap the wire becomes.  Split the physics across "
-            "the cards first, then build this with its own pin, and the "
-            "refusal comes out"
+            "roughly a third off the largest item.  It changes the "
+            "contraction's K from nlat to a card's row count, which is a "
+            "change of arithmetic: run under the 'gather' pins it would "
+            "return a different answer from one card while claiming the "
+            "same one (gate BIT-5).  Build it with its own pin, so a "
+            "checkpoint written under it refuses to resume under 'gather', "
+            "and the refusal comes out"
         )
     if card_exchange != "gather":
         raise ValueError(
@@ -1447,7 +1490,7 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         analysis_fill_mapping=analysis_fill_mapping,
         insitu=insitu,
         statics=statics,
-        maximum_lipschitz=maximum_lipschitz,
+        minimum_fold_determinant=minimum_fold_determinant,
         semilag=semilag,
         spectral_chunk=spectral_chunk,
         synthesis_memo=synthesis_memo,

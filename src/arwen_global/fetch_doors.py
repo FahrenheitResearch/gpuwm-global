@@ -1,10 +1,10 @@
 """``gpuwm-global fetch-doors``: stage the Rust doors this package publishes.
 
-The wheel carries no Rust.  Eight of the fourteen binaries this model runs on
+The wheel carries no Rust.  Nine of the fifteen binaries this model runs on
 are published by this package rather than by the engine, and before this
 command exists the only way to obtain them is a Rust toolchain, a checkout of
 the engine's source tree and a few minutes of compiling -- which by the rule
-that a capability a user cannot reach does not exist means those eight doors
+that a capability a user cannot reach does not exist means those doors
 were not shipped at all.  This command is the same trade ``gpuwm
 fetch-bridges`` already makes: the binaries are published as versioned GitHub
 release assets, their exact size and SHA-256 pins are packaged inside this
@@ -13,7 +13,7 @@ anything is installed.
 
 WHAT IS STAGED, AND WHERE
 One bundle per platform holding the doors of
-``arwen_global.doors.doors_from_bundle("gpuwm-global")``, staged into
+``arwen_global.doors.companion_doors()``, staged into
 :func:`arwen_global.doors.companion_door_dir` (``~/.gpuwm/global-doors``).
 
 Beside the engine's ``~/.gpuwm/bridges``, not inside it, and that placement
@@ -51,6 +51,19 @@ which is what an operator has after building them on a machine that does have
 a toolchain.  ``ARWEN_GLOBAL_DOOR_URL_BASE`` overrides the download base URL;
 the bundle filename is appended to it either way.
 
+WHERE THE DOWNLOAD COMES FROM
+The release assets of the repository this installed distribution's own
+metadata names (its ``Repository`` project URL), never an address written
+into the source.  A distribution that carries this package under another
+name publishes from its own repository, and a literal here would send its
+users to somebody else's releases.
+
+WHEN THE ENGINE PUBLISHES EVERY DOOR
+A door the installed engine's own bundle declares is the engine's door
+(:func:`arwen_global.doors.publisher`).  When that is all of them this
+package has nothing to stage, and the command says so and names the
+engine's command instead of downloading a bundle nobody publishes.
+
 PINS ARE GENERATED AT RELEASE TIME
 The bundles are built by this repository's CI from the engine's ``tools/
 rustwx`` workspace at the pinned engine revision, and ``tools/
@@ -71,16 +84,15 @@ import tempfile
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from ._version import CONSOLE_SCRIPT, __version__
+from ._version import CONSOLE_SCRIPT, DISTRIBUTION_NAME, __version__
 from .doors import (
-    COMPANION_BUNDLE,
     DoorStagingError,
     artifact_filename,
     bundle_filename,
     companion_door_dir,
+    companion_doors,
     companion_pins,
     current_platform,
-    doors_from_bundle,
     sha256_file,
     BUNDLE_NOTICE,
     stage_from_directory,
@@ -92,17 +104,62 @@ __all__ = ["add_fetch_doors_arguments", "fetch_doors", "asset_url_base"]
 #: filename is appended to it.
 ASSET_URL_BASE_ENV = "ARWEN_GLOBAL_DOOR_URL_BASE"
 
-_DEFAULT_URL_BASE = (
-    "https://github.com/FahrenheitResearch/gpuwm-global/releases/download")
+#: The project-URL labels read, in order, for the repository whose release
+#: assets carry the bundle.
+_REPOSITORY_LABELS = ("repository", "source", "homepage")
 _USER_AGENT = "gpuwm-global-fetch-doors/1"
 _TIMEOUT_S = 120
+
+
+def repository_url() -> str | None:
+    """The repository this installed distribution's metadata names, or None.
+
+    THE BREAKAGE THIS PREVENTS: the address used to be a literal in this
+    file, so a distribution that carries this package under its own name
+    and publishes from its own repository sent every ``fetch-doors`` to a
+    different repository's releases.  The metadata is written from the
+    same project file that names the repository on the package index page.
+    """
+
+    from importlib.metadata import PackageNotFoundError, metadata
+
+    try:
+        entries = metadata(DISTRIBUTION_NAME).get_all("Project-URL") or []
+    except PackageNotFoundError:
+        return None
+    urls = {}
+    for entry in entries:
+        label, _, url = entry.partition(",")
+        if url.strip():
+            urls.setdefault(label.strip().lower(), url.strip().rstrip("/"))
+    for label in _REPOSITORY_LABELS:
+        if urls.get(label, "").startswith("https://"):
+            return urls[label]
+    return None
 
 
 def asset_url_base(release: str) -> str:
     override = os.environ.get(ASSET_URL_BASE_ENV)
     if override:
         return override.rstrip("/")
-    return f"{_DEFAULT_URL_BASE}/{release}"
+    repository = repository_url()
+    if repository is None:
+        raise DoorStagingError(
+            f"the installed {DISTRIBUTION_NAME} names no repository in its "
+            "metadata, so there is no release to download the bundle from; "
+            f"set {ASSET_URL_BASE_ENV} to the release asset base, or stage "
+            "from a local bundle with --from")
+    return f"{repository}/releases/download/{release}"
+
+
+def _engine_publishes_everything() -> int:
+    print(f"{CONSOLE_SCRIPT} fetch-doors: the installed engine's bundle "
+          "publishes every Rust door this model runs on, so there is nothing "
+          "for this command to stage.  Stage them with `gpuwm fetch-bridges` "
+          f"(an install whose wheel carries them needs neither); "
+          f"`{CONSOLE_SCRIPT} doctor` grades each one against the engine's "
+          "pins.")
+    return 0
 
 
 def add_fetch_doors_arguments(parser: argparse.ArgumentParser) -> None:
@@ -129,7 +186,9 @@ def add_fetch_doors_arguments(parser: argparse.ArgumentParser) -> None:
 def fetch_doors(args: argparse.Namespace) -> int:
     dest = args.dest or companion_door_dir()
     platform_key = current_platform()
-    doors = doors_from_bundle(COMPANION_BUNDLE)
+    doors = companion_doors()
+    if not doors:
+        return _engine_publishes_everything()
     if platform_key is None:
         print(
             f"{CONSOLE_SCRIPT} fetch-doors: no door bundle is published for "
@@ -163,9 +222,10 @@ def fetch_doors(args: argparse.Namespace) -> int:
             "  A release cut writes the pins from the exact bytes it "
             "published; a tree that has not been through that step declares "
             "no platforms.\n"
-            f"  Build the {len(doors)} doors from the engine's tools/rustwx "
-            f"workspace and stage them with --from DIR, or install a release "
-            "of this package.", file=sys.stderr)
+            f"  Build the {len(doors)} doors from their crates (the engine's "
+            "tools/rustwx workspace, and this repository's rust/ for the "
+            "render kernels) and stage them with --from DIR, or install a "
+            "release of this package.", file=sys.stderr)
         return 3
 
     if args.source is not None:
@@ -174,7 +234,11 @@ def fetch_doors(args: argparse.Namespace) -> int:
         return _stage(source, dest, platform_key, origin, doors)
 
     filename = bundle_filename(release, platform_key)
-    url = f"{asset_url_base(release)}/{filename}"
+    try:
+        url = f"{asset_url_base(release)}/{filename}"
+    except DoorStagingError as error:
+        print(f"{CONSOLE_SCRIPT} fetch-doors: {error}", file=sys.stderr)
+        return 3
     with tempfile.TemporaryDirectory(prefix="gpuwm-global-doors-") as scratch:
         archive = Path(scratch) / filename
         try:

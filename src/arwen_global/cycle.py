@@ -72,7 +72,7 @@ from .runner import (
     CHECKPOINT_PREFIX,
     DIAGNOSTICS_NAME,
     RECEIPT_NAME,
-    SUPPLEMENTARY_TRACKER_KEYS,
+    fresh_supplementary,
     _CheckpointWriter,
     _append_diagnostics,
     _carries_assimilation_chain,
@@ -84,6 +84,7 @@ from .runner import (
     _sizing_model_peak_bytes,
     latitude_bands_receipt,
     _update_trackers,
+    adopt_checkpoint_clock,
     build_model_and_cold_state,
     build_transform,
     run_gates,
@@ -180,6 +181,42 @@ def resolve_start_time(cfg: ArwenGlobalConfig, start_utc) -> dt.datetime:
             "--start-utc, or set start_time_utc in the config's physics options"
         )
     return configured
+
+
+def reconcile_start_time(clock, start_utc) -> dt.datetime:
+    """The cycle's start instant held to the model's forecast clock
+    (arwen_global.clock): a dated clock IS the start, and a ``--start-utc``
+    that disagrees with it is refused by name (the observations would be
+    windowed against one instant while the radiation and the analyses run
+    on another); an undated clock takes ``start_utc`` and refuses without
+    one."""
+    from .clock import ClockMismatchError, mismatch_sentence
+
+    requested = None
+    if start_utc is not None:
+        requested = resolve_start_time(None, start_utc)
+    if clock is not None and clock.dated:
+        if requested is not None and requested != clock.start_utc:
+            name = (
+                "the analysis valid time"
+                if clock.source == "analysis-valid-time"
+                else "the config's physics start_time_utc"
+            )
+            raise ClockMismatchError(
+                mismatch_sentence("--start-utc", requested, clock.start_utc, name)
+                + ", and every observation would be windowed against it; "
+                "leave --start-utc out to take the run's own clock"
+            )
+        return clock.start_utc
+    if requested is None:
+        raise ValueError(
+            "the cycle needs the instant model time zero stands for, because "
+            "each analysis is formed at the run's start plus its model time "
+            "and the observation age window is measured from it: initialise "
+            "from an analysis, pass --start-utc, or set start_time_utc in the "
+            "config's physics options"
+        )
+    return requested
 
 
 def analysis_steps(
@@ -334,7 +371,10 @@ def _cycle_tracked(
     door_plan=None,
 ) -> dict[str, object]:
     output = Path(outdir)
-    start_time = resolve_start_time(cfg, start_utc)
+    if start_utc is not None:
+        # Parsed now so a malformed instant is refused before the decode;
+        # held to the run's clock once the model is built.
+        resolve_start_time(cfg, start_utc)
     if increment_application not in ("direct", "iau"):
         raise ValueError("increment_application must be 'direct' or 'iau'")
     if information_cutoff is not None and not isinstance(information_cutoff, dt.datetime):
@@ -420,16 +460,18 @@ def _cycle_tracked(
     backend = transform.backend
     model, cold = build_model_and_cold_state(
         cfg, transform, scratch_destination=output)
+    start_time = reconcile_start_time(model.forecast_clock, start_utc)
     cold_diag = model.diagnostics(cold)
     target_mass = cold_diag["global_mean_surface_pressure_pa"]
     target_water = cold_diag["global_mean_total_water_kg_m2"]
     trackers = normalize_trackers()
-    supplementary = {name: 0.0 for name in SUPPLEMENTARY_TRACKER_KEYS}
+    supplementary = fresh_supplementary()
     epochs: list[dict[str, object]] = []
     if restart is None:
         state = cold
     else:
         state = state_from_checkpoint(restart_metadata, restart_arrays, backend)
+        adopt_checkpoint_clock(model, state, f"restart checkpoint {restart}")
         trackers = normalize_trackers(restart_metadata["run_trackers"])
         if state.time_s >= until_s - 1.0e-9:
             raise ValueError(
@@ -1229,5 +1271,6 @@ __all__ = [
     "cycle",
     "cycle_owned_files",
     "incremental_analysis_update",
+    "reconcile_start_time",
     "resolve_start_time",
 ]

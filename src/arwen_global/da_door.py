@@ -697,11 +697,16 @@ def dump_toml(document: dict, *, header: str | None = None) -> str:
 
 def derive_fresh_config(
     base_config: str | Path, *, analysis_grib: str | None, analysis_mapping: str | None,
-    duration_s: float, name_suffix: str = "fresh",
+    duration_s: float, name_suffix: str = "fresh", start_utc=None,
 ) -> dict:
     """The run configuration ``fresh`` writes: the base TOML with the
     initial analysis pointed at the fetched object (an analysis-mode base)
-    and the duration set to the cycle span plus the forecast."""
+    and the duration set to the cycle span plus the forecast.
+
+    An analytic base dates its native physics with ``start_utc`` (the
+    ``--start-utc`` instant): the base's own start_time_utc names the date
+    IT was written for, and kept here every --start-utc but that literal
+    would be refused by the cycle's clock check."""
     raw = tomllib.loads(Path(base_config).read_text(encoding="utf-8"))
     document = json.loads(json.dumps(raw))  # a deep copy of plain data
     initial = document.setdefault("initial", {})
@@ -714,6 +719,19 @@ def derive_fresh_config(
         initial["analysis_grib"] = Path(analysis_grib).as_posix()
         if analysis_mapping:
             initial["analysis_mapping"] = analysis_mapping
+        # The forecast clock follows the fetched analysis (arwen_global.clock):
+        # a base config's own start_time_utc names the cycle IT was written
+        # for, and kept here it would be refused against the fetched frame's
+        # valid time (or, before the clock existed, radiate on that cycle's
+        # sun while the observations ran on the fetched one).
+        options = (document.get("physics") or {}).get("native_adapter_options")
+        if isinstance(options, dict):
+            options.pop("start_time_utc", None)
+    elif start_utc is not None:
+        options = (document.get("physics") or {}).get("native_adapter_options")
+        if isinstance(options, dict):
+            moment = start_utc.astimezone(dt.timezone.utc)
+            options["start_time_utc"] = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
     time_table = document.setdefault("time", {})
     time_table["duration_s"] = float(duration_s)
     head = document.setdefault("arwen_global", {})
@@ -833,6 +851,7 @@ def fresh(
     document = derive_fresh_config(
         base_config, analysis_grib=None if analysis is None else analysis.path,
         analysis_mapping=mapping, duration_s=duration_s,
+        start_utc=None if analysis_mode else start_moment,
     )
     config_path = output / FRESH_CONFIG_NAME
     if config_path.exists() and not overwrite:

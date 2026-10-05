@@ -6,13 +6,14 @@ the tool after changing an option and commit what it writes.
 
 `gpuwm-global <command> --help` prints the same text at the terminal.
 
-**48 commands.**
+**49 commands.**
 
 - `gpuwm-global pins`
 - `gpuwm-global physics-manifest`
 - `gpuwm-global doctor`
 - `gpuwm-global fetch-doors`
 - `gpuwm-global fetch-analysis`
+- `gpuwm-global score`
 - `gpuwm-global obs fetch`
 - `gpuwm-global obs subscribe`
 - `gpuwm-global obs hours`
@@ -85,6 +86,21 @@ the tool after changing an option and commit what it writes.
 | `--cycle` `YYYY-MM-DDTHH` | the GDAS cycle to fetch; without it, the newest published one |  |
 | `--engine` `{auto,rust,python}` | which transport the engine's fetch route uses | `auto` |
 | `--quiet` | do not print the transport's own progress lines |  |
+
+## `gpuwm-global score`
+
+| option | what it does | default |
+|---|---|---|
+| `run_dir` (positional) | the output directory of `gpuwm-global run` (any truncation) |  |
+| `--out` `OUT` | directory the scorecard (scorecard.json, scorecard.txt), the door records and the fetched analyses land in |  |
+| `--hours` `HOURS` | the leads to score, in hours; default every checkpoint after the start |  |
+| `--label` `LABEL` | the model's row label (default woof-global-t<N>) |  |
+| `--asos-record` `ASOS_RECORD` | a `rw_asos decode` record (gpuwm-obs.asos-surface.v2) covering the leads; default: fetch and decode one through rw_asos |  |
+| `--igra2-table` `IGRA2_TABLE` | a `rw_igra2 table` neutral table covering the leads; default: fetch and decode one through rw_igra2 |  |
+| `--reference` `LABEL=FILE` | an analysis already on disk, LABEL one of gfs, ifs; repeat per file | `[]` |
+| `--families` `FAMILIES` | the reference centres to fetch analyses for (comma-separated) | `gfs,ifs` |
+| `--no-fetch-references` | score only the --reference files given; fetch no analysis |  |
+| `--initial-analysis` `INITIAL_ANALYSIS` | the run's initial analysis file when the receipt's recorded path is not on this machine (its SHA-256 must be the one the receipt recorded) |  |
 
 ## `gpuwm-global obs`
 
@@ -179,9 +195,9 @@ the tool after changing an option and commit what it writes.
 | `--card-exchange` `{gather,partial}` | 'gather' (default) ships the Fourier waist's latitude rows and keeps the contraction whole, which is bit-identical to one card and enters no identity; 'partial' ships partial Legendre sums and adds them in rank order, which is a third of the bytes and a CHANGE OF ARITHMETIC that carries its own pin and joins the config hash |  |
 | `--card-axis` `{band,order}` | which decomposition a run above one card uses (config [memory].card_axis, default 'band'). 'band' partitions grid space by latitude and gathers waist rows -- the SPEED axis, and the one a model run uses. 'order' partitions the Legendre orders and gathers coefficient columns, holding one card's fraction of the table -- the CAPACITY axis past the whole-table wall, proven bit-identical at the transform and refused for a model run until a truncation that needs it has a card that fits it |  |
 | `--card-agreement` `{refuse,record}` | what a gather run above one card does when its cards return different bits for a contraction the step presents (config [memory].card_agreement, default 'refuse'). 'refuse' stops the run by name at that contraction, before the waist it feeds is assembled from both cards' rows. 'record' carries on, lists every disagreeing shape in the receipt and FAILS the run's two_card_contractions_agree gate row: a timing device for a pair of unlike cards whose bits do not agree, and never a run of record |  |
-| `--card-rank` `R` | this process's rank, 0-based, inside --cards |  |
+| `--card-rank` `R` | this process's rank, 0-based, inside --cards. On a CUDA backend the rank runs on its own card: its local rank among the ranks whose --card-addresses name the same host picks the card (CUDA_VISIBLE_DEVICES is narrowed to it; a single entry already set is kept, a list is indexed), and two ranks on one card are refused by device UUID |  |
 | `--card-addresses` `H:P,H:P` | the rendezvous host:port of every rank IN RANK ORDER, comma separated. Use the address of the fast interconnect between the cards, not the management network |  |
-| `--card-transport` `{auto,tcp,nccl}` | 'auto' (default) takes NCCL where it imports and TCP otherwise; the two measured within 1 percent of each other on this link |  |
+| `--card-transport` `{auto,tcp,nccl}` | 'auto' (default) carries the device exchanges on NCCL when every rank runs on a CUDA device and can open it (in one box: NVLink or PCIe peer traffic, no host staging), and on the TCP mesh otherwise; it never refuses. The TCP mesh is always the rendezvous and the host channel. Both move bytes only, so the answer is the same on either; 'nccl' refuses by name where it cannot be built, 'tcp' never tries NCCL |  |
 | `--card-weights` `W,W` | one relative card speed per rank, in rank order, overriding the per-band cost profile measured at run start. The assignment is outside the arithmetic (gate BIT-6), so this changes who computes a row and not what the row is |  |
 | `--card-halo-rows` `N` | latitude rows exchanged across a card boundary for the meridional sweep's deep halo (default 16). It must cover 2n for the step's sub-step count n; a step that needs more is refused by name rather than swept from stale neighbour rows |  |
 | `--spectral-chunk` `SPECTRAL_CHUNK` | widest field stack one transform call carries (config [memory].spectral_chunk, default 6): a smaller chunk bounds the complex Fourier temporaries a wide stack materializes and costs one more pass of the per-order loop; it is the Legendre GEMM's M dimension and moves bits at a narrow vertical ladder, so it carries its own config identity |  |
@@ -211,9 +227,9 @@ the tool after changing an option and commit what it writes.
 | `--card-exchange` `{gather,partial}` | 'gather' (default) ships the Fourier waist's latitude rows and keeps the contraction whole, which is bit-identical to one card and enters no identity; 'partial' ships partial Legendre sums and adds them in rank order, which is a third of the bytes and a CHANGE OF ARITHMETIC that carries its own pin and joins the config hash |  |
 | `--card-axis` `{band,order}` | which decomposition a run above one card uses (config [memory].card_axis, default 'band'). 'band' partitions grid space by latitude and gathers waist rows -- the SPEED axis, and the one a model run uses. 'order' partitions the Legendre orders and gathers coefficient columns, holding one card's fraction of the table -- the CAPACITY axis past the whole-table wall, proven bit-identical at the transform and refused for a model run until a truncation that needs it has a card that fits it |  |
 | `--card-agreement` `{refuse,record}` | what a gather run above one card does when its cards return different bits for a contraction the step presents (config [memory].card_agreement, default 'refuse'). 'refuse' stops the run by name at that contraction, before the waist it feeds is assembled from both cards' rows. 'record' carries on, lists every disagreeing shape in the receipt and FAILS the run's two_card_contractions_agree gate row: a timing device for a pair of unlike cards whose bits do not agree, and never a run of record |  |
-| `--card-rank` `R` | this process's rank, 0-based, inside --cards |  |
+| `--card-rank` `R` | this process's rank, 0-based, inside --cards. On a CUDA backend the rank runs on its own card: its local rank among the ranks whose --card-addresses name the same host picks the card (CUDA_VISIBLE_DEVICES is narrowed to it; a single entry already set is kept, a list is indexed), and two ranks on one card are refused by device UUID |  |
 | `--card-addresses` `H:P,H:P` | the rendezvous host:port of every rank IN RANK ORDER, comma separated. Use the address of the fast interconnect between the cards, not the management network |  |
-| `--card-transport` `{auto,tcp,nccl}` | 'auto' (default) takes NCCL where it imports and TCP otherwise; the two measured within 1 percent of each other on this link |  |
+| `--card-transport` `{auto,tcp,nccl}` | 'auto' (default) carries the device exchanges on NCCL when every rank runs on a CUDA device and can open it (in one box: NVLink or PCIe peer traffic, no host staging), and on the TCP mesh otherwise; it never refuses. The TCP mesh is always the rendezvous and the host channel. Both move bytes only, so the answer is the same on either; 'nccl' refuses by name where it cannot be built, 'tcp' never tries NCCL |  |
 | `--card-weights` `W,W` | one relative card speed per rank, in rank order, overriding the per-band cost profile measured at run start. The assignment is outside the arithmetic (gate BIT-6), so this changes who computes a row and not what the row is |  |
 | `--card-halo-rows` `N` | latitude rows exchanged across a card boundary for the meridional sweep's deep halo (default 16). It must cover 2n for the step's sub-step count n; a step that needs more is refused by name rather than swept from stale neighbour rows |  |
 | `--spectral-chunk` `SPECTRAL_CHUNK` | widest field stack one transform call carries (config [memory].spectral_chunk, default 6): a smaller chunk bounds the complex Fourier temporaries a wide stack materializes and costs one more pass of the per-order loop; it is the Legendre GEMM's M dimension and moves bits at a narrow vertical ladder, so it carries its own config identity |  |
@@ -244,9 +260,9 @@ the tool after changing an option and commit what it writes.
 | `--card-exchange` `{gather,partial}` | 'gather' (default) ships the Fourier waist's latitude rows and keeps the contraction whole, which is bit-identical to one card and enters no identity; 'partial' ships partial Legendre sums and adds them in rank order, which is a third of the bytes and a CHANGE OF ARITHMETIC that carries its own pin and joins the config hash |  |
 | `--card-axis` `{band,order}` | which decomposition a run above one card uses (config [memory].card_axis, default 'band'). 'band' partitions grid space by latitude and gathers waist rows -- the SPEED axis, and the one a model run uses. 'order' partitions the Legendre orders and gathers coefficient columns, holding one card's fraction of the table -- the CAPACITY axis past the whole-table wall, proven bit-identical at the transform and refused for a model run until a truncation that needs it has a card that fits it |  |
 | `--card-agreement` `{refuse,record}` | what a gather run above one card does when its cards return different bits for a contraction the step presents (config [memory].card_agreement, default 'refuse'). 'refuse' stops the run by name at that contraction, before the waist it feeds is assembled from both cards' rows. 'record' carries on, lists every disagreeing shape in the receipt and FAILS the run's two_card_contractions_agree gate row: a timing device for a pair of unlike cards whose bits do not agree, and never a run of record |  |
-| `--card-rank` `R` | this process's rank, 0-based, inside --cards |  |
+| `--card-rank` `R` | this process's rank, 0-based, inside --cards. On a CUDA backend the rank runs on its own card: its local rank among the ranks whose --card-addresses name the same host picks the card (CUDA_VISIBLE_DEVICES is narrowed to it; a single entry already set is kept, a list is indexed), and two ranks on one card are refused by device UUID |  |
 | `--card-addresses` `H:P,H:P` | the rendezvous host:port of every rank IN RANK ORDER, comma separated. Use the address of the fast interconnect between the cards, not the management network |  |
-| `--card-transport` `{auto,tcp,nccl}` | 'auto' (default) takes NCCL where it imports and TCP otherwise; the two measured within 1 percent of each other on this link |  |
+| `--card-transport` `{auto,tcp,nccl}` | 'auto' (default) carries the device exchanges on NCCL when every rank runs on a CUDA device and can open it (in one box: NVLink or PCIe peer traffic, no host staging), and on the TCP mesh otherwise; it never refuses. The TCP mesh is always the rendezvous and the host channel. Both move bytes only, so the answer is the same on either; 'nccl' refuses by name where it cannot be built, 'tcp' never tries NCCL |  |
 | `--card-weights` `W,W` | one relative card speed per rank, in rank order, overriding the per-band cost profile measured at run start. The assignment is outside the arithmetic (gate BIT-6), so this changes who computes a row and not what the row is |  |
 | `--card-halo-rows` `N` | latitude rows exchanged across a card boundary for the meridional sweep's deep halo (default 16). It must cover 2n for the step's sub-step count n; a step that needs more is refused by name rather than swept from stale neighbour rows |  |
 | `--spectral-chunk` `SPECTRAL_CHUNK` | widest field stack one transform call carries (config [memory].spectral_chunk, default 6): a smaller chunk bounds the complex Fourier temporaries a wide stack materializes and costs one more pass of the per-order loop; it is the Legendre GEMM's M dimension and moves bits at a narrow vertical ladder, so it carries its own config identity |  |
@@ -264,7 +280,7 @@ the tool after changing an option and commit what it writes.
 | `--outdir` `OUTDIR` | where the hourly checkpoints, each cycle's analysis checkpoint (arwen_global_analysis_step*.npz) and report (assimilation-report-step*.json), and the receipt are written |  |
 | `--cycles` `CYCLES` | how many analyses to form, one every --interval-s of model time from the run's start; refused when they do not fit before the end of the run |  |
 | `--interval-s` `INTERVAL_S` | model time between analyses in seconds (default 3600); must be a whole number of steps | `3600.0` |
-| `--start-utc` `START_UTC` | ISO-8601 instant model time zero stands for, so each analysis time is this plus its model time; default is the config's physics start_time_utc, refused when neither exists |  |
+| `--start-utc` `START_UTC` | ISO-8601 instant model time zero stands for, so each analysis time is this plus its model time; default is the run's forecast clock (the analysis valid time, else the config's physics start_time_utc), a value that disagrees with that clock is refused, and an undated run without one is refused |  |
 | `--until-s` `UNTIL_S` | stop the integration at this model time in seconds from the run's start instead of the config's duration_s (equal to the last analysis time for a cycle without a forecast leg) |  |
 | `--restart` `RESTART` | continue from this checkpoint instead of the cold state (an interrupted cycle resumes from its last analysis or hourly checkpoint); the config hash it carries has to be this config's |  |
 | `--keep-backgrounds` | also write each analysis hour's background checkpoint; by default only the analysis is written there, the background's identity riding in the report and the chain |  |
@@ -314,7 +330,7 @@ the tool after changing an option and commit what it writes.
 | `--outdir` `OUTDIR` | where the hourly checkpoints, each cycle's analysis checkpoint and report, the fetch manifests (fetch/), the ensemble manifest, the run receipt and the DA receipt are written |  |
 | `--cycles` `CYCLES` | how many analyses to form, one every --interval-s of model time from the run's start |  |
 | `--interval-s` `INTERVAL_S` | model time between analyses in seconds (default 3600) | `3600.0` |
-| `--start-utc` `START_UTC` | ISO-8601 instant model time zero stands for; default the config's physics start_time_utc, refused when neither exists |  |
+| `--start-utc` `START_UTC` | ISO-8601 instant model time zero stands for; default the run's forecast clock (the analysis valid time, else the config's physics start_time_utc), refused when it disagrees with that clock or when the run has neither |  |
 | `--until-s` `UNTIL_S` | stop the integration at this model time (default the config's duration_s; equal to the last analysis time for a cycle without a forecast leg) |  |
 | `--restart` `RESTART` | continue from this checkpoint instead of the cold state |  |
 | `--ensemble` `ENSEMBLE` | the ensemble manifest (da-ensemble.json) to cycle from; its deterministic checkpoint is the restart unless --restart names one |  |
@@ -484,7 +500,7 @@ the tool after changing an option and commit what it writes.
 | `--outdir` `OUTDIR` | where the tapes are written |  |
 | `--nlat` `NLAT` | latitude points of the regular output grid (default 360) | `360` |
 | `--nlon` `NLON` | longitude points of the regular output grid (default 720) | `720` |
-| `--start-date` `START_DATE` | analysis valid time as YYYY-MM-DD_HH:MM:SS; checkpoint times offset from it |  |
+| `--start-date` `START_DATE` | analysis valid time as YYYY-MM-DD_HH:MM:SS. Optional: a run that starts from an analysis (or states start_time_utc) stamps its tapes from its own forecast clock, and a value that disagrees with that clock is refused; required only for an idealized run with no date |  |
 | `--overwrite` | replace tapes that already exist |  |
 | `--bbox` `('LAT_MIN', 'LAT_MAX', 'LON_MIN', 'LON_MAX')` | crop the tape to a lat/lon window (degrees, lon in -180..180) |  |
 
@@ -651,7 +667,7 @@ the tool after changing an option and commit what it writes.
 |---|---|---|
 | `config` (positional) | the experiment TOML, or the name of a shipped experiment |  |
 | `--outdir` `OUTDIR` | the run directory; checkpoints, receipt, status.json and the log go here, and pictures under <outdir>/pictures |  |
-| `--start-date` `START_DATE` | analysis valid time as YYYY-MM-DD_HH:MM:SS for the render stage; without it the forecast still runs and the render stage is skipped out loud, because a tape with no valid time is a tape nobody can place in time |  |
+| `--start-date` `START_DATE` | analysis valid time as YYYY-MM-DD_HH:MM:SS for the render stage. Optional: a config that starts from an analysis (or states start_time_utc) renders on its own forecast clock, and a value that disagrees with it is refused. An idealized config with no date and no --start-date still forecasts and skips the render stage out loud, because a tape with no valid time is a tape nobody can place in time |  |
 | `--products` `LIST` | comma-separated products for the render stage |  |
 | `--geog-root` `GEOG_ROOT` | the WPS_GEOG archive for the statics stage; without it the config's own [statics] geog_root is used |  |
 | `--no-statics` | skip the statics stage even for a real planet |  |
@@ -665,7 +681,7 @@ the tool after changing an option and commit what it writes.
 | `--config` `CONFIG` | the experiment TOML the checkpoints were run under, or the name of a shipped experiment. Optional: a run directory written by `run` or `go` carries a copy of its own config, and that copy is used when this flag is absent |  |
 | `inputs` (positional) | checkpoints in time order, run directories (every arwen_global_step*.npz inside, sorted), or wrfout tapes that are already exported |  |
 | `--outdir` `OUTDIR` | where the pictures go, laid out <outdir>/<domain>/<product>/<valid-day>/ |  |
-| `--start-date` `START_DATE` | analysis valid time as YYYY-MM-DD_HH:MM:SS; checkpoint times offset from it |  |
+| `--start-date` `START_DATE` | analysis valid time as YYYY-MM-DD_HH:MM:SS. Optional: a run that starts from an analysis (or states start_time_utc) stamps its tapes from its own forecast clock, and a value that disagrees with that clock is refused; required only for an idealized run with no date |  |
 | `--products` `LIST` | comma-separated products, or 'all' (default: 2m_temperature,mslp_10m_winds,10m_wind_speed_and_direction,total_qpf) | `2m_temperature,mslp_10m_winds,10m_wind_speed_and_direction,total_qpf` |
 | `--size` `WxH` | picture size in pixels (default 1600x1000) | `1600x1000` |
 | `--nlat` `NLAT` | latitude points of the export grid (default 360) | `360` |

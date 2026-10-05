@@ -111,6 +111,22 @@ def standard_atmosphere_height_m(pressure_pa):
     return out if out.ndim else float(out)
 
 
+def standard_atmosphere_temperature_k(pressure_pa):
+    """ICAO standard-atmosphere temperature (K) at a pressure (Pa): the
+    layer law of :data:`_STANDARD_ATMOSPHERE_LAYERS` at the pressure's
+    standard height (216.65 K through 20 km, warming 1 K/km to 32 km and
+    2.8 K/km to the 270.65 K stratopause at 47 km)."""
+    p = np.asarray(pressure_pa, dtype=np.float64)
+    z = np.asarray(standard_atmosphere_height_m(p), dtype=np.float64)
+    bases = np.array([layer[3] for layer in _STANDARD_ATMOSPHERE_LAYERS])
+    index = np.clip(np.searchsorted(-bases, -p, side="right") - 1, 0, bases.size - 1)
+    z0 = np.array([layer[0] for layer in _STANDARD_ATMOSPHERE_LAYERS])[index]
+    t0 = np.array([layer[1] for layer in _STANDARD_ATMOSPHERE_LAYERS])[index]
+    lapse = np.array([layer[2] for layer in _STANDARD_ATMOSPHERE_LAYERS])[index]
+    out = t0 + lapse * (z - z0)
+    return out if out.ndim else float(out)
+
+
 @dataclass(frozen=True)
 class HybridCoordinate:
     """Hydrostatic hybrid pressure coordinate.

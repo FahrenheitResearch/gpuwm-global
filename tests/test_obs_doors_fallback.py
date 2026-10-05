@@ -49,7 +49,11 @@ def test_a_fallback_row_resolves_to_a_real_front_door():
         door = obs_doors.front_door(name)
         assert isinstance(door, FrontDoor)
         assert door.name == name
-        assert door.env_var.startswith("GPUWM_")
+        # The override is the one the door table names for this binary, so
+        # the front door, the doctor and the search ladder read one variable.
+        from arwen_global.doors import door_by_name
+
+        assert door.env_var == door_by_name(name).env_var
         # The marker is the record contract, not a version number: it names
         # the fields the Python side reads.
         assert "\t" in door.abi_marker

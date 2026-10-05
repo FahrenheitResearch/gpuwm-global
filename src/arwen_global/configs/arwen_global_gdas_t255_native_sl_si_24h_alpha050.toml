@@ -32,13 +32,13 @@ truncation = 255
 dealias_factor = 1.5
 
 # The step is NOT bound by the advective Courant number on this core; the
-# Lipschitz gate below is the refusal that replaces it.
+# trajectory fold gate below is the refusal that replaces it.
 [time]
 dt_s = 300.0
 duration_s = 86400.0
 output_interval_s = 86400.0
 integrator = "sl_si"
-maximum_lipschitz = 0.75
+minimum_fold_determinant = 0.2
 
 [semilag]
 quasi_monotone = true

@@ -64,15 +64,33 @@ PCIe to the host is 23 times cheaper per byte than that wire
 (H2D 55.6 / 56.8, D2H 42.3 / 42.6 GB/s MEASURED), which is why spilling
 to the host is the capacity mechanism and the second card is not.
 
-NCCL IS NOT INSTALLED IN THE NODE VENVS (MEASURED 2026-09-06: CuPy 14.2.0
-on CUDA 13, ``cupy.cuda.nccl.available`` False on both nodes, and the
-wheel that would supply it is ``nvidia-nccl-cu13``).  The design allows
-for that and names the substitute: the TCP transport the interconnect
-lane measured at the same rate.  :class:`NcclCards` is here and is chosen
-first when the library IS importable, with ``NCCL_IB_DISABLE=1`` set by
-the launcher and recorded in the receipt so a socket run is never read as
-a fabric run; :class:`TcpCards` is what actually runs on this pair, and
-every wire figure in this lane's report was taken through it.
+**Two transports, one rendezvous.**  Every multi-card run opens
+:class:`TcpCards` first: the full mesh of sockets is the rendezvous, and
+it carries every small host payload (the band profile, the agreement
+digests, the associative folds, the closing barrier).  When every rank
+runs on a CUDA device and ``cupy.cuda.nccl`` imports on every rank, the
+ranks vote over that mesh, rank 0 broadcasts an NCCL unique id over it,
+and :class:`NcclCards` carries the DEVICE exchanges (waist rows, halo
+edges, partial sums, order columns) as device pointers on the compute
+stream: no device-to-host copy, no ``tobytes``, no socket and no GIL in
+the data path.  In one box that is NVLink or PCIe peer copies instead of
+loopback TCP through host memory, which the 2026-10-05 audit MEASURED at
+0.28 to 3.1 GB/s per rank.  NCCL still moves bytes only: the all-gather
+is a grouped broadcast from each rank of its exact payload, the halo is a
+grouped send/receive with the two neighbours, and every sum is taken
+afterwards, locally, in ascending rank order, so the transport cannot
+move a bit (BIT-5, BIT-6).  Where NCCL is absent on any rank, or the
+backend is NumPy, the device exchanges stage through the host over TCP
+exactly as before, and the receipt names which transport ran and why.
+``NCCL_IB_DISABLE=1`` is set by the launcher and recorded in the receipt
+so a socket run between nodes is never read as a fabric run.
+
+**One rank, one card.**  A box with several cards runs one rank per card:
+:func:`place_rank` narrows ``CUDA_VISIBLE_DEVICES`` to the rank's own card
+(its LOCAL rank among the ranks sharing its host) before any CUDA context
+exists, so the sizer's probe subprocess and the run read the same card,
+and the transport refuses by name a run whose ranks report the same
+device UUID.
 """
 from __future__ import annotations
 
@@ -462,6 +480,11 @@ class CardTransport:
         self.rank = int(rank)
         self.world = int(world)
         self.ledger = ledger if ledger is not None else WireLedger()
+        #: What the run asked for and why this transport is the one that
+        #: runs: the receipt carries both, so a rate is never read against
+        #: the wrong transport.
+        self.requested = self.name
+        self.reason = ""
 
     def post(self, tag: str, payload) -> None:
         raise NotImplementedError
@@ -478,6 +501,51 @@ class CardTransport:
     def barrier(self, tag: str = "barrier") -> None:
         self.all_gather(tag, b"\x00")
 
+    # -- point to point -------------------------------------------------
+    def post_to(self, peer: int, tag: str, payload) -> None:
+        """Hand a payload to ONE peer without waiting."""
+        raise NotImplementedError
+
+    def collect_from(self, tag: str, peers, *, timeout_s: float = DEFAULT_TIMEOUT_S) -> dict:
+        """Wait for ``tag`` from each of ``peers`` only; ``{peer: payload}``."""
+        raise NotImplementedError
+
+    # -- array exchanges ------------------------------------------------
+    #
+    # The base implementation stages through host bytes, which is what the
+    # TCP transport runs.  The bytes that arrive are the bytes the peer
+    # computed, so the transport never enters the answer.
+
+    def all_gather_arrays(self, tag: str, xp, local, shapes, dtype) -> list:
+        """Every rank's array, in rank order: ``shapes[r]`` is rank ``r``'s.
+
+        The bytes that arrive are the bytes each rank computed, PLACED and
+        never combined; any sum over the pieces is the caller's, in rank
+        order (:func:`sum_in_rank_order`).  This rank's own entry is
+        ``local`` itself.
+        """
+        self.post(tag, _to_host_bytes(xp, local))
+        pieces = self.collect(tag)
+        out = []
+        for rank, piece in enumerate(pieces):
+            if rank == self.rank:
+                out.append(local)
+                continue
+            out.append(_array_from_host_bytes(xp, piece, tuple(shapes[rank]), dtype))
+        return out
+
+    def exchange_with(self, tag: str, xp, sends: dict, recv_shapes: dict, dtype) -> dict:
+        """Point-to-point: send ``sends[peer]`` to each peer named there and
+        receive one array of ``recv_shapes[peer]`` from each peer named
+        there.  Only the named peers see a byte (the halo's two neighbours)."""
+        for peer in sorted(sends):
+            self.post_to(int(peer), tag, _to_host_bytes(xp, sends[peer]))
+        got = self.collect_from(tag, sorted(recv_shapes))
+        return {
+            peer: _array_from_host_bytes(xp, got[peer], tuple(recv_shapes[peer]), dtype)
+            for peer in sorted(recv_shapes)
+        }
+
     def close(self) -> None:
         pass
 
@@ -490,7 +558,13 @@ class CardTransport:
         return None
 
     def receipt(self) -> dict[str, object]:
-        return {"transport": self.name, "rank": self.rank, "cards": self.world}
+        return {
+            "transport": self.name,
+            "transport_requested": self.requested,
+            "transport_reason": self.reason,
+            "rank": self.rank,
+            "cards": self.world,
+        }
 
 
 class SingleCard(CardTransport):
@@ -688,12 +762,15 @@ class TcpCards(CardTransport):
     band.  That overlap is the whole difference between the design's
     1.37x and its 1.06x, and it is the first thing this lane measures.
 
-    Why not NCCL: it is not installed in the node venvs (MEASURED
-    2026-09-06, both nodes) and the interconnect lane measured NCCL over
-    sockets, NCCL over RoCE, MPI over TCP and a hand-staged pipeline
-    within 1 percent of each other on this link, so the substitution costs
-    nothing measurable.  :class:`NcclCards` is chosen ahead of this one
-    wherever the library is importable.
+    Between two nodes over 25 GbE the interconnect lane measured NCCL
+    over sockets, NCCL over RoCE, MPI over TCP and a hand-staged pipeline
+    within 1 percent of each other, so this is the inter-node transport
+    and costs nothing there.  It is ALSO the rendezvous and the host
+    channel of every multi-card run: :class:`NcclCards` is built on top
+    of it and keeps it for the small host payloads.  Inside one box it is
+    the wrong device path (host staging through loopback, MEASURED
+    0.28 to 3.1 GB/s per rank, 2026-10-05), which is what NCCL replaces
+    wherever every rank can open it.
     """
 
     name = "tcp"
@@ -808,6 +885,20 @@ class TcpCards(CardTransport):
         self.ledger.record_exposure(total, time.perf_counter() - started)
         return pieces
 
+    def post_to(self, peer: int, tag: str, payload) -> None:
+        self._peers[int(peer)].post(tag, payload)
+
+    def collect_from(self, tag: str, peers, *, timeout_s: float = DEFAULT_TIMEOUT_S) -> dict:
+        started = time.perf_counter()
+        got = {}
+        total = 0
+        for rank in sorted(int(p) for p in peers):
+            payload = self._peers[rank].take(tag, timeout_s)
+            got[rank] = payload
+            total += len(payload)
+        self.ledger.record_exposure(total, time.perf_counter() - started)
+        return got
+
     def close(self) -> None:
         for peer in self._peers.values():
             peer.close()
@@ -845,18 +936,40 @@ def _recv_all(sock: socket.socket, nbytes: int) -> bytes:
 
 
 class NcclCards(CardTransport):
-    """NCCL as a TRANSPORT: all-gather only, no reduction, IB disabled.
+    """NCCL as a DEVICE TRANSPORT: bytes only, no reduction, IB disabled.
 
-    Present so the pair is not the only shape this runs on, and chosen
-    ahead of :class:`TcpCards` wherever ``cupy.cuda.nccl`` imports.  It
-    is NOT what this lane measured, because the library is absent from
-    both node venvs (MEASURED 2026-09-06).
+    Built on an open :class:`TcpCards` mesh, which stays the rendezvous
+    and the host channel: every host payload (the band profile, the
+    placement table, the agreement digests, the associative folds, the
+    closing barrier) still crosses it, and so does any exchange of a NumPy
+    array (a checkpoint gather).  The DEVICE arrays the step exchanges --
+    waist rows, partial sums, order columns, halo edges -- go through the
+    communicator as device pointers on the current stream: no
+    device-to-host copy, no ``tobytes``, no socket, no GIL.
+
+    The answer cannot move.  An all-gather of unequal pieces is a grouped
+    broadcast from every root of that root's exact bytes (``ncclUint8``),
+    the halo is a grouped send/receive with the two neighbours only, and
+    nothing is reduced on the wire: every sum is the caller's, afterwards,
+    locally, in ascending rank order (:func:`sum_in_rank_order`), exactly
+    as over TCP.  So one card, P cards over TCP and P cards over NCCL
+    assemble the same bytes and BIT-5 and BIT-6 hold by construction.
+
+    The wire ledger is fed from CUDA events around each group, resolved
+    when the receipt is read (:meth:`drain`) rather than by synchronising
+    the stream per exchange, so the device rate WIRE-1 grades is the rate
+    the collectives ran at.  A collective cannot finish before its slowest
+    rank arrives, so that time includes any wait on a peer still
+    computing, and the rate is a LOWER bound on the link (MEASURED
+    2026-10-05 across an RTX 4090 and an RTX 5070 Ti on the 2.5 GbE LAN:
+    0.19 and 0.03 GB/s on the two ranks of one T31 run, the second rank
+    being the one that waited).  There is no chunk: the 8 MB operating
+    point was fitted to the 25 GbE curve and belongs to the TCP transport
+    only.
 
     ``NCCL_IB_DISABLE=1`` is set by :func:`launch_environment` and
-    recorded in the receipt.  Without it NCCL will try InfiniBand verbs on
-    a link that is Ethernet, and the failure is a stall rather than an
-    error; with it the run is a socket run and the receipt says so, so a
-    3 GB/s figure is never read as a fabric figure.
+    recorded in the receipt: without it NCCL tries InfiniBand verbs on an
+    Ethernet link between nodes and stalls rather than failing.
     """
 
     name = "nccl"
@@ -869,38 +982,386 @@ class NcclCards(CardTransport):
             return False
         return bool(getattr(nccl, "available", False))
 
-    def __init__(self, rank: int, world: int, communicator, *, ledger=None):
-        super().__init__(rank, world, ledger=ledger)
-        self._comm = communicator
-        self._pending: dict[str, object] = {}
+    #: Device groups between two cross-rank checks of the tag sequence.
+    TAG_CHECK_EVERY = 32
+    #: Bytes each rank broadcasts in the device link probe at session open.
+    LINK_PROBE_BYTES = 32 * 2**20
+    #: Repeats of the link probe; the fastest is the link's rate.
+    LINK_PROBE_REPEATS = 3
 
+    def __init__(self, mesh: "TcpCards", communicator, nccl=None, *, device_xp=None,
+                 timeout_s: float = DEFAULT_TIMEOUT_S, probe: bool = True):
+        super().__init__(mesh.rank, mesh.world, ledger=mesh.ledger)
+        self.mesh = mesh
+        self._comm = communicator
+        if nccl is None:
+            from cupy.cuda import nccl  # type: ignore
+        self._nccl = nccl
+        if device_xp is None:
+            import cupy as device_xp  # type: ignore
+        #: The array module whose arrays take the device path; any other
+        #: (NumPy) stages through the mesh.
+        self._dev = device_xp
+        self._uint8 = int(getattr(nccl, "NCCL_UINT8", 1))
+        #: (start, end, posted, received, name) per group, resolved lazily.
+        self._timings: list = []
+        self.device_exchanges = 0
+        self.ledger.drain_hook = self.drain
+        # THE TWO SAFETY PROPERTIES THE TCP PATH HAS, kept on the device
+        # path.  R17: a dead rank must fail loudly and soon.  A collective
+        # has no timeout of its own, so a watchdog aborts the communicator
+        # when a group stays unfinished past ``timeout_s``, and the next
+        # exchange (or the receipt) raises naming the group's tag.  And the
+        # tag: two ranks running different exchanges of equal byte counts
+        # would swap bytes silently, so every rank folds each group's tag
+        # and sizes into a running digest and the ranks compare it over the
+        # host mesh every TAG_CHECK_EVERY groups.
+        self._timeout_s = float(timeout_s)
+        self._watch_lock = threading.Lock()
+        self._watching: list = []
+        self._aborted: str | None = None
+        self._watch_stop = threading.Event()
+        self._watchdog = threading.Thread(
+            target=self._watch, name=f"nccl-watchdog-{self.rank}", daemon=True)
+        self._watchdog.start()
+        self._tag_digest = b""
+        self._tag_groups = 0
+        #: The device link's rate, measured at session open with every rank
+        #: released together (gate WIRE-1 on NCCL).
+        self.link_probe_gb_s: float | None = None
+        if probe:
+            self.link_probe_gb_s = self._probe_link()
+
+    # -- the host channel: the mesh ----------------------------------
     def post(self, tag: str, payload) -> None:
-        self._pending[tag] = payload
+        self.mesh.post(tag, payload)
 
     def collect(self, tag: str, *, timeout_s: float = DEFAULT_TIMEOUT_S) -> list:
-        import cupy as cp
+        return self.mesh.collect(tag, timeout_s=timeout_s)
 
-        payload = self._pending.pop(tag)
-        started = time.perf_counter()
-        local = cp.asarray(memoryview(payload).cast("B"))
-        gathered = cp.empty(local.size * self.world, dtype=cp.uint8)
-        self._comm.allGather(
-            local.data.ptr, gathered.data.ptr, local.size,
-            0,  # ncclUint8
-            cp.cuda.Stream.null.ptr,
-        )
-        cp.cuda.Stream.null.synchronize()
-        seconds = time.perf_counter() - started
-        self.ledger.record_send(int(local.nbytes), seconds)
-        self.ledger.record_exposure(int(local.nbytes) * (self.world - 1), seconds)
-        block = gathered.reshape(self.world, local.size)
-        return [bytes(cp.asnumpy(block[r])) for r in range(self.world)]
+    def post_to(self, peer: int, tag: str, payload) -> None:
+        self.mesh.post_to(peer, tag, payload)
+
+    def collect_from(self, tag: str, peers, *, timeout_s: float = DEFAULT_TIMEOUT_S) -> dict:
+        return self.mesh.collect_from(tag, peers, timeout_s=timeout_s)
+
+    # -- device plumbing ---------------------------------------------
+    def _on_device(self, xp) -> bool:
+        return xp is self._dev
+
+    def _ptr(self, array) -> int:
+        data = getattr(array, "data", None)
+        ptr = getattr(data, "ptr", None)
+        if ptr is not None:
+            return int(ptr)
+        return int(array.ctypes.data)
+
+    def _stream_ptr(self) -> int:
+        cuda = getattr(self._dev, "cuda", None)
+        if cuda is None:
+            return 0
+        return int(cuda.get_current_stream().ptr)
+
+    def _mark(self):
+        cuda = getattr(self._dev, "cuda", None)
+        if cuda is None:
+            return time.perf_counter()
+        event = cuda.Event()
+        event.record()
+        return event
+
+    def _elapsed_s(self, start, end) -> float:
+        cuda = getattr(self._dev, "cuda", None)
+        if cuda is None:
+            return float(end - start)
+        end.synchronize()
+        return float(cuda.get_elapsed_time(start, end)) / 1e3
+
+    def _settle(self, *, wait: bool) -> None:
+        """Hand finished groups' bytes and seconds to the ledger."""
+        cuda = getattr(self._dev, "cuda", None)
+        keep = []
+        for row in self._timings:
+            start, end, posted, received, name = row
+            if not wait and cuda is not None and not end.done:
+                keep.append(row)
+                continue
+            seconds = self._elapsed_s(start, end)
+            self.ledger.record_send(posted, seconds, name)
+            self.ledger.record_exposure(received, seconds)
+        self._timings = keep
+
+    def _group(self, tag: str, ops, posted: int, received: int) -> None:
+        self._raise_if_aborted()
+        self._check_tags(tag, posted, received)
+        self._settle(wait=False)
+        start = self._mark()
+        self._nccl.groupStart()
+        try:
+            for op in ops:
+                op()
+        finally:
+            self._nccl.groupEnd()
+        end = self._mark()
+        self._timings.append((start, end, int(posted), int(received),
+                              tag.rsplit("#", 1)[0]))
+        with self._watch_lock:
+            self._watching.append((end, tag, time.monotonic()))
+        self.device_exchanges += 1
+
+    # -- the two safety properties ------------------------------------
+    def _check_tags(self, tag: str, posted: int, received: int) -> None:
+        """Fold this group into the running tag digest; every
+        TAG_CHECK_EVERY groups, refuse by name when the ranks disagree."""
+        import hashlib
+
+        name = tag.rsplit("#", 1)[0]
+        self._tag_digest = hashlib.sha256(
+            self._tag_digest + f"{name}|{int(posted)}|{int(received)}".encode()
+        ).digest()
+        self._tag_groups += 1
+        if self._tag_groups % self.TAG_CHECK_EVERY:
+            return
+        digests = self.mesh.all_gather(
+            f"nccl-tag-digest#{self._tag_groups}", self._tag_digest,
+            timeout_s=self._timeout_s)
+        differing = [r for r, d in enumerate(digests)
+                     if bytes(d) != self._tag_digest]
+        if differing:
+            raise RuntimeError(
+                f"the card ranks ran different device exchanges: by group "
+                f"{self._tag_groups} (this rank's last: {name!r}) the tag "
+                f"sequence of ranks {differing} differs from rank "
+                f"{self.rank}'s, and NCCL would have swapped bytes between "
+                "different exchanges without noticing")
+
+    def _watch(self) -> None:
+        while not self._watch_stop.wait(1.0):
+            now = time.monotonic()
+            with self._watch_lock:
+                pending = []
+                for end, tag, posted_at in self._watching:
+                    if self._done(end):
+                        continue
+                    if now - posted_at > self._timeout_s:
+                        self._aborted = (
+                            f"the device exchange {tag!r} did not finish within "
+                            f"{self._timeout_s:.0f} s; a peer rank is dead or "
+                            "stuck, and the communicator was aborted so this "
+                            "rank fails instead of hanging (R17)")
+                        pending = []
+                        break
+                    pending.append((end, tag, posted_at))
+                self._watching = pending
+            if self._aborted is not None:
+                abort = getattr(self._comm, "abort", None)
+                if abort is not None:
+                    try:
+                        abort()
+                    except Exception:  # noqa: BLE001 - the flag is the report
+                        pass
+                return
+
+    @staticmethod
+    def _done(end) -> bool:
+        done = getattr(end, "done", None)
+        return True if done is None else bool(done)
+
+    def _raise_if_aborted(self) -> None:
+        if self._aborted is not None:
+            raise TimeoutError(self._aborted)
+
+    def _probe_link(self) -> float:
+        """The device link's rate in GB/s, every rank released together.
+
+        In a run a collective cannot finish before its slowest rank
+        arrives, so the event time a rank records includes its wait on
+        peers still computing and the ledger's rate is only a lower bound
+        on the link.  The probe is the link itself: a host barrier, then an
+        all-gather of LINK_PROBE_BYTES from every rank timed on the device,
+        the fastest of LINK_PROBE_REPEATS and then the fastest rank (the
+        one that waited least).  It stays out of the wire ledger and the
+        tag digest, which describe the run's own exchanges.
+        """
+        xp = self._dev
+        nbytes = int(self.LINK_PROBE_BYTES)
+        if getattr(xp, "cuda", None) is None:
+            # A host stand-in (the CPU tests): the rate means nothing there,
+            # and the exchange is exercised with a token payload.
+            nbytes = 4096
+        buffers = [xp.zeros(nbytes, dtype=np.uint8) for _ in range(self.world)]
+        stream = self._stream_ptr()
+        best = 0.0
+        for repeat in range(int(self.LINK_PROBE_REPEATS)):
+            self.mesh.all_gather(f"nccl-probe-barrier#{repeat}", bytes(1),
+                                 timeout_s=self._timeout_s)
+            start = self._mark()
+            self._nccl.groupStart()
+            try:
+                for root, buf in enumerate(buffers):
+                    ptr = self._ptr(buf)
+                    self._comm.broadcast(ptr, ptr, nbytes, self._uint8, root,
+                                         stream)
+            finally:
+                self._nccl.groupEnd()
+            end = self._mark()
+            seconds = self._elapsed_s(start, end)
+            moved = nbytes * (self.world - 1)
+            if seconds > 0.0:
+                best = max(best, moved / seconds / 1e9)
+        del buffers
+        rates = self.mesh.all_gather(
+            "nccl-probe-rate", f"{best:.9e}".encode("ascii"),
+            timeout_s=self._timeout_s)
+        return max(float(bytes(r).decode("ascii")) for r in rates)
+
+    # -- the device exchanges ----------------------------------------
+    def all_gather_arrays(self, tag: str, xp, local, shapes, dtype) -> list:
+        if not self._on_device(xp):
+            return super().all_gather_arrays(tag, xp, local, shapes, dtype)
+        send = xp.ascontiguousarray(local)
+        out = [send if r == self.rank else xp.empty(tuple(shapes[r]), dtype=dtype)
+               for r in range(self.world)]
+        stream = self._stream_ptr()
+        ops = []
+        for root, buf in enumerate(out):
+            nbytes = int(buf.nbytes)
+            if nbytes == 0:
+                continue
+            ptr = self._ptr(buf)
+            ops.append(lambda ptr=ptr, nbytes=nbytes, root=root: self._comm.broadcast(
+                ptr, ptr, nbytes, self._uint8, root, stream))
+        received = sum(int(out[r].nbytes) for r in range(self.world) if r != self.rank)
+        self._group(tag, ops, int(send.nbytes) * (self.world - 1), received)
+        out[self.rank] = local
+        return out
+
+    def exchange_with(self, tag: str, xp, sends: dict, recv_shapes: dict, dtype) -> dict:
+        if not self._on_device(xp):
+            return super().exchange_with(tag, xp, sends, recv_shapes, dtype)
+        stream = self._stream_ptr()
+        outgoing = {int(p): xp.ascontiguousarray(a) for p, a in sends.items()}
+        incoming = {int(p): xp.empty(tuple(shape), dtype=dtype)
+                    for p, shape in recv_shapes.items()}
+        ops = []
+        for peer in sorted(outgoing):
+            buf = outgoing[peer]
+            if buf.nbytes:
+                ptr, n = self._ptr(buf), int(buf.nbytes)
+                ops.append(lambda ptr=ptr, n=n, peer=peer: self._comm.send(
+                    ptr, n, self._uint8, peer, stream))
+        for peer in sorted(incoming):
+            buf = incoming[peer]
+            if buf.nbytes:
+                ptr, n = self._ptr(buf), int(buf.nbytes)
+                ops.append(lambda ptr=ptr, n=n, peer=peer: self._comm.recv(
+                    ptr, n, self._uint8, peer, stream))
+        self._group(
+            tag, ops,
+            sum(int(b.nbytes) for b in outgoing.values()),
+            sum(int(b.nbytes) for b in incoming.values()))
+        return {peer: incoming[peer] for peer in sorted(incoming)}
+
+    # -- lifecycle ----------------------------------------------------
+    def drain(self, timeout_s: float = DEFAULT_TIMEOUT_S) -> None:
+        self._raise_if_aborted()
+        self.mesh.drain(timeout_s)
+        self._settle(wait=True)
+        self._raise_if_aborted()
+
+    def close(self) -> None:
+        self._watch_stop.set()
+        try:
+            if self._aborted is None:
+                self._settle(wait=True)
+        finally:
+            destroy = getattr(self._comm, "destroy", None)
+            if destroy is not None:
+                try:
+                    destroy()
+                except Exception:  # noqa: BLE001 - the mesh still closes
+                    pass
+            self.mesh.close()
 
     def receipt(self) -> dict[str, object]:
+        self.drain()
         row = super().receipt()
+        mesh = self.mesh.receipt()
+        row["addresses"] = mesh.get("addresses")
+        row["host_channel"] = "tcp"
+        row["host_channel_chunk_bytes"] = mesh.get("chunk_bytes")
+        row["device_exchanges"] = int(self.device_exchanges)
+        row["link_probe_gb_s"] = self.link_probe_gb_s
+        row["tag_checked_groups"] = int(
+            self._tag_groups - self._tag_groups % self.TAG_CHECK_EVERY)
+        try:
+            row["nccl_version"] = int(self._nccl.get_version())
+        except Exception:  # noqa: BLE001
+            row["nccl_version"] = None
         row["nccl_ib_disable"] = os.environ.get("NCCL_IB_DISABLE")
         row["nccl_socket_ifname"] = os.environ.get("NCCL_SOCKET_IFNAME")
         return row
+
+
+def _build_nccl(mesh: "TcpCards", want: bool, nccl=None, *, timeout_s: float = DEFAULT_TIMEOUT_S):
+    """Vote over the mesh, then build the communicator, or say why not.
+
+    Every rank must take the same branch or the first collective hangs, so
+    the decision is taken from votes every rank sees: rank 0's NCCL unique
+    id crosses the mesh only when every rank voted yes, and the
+    communicator is kept only when every rank reports it built.  Returns
+    ``(communicator or None, nccl module, reason)``.
+    """
+    import json
+
+    vote = b"1" if want else b"0"
+    votes = mesh.all_gather("nccl-vote", vote, timeout_s=timeout_s)
+    missing = [r for r, v in enumerate(votes) if bytes(v) != b"1"]
+    if missing:
+        return None, None, (
+            f"card ranks {missing} cannot open NCCL (no cupy.cuda.nccl, or "
+            "a NumPy backend)")
+    if nccl is None:
+        from cupy.cuda import nccl  # type: ignore
+    uid = b""
+    first_error = ""
+    if mesh.rank == 0:
+        try:
+            raw = nccl.get_unique_id()
+            # CuPy 14 hands the id over as bytes, older CuPy as a tuple of
+            # ints, and NcclCommunicator wants it back in the same type.
+            if isinstance(raw, (bytes, bytearray)):
+                uid = b"B" + bytes(raw)
+            else:
+                uid = b"T" + json.dumps([int(v) for v in raw]).encode("utf-8")
+        except Exception as exc:  # noqa: BLE001 - the vote below carries it
+            first_error = repr(exc)
+    pieces = mesh.all_gather("nccl-uid", uid, timeout_s=timeout_s)
+    if not pieces[0]:
+        return None, None, "rank 0 could not draw an NCCL unique id: " + (
+            first_error if mesh.rank == 0 else "see rank 0")
+    head, body = bytes(pieces[0][:1]), bytes(pieces[0][1:])
+    unique_id = body if head == b"B" else tuple(json.loads(body.decode("utf-8")))
+    comm = None
+    error = ""
+    try:
+        comm = nccl.NcclCommunicator(mesh.world, unique_id, mesh.rank)
+    except Exception as exc:  # noqa: BLE001
+        error = repr(exc)
+    ready = mesh.all_gather(
+        "nccl-ready", b"1" if comm is not None else error.encode("utf-8")[:512] or b"0",
+        timeout_s=timeout_s)
+    failed = [r for r, v in enumerate(ready) if bytes(v) != b"1"]
+    if failed:
+        if comm is not None:
+            try:
+                comm.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+        return None, None, (
+            f"the NCCL communicator did not build on card ranks {failed}: "
+            + "; ".join(bytes(ready[r]).decode("utf-8", "replace") for r in failed))
+    return comm, nccl, "every rank opened NCCL"
 
 
 def launch_environment(interface: str | None = None) -> dict[str, str]:
@@ -926,30 +1387,300 @@ def open_transport(
     prefer: str = "auto",
     chunk_bytes: int = CHUNK_BYTES,
     ledger: WireLedger | None = None,
+    device: bool = False,
+    nccl=None,
+    device_xp=None,
 ) -> CardTransport:
-    """The transport for this rank: single card, NCCL if it is there, else TCP."""
+    """The transport for this rank: single card, NCCL on the TCP mesh, or TCP.
+
+    Every multi-card run opens the TCP mesh first; it is the rendezvous.
+    ``auto`` then takes NCCL for the device exchanges when every rank runs
+    on a CUDA device and can open it, which in one box is NVLink or PCIe
+    peer traffic instead of loopback TCP through host memory (MG-2), and
+    keeps the mesh alone otherwise.  ``auto`` NEVER refuses: it used to
+    raise as soon as ``cupy.cuda.nccl`` imported, which is the normal state
+    of a rented CUDA box image, so every default multi-card run there died
+    at the door (MG-3).  Only an explicit ``nccl`` that cannot be honoured
+    is an error, because an operator who named a transport and got another
+    would read its rate as the wrong link.  The receipt names the
+    transport that ran, the one asked for, and why.
+
+    ``device`` is whether this rank's arrays live on a CUDA device (the
+    CuPy backend); ``nccl`` and ``device_xp`` replace ``cupy.cuda.nccl`` and
+    ``cupy`` for a test.
+    """
     if int(world) <= 1:
         return SingleCard(ledger=ledger)
     choice = str(prefer).strip().lower()
-    if choice in {"auto", "nccl"} and NcclCards.available():
-        raise NotImplementedError(
-            "the NCCL transport needs a communicator built by the launcher; "
-            "pass prefer='tcp' until the rendezvous is written for it"
-        )
-    if choice == "nccl":
+    if choice not in {"auto", "tcp", "nccl"}:
+        raise ValueError(
+            f"card_transport must be 'auto', 'tcp' or 'nccl', got {prefer!r}")
+    if choice == "nccl" and nccl is None and not NcclCards.available():
         raise RuntimeError(
             "card_transport='nccl' was asked for and cupy.cuda.nccl is not "
             "importable in this environment (MEASURED 2026-09-06: CuPy 14.2.0 "
             "on CUDA 13 without nvidia-nccl-cu13 on either node).  Install "
-            "nvidia-nccl-cu13 or select 'tcp', which the interconnect lane "
-            "measured within 1 percent of NCCL on this link"
+            "nvidia-nccl-cu13 or select 'auto', which runs the TCP mesh "
+            "where NCCL is absent"
         )
     if not addresses:
         raise ValueError(
             f"{world} cards need {world} rendezvous addresses in rank order"
         )
-    return TcpCards(
+    mesh = TcpCards(
         rank, world, addresses, chunk_bytes=chunk_bytes, ledger=ledger)
+    mesh.requested = choice
+    if choice == "tcp":
+        mesh.reason = "card_transport='tcp' was asked for"
+        return mesh
+    want = bool(device) and (nccl is not None or NcclCards.available())
+    try:
+        comm, module, reason = _build_nccl(mesh, want, nccl)
+    except BaseException:
+        mesh.close()
+        raise
+    if comm is None:
+        if choice == "nccl":
+            mesh.close()
+            raise RuntimeError(
+                f"card_transport='nccl' was asked for and {reason}; select "
+                "'auto' to run the TCP mesh instead")
+        mesh.reason = f"auto: {reason}, so the TCP mesh carries every exchange"
+        return mesh
+    transport = NcclCards(mesh, comm, module, device_xp=device_xp)
+    transport.requested = choice
+    transport.reason = (
+        f"{choice}: {reason}; device exchanges on NCCL, host payloads on the "
+        "TCP mesh")
+    return transport
+
+
+# ---------------------------------------------------------------------
+# Placement: one rank, one card
+# ---------------------------------------------------------------------
+
+_LOOPBACK_HOSTS = {"localhost", "::1", "[::1]", "0.0.0.0"}
+
+#: The placement each rank took in this process, so the door and the run
+#: report the first decision rather than the second call reading it back.
+_PLACED: dict = {}
+
+
+def _host_key(address) -> str:
+    host = str(address).rpartition(":")[0].strip().lower()
+    if host in _LOOPBACK_HOSTS or host.startswith("127."):
+        return "loopback"
+    return host
+
+
+def _host_card_count() -> int | None:
+    """How many CUDA cards this host has, asked WITHOUT opening CUDA here.
+
+    ``CUDA_VISIBLE_DEVICES`` is read once, when CUDA initialises, so the
+    count comes from ``nvidia-smi -L`` in a child process; ``None`` when
+    that cannot answer, and the UUID check at the session still refuses
+    two ranks on one card."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "-L"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return sum(1 for line in out.stdout.splitlines() if line.startswith("GPU "))
+
+
+def local_rank_of(rank: int, addresses) -> tuple[int, int]:
+    """``(local rank, ranks on this host)`` from the rendezvous list.
+
+    The ranks that share this rank's host are the ranks whose rendezvous
+    address names the same host (every loopback spelling is one host); the
+    local rank is this rank's position among them in rank order.  A pure
+    function of the address list every rank holds, so no discovery service
+    is needed and every rank reaches the same table.
+    """
+    keys = [_host_key(a) for a in addresses]
+    mine = keys[int(rank)]
+    local = sum(1 for k in keys[:int(rank)] if k == mine)
+    return local, sum(1 for k in keys if k == mine)
+
+
+def place_rank(rank: int, world: int, addresses, backend: str, *, env=None) -> dict:
+    """Put this rank on its own card, before any CUDA context exists.
+
+    A box with several cards runs one rank per card, and nothing used to
+    choose the card: every rank opened the current device, so ``--cards 8``
+    in an eight-card box put all eight ranks on device 0, where the sizer's
+    probe read the same free memory eight times, admitted all eight, and
+    the ranks then competed for one card while seven idled (the 2026-10-05
+    audit, MG-4).  So the rank narrows ``CUDA_VISIBLE_DEVICES`` to its
+    LOCAL rank's card (:func:`local_rank_of`) and the sizer's probe
+    subprocess, which inherits the environment, reads the card the run
+    will use.
+
+    An operator's own choice is kept: a single entry already in
+    ``CUDA_VISIBLE_DEVICES`` is that operator pinning this process, and a
+    list is the set of cards this host offers, of which the rank takes the
+    local-rank-th.  A list too short for the ranks sharing the host is
+    refused by name, because the rank past its end would land on a card
+    another rank already holds.  Two ranks that end up on one card anyway
+    are refused at the session by device UUID (:func:`check_card_placement`).
+
+    Where CUDA was already initialised in this process (a library caller
+    that touched the device before ``run``), narrowing the environment
+    changes nothing, so the rank also selects its card by index when more
+    than one is still visible.  A CPU run and a one-card run are untouched.
+    """
+    env = os.environ if env is None else env
+    record = {"placed": False, "backend": str(backend)}
+    if int(world) <= 1 or str(backend).strip().lower() != "cupy":
+        return record
+    addresses = tuple(str(a) for a in (addresses or ()))
+    if len(addresses) != int(world):
+        return record
+    key = (int(rank), int(world), addresses)
+    done = _PLACED.get(key)
+    if (env is os.environ and done is not None
+            and env.get("CUDA_VISIBLE_DEVICES") == done["cuda_visible_devices"]):
+        # The door placed this rank already; the run asks again so a
+        # library caller that skipped the door is placed too.
+        return dict(done)
+    local, sharing = local_rank_of(rank, addresses)
+    before = env.get("CUDA_VISIBLE_DEVICES")
+    entries = [e.strip() for e in (before or "").split(",") if e.strip()]
+    if before is not None and not entries:
+        # Set and empty is an operator hiding every card from this process.
+        # Overwriting it with the local rank would turn a deliberate "no
+        # card" into device 0; it is left as set, and the cupy backend then
+        # says there is no device.
+        record["reason"] = (
+            "CUDA_VISIBLE_DEVICES is set and empty (every card hidden); "
+            "left as the operator set it")
+        return record
+    if len(entries) == 1:
+        chosen, placed_by = entries[0], "operator"
+    elif entries:
+        if local >= len(entries):
+            raise ValueError(
+                f"card rank {rank} is rank {local} of the {sharing} ranks on "
+                f"host {_host_key(addresses[rank])!r}, and CUDA_VISIBLE_DEVICES "
+                f"names {len(entries)} cards ({before}): this rank would land "
+                "on a card another rank already holds, and the two would "
+                "compete for its memory.  Name one card per rank on this host"
+            )
+        chosen, placed_by = entries[local], "rank-from-list"
+    else:
+        count = _host_card_count() if env is os.environ else None
+        if count is not None and sharing > count:
+            raise ValueError(
+                f"{sharing} card ranks share host "
+                f"{_host_key(addresses[rank])!r} and it has {count} "
+                f"card{'s' if count != 1 else ''}: rank {rank} (local rank "
+                f"{local}) would have no card of its own, and ranks sharing "
+                "a card split its memory while the run reads as a "
+                f"{sharing}-card run.  Launch at most {count} "
+                f"rank{'s' if count != 1 else ''} on this host"
+            )
+        chosen, placed_by = str(local), "rank"
+    env["CUDA_VISIBLE_DEVICES"] = chosen
+    record.update({
+        "placed": True,
+        "local_rank": int(local),
+        "ranks_on_host": int(sharing),
+        "cuda_visible_devices_before": before,
+        "cuda_visible_devices": chosen,
+        "placed_by": placed_by,
+    })
+    import sys
+
+    if env is os.environ and "cupy" in sys.modules:
+        # CUDA may already be initialised in this process, in which case
+        # the narrowed variable is read by nobody; select by index then.
+        try:
+            cp = sys.modules["cupy"]
+            count = int(cp.cuda.runtime.getDeviceCount())
+        except Exception:  # noqa: BLE001 - no driver: the backend says so later
+            count = 0
+        if count > 1:
+            index = int(local)
+            if index >= count:
+                raise ValueError(
+                    f"card rank {rank} wants device {index} and this process "
+                    f"sees {count}: CUDA was initialised before the rank was "
+                    "placed, so start the rank in a fresh process"
+                )
+            cp.cuda.Device(index).use()
+            record["selected_device_index"] = index
+    if env is os.environ:
+        _PLACED[key] = dict(record)
+    return record
+
+
+def card_identity(xp) -> dict | None:
+    """The card this rank computes on: name, PCI bus and UUID.
+
+    No host name: the UUID is unique across machines, and the package
+    reads no hostname into anything it writes.
+
+    ``None`` under NumPy, where there is no card to share."""
+    if xp is np or getattr(xp, "__name__", "") != "cupy":
+        return None
+    dev = xp.cuda.Device()
+    props = xp.cuda.runtime.getDeviceProperties(int(dev.id))
+    uuid = props.get("uuid", b"")
+    if isinstance(uuid, (bytes, bytearray)):
+        uuid = bytes(uuid).hex()
+    name = props.get("name", b"")
+    if isinstance(name, (bytes, bytearray)):
+        name = bytes(name).split(b"\x00", 1)[0].decode("utf-8", "replace")
+    try:
+        pci = str(dev.pci_bus_id)
+    except Exception:  # noqa: BLE001
+        pci = ""
+    return {
+        "device_index": int(dev.id),
+        "name": str(name),
+        "uuid": str(uuid),
+        "pci_bus_id": pci,
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+    }
+
+
+def check_card_placement(transport: "CardTransport", identity) -> list:
+    """All-gather every rank's card and refuse two ranks on one card.
+
+    Two ranks on one card pass every gate the run has (the answer is still
+    the one-card answer) while the card's memory is split between them and
+    the other cards idle, so it is refused by name here, at the session,
+    with both ranks and the card named.  The list is the receipt's
+    ``card_devices`` block.
+    """
+    import json
+
+    if transport.world <= 1:
+        return [identity]
+    pieces = transport.all_gather(
+        "card-placement", json.dumps(identity, sort_keys=True).encode("utf-8"))
+    devices = [json.loads(bytes(piece).decode("utf-8")) for piece in pieces]
+    seen: dict = {}
+    for rank, row in enumerate(devices):
+        if not row or not row.get("uuid"):
+            continue
+        key = row["uuid"]
+        if key in seen:
+            other = seen[key]
+            raise ValueError(
+                f"card ranks {other} and {rank} both run on {row.get('name')!r} "
+                f"(UUID {key}, PCI {row.get('pci_bus_id')}): two ranks on one "
+                "card split its memory "
+                "and leave another card idle.  Launch one rank per card (the "
+                "rank's local rank picks its card when CUDA_VISIBLE_DEVICES is "
+                "unset or lists the host's cards)"
+            )
+        seen[key] = rank
+    return devices
 
 
 # ---------------------------------------------------------------------
@@ -1013,6 +1744,10 @@ class CardSession:
             self.owners = band_owners(self.nlat, self.bands, self.weights)
         self._edges = band_edges(self.nlat, self.bands)
         self._counter = 0
+        #: Every rank's card (:func:`check_card_placement`), and how this
+        #: rank was placed (:func:`place_rank`); both ride the receipt.
+        self.devices: list = []
+        self.placement: dict = {}
 
     # -- ownership ----------------------------------------------------
     def local_band_indices(self) -> tuple[int, ...]:
@@ -1051,16 +1786,17 @@ class CardSession:
             return buffer
         first, last = self.local_rows()
         local = _slice_rows(buffer, axis, first, last)
-        payload = _to_host_bytes(xp, local)
-        tag = self.tag(name)
-        self.transport.post(tag, payload)
-        pieces = self.transport.collect(tag)
+        shapes = []
+        for rank in range(self.world):
+            r0, r1 = self.rows_of_rank(rank)
+            shapes.append(_rows_shape(buffer, axis, r1 - r0))
+        pieces = self.transport.all_gather_arrays(
+            self.tag(name), xp, local, shapes, buffer.dtype)
         for rank, piece in enumerate(pieces):
-            if rank == self.rank or piece is None:
+            if rank == self.rank:
                 continue
             r0, r1 = self.rows_of_rank(rank)
-            target = _slice_rows(buffer, axis, r0, r1)
-            _from_host_bytes(xp, piece, target)
+            _slice_rows(buffer, axis, r0, r1)[...] = piece
         return buffer
 
     def exchange_halo(self, xp, buffer, axis: int, width: int, *, name: str = "halo"):
@@ -1077,73 +1813,59 @@ class CardSession:
 
         Poles are walls, not neighbours, so the window is clipped there
         and nothing is asked for beyond them.
+
+        NEIGHBOURS ONLY.  Each rank's rows are one contiguous run and the
+        runs follow rank order (:func:`band_owners`), so the rows below
+        ``first`` belong to rank ``r - 1`` and the rows from ``last`` to
+        rank ``r + 1``; with every rank holding at least ``width`` rows
+        (refused otherwise, below) the whole window lies on that one
+        neighbour.  So each edge goes to the one rank that reads it and to
+        nobody else, and the halo bytes per rank are two edges whatever
+        the card count (the 2026-10-05 audit MEASURED 3.0x the need at four
+        cards when every edge went to every rank).
         """
         if self.world == 1 or int(width) <= 0:
             return buffer
         w = int(width)
         first, last = self.local_rows()
-        own = last - first
-        if w > own:
+        # Checked over EVERY rank, not only this one: the rows each rank
+        # owns are a pure function of the assignment every rank holds, so
+        # every rank reaches the same verdict and none of them is left
+        # waiting on a neighbour that refused alone.
+        narrowest = min(
+            (b - a, r) for r, (a, b) in
+            ((r, self.rows_of_rank(r)) for r in range(self.world)))
+        if w > narrowest[0]:
+            own = last - first
             raise ValueError(
-                f"a {w}-row halo is wider than the {own} rows this card owns: "
-                "the deep halo would reach past the neighbour into a third "
-                "card's rows.  Use fewer cards, more rows, or a smaller "
-                "sub-step count"
+                f"a {w}-row halo is wider than the {narrowest[0]} rows card "
+                f"rank {narrowest[1]} owns (this card owns {own}): the deep "
+                "halo would reach past the neighbour into a third card's "
+                "rows.  Use fewer cards, more rows, or a smaller sub-step "
+                "count"
             )
-        # Every card posts both of its edges; each card writes the pieces
-        # that fall in the two windows it is missing.
-        lower = _slice_rows(buffer, axis, first, first + w)
-        upper = _slice_rows(buffer, axis, last - w, last)
-        payload = _to_host_bytes(xp, lower) + _to_host_bytes(xp, upper)
-        tag = self.tag(name)
-        self.transport.post(tag, payload)
-        pieces = self.transport.collect(tag)
-        want = (
-            (max(0, first - w), first),
-            (last, min(self.nlat, last + w)),
-        )
-        for rank, piece in enumerate(pieces):
-            if rank == self.rank or piece is None:
-                continue
-            q_first, q_last = self.rows_of_rank(rank)
-            half = len(piece) // 2
-            blocks = (
-                ((q_first, q_first + w), piece[:half]),
-                ((q_last - w, q_last), piece[half:]),
-            )
-            for (b0, b1), raw in blocks:
-                for w0, w1 in want:
-                    lo = max(b0, w0)
-                    hi = min(b1, w1)
-                    if hi <= lo:
-                        continue
-                    target = _slice_rows(buffer, axis, lo, hi)
-                    host = np.frombuffer(raw, dtype=_dtype_of(buffer))
-                    rows_shape = list(buffer.shape)
-                    rows_shape[axis] = b1 - b0
-                    host = host.reshape(rows_shape)
-                    cut = [slice(None)] * buffer.ndim
-                    cut[axis] = slice(lo - b0, hi - b0)
-                    piece_host = host[tuple(cut)]
-                    target[...] = (
-                        piece_host if xp is np else xp.asarray(piece_host)
-                    )
+        sends = {}
+        recv_shapes = {}
+        if self.rank > 0:
+            sends[self.rank - 1] = _slice_rows(buffer, axis, first, first + w)
+            recv_shapes[self.rank - 1] = _rows_shape(buffer, axis, w)
+        if self.rank < self.world - 1:
+            sends[self.rank + 1] = _slice_rows(buffer, axis, last - w, last)
+            recv_shapes[self.rank + 1] = _rows_shape(buffer, axis, w)
+        got = self.transport.exchange_with(
+            self.tag(name), xp, sends, recv_shapes, buffer.dtype)
+        if self.rank > 0:
+            _slice_rows(buffer, axis, first - w, first)[...] = got[self.rank - 1]
+        if self.rank < self.world - 1:
+            _slice_rows(buffer, axis, last, last + w)[...] = got[self.rank + 1]
         return buffer
 
     def gather_partials(self, xp, local, *, name: str = "partial"):
         """All-gather a partial spectral sum and add in ascending rank order."""
         if self.world == 1:
             return local
-        tag = self.tag(name)
-        payload = _to_host_bytes(xp, local)
-        self.transport.post(tag, payload)
-        pieces = self.transport.collect(tag)
-        parts = []
-        for rank, piece in enumerate(pieces):
-            if rank == self.rank:
-                parts.append(local)
-                continue
-            parts.append(_array_from_host_bytes(xp, piece, local.shape, local.dtype))
+        parts = self.transport.all_gather_arrays(
+            self.tag(name), xp, local, [local.shape] * self.world, local.dtype)
         return sum_in_rank_order(parts)
 
     def fold_associative(self, xp, value, op: str, *, name: str = "fold"):
@@ -1181,6 +1903,49 @@ class CardSession:
                 )
         return xp.asarray(folded) if xp is not np else folded
 
+    def gather_records(self, record, *, name: str = "records") -> list:
+        """All-gather one small host record per rank, in rank order.
+
+        For the readings a band produces that are not arrays: the physics
+        suite's per-band diagnostics and namespace metadata, which the
+        suite's ``finish`` merges by rule over EVERY band of the call.  A
+        card runs only its own bands, so the other cards' records have to
+        reach it before the merge, and they have to arrive as the values
+        the other card held, type for type: a float32 reading that came
+        back a Python float, or a tuple that came back a list, would make
+        a merged reading or a checkpointed metadata record differ from the
+        one-card run's (gate BIT-6).  :func:`encode_record` is exact in
+        that sense and refuses a value it cannot carry exactly.
+
+        The bytes cross through the transport's own post and collect, so
+        any transport that moves bytes moves these.  The ranks' records
+        differ in length, and a collective all-gather (NCCL's) moves one
+        length from every rank, so the lengths cross first and every
+        payload is padded to the longest; each piece is cut back to its
+        own length before it is decoded.  This rank's own entry is the
+        record it was handed, not a decoded copy.
+        """
+        if self.world == 1:
+            return [record]
+        payload = encode_record(record)
+        tag = self.tag(f"{name}_length")
+        self.transport.post(tag, struct.pack("!Q", len(payload)))
+        lengths = [
+            len(payload) if rank == self.rank or piece is None
+            else struct.unpack("!Q", bytes(piece))[0]
+            for rank, piece in enumerate(self.transport.collect(tag))
+        ]
+        tag = self.tag(name)
+        self.transport.post(tag, payload + b" " * (max(lengths) - len(payload)))
+        pieces = self.transport.collect(tag)
+        out = []
+        for rank, piece in enumerate(pieces):
+            if rank == self.rank or piece is None:
+                out.append(record)
+                continue
+            out.append(decode_record(bytes(piece)[: lengths[rank]]))
+        return out
+
     def mark_step(self) -> None:
         self.transport.ledger.mark_step()
 
@@ -1202,6 +1967,8 @@ class CardSession:
                 "local_rows": list(self.local_rows()),
                 "nccl_ib_disable": os.environ.get("NCCL_IB_DISABLE"),
                 "card_axis": "band",
+                "card_devices": list(self.devices),
+                "card_placement": dict(self.placement),
                 "card_agreement": self.agreement.receipt(),
                 "wire": self.wire_receipt(),
             }
@@ -1427,6 +2194,9 @@ class RowExchange:
     def gather_partials(self, xp, local, *, name: str = "partial"):
         return self.session.gather_partials(xp, local, name=name)
 
+    def gather_records(self, record, *, name: str = "records") -> list:
+        return self.session.gather_records(record, name=name)
+
     def agree_once(self, xp, key, array) -> None:
         """The transform hands every contraction's output here once per
         distinct shape; the ranks must agree on it or the run is refused."""
@@ -1509,20 +2279,13 @@ class OrderExchange:
         lead = tuple(compact.shape[:-2])
         x = compact.shape[-2]
         dtype = compact.dtype
-        tag = self.session.tag(name)
-        payload = _to_host_bytes(xp, compact)
-        self.session.transport.post(tag, payload)
-        pieces = self.session.transport.collect(tag)
+        shapes = [(*lead, x, m_hi - m_lo) for m_lo, m_hi in ranges]
+        pieces = self.session.transport.all_gather_arrays(
+            self.session.tag(name), xp, compact, shapes, dtype)
         full = xp.empty((*lead, x, int(width)), dtype=dtype)
         for r, piece in enumerate(pieces):
             m_lo, m_hi = ranges[r]
-            if r == self.rank:
-                full[..., :, m_lo:m_hi] = compact
-                continue
-            block = _array_from_host_bytes(
-                xp, piece, (*lead, x, m_hi - m_lo), dtype
-            )
-            full[..., :, m_lo:m_hi] = block
+            full[..., :, m_lo:m_hi] = piece
         return full
 
 
@@ -1557,6 +2320,12 @@ def _slice_rows(buffer, axis: int, first: int, last: int):
     return buffer[tuple(index)]
 
 
+def _rows_shape(buffer, axis: int, rows: int) -> tuple:
+    shape = list(buffer.shape)
+    shape[axis] = int(rows)
+    return tuple(shape)
+
+
 def _to_numpy(xp, value):
     if xp is np:
         return np.asarray(value)
@@ -1582,6 +2351,85 @@ def _dtype_of(array):
     return np.dtype(array.dtype)
 
 
+# ---------------------------------------------------------------------
+# small host records
+# ---------------------------------------------------------------------
+
+
+def _record_tree(value):
+    """``value`` as a JSON tree that names every type it came in."""
+    if value is None or isinstance(value, (bool, str)):
+        return value
+    if isinstance(value, np.generic):
+        return {"np": np.dtype(value.dtype).str,
+                "b": np.asarray(value).tobytes().hex()}
+    if isinstance(value, np.ndarray):
+        array = np.ascontiguousarray(value)
+        return {"nd": array.dtype.str, "s": list(array.shape),
+                "b": array.tobytes().hex()}
+    if isinstance(value, int):
+        return {"i": str(int(value))}
+    if isinstance(value, float):
+        return {"f": float(value).hex()}
+    if isinstance(value, tuple):
+        return {"t": [_record_tree(v) for v in value]}
+    if isinstance(value, list):
+        return {"l": [_record_tree(v) for v in value]}
+    if isinstance(value, dict):
+        return {"d": [[_record_tree(k), _record_tree(v)]
+                      for k, v in value.items()]}
+    raise TypeError(
+        f"a {type(value).__name__} cannot cross between cards as a record: "
+        "only None, bool, int, float, str, tuple, list, dict and numpy "
+        "scalars and arrays are carried exactly, and a reading that came "
+        "back as a different type would make the merged reading differ "
+        "from the one-card run's"
+    )
+
+
+def _record_value(tree):
+    if tree is None or isinstance(tree, (bool, str)):
+        return tree
+    if "np" in tree:
+        return np.frombuffer(bytes.fromhex(tree["b"]), dtype=np.dtype(tree["np"]))[0]
+    if "nd" in tree:
+        return np.frombuffer(
+            bytes.fromhex(tree["b"]), dtype=np.dtype(tree["nd"])
+        ).reshape(tree["s"]).copy()
+    if "i" in tree:
+        return int(tree["i"])
+    if "f" in tree:
+        return float.fromhex(tree["f"])
+    if "t" in tree:
+        return tuple(_record_value(v) for v in tree["t"])
+    if "l" in tree:
+        return [_record_value(v) for v in tree["l"]]
+    if "d" in tree:
+        return {_record_value(k): _record_value(v) for k, v in tree["d"]}
+    raise ValueError(f"not a card record: {sorted(tree)}")
+
+
+def encode_record(value) -> bytes:
+    """Bytes for a small host record, exact in value and in type.
+
+    JSON with every number and container tagged by its type, rather than
+    pickle: a rank's socket is a network listener, and a payload decoded
+    by pickle can run code, while this one can only build the types
+    above.  Floats travel as their hexadecimal form, so every bit
+    survives, NaN and negative zero included.
+    """
+    import json
+
+    return json.dumps(_record_tree(value), separators=(",", ":")).encode()
+
+
+def decode_record(payload: bytes):
+    """The record :func:`encode_record` was handed."""
+    import json
+
+    return _record_value(json.loads(bytes(payload).decode()))
+
+
 __all__ = [
     "CHUNK_BYTES",
     "CardSession",
@@ -1596,10 +2444,16 @@ __all__ = [
     "WIRE_FLOOR_BYTES_S",
     "WireLedger",
     "band_owners",
+    "card_identity",
+    "check_card_placement",
+    "decode_record",
+    "encode_record",
     "launch_environment",
+    "local_rank_of",
     "open_transport",
     "order_band_owners",
     "order_exchange_for",
+    "place_rank",
     "single_card_session",
     "sum_in_rank_order",
     "throughput_weights",

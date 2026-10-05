@@ -1,7 +1,18 @@
-"""Pinned numerical interpolation choices for Level-5 parent translation."""
+"""Pinned numerical interpolation choices for Level-5 parent translation.
+
+The refusals live here, in Python, because they are about what a caller
+handed over.  The arithmetic runs in the Rust render kernels
+(`arwen_global.render_kernels`): the horizontal sampling, the per-column
+ln p interpolation (one np.interp call per column before, millions of calls
+for a kilometre-scale target) and the standard-lapse continuation.  The
+NumPy versions they replaced are the test oracle in
+``tests/render_kernel_oracle.py``.
+"""
 from __future__ import annotations
 
 import numpy as np
+
+from .. import render_kernels
 
 
 def periodic_bilinear(
@@ -29,9 +40,7 @@ def periodic_bilinear(
         # the bracket it returns then does not contain the target point and the
         # weights leave [0, 1], so the interpolation is wrong without raising.
         raise ValueError("parent coordinates must be strictly monotonic")
-    if lat[0] > lat[-1]:
-        lat = lat[::-1]
-        field = field[..., ::-1, :]
+    ascending = lat[::-1] if lat[0] > lat[-1] else lat
     dlon = np.diff(lon)
     if not np.allclose(dlon, dlon[0], rtol=0.0, atol=1.0e-10):
         raise ValueError("parent longitude must be uniformly spaced")
@@ -40,7 +49,7 @@ def periodic_bilinear(
         raise ValueError("parent longitude grid must span exactly one period")
 
     flat_lat = target_lat.reshape(-1)
-    if np.any(flat_lat < lat[0]) or np.any(flat_lat > lat[-1]):
+    if np.any(flat_lat < ascending[0]) or np.any(flat_lat > ascending[-1]):
         # The parent export builds its grid with include_poles=False, so the
         # global field genuinely stops short of +/-90.  Filling a poleward
         # target row from the parent's outermost latitude is constant
@@ -48,26 +57,10 @@ def periodic_bilinear(
         # no trace in the frame, so it is refused instead.
         raise ValueError(
             "target latitude lies outside the parent grid "
-            f"[{lat[0]}, {lat[-1]}]: the parent excludes the polar caps"
+            f"[{ascending[0]}, {ascending[-1]}]: the parent excludes the polar caps"
         )
-    j1 = np.searchsorted(lat, flat_lat, side="right")
-    j1 = np.clip(j1, 1, lat.size - 1)
-    j0 = j1 - 1
-    wy = (flat_lat - lat[j0]) / (lat[j1] - lat[j0])
-
-    x = ((target_lon.reshape(-1) - lon[0]) % 360.0) / spacing
-    i0 = np.floor(x).astype(np.int64) % lon.size
-    i1 = (i0 + 1) % lon.size
-    wx = x - np.floor(x)
-
-    f00 = field[..., j0, i0]
-    f01 = field[..., j0, i1]
-    f10 = field[..., j1, i0]
-    f11 = field[..., j1, i1]
-    lower = f00 * (1.0 - wx) + f01 * wx
-    upper = f10 * (1.0 - wx) + f11 * wx
-    result = lower * (1.0 - wy) + upper * wy
-    return result.reshape((*field.shape[:-2], *target_lat.shape))
+    return render_kernels.periodic_bilinear(
+        lat, float(lon[0]), spacing, lon.size, field, target_lat, target_lon)
 
 
 #: ICAO standard-atmosphere tropospheric lapse rate.  WPS/real.exe use the
@@ -107,12 +100,16 @@ def standard_lapse_theta_below(
     source_p = np.asarray(source_pressure, np.float64)
     theta = np.asarray(source_theta, np.float64)
     target_p = np.asarray(target_pressure, np.float64)
-    bottom_p = source_p[-1][None]
-    bottom_theta = theta[-1][None]
-    bottom_t = bottom_theta * (bottom_p / reference_pressure_pa) ** kappa
-    depth_m = (gas_constant * bottom_t / gravity) * np.log(target_p / bottom_p)
-    continued_t = bottom_t + STANDARD_LAPSE_RATE_K_M * depth_m
-    return continued_t * (reference_pressure_pa / target_p) ** kappa
+    if source_p.shape != theta.shape or source_p.ndim < 1 or source_p.shape[0] < 1:
+        raise ValueError("source pressure/theta must be equal (nlev, ...) arrays")
+    if target_p.shape[1:] != source_p.shape[1:]:
+        raise ValueError("target pressure has incompatible shape")
+    return render_kernels.standard_lapse_theta_below(
+        source_p, theta, target_p,
+        reference_pressure_pa=reference_pressure_pa, kappa=kappa,
+        gas_constant=gas_constant, gravity=gravity,
+        lapse_rate=STANDARD_LAPSE_RATE_K_M,
+    )
 
 
 def log_pressure_interpolate(
@@ -150,22 +147,13 @@ def log_pressure_interpolate(
             f"the parent's lowest full level (max {float(overshoot.max()):.4f} "
             f"vs {float(limit.min()):.4f} in ln p)"
         )
-    flat_sp = np.log(source_p.reshape(source_p.shape[0], -1))
-    flat_sv = source.reshape(source.shape[0], -1)
-    flat_tp = np.log(target_p.reshape(target_p.shape[0], -1))
-    out = np.empty_like(flat_tp)
-    for column in range(flat_sp.shape[1]):
-        out[:, column] = np.interp(
-            flat_tp[:, column], flat_sp[:, column], flat_sv[:, column],
-            left=flat_sv[0, column], right=flat_sv[-1, column],
-        )
-    result = out.reshape(target_p.shape)
+    continued = None
     if bottom_values is not None:
         continued = np.asarray(bottom_values, np.float64)
         if continued.shape != target_p.shape:
             raise ValueError("bottom continuation shape does not match target")
-        result = np.where(target_p > source_p[-1][None], continued, result)
-    return result
+    return render_kernels.log_pressure_interpolate(
+        source_p, source, target_p, bottom_values=continued)
 
 
 def rotate_earth_to_grid(eastward, northward, cosa, sina):

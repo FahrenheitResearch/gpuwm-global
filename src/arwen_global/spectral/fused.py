@@ -127,8 +127,8 @@ def _limited_interface_flux(name: str, j: str) -> str:
     Mirrors the numpy specification statement by statement, in the same
     association: upstream layer ``u`` (above when ``w >= 0``), its van
     Leer gradient ``2 * ga * gb / (ga + gb)`` when both one-sided
-    gradients share a sign (zero otherwise, and zero for the boundary
-    layers), the face value ``s[u] + grad * (p_half[j] - p_full[u])``
+    gradients share a sign (zero otherwise; the boundary layers take the
+    one-sided gradient to their one neighbour, DYC-1), the face value ``s[u] + grad * (p_half[j] - p_full[u])``
     bounded by the two adjacent layer values, times ``w``.  Interfaces
     0 and nlev carry zero flux.  ``base`` is the first index of the
     current tracer block, so no access crosses a tracer boundary.
@@ -154,6 +154,12 @@ def _limited_interface_flux(name: str, j: str) -> str:
                     if (prod > (T)0) {{
                         grad = (T)2 * prod / (ga + gb);
                     }}
+                }} else if (u == 0 && nlev >= 2) {{
+                    grad = (s[base + horiz + col] - su)
+                         / (pf[horiz + col] - pf[col]);
+                }} else if (u == nlev - 1 && nlev >= 2) {{
+                    grad = (su - s[base + (u - 1) * horiz + col])
+                         / (pf[u * horiz + col] - pf[(u - 1) * horiz + col]);
                 }}
                 T face = su + grad * (ph[j * horiz + col] - pf[u * horiz + col]);
                 const T above = s[base + (j - 1) * horiz + col];

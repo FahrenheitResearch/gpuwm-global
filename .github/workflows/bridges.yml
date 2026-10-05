@@ -18,9 +18,15 @@
 # a few minutes of compiling, which by the rule that a capability a user
 # cannot reach does not exist means eight doors were never shipped.
 #
-# WHERE THE CRATES COME FROM.  Not from this repository.  They live in the
-# engine's `tools/rustwx` workspace and stay there: two copies of a decoder
-# is how the two drift.  This workflow checks the engine's public repository
+# WHERE THE CRATES COME FROM.  The observation and radiance doors come from
+# the engine's `tools/rustwx` workspace and stay there: two copies of a
+# decoder is how the two drift.  Two doors, `rw_global_coldstart` and
+# `global_render_kernels`, come from this repository's own `rust/`
+# workspace: the cold start's analysis regrid and remap, and the render
+# tapes' regrid and the regional translation, which nothing in the engine
+# does, so there is no engine copy to drift from.  They are stamped with
+# this repository's commit and pinned against it (`pin --package-rev`).
+# This workflow checks the engine's public repository
 # out at the tag `ENGINE_TAG` names below (or the revision passed in) and
 # builds only the targets this package's bundle carries.
 #
@@ -120,6 +126,7 @@ jobs:
       engine_ref: ${{ steps.read.outputs.engine_ref }}
       release: ${{ steps.read.outputs.release }}
       doors: ${{ steps.read.outputs.doors }}
+      package_doors: ${{ steps.read.outputs.package_doors }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -156,16 +163,22 @@ jobs:
                   "ENGINE_TAG is empty and none was passed in, so there is "
                   "nothing that says which public source these binaries "
                   "would come from.")
-          names = [d.name for d in doors.doors_from_bundle(doors.COMPANION_BUNDLE)]
+          published = doors.doors_from_bundle(doors.COMPANION_BUNDLE)
+          names = [d.name for d in published
+                   if not doors.built_from_this_repository(d)]
+          here = [d.crate for d in published
+                  if doors.built_from_this_repository(d)]
           print(f"engine_ref={engine}")
           print(f"release={pins.get('release') or 'v0.0.0-dev'}")
           print("platforms=" + " ".join(doors.SUPPORTED_PLATFORMS))
           print("doors=" + " ".join(names))
+          print("package_doors=" + " ".join(here))
           PY
       - run: |
           echo "engine   ${{ steps.read.outputs.engine_ref }}"
           echo "release  ${{ steps.read.outputs.release }}"
           echo "doors    ${{ steps.read.outputs.doors }}"
+          echo "here     ${{ steps.read.outputs.package_doors }}"
 
   # ---------------------------------------------------------------------
   # 2.  Does the engine checkout actually carry what this builds?
@@ -268,6 +281,7 @@ jobs:
           home = Path.home()
           roots = {
               str(Path("engine").resolve()): "/build/engine",
+              str(Path("package").resolve()): "/build/package",
               os.environ.get("CARGO_HOME") or str(home / ".cargo"): "/build/cargo",
               os.environ.get("RUSTUP_HOME") or str(home / ".rustup"): "/build/rustup",
           }
@@ -289,6 +303,15 @@ jobs:
           # door is built against the same dependency graph.
           cargo build --release --locked --offline \
             -p rw-obs -p rw-goes -p rw-atms "${args[@]}"
+      # The doors built from this package's own rust/ workspace (the cold
+      # start's regrid and remap, and the render kernels), stamped with
+      # THIS repository's commit, which `pin --package-rev` then checks.  std-only, so --locked
+      # --offline needs no registry.
+      - name: build the doors this package's own rust/ workspace carries
+        working-directory: package/rust
+        env:
+          GPUWM_BRIDGE_SOURCE_REV: ${{ github.sha }}
+        run: cargo build --release --locked --offline
       - name: pack the bundle
         working-directory: package
         env:
@@ -297,7 +320,7 @@ jobs:
           python tools/build_door_bundle.py pack \
             --release "$RELEASE" \
             --platform ${{ matrix.platform }} \
-            --search ../engine/tools/rustwx/target/release \
+            --search ../engine/tools/rustwx/target/release rust/target/release \
             --workspace ../engine/tools/rustwx \
             --out dist-doors
       - name: no build-machine path in any member (NUL-stripped scan)
@@ -342,6 +365,7 @@ jobs:
             --release "$RELEASE" \
             --source-rev "$ENGINE_REF" \
             --engine-rev "$ENGINE_REF" \
+            --package-rev "${{ github.sha }}" \
             bundles/*.zip
           git --no-pager diff --stat -- src/arwen_global/data/door-pins.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

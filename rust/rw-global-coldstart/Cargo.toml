@@ -1,0 +1,27 @@
+# The cold start's data path: the analysis's bilinear regrid from a regular
+# global latitude-longitude grid onto the spectral transform's Gaussian
+# grid, and the linear-in-ln(p) remap from isobaric levels onto the model's
+# full levels.
+#
+# The parity contract is byte-identical float64 against the NumPy
+# expressions these replace (kept as the test oracle in
+# tests/coldstart_oracle.py): the same operations in the same order, no
+# fused multiply-add, and each output element computed by exactly one
+# thread, so the thread count never moves a bit.
+
+[package]
+name = "rw-global-coldstart"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "WOOF Global cold start: analysis regrid onto the Gaussian grid and ln(p) remap onto model levels"
+
+[lib]
+name = "rw_global_coldstart"
+# cdylib: the ctypes seam src/arwen_global/coldstart_bridge.py loads.
+# rlib:   the crate's own tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]

@@ -658,9 +658,17 @@ class ReferencePhysics:
     # marked after every process function in step().  Read-only by contract.
     observer = None
 
-    def __init__(self, backend, options: ReferencePhysicsOptions | None = None):
+    def __init__(self, backend, options: ReferencePhysicsOptions | None = None,
+                 start_utc=None):
         self.backend = backend
         self.options = options or ReferencePhysicsOptions()
+        # The forecast clock (arwen_global.clock).  A dated run takes WRF's
+        # radconst geometry at start_utc plus model time: declination,
+        # equation of time and the UTC hour angle.  None is the idealized
+        # fixture the suite always ran (model time zero at 00 UTC on an
+        # equinox, no declination, no equation of time), kept bit for bit
+        # for the analytic and baroclinic-wave cases that have no date.
+        self.start_utc = start_utc
 
     #: How a call's scalar readings are formed from its bands'
     #: (physics.banding): the maxima fold, the two column counts add
@@ -714,7 +722,47 @@ class ReferencePhysics:
 
     @property
     def identity(self) -> dict[str, object]:
-        return self.options.identity
+        identity = self.options.identity
+        if self.start_utc is not None:
+            from ..clock import format_utc
+
+            identity = {
+                **identity,
+                "solar_clock": {
+                    "start_utc": format_utc(self.start_utc),
+                    "geometry": "wrf-v4.6.1-radconst-dated",
+                },
+            }
+        return identity
+
+    def _cosine_zenith(self, latitude, longitude, time_s: float, dt: float, xp):
+        """Cosine of the solar zenith angle at the step's midpoint.
+
+        Dated (``start_utc`` set): WRF's radconst declination and equation
+        of time at the call's valid time, and the hour angle at the step
+        midpoint from the UTC clock, as the native suite's RRTMGP clock
+        (core/rrtmgp.py ``_cosine_zenith``).  Undated: the idealized
+        fixture, model time zero at 00 UTC on an equinox."""
+        if self.start_utc is None:
+            solar_angle = 2.0 * math.pi * ((time_s + 0.5 * dt) % 86_400.0) / 86_400.0
+            hour_angle = solar_angle + longitude - math.pi
+            return xp.maximum(0.0, xp.cos(latitude) * xp.cos(hour_angle))
+        from datetime import timedelta
+
+        from ..clock import solar_declination_and_equation_of_time
+
+        valid = self.start_utc + timedelta(seconds=time_s)
+        declination, equation_minutes = solar_declination_and_equation_of_time(valid)
+        midnight = valid.replace(hour=0, minute=0, second=0, microsecond=0)
+        hour = ((valid - midnight).total_seconds() + 0.5 * dt) / 3600.0
+        solar_minutes = 60.0 * hour + equation_minutes
+        # longitude is in radians: 4 minutes of solar time per degree.
+        hour_angle = (solar_minutes / 4.0 - 180.0) * (math.pi / 180.0) + longitude
+        return xp.maximum(
+            0.0,
+            xp.sin(latitude) * math.sin(declination)
+            + xp.cos(latitude) * math.cos(declination) * xp.cos(hour_angle),
+        )
 
     def _saturation_adjust(self, theta, q, exner, pressure, xp):
         temperature = theta * exner
@@ -780,9 +828,8 @@ class ReferencePhysics:
 
         latitude = exchange.latitude_deg * (math.pi / 180.0)
         longitude = exchange.longitude_deg * (math.pi / 180.0)
-        solar_angle = 2.0 * math.pi * ((exchange.time_s + 0.5 * dt) % 86_400.0) / 86_400.0
-        hour_angle = solar_angle + longitude - math.pi
-        coszen = xp.maximum(0.0, xp.cos(latitude) * xp.cos(hour_angle))
+        coszen = self._cosine_zenith(
+            latitude, longitude, float(exchange.time_s), dt, xp)
         sw_toa = self.options.solar_constant_w_m2 * coszen
         sw_atmosphere = self.options.atmospheric_shortwave_absorptivity * sw_toa
         sw_surface = (1.0 - self.options.atmospheric_shortwave_absorptivity) * sw_toa

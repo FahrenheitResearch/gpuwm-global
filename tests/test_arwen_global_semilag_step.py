@@ -39,7 +39,7 @@ from arwen_global.checkpoint import (  # noqa: E402
     write_checkpoint,
 )
 from arwen_global.config import (  # noqa: E402
-    DEFAULT_MAXIMUM_LIPSCHITZ, TIME_INTEGRATORS, load_config,
+    DEFAULT_MINIMUM_FOLD_DETERMINANT, TIME_INTEGRATORS, load_config,
 )
 from arwen_global.constants import (  # noqa: E402
     GRAVITY_M_S2, KAPPA, REFERENCE_PRESSURE_PA, SEMILAG_CHECKPOINT_SCHEMA,
@@ -590,12 +590,15 @@ def test_the_identity_of_every_other_integrator_is_untouched(tmp_path):
         integrator="imex_ssp3", time_extra="", extra="")))
     assert "semilag" not in imex.config_identity
     assert "maximum_lipschitz" not in imex.config_identity
-    assert imex.maximum_lipschitz == DEFAULT_MAXIMUM_LIPSCHITZ
+    assert "minimum_fold_determinant" not in imex.config_identity
+    assert imex.minimum_fold_determinant == DEFAULT_MINIMUM_FOLD_DETERMINANT
 
     sl = load_config(_write(tmp_path, _BASE.format(
-        integrator=SL, time_extra="maximum_lipschitz = 0.6", extra="")))
+        integrator=SL, time_extra="minimum_fold_determinant = 0.1", extra="")))
     identity = sl.config_identity
-    assert identity["maximum_lipschitz"] == 0.6
+    assert identity["minimum_fold_determinant"] == 0.1
+    # the retired norm ceiling's constant stays, so pre-replacement hashes hold
+    assert identity["maximum_lipschitz"] == 0.75
     assert identity["semilag"]["trajectory_iterations"] == 3
     # The batch size is a memory and launch trade that changes no bits, so
     # it is not in the identity; every other option is.
@@ -659,8 +662,8 @@ def test_the_gate_reads_the_two_folds_and_not_the_mixed_unit_norm():
     # reason it is reported and not gated.
     assert diagnostics.lipschitz_mixed > diagnostics.lipschitz
     # The balanced norm dominates both folds, because each of them is a
-    # submatrix of the matrix it is the norm of, and it is what the gate
-    # reads.
+    # submatrix of the matrix it is the norm of.  No norm is gated any
+    # more: the fold determinant is (test_arwen_global_semilag_fold_gate).
     assert diagnostics.lipschitz_balanced >= max(
         diagnostics.lipschitz_horizontal, diagnostics.lipschitz_vertical
     ) - 1.0e-12
@@ -669,8 +672,8 @@ def test_the_gate_reads_the_two_folds_and_not_the_mixed_unit_norm():
         "semilag_lipschitz_vertical", "semilag_lipschitz_mixed",
         "semilag_lipschitz_balanced", "semilag_lipschitz_frobenius",
     }
-    # The gated number is SCALE FREE: the mixed norm moves when the length
-    # that converts a model level into metres moves and the gated one does
+    # The scale-free norm is SCALE FREE: the mixed norm moves when the
+    # length that converts a model level into metres moves and it does
     # not.  That is the whole claim the instrument rests on and nothing
     # else in the battery makes it.
     stretched = lipschitz(wind, tables, 300.0, reference_length_m=4.0 * 52100.0)
@@ -760,8 +763,13 @@ def test_the_reported_fixer_magnitude_is_the_transports_and_not_the_fixers():
     correction by the same array ``"bermejo_conde"`` does, so it was a
     door value that changed no bit of any run.  The refusal is pinned
     here beside the equality, because a retired name that stopped being
-    refused would put that door value back.
+    refused would put that door value back.  That uniform form is now
+    ``"mass_proportional"``; ``"bermejo_conde"`` is the published
+    weighting by the interpolation difference (DYC-5), and its magnitude
+    is the same number too.
     """
+    from arwen_global.semilag.interpolate import zero_stencil
+    from arwen_global.semilag.tables import SphericalGridTables
     from arwen_global.semilag.tracers import fix_mass
 
     transform = _transform()
@@ -774,20 +782,26 @@ def test_the_reported_fixer_magnitude_is_the_transports_and_not_the_fixers():
     # the two conservative forms have to be the same array.
     deficits = {"qc": np.zeros(shape)}
     dp = np.full(shape, 2.0e3)
+    tables = SphericalGridTables.create(
+        transform.grid, xp=np, dtype=transform.backend.float_dtype
+    )
+    stencil = zero_stencil(tables, shape[0], xp=np, dtype=tables.dtype)
     magnitudes = {}
     fixed = {}
-    for scheme in ("bermejo_conde_additive", "bermejo_conde", "none"):
+    for scheme in ("bermejo_conde_additive", "bermejo_conde",
+                   "mass_proportional", "none"):
         out, metrics = fix_mass(
             advected, before, dp, dp, transform, scheme=scheme,
-            deficits=deficits,
+            deficits=deficits, stencil=stencil,
         )
         magnitudes[scheme] = metrics[
             "semilag_tracer_mass_fixer_relative__qc"
         ]
         fixed[scheme] = np.asarray(out["qc"])
-    assert magnitudes["bermejo_conde"] == pytest.approx(
-        magnitudes["none"], rel=1e-15
-    )
+    for scheme in ("bermejo_conde", "mass_proportional"):
+        assert magnitudes[scheme] == pytest.approx(
+            magnitudes["none"], rel=1e-15
+        )
     assert magnitudes["bermejo_conde_additive"] == pytest.approx(
         magnitudes["none"], rel=1e-15
     )
@@ -796,7 +810,8 @@ def test_the_reported_fixer_magnitude_is_the_transports_and_not_the_fixers():
     # two conservative arms close it the same way on a field the limiter
     # did not touch.
     assert np.allclose(fixed["bermejo_conde_additive"],
-                       fixed["bermejo_conde"], rtol=1e-12, atol=0.0)
+                       fixed["mass_proportional"], rtol=1e-12, atol=0.0)
+    assert not np.allclose(fixed["none"], fixed["mass_proportional"])
     assert not np.allclose(fixed["none"], fixed["bermejo_conde"])
     # And the retired name is refused, not quietly accepted.
     with pytest.raises(ValueError, match="retired"):

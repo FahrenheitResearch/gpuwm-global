@@ -155,10 +155,14 @@ _PIN_DOCUMENT_TEMPLATE = {
     # transport on the Gaussian cells (transport.GridTracerTransport)
     # with the step's mass fluxes averaged between its start and its
     # advanced state, positive by construction.
+    # v5 (DYC-1): the top and bottom layers reconstruct their one interior
+    # face with the one-sided gradient to their neighbour instead of zero,
+    # which carried the top layer's own theta out under descent and cooled
+    # the lid without bound (-79 K a day at level 0 on the T255 day).
     "scalar_transport": (
         "spectral-horizontal-pressure-mass-flux-and-vertical-van-leer-limited-"
-        "upwind-theta-and-vapor-plus-grid-point-split-van-leer-flux-form-"
-        "condensate-and-moments-v4"
+        "upwind-with-one-sided-boundary-layer-gradient-theta-and-vapor-plus-"
+        "grid-point-split-van-leer-flux-form-condensate-and-moments-v5"
     ),
     "moment_policy": "five-Morrison-number-moments-grid-point-nonnegative-v2",
     # The moments have no spectral coefficients to diffuse: the transport's
@@ -362,20 +366,43 @@ SPECTRAL_TRACER_ERA_PINS_HASHES = frozenset({
     "26533ea4cd81faab809ef55374907de39ca313025fa92f6e1f2807d502982a6b",
     "15b5d7012e190e33fa49384cabd0ec57263cb905570bc5f963f6221ab4cd934d",
 })
-#: The two RETIRED semi-Lagrangian pins (2026-09-06): v1, before the tracer
+#: The RETIRED semi-Lagrangian pins.  2026-09-06: v1, before the tracer
 #: mass fixer's clip-deficit stage, and v2, which advected theta as a
 #: deviation from the reference profile with the reference's material
 #: tendency carried on the grid (the lid warming of 32 K a day, semilag.rhs).
-#: Not this build's arithmetic, so no restart resumes under them; a reader
-#: without a scheme may INSPECT such a checkpoint, which is how the arms
-#: that measured the defect stay readable beside the arms that fixed it.
+#: 2026-10-05: v3, the WOOF Global 1.0.x arithmetic, whose departure level
+#: was clamped at the outermost FULL levels instead of the boundary
+#: interfaces, whose level rate divided by arithmetic layer means (the lid
+#: cooling drift and DYC-3), and whose default tracer mass fixer rescaled
+#: every point holding a species by one uniform factor (up to 12 percent of
+#: the graupel in one step); and the two v4 strings that each carried one
+#: of those fixes alone on its own line (the interface clamp with the
+#: geometric rate, and the Bermejo-Conde weighting), which v5 carries
+#: together.  Not this build's arithmetic, so no restart resumes under
+#: them; a reader without a scheme may INSPECT such a checkpoint, which is
+#: how the arms that measured the defect stay readable beside the arms
+#: that fixed it.
 RETIRED_SEMILAG_PINS_HASHES = frozenset({
     "7082aea098df6c9fca5385020bbc8836ed46cbe2e91a5b15c423fc21ba84fd5b",
     "a3f927dccabd32e9ba93f2ee65f63ff528764833d23f7757ca858b53fa6acd5b",
+    "d82dc8ae4b0b5ea75aadccbf8b2ef5f8b3330d5b36670f00234f28bfe6e9d5d8",
+    "9f2c83af1c759b5be69cf6b55936e2deb0a9097431f05ffa7aab88927b33f5de",
+    "5344d698e0ebdcf62080871b37b55516691fb3b81f79a65c542857ab8f19c3f2",
+})
+#: The four Eulerian pins of the zero boundary-layer gradient (DYC-1): the
+#: grid-tracer documents of both schemes under the split steppers and the
+#: IMEX pair, as they stood before the one-sided boundary faces.
+#: Inspectable, never resumable.
+RETIRED_BOUNDARY_FACE_PINS_HASHES = frozenset({
+    "4c4340945258b8c3e5648d0350af6e84ceb1e3d69d17c8b7d4603d361cb92aa6",
+    "f536e10061499732a08bd6e32cb45160820bb55519df5c0721be4c33fbf573a0",
+    "c5d0545d71c6b3fefd2aa5899e720161b0f0d38ff4522a50f66cdc44a52a992b",
+    "6066104ed4e0004ea7e17a5e99fd014968ec97241a93dc112400fd074f909546",
 })
 #: Every pin a reader may inspect without integrating under it.
 INSPECTABLE_RETIRED_PINS_HASHES = (
     SPECTRAL_TRACER_ERA_PINS_HASHES | RETIRED_SEMILAG_PINS_HASHES
+    | RETIRED_BOUNDARY_FACE_PINS_HASHES
 )
 
 
@@ -408,6 +435,7 @@ __all__ = [
     "KNOWN_PINS_HASHES",
     "SPECTRAL_TRACER_ERA_PINS_HASHES",
     "RETIRED_SEMILAG_PINS_HASHES",
+    "RETIRED_BOUNDARY_FACE_PINS_HASHES",
     "INSPECTABLE_RETIRED_PINS_HASHES",
     "LEVEL4_PINS_HASH",
     "PINS_HASH",

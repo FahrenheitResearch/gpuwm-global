@@ -1,0 +1,40 @@
+# The Rust doors WOOF Global builds from its own source.
+#
+# Most of this package's doors live in the engine's `tools/rustwx`
+# workspace and are built from there (see src/arwen_global/doors.py).  The
+# crates in THIS workspace are the data path that has no engine owner: the
+# cold start's analysis regrid and vertical remap, and the render tape's
+# Gaussian regrid, hydrostatic column and regional translation, belong to
+# the global model alone, so they live beside it.  One workspace, one
+# lockfile and one target directory (rust/target/release), which is the
+# rung doors.package_build_dir() names for every door built here.
+#
+# Dependency posture: none.  Every member is std-only, so
+# `cargo build --release --locked --offline` resolves from this lockfile
+# with no registry and no vendored mirror.
+
+[workspace]
+resolver = "2"
+members = [
+    "global-render-kernels",
+    "rw-global-coldstart",
+]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+rust-version = "1.77"
+
+[profile.release]
+# Library doors are measured against the bundle's size like every other
+# door; debug symbols are the cheapest weight to give back.
+strip = "debuginfo"
+# No fused multiply-add and no reassociation in any member: the kernels
+# must evaluate the same IEEE operations in the same order as the NumPy
+# oracles they are held to byte for byte.  Rust never contracts a*b+c into
+# an FMA unless asked, and nothing here asks.  One codegen unit keeps the
+# build deterministic.
+opt-level = 3
+codegen-units = 1
+panic = "unwind"

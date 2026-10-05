@@ -47,43 +47,73 @@ So the fixer's magnitude is the ADVECTION's error, it is the same to two
 figures under every form below, and what separates the forms is not how
 much they move but where they put it:
 
+``bermejo_conde`` (default)
+    The Bermejo-Conde mass fixer (Mon. Wea. Rev. 130, 423-430, 2002), in
+    the form the IFS tracer mass fixers use (Geosci. Model Dev. 7,
+    965-979, 2014, their Eq. 5 and 6): the correction at a point is
+    ``lambda * w`` with the one-signed weight
+
+        w = max(0, sgn(d) (q_L - q_H)) ** beta,   beta = 1
+
+    where ``d`` is the mass to restore, ``q_H`` the limited cubic value
+    the gather returned and ``q_L`` the TRILINEAR value at the same
+    departure point inside the limiter's own cell
+    (``interpolate.gather_linear_batch``).  The two interpolants agree
+    wherever the field is resolved and part where it is not, which is
+    where the interpolation and its positivity floor made the mass error,
+    so the correction lands on the feature that made it and not on every
+    point of the planet that holds the species.  The weight is one-signed
+    so a surplus is taken only where the cubic rose above the trilinear
+    value and a deficit restored only where it fell below it: every point
+    moves TOWARD its trilinear value and is capped at reaching it, so the
+    result stays between the two interpolants, inside the limiter's box
+    and nonnegative (water filling: a capped point drops out and the rest
+    is re-spread, a few passes).  MEASURED 2026-10-05 on T255: the
+    two-signed weight ``|q_H - q_L| ** 1.5`` (the unlimited variant of
+    the paper's section 3.2) emptied points holding a
+    thousandth of a species' maximum and more, by taking a surplus from
+    points whose cubic had already fallen below the trilinear value.
+    What the weighted stage cannot place, which is the float roundoff of
+    the sums and, rarely, a correction larger than every point's room,
+    closes as one uniform relative factor over the species and is
+    REPORTED as ``semilag_tracer_fixer_uniform_rescale__<name>``.
+``mass_proportional``
+    The previous default, kept as the counter-arm: one uniform RELATIVE
+    adjustment of every point that holds the species, ``q (1 + d/W)``
+    with ``W`` the species' mass.  Conservative, and wrong in place.  On
+    the T255 water-closure receipts (2026-10-01) its per-step factor
+    reached 0.116 for graupel, 0.057 for snow and 0.051 and 0.043 for
+    their number moments in the worst step of a day, and 0.086 to 0.089 in
+    a five-day run: every graupel shaft on the planet rescaled by up to 12
+    percent in one step to pay for positivity mass created at the
+    shoulders of other storms.  It was named ``bermejo_conde`` until
+    2026-10-05; that name now means the published weighting above.
 ``bermejo_conde_additive``
     Two stages.  First the clip deficit, the signed mass the limiter moved
     at every point, which the gather reports at no extra arithmetic: the
     correction goes back exactly there, scaled by one global number and
     capped so it can never over-restore past the raw interpolated value or
     drive a point negative.  Whatever is left over closes multiplicatively
-    as below.  MEASURED on the same arms: that stage carries 1 to 6
-    percent of the correction under the default physics coupling and 100
-    percent under ``physics_coupling = "arrival"``, where the correction is
-    an ADDITION and the deficit points the right way.  The reason it is
-    small under the default is the direction above: the limiter's mass came
-    from lifting points to zero, and a point that now holds exactly zero
-    cannot give any of it back without going negative.
-``bermejo_conde`` (default)
-    The multiplicative form alone: one uniform RELATIVE adjustment of the
-    air that holds the species, weighted by the mass already present.
-    Conservative, and it reshapes the field by its own weighting rather
-    than by the flow.  On a non-negative field it IS the additive form
-    with mass-proportional weights, because ``q (1 + d/W)`` is
-    ``q + d q/W``; what the additive stage above adds is not a different
-    algebra but a different WEIGHT, the clip deficit in place of the
-    mass.  It is the default because the additive stage's
-    measured share does not pay for the second device array per gathered
-    tracer that reporting the deficit costs; it ships selectable with that
-    number rather than being left unbuilt.
+    as ``mass_proportional`` does.  MEASURED on the 2026-09-06 arms: that
+    stage carries 1 to 6 percent of the correction under the default
+    physics coupling and 100 percent under ``physics_coupling =
+    "arrival"``, where the correction is an ADDITION and the deficit
+    points the right way.  The reason it is small under the default is
+    the direction above: the limiter's mass came from lifting points to
+    zero, and a point that now holds exactly zero cannot give any of it
+    back without going negative.
 ``proportional`` is RETIRED and refused by name.  It weighted the
-correction by the signed advected value where ``bermejo_conde`` weights
-it by the positive part, and once the positivity floor moved in front of
-the mass measurement the two weightings became the same array at every
-point of every field: MEASURED 2026-09-06 on the numpy path, bitwise
+correction by the signed advected value where ``mass_proportional``
+weights it by the positive part, and once the positivity floor moved in
+front of the mass measurement the two weightings became the same array at
+every point of every field: MEASURED 2026-09-06 on the numpy path, bitwise
 identical output with the limiter on AND off, on a spiky field and on a
 cloudy one.  A door whose two values produce the same run and two
 different config hashes is the flag-parsed-and-ignored failure this
 package refuses everywhere else, so it is refused here rather than left
 selectable.
 
-All three floor the advected field at zero BEFORE they measure it, and
+Every form floors the advected field at zero BEFORE they measure it, and
 report the mass that floor created per species.  A negative mixing ratio
 is not a state the model has, so the floor is not optional; measuring the
 mass after it is what makes the correction close.
@@ -101,13 +131,34 @@ from __future__ import annotations
 
 from typing import Any
 
-from .interpolate import Stencil, gather_batch
+from .interpolate import Stencil, gather_batch, gather_linear_batch
 from ..spill import resident
 
 #: The fixer forms the ``[semilag] tracer_fixer`` door accepts.  ``none``
 #: reports the drift and closes nothing; it is the counter-arm that says
 #: what the fixer is worth, not a shipping choice.
-TRACER_FIXERS = ("bermejo_conde_additive", "bermejo_conde", "none")
+TRACER_FIXERS = (
+    "bermejo_conde", "mass_proportional", "bermejo_conde_additive", "none",
+)
+
+#: The forms that weigh the correction by the high-minus-low-order
+#: interpolation difference and therefore need the departure stencil.
+STENCIL_FIXERS = ("bermejo_conde",)
+
+#: The Bermejo-Conde exponent on the interpolation difference.  The IFS
+#: implementation runs 1, having found no benefit from larger values and
+#: sharper, larger increments with them; this one follows it.
+BERMEJO_CONDE_BETA = 1.0
+
+#: Water-filling passes.  Each pass re-spreads what the capped points
+#: could not take over the points that still have room before their
+#: trilinear value; what is left after the last one is closed uniformly
+#: and reported.
+BERMEJO_CONDE_PASSES = 4
+
+#: A point the fixer changed by more than this fraction of its own value
+#: counts as touched in ``semilag_tracer_fixer_touched_mass_fraction``.
+TOUCHED_RELATIVE = 1.0e-2
 
 #: Names the door once accepted and now refuses, each with the reason.
 #: A retired name is refused rather than dropped, because a config that
@@ -115,14 +166,14 @@ TRACER_FIXERS = ("bermejo_conde_additive", "bermejo_conde", "none")
 RETIRED_TRACER_FIXERS = {
     "proportional": (
         "it weighted the correction by the signed advected value where "
-        "'bermejo_conde' weights it by the positive part, and every "
+        "'mass_proportional' weights it by the positive part, and every "
         "conservative form now floors the field at zero BEFORE it measures "
         "the mass, so the two weightings are the same array at every point: "
         "MEASURED 2026-09-06, bitwise identical output with the "
         "quasi-monotone limiter on and off, on a spiky field and on a cloudy "
-        "one.  Selecting it produced the same run as 'bermejo_conde' under a "
-        "different config hash, which is the parsed-and-ignored failure this "
-        "package refuses everywhere else"
+        "one.  Selecting it produced the same run as 'mass_proportional' "
+        "under a different config hash, which is the parsed-and-ignored "
+        "failure this package refuses everywhere else"
     ),
 }
 
@@ -175,10 +226,45 @@ def _refuse_empty(name: str, delta: float) -> None:
     )
 
 
+def _bermejo_conde(xp, value, low, delta: float, dp, cell):
+    """The weighted stage of the Bermejo-Conde fixer.
+
+    Returns the corrected field and the signed mass it placed.  ``value``
+    is nonnegative (the floor ran first) and so is ``low``, the trilinear
+    value of a nonnegative source.  The weight is one-signed: an ADDITION
+    goes only where the high-order value fell below the low-order one and
+    a REMOVAL only where it rose above it, so every point moves TOWARD its
+    trilinear value.  Each point is capped at reaching it (``room``), so
+    the corrected value stays between the two interpolants, inside the
+    limiter's box and nonnegative; a point that reaches its cap drops out
+    and the rest is re-spread over the others (water filling).
+    """
+    sign = 1.0 if delta > 0.0 else -1.0
+    room = xp.maximum(sign * (low - value), 0.0)
+    weight = room if BERMEJO_CONDE_BETA == 1.0 else room ** BERMEJO_CONDE_BETA
+    remaining = abs(float(delta))
+    placed = 0.0
+    for _ in range(BERMEJO_CONDE_PASSES):
+        capacity = _mass(xp, weight, dp, cell)
+        if capacity <= 0.0 or remaining <= 0.0:
+            break
+        step = xp.minimum((remaining / capacity) * weight, room)
+        moved = _mass(xp, step, dp, cell)
+        value = value + sign * step
+        room = room - step
+        del step
+        remaining -= moved
+        placed += moved
+        # A point that reached its trilinear value takes no more.
+        weight = xp.where(room > 0.0, weight, 0.0)
+    return value, sign * placed
+
+
 def fix_mass(
     advected: dict[str, Any], before: dict[str, Any], dp_before, dp_after,
-    transform, *, scheme: str = "bermejo_conde_additive",
+    transform, *, scheme: str = "bermejo_conde",
     deficits: dict[str, Any] | None = None,
+    stencil: Stencil | None = None,
 ) -> tuple[dict[str, Any], dict[str, float]]:
     """Restore each species' mass after a semi-Lagrangian advection.
 
@@ -187,11 +273,17 @@ def fix_mass(
     are the same species at the departure points and ``dp_after`` the
     thickness of the layers they now sit in.  ``deficits`` carries the
     limiter's signed clip amount per species and is required by, and only
-    read by, the additive form.
+    read by, the additive form.  ``stencil`` is the departure stencil the
+    species were gathered on; the Bermejo-Conde form reads the low-order
+    interpolant of ``before`` on it, one species at a time.
 
-    Returns the fixed tracers and, per species, the relative mass the
-    fixer moved, that mass signed (positive where it put mass back), and
-    the fraction of it the clip deficit carried.
+    Returns the fixed tracers and, per species: the relative mass the
+    fixer moved, that mass signed (positive where it put mass back), the
+    fraction of it the clip deficit carried, the fraction the local
+    (weighted) stage carried, the uniform relative factor the remainder
+    applied to every point holding the species, and the fraction of the
+    species' mass at points the fixer changed by more than
+    ``TOUCHED_RELATIVE`` of their own value.
     """
     if scheme in RETIRED_TRACER_FIXERS:
         raise ValueError(
@@ -205,12 +297,23 @@ def fix_mass(
             + f", got {scheme!r}"
         )
     additive = scheme == "bermejo_conde_additive"
+    weighted = scheme in STENCIL_FIXERS
     if additive and deficits is None:
         raise ValueError(
             "the additive tracer fixer puts a species' mass back where the "
             "quasi-monotone limiter took it, so it cannot run without the "
-            "limiter's clip deficit; gather with deficit=True or select "
-            "tracer_fixer = 'bermejo_conde'"
+            "limiter's clip deficit; gather with deficit=True, select "
+            "tracer_fixer = 'bermejo_conde' and hand over the departure "
+            "stencil, or select 'mass_proportional', which needs neither"
+        )
+    if weighted and stencil is None:
+        raise ValueError(
+            "the Bermejo-Conde tracer fixer weighs the correction by the "
+            "difference between the high-order and the trilinear "
+            "interpolant at each departure point, so it cannot run without "
+            "the departure stencil; without it the weight does not exist "
+            "and the correction would land on points the interpolation did "
+            "not err at"
         )
     xp = transform.backend.xp
     cell = area_weights(transform)
@@ -219,7 +322,8 @@ def fix_mass(
     for name, value in advected.items():
         # The before-state may be the tier's (a parked tracer): staged
         # one species at a time for its mass and dropped.
-        target = _mass(xp, resident(xp, before[name]), dp_before, cell)
+        source = resident(xp, before[name])
+        target = _mass(xp, source, dp_before, cell)
         clamped = 0.0
         if scheme != "none":
             # The floor comes FIRST, and its mass is measured.
@@ -251,9 +355,17 @@ def fix_mass(
         # above, which is a magnitude on purpose.
         metrics[f"semilag_tracer_mass_fixer_kg_m2__{name}"] = float(delta)
         metrics[f"semilag_tracer_clip_share__{name}"] = 0.0
+        metrics[f"semilag_tracer_fixer_local_share__{name}"] = 0.0
+        metrics[f"semilag_tracer_fixer_uniform_rescale__{name}"] = 0.0
+        metrics[f"semilag_tracer_fixer_touched_mass_fraction__{name}"] = 0.0
+        metrics[f"semilag_tracer_fixer_residual_relative__{name}"] = (
+            0.0 if scheme != "none" else float(relative)
+        )
         if scheme == "none" or delta == 0.0:
             fixed[name] = value
             continue
+        start = value
+        total = abs(delta)
         sign = 1.0 if delta > 0.0 else -1.0
         if additive:
             # Stage one.  The limiter's own record of where the mass went:
@@ -272,32 +384,67 @@ def fix_mass(
                 # be undoing more than the limiter ever did.
                 lam = min(abs(delta) / capacity, 1.0)
                 value = value + (sign * lam) * room
-                moved = sign * lam * capacity
-                metrics[f"semilag_tracer_clip_share__{name}"] = float(
-                    abs(moved) / max(abs(delta), 1.0e-30)
-                )
-                delta = delta - moved
+                share = float(lam * capacity / max(total, 1.0e-30))
+                metrics[f"semilag_tracer_clip_share__{name}"] = share
+                metrics[f"semilag_tracer_fixer_local_share__{name}"] = share
             del room
-            if delta == 0.0:
-                fixed[name] = xp.maximum(value, 0.0)
-                continue
-            sign = 1.0 if delta > 0.0 else -1.0
-        # Stage two, and the whole of the multiplicative forms.  Weights
-        # proportional to the mass already present, zero in air that holds
-        # none of the species: the correction is a uniform RELATIVE
-        # adjustment of the air that has it.  max(q, 0) rather than
-        # abs(q) so a roundoff-negative point cannot be handed positive
-        # mass.
-        # ``value`` is already nonnegative (the floor above), so the
-        # weights are the mass present and the scaled field cannot leave
-        # the floor.  max(q, 0) rather than abs(q) is therefore an
-        # identity here and is written as the floor instead.
+            value = xp.maximum(value, 0.0)
+        elif weighted:
+            low = gather_linear_batch([source], stencil)[0]
+            value, moved = _bermejo_conde(xp, value, low, delta,
+                                          dp_after, cell)
+            del low
+            metrics[f"semilag_tracer_fixer_local_share__{name}"] = float(
+                abs(moved) / max(total, 1.0e-30)
+            )
+        del source
+        # The uniform stage, and the whole of ``mass_proportional``.  The
+        # remainder is measured afresh from the field as it now stands, so
+        # whatever the stages above left (the float roundoff of their sums
+        # included) closes here and the species' mass is the target.
+        # Weights proportional to the mass already present, zero in air
+        # that holds none of the species: a uniform RELATIVE adjustment of
+        # the air that has it.  ``value`` is nonnegative here, so the
+        # scaled field cannot leave the floor.
         weight = _mass(xp, value, dp_after, cell)
+        rest = target - weight
         if weight == 0.0:
-            _refuse_empty(name, delta)
-        fixed[name] = value * (1.0 + delta / weight)
+            if rest != 0.0:
+                _refuse_empty(name, rest)
+            fixed[name] = value
+            continue
+        factor = rest / weight
+        metrics[f"semilag_tracer_fixer_uniform_rescale__{name}"] = float(
+            abs(factor)
+        )
+        value = value * (1.0 + factor)
+        # Where the correction landed: the fraction of the species' mass
+        # (as advected) sitting at points the fixer changed by more than
+        # TOUCHED_RELATIVE of their own value.  One for the uniform form
+        # whenever its factor exceeds that, and the number that says how
+        # local a weighted form actually was.
+        held = _mass(xp, start, dp_after, cell)
+        if held > 0.0:
+            changed = xp.abs(value - start) > TOUCHED_RELATIVE * start
+            metrics[
+                f"semilag_tracer_fixer_touched_mass_fraction__{name}"
+            ] = float(_mass(xp, xp.where(changed, start, 0.0),
+                            dp_after, cell) / held)
+            del changed
+        del start
+        # The closure the fixer exists for, read back from the field it
+        # returns: the species' mass after the fix against the target, as
+        # a fraction of the target.  Float roundoff of the reductions and
+        # nothing else; a receipt that reads more than that has a fixer
+        # that is not conserving.
+        metrics[f"semilag_tracer_fixer_residual_relative__{name}"] = float(
+            abs(_mass(xp, value, dp_after, cell) - target)
+            / max(abs(target), 1.0e-30)
+        )
+        fixed[name] = value
     return fixed, metrics
 
 
-__all__ = ["DEFICIT_FIXERS", "RETIRED_TRACER_FIXERS", "TRACER_FIXERS",
-           "advect", "area_weights", "fix_mass"]
+__all__ = ["BERMEJO_CONDE_BETA", "DEFICIT_FIXERS", "RETIRED_TRACER_FIXERS",
+           "STENCIL_FIXERS", "TRACER_FIXERS", "advect", "area_weights",
+           "fix_mass"]

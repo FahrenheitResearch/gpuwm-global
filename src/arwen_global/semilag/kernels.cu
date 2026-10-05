@@ -31,6 +31,9 @@
  *                    weights lose about half of that.  Same template, a
  *                    second table set (three reflected rows a pole rather
  *                    than two), and the cubic entry points untouched.
+ *   sl_linear_*      trilinear interpolation inside the limiter's own cell,
+ *                    the low-order interpolant the Bermejo-Conde mass
+ *                    fixer weighs the high-order one against.
  *   sl_departure_*   the spherical fixed-point departure-point search, all
  *                    of its iterations in one launch, with the wind read as
  *                    geocentric Cartesian components so the poles need no
@@ -56,7 +59,9 @@
  *     over its whole length and a 4-point stencil always fits
  *   - rowoff[nj+4] and rowshift[nj+4] map an extended row to the offset of
  *     the DATA row it reads and to the zonal shift (0 or ni/2) it reads with
- *   - full level k sits at continuous index k, k in [0, nk-1], nk >= 4
+ *   - full level k sits at continuous index k, k in [0, nk-1], nk >= 4;
+ *     departure levels are clamped to the boundary interfaces,
+ *     [-1/2, nk - 1/2]
  *
  * The weights of all three directions are NORMALIZED by their own sum.  That
  * is what makes the zero-displacement identity exact: at a grid point three
@@ -222,7 +227,17 @@ __device__ __forceinline__ void sl_meridional_weights6(
    gates of record were measured on and its arithmetic is untouched: the
    NH = 6 branches are compile-time and the four-point weights, bracket and
    address arithmetic are the same expressions in the same order. */
-template <typename T, int QM, int UNROLL, int DEFICIT, int NH>
+/* BAND = 1 is the latitude-band form (semilag.tables.BandWindow): the
+   departure coordinates and the output cover the band's nja rows, the
+   source fields hold only the band's njs rows plus halo, and rowoff maps
+   an extended row to its offset INSIDE those held rows, or to -1 for a row
+   the band does not hold.  A read of such a row is an escape: it is
+   flagged in *esc and redirected to row 0 of the held rows so the read
+   stays in bounds, and the caller refuses the result.  The weights, the
+   bracket and every floating-point expression are the BAND = 0 ones in the
+   same order; only the integer address of a data row differs, so a band
+   returns the whole-grid gather's bits at every point it computes. */
+template <typename T, int QM, int UNROLL, int DEFICIT, int NH, int BAND>
 __device__ __forceinline__ void sl_gather_body(
     const T* __restrict__ src,
     const T* __restrict__ xis, const T* __restrict__ phi,
@@ -231,16 +246,26 @@ __device__ __forceinline__ void sl_gather_body(
     const int* __restrict__ mlut, const int* __restrict__ rowoff,
     const int* __restrict__ rowshift,
     T* __restrict__ out, T* __restrict__ dev,
-    int F, int nk, int nj, int ni, int nb, T lut_scale)
+    int F, int nk, int nj, int ni, int nb, T lut_scale,
+    int njs, int nja, int* __restrict__ esc)
 {
-    const long long n = (long long)nk * (long long)nj * (long long)ni;
+    const int rows_out = BAND ? nja : nj;
+    const int rows_src = BAND ? njs : nj;
+    const long long n = (long long)nk * (long long)rows_out * (long long)ni;
     const long long gid = (long long)blockIdx.x * blockDim.x + threadIdx.x;
     if (gid >= n) return;
 
     T p = phi[gid];
     p = min(max(p, -(T)SL_HALF_PI_D), (T)SL_HALF_PI_D);
+    /* Clamped at the lid and ground interfaces (DYC-1); a point in the
+       half layer outside the outermost full level reads the one-sided
+       cubic there, held between the outermost level's value and the
+       linear reconstruction at the interface for the unlimited fields. */
     T xk = zk[gid];
-    xk = min(max(xk, (T)0), (T)(nk - 1));
+    xk = min(max(xk, (T)-0.5), (T)nk - (T)0.5);
+    const bool outside = (xk < (T)0) || (xk > (T)(nk - 1));
+    const int c_edge = (xk < (T)0) ? 0 : 3;
+    const int c_next = (xk < (T)0) ? 1 : 2;
     const T xi = xis[gid];
 
     /* zonal: uniform nodes, periodic, never clamped */
@@ -281,7 +306,8 @@ __device__ __forceinline__ void sl_gather_body(
     int adr[NH * NH];
 #pragma unroll
     for (int m = 0; m < NH; ++m) {
-        const int ro = rowoff[sst + m];
+        int ro = rowoff[sst + m];
+        if (BAND && ro < 0) { atomicOr(esc, 1); ro = 0; }
         const int sh = rowshift[sst + m];
 #pragma unroll
         for (int q = 0; q < NH; ++q) adr[NH * m + q] = ro + (sh ? b[q] : a[q]);
@@ -289,12 +315,14 @@ __device__ __forceinline__ void sl_gather_body(
     /* the limiter's cell: the two rows and two columns around the point */
     const int mid = NH / 2 - 1;
 
-    const long long plane = (long long)nj * (long long)ni;
+    const long long plane = (long long)rows_src * (long long)ni;
+    const long long nsrc = (long long)nk * plane;
     for (int f = 0; f < F; ++f) {
-        const T* s = src + (long long)f * n;
+        const T* s = src + (long long)f * nsrc;
         T acc = (T)0;
         T lo = sl_traits<T>::big();
         T hi = -sl_traits<T>::big();
+        T f_edge = (T)0, f_next = (T)0;
 #pragma unroll UNROLL
         for (int c = 0; c < 4; ++c) {
             const T* sp = s + (long long)(k0 + c) * plane;
@@ -315,6 +343,21 @@ __device__ __forceinline__ void sl_gather_body(
                 }
             }
             acc += wz[c] * rowsum;
+            if (c == c_edge) f_edge = rowsum;
+            if (c == c_next) f_next = rowsum;
+        }
+        if (!QM && outside) {
+            /* Half layer between the outermost full level and its
+             * boundary interface: the one-sided cubic is held between the
+             * outermost level's value and the linear reconstruction at
+             * the interface, so the extrapolation hands the sponge no
+             * extremum the column's own end slope does not imply.  The
+             * limited fields keep their cell box, which already bounds
+             * them by the outermost two levels. */
+            const T f_face = f_edge + (T)0.5 * (f_edge - f_next);
+            const T blo = min(f_edge, f_face);
+            const T bhi = max(f_edge, f_face);
+            acc = min(max(acc, blo), bhi);
         }
         T kept = acc;
         if (QM) kept = min(max(acc, lo), hi);
@@ -335,36 +378,36 @@ extern "C" __global__ void sl_gather_f32(
     const float* lat_ext, const float* mrden, const int* mlut,
     const int* rowoff, const int* rowshift, float* out,
     int F, int nk, int nj, int ni, int nb, float lut_scale)
-{ sl_gather_body<float, 0, 2, 0, 4>(src, xis, phi, zk, lat_ext, mrden, mlut,
+{ sl_gather_body<float, 0, 2, 0, 4, 0>(src, xis, phi, zk, lat_ext, mrden, mlut,
                                  rowoff, rowshift, out, (float*)0, F, nk, nj,
-                                 ni, nb, lut_scale); }
+                                 ni, nb, lut_scale, 0, 0, (int*)0); }
 
 extern "C" __global__ void sl_gather_qm_f32(
     const float* src, const float* xis, const float* phi, const float* zk,
     const float* lat_ext, const float* mrden, const int* mlut,
     const int* rowoff, const int* rowshift, float* out,
     int F, int nk, int nj, int ni, int nb, float lut_scale)
-{ sl_gather_body<float, 1, 2, 0, 4>(src, xis, phi, zk, lat_ext, mrden, mlut,
+{ sl_gather_body<float, 1, 2, 0, 4, 0>(src, xis, phi, zk, lat_ext, mrden, mlut,
                                  rowoff, rowshift, out, (float*)0, F, nk, nj,
-                                 ni, nb, lut_scale); }
+                                 ni, nb, lut_scale, 0, 0, (int*)0); }
 
 extern "C" __global__ void sl_gather_f64(
     const double* src, const double* xis, const double* phi, const double* zk,
     const double* lat_ext, const double* mrden, const int* mlut,
     const int* rowoff, const int* rowshift, double* out,
     int F, int nk, int nj, int ni, int nb, double lut_scale)
-{ sl_gather_body<double, 0, 2, 0, 4>(src, xis, phi, zk, lat_ext, mrden, mlut,
+{ sl_gather_body<double, 0, 2, 0, 4, 0>(src, xis, phi, zk, lat_ext, mrden, mlut,
                                   rowoff, rowshift, out, (double*)0, F, nk, nj,
-                                  ni, nb, lut_scale); }
+                                  ni, nb, lut_scale, 0, 0, (int*)0); }
 
 extern "C" __global__ void sl_gather_qm_f64(
     const double* src, const double* xis, const double* phi, const double* zk,
     const double* lat_ext, const double* mrden, const int* mlut,
     const int* rowoff, const int* rowshift, double* out,
     int F, int nk, int nj, int ni, int nb, double lut_scale)
-{ sl_gather_body<double, 1, 2, 0, 4>(src, xis, phi, zk, lat_ext, mrden, mlut,
+{ sl_gather_body<double, 1, 2, 0, 4, 0>(src, xis, phi, zk, lat_ext, mrden, mlut,
                                   rowoff, rowshift, out, (double*)0, F, nk, nj,
-                                  ni, nb, lut_scale); }
+                                  ni, nb, lut_scale, 0, 0, (int*)0); }
 
 /* The quasi-monotone gather that also reports where its limiter moved
  * mass.  Same arithmetic in ``out``, bit for bit, as sl_gather_qm_*: the
@@ -376,18 +419,18 @@ extern "C" __global__ void sl_gather_qmd_f32(
     const float* lat_ext, const float* mrden, const int* mlut,
     const int* rowoff, const int* rowshift, float* out, float* dev,
     int F, int nk, int nj, int ni, int nb, float lut_scale)
-{ sl_gather_body<float, 1, 2, 1, 4>(src, xis, phi, zk, lat_ext, mrden, mlut,
+{ sl_gather_body<float, 1, 2, 1, 4, 0>(src, xis, phi, zk, lat_ext, mrden, mlut,
                                  rowoff, rowshift, out, dev, F, nk, nj, ni,
-                                 nb, lut_scale); }
+                                 nb, lut_scale, 0, 0, (int*)0); }
 
 extern "C" __global__ void sl_gather_qmd_f64(
     const double* src, const double* xis, const double* phi, const double* zk,
     const double* lat_ext, const double* mrden, const int* mlut,
     const int* rowoff, const int* rowshift, double* out, double* dev,
     int F, int nk, int nj, int ni, int nb, double lut_scale)
-{ sl_gather_body<double, 1, 2, 1, 4>(src, xis, phi, zk, lat_ext, mrden, mlut,
+{ sl_gather_body<double, 1, 2, 1, 4, 0>(src, xis, phi, zk, lat_ext, mrden, mlut,
                                   rowoff, rowshift, out, dev, F, nk, nj, ni,
-                                  nb, lut_scale); }
+                                  nb, lut_scale, 0, 0, (int*)0); }
 
 /* The quintic-horizontal gather.  Its table arguments are the SIX-POINT
  * tables (lat_ext6, mrden6, mlut6, rowoff6, rowshift6, their bin count and
@@ -399,41 +442,233 @@ extern "C" __global__ void sl_gather5_f32(
     const float* lat_ext, const float* mrden, const int* mlut,
     const int* rowoff, const int* rowshift, float* out,
     int F, int nk, int nj, int ni, int nb, float lut_scale)
-{ sl_gather_body<float, 0, 2, 0, 6>(src, xis, phi, zk, lat_ext, mrden, mlut,
+{ sl_gather_body<float, 0, 2, 0, 6, 0>(src, xis, phi, zk, lat_ext, mrden, mlut,
                                     rowoff, rowshift, out, (float*)0, F, nk,
-                                    nj, ni, nb, lut_scale); }
+                                    nj, ni, nb, lut_scale, 0, 0, (int*)0); }
 
 extern "C" __global__ void sl_gather5_qm_f32(
     const float* src, const float* xis, const float* phi, const float* zk,
     const float* lat_ext, const float* mrden, const int* mlut,
     const int* rowoff, const int* rowshift, float* out,
     int F, int nk, int nj, int ni, int nb, float lut_scale)
-{ sl_gather_body<float, 1, 2, 0, 6>(src, xis, phi, zk, lat_ext, mrden, mlut,
+{ sl_gather_body<float, 1, 2, 0, 6, 0>(src, xis, phi, zk, lat_ext, mrden, mlut,
                                     rowoff, rowshift, out, (float*)0, F, nk,
-                                    nj, ni, nb, lut_scale); }
+                                    nj, ni, nb, lut_scale, 0, 0, (int*)0); }
 
 extern "C" __global__ void sl_gather5_f64(
     const double* src, const double* xis, const double* phi, const double* zk,
     const double* lat_ext, const double* mrden, const int* mlut,
     const int* rowoff, const int* rowshift, double* out,
     int F, int nk, int nj, int ni, int nb, double lut_scale)
-{ sl_gather_body<double, 0, 2, 0, 6>(src, xis, phi, zk, lat_ext, mrden, mlut,
+{ sl_gather_body<double, 0, 2, 0, 6, 0>(src, xis, phi, zk, lat_ext, mrden, mlut,
                                      rowoff, rowshift, out, (double*)0, F, nk,
-                                     nj, ni, nb, lut_scale); }
+                                     nj, ni, nb, lut_scale, 0, 0, (int*)0); }
 
 extern "C" __global__ void sl_gather5_qm_f64(
     const double* src, const double* xis, const double* phi, const double* zk,
     const double* lat_ext, const double* mrden, const int* mlut,
     const int* rowoff, const int* rowshift, double* out,
     int F, int nk, int nj, int ni, int nb, double lut_scale)
-{ sl_gather_body<double, 1, 2, 0, 6>(src, xis, phi, zk, lat_ext, mrden, mlut,
+{ sl_gather_body<double, 1, 2, 0, 6, 0>(src, xis, phi, zk, lat_ext, mrden, mlut,
                                      rowoff, rowshift, out, (double*)0, F, nk,
-                                     nj, ni, nb, lut_scale); }
+                                     nj, ni, nb, lut_scale, 0, 0, (int*)0); }
+
+/* The latitude-band entry points (BAND = 1, semilag.tables.BandWindow):
+ * the same bodies, with the held source rows njs, the computed rows
+ * nja and the escape flag appended.  The deficit pointer is the one
+ * extra argument the qmd variants carry, exactly as above. */
+extern "C" __global__ void sl_gather_band_f32(
+    const float* src, const float* xis, const float* phi, const float* zk,
+    const float* lat_ext, const float* mrden, const int* mlut,
+    const int* rowoff, const int* rowshift, float* out,
+    int F, int nk, int nj, int ni, int nb, float lut_scale,
+    int njs, int nja, int* esc)
+{ sl_gather_body<float, 0, 2, 0, 4, 1>(src, xis, phi, zk, lat_ext, mrden,
+    mlut, rowoff, rowshift, out, (float*)0, F, nk, nj, ni, nb, lut_scale,
+    njs, nja, esc); }
+
+extern "C" __global__ void sl_gather_qm_band_f32(
+    const float* src, const float* xis, const float* phi, const float* zk,
+    const float* lat_ext, const float* mrden, const int* mlut,
+    const int* rowoff, const int* rowshift, float* out,
+    int F, int nk, int nj, int ni, int nb, float lut_scale,
+    int njs, int nja, int* esc)
+{ sl_gather_body<float, 1, 2, 0, 4, 1>(src, xis, phi, zk, lat_ext, mrden,
+    mlut, rowoff, rowshift, out, (float*)0, F, nk, nj, ni, nb, lut_scale,
+    njs, nja, esc); }
+
+extern "C" __global__ void sl_gather_band_f64(
+    const double* src, const double* xis, const double* phi, const double* zk,
+    const double* lat_ext, const double* mrden, const int* mlut,
+    const int* rowoff, const int* rowshift, double* out,
+    int F, int nk, int nj, int ni, int nb, double lut_scale,
+    int njs, int nja, int* esc)
+{ sl_gather_body<double, 0, 2, 0, 4, 1>(src, xis, phi, zk, lat_ext, mrden,
+    mlut, rowoff, rowshift, out, (double*)0, F, nk, nj, ni, nb, lut_scale,
+    njs, nja, esc); }
+
+extern "C" __global__ void sl_gather_qm_band_f64(
+    const double* src, const double* xis, const double* phi, const double* zk,
+    const double* lat_ext, const double* mrden, const int* mlut,
+    const int* rowoff, const int* rowshift, double* out,
+    int F, int nk, int nj, int ni, int nb, double lut_scale,
+    int njs, int nja, int* esc)
+{ sl_gather_body<double, 1, 2, 0, 4, 1>(src, xis, phi, zk, lat_ext, mrden,
+    mlut, rowoff, rowshift, out, (double*)0, F, nk, nj, ni, nb, lut_scale,
+    njs, nja, esc); }
+
+extern "C" __global__ void sl_gather_qmd_band_f32(
+    const float* src, const float* xis, const float* phi, const float* zk,
+    const float* lat_ext, const float* mrden, const int* mlut,
+    const int* rowoff, const int* rowshift, float* out, float* dev,
+    int F, int nk, int nj, int ni, int nb, float lut_scale,
+    int njs, int nja, int* esc)
+{ sl_gather_body<float, 1, 2, 1, 4, 1>(src, xis, phi, zk, lat_ext, mrden,
+    mlut, rowoff, rowshift, out, dev, F, nk, nj, ni, nb, lut_scale,
+    njs, nja, esc); }
+
+extern "C" __global__ void sl_gather_qmd_band_f64(
+    const double* src, const double* xis, const double* phi, const double* zk,
+    const double* lat_ext, const double* mrden, const int* mlut,
+    const int* rowoff, const int* rowshift, double* out, double* dev,
+    int F, int nk, int nj, int ni, int nb, double lut_scale,
+    int njs, int nja, int* esc)
+{ sl_gather_body<double, 1, 2, 1, 4, 1>(src, xis, phi, zk, lat_ext, mrden,
+    mlut, rowoff, rowshift, out, dev, F, nk, nj, ni, nb, lut_scale,
+    njs, nja, esc); }
+
+extern "C" __global__ void sl_gather5_band_f32(
+    const float* src, const float* xis, const float* phi, const float* zk,
+    const float* lat_ext, const float* mrden, const int* mlut,
+    const int* rowoff, const int* rowshift, float* out,
+    int F, int nk, int nj, int ni, int nb, float lut_scale,
+    int njs, int nja, int* esc)
+{ sl_gather_body<float, 0, 2, 0, 6, 1>(src, xis, phi, zk, lat_ext, mrden,
+    mlut, rowoff, rowshift, out, (float*)0, F, nk, nj, ni, nb, lut_scale,
+    njs, nja, esc); }
+
+extern "C" __global__ void sl_gather5_qm_band_f32(
+    const float* src, const float* xis, const float* phi, const float* zk,
+    const float* lat_ext, const float* mrden, const int* mlut,
+    const int* rowoff, const int* rowshift, float* out,
+    int F, int nk, int nj, int ni, int nb, float lut_scale,
+    int njs, int nja, int* esc)
+{ sl_gather_body<float, 1, 2, 0, 6, 1>(src, xis, phi, zk, lat_ext, mrden,
+    mlut, rowoff, rowshift, out, (float*)0, F, nk, nj, ni, nb, lut_scale,
+    njs, nja, esc); }
+
+extern "C" __global__ void sl_gather5_band_f64(
+    const double* src, const double* xis, const double* phi, const double* zk,
+    const double* lat_ext, const double* mrden, const int* mlut,
+    const int* rowoff, const int* rowshift, double* out,
+    int F, int nk, int nj, int ni, int nb, double lut_scale,
+    int njs, int nja, int* esc)
+{ sl_gather_body<double, 0, 2, 0, 6, 1>(src, xis, phi, zk, lat_ext, mrden,
+    mlut, rowoff, rowshift, out, (double*)0, F, nk, nj, ni, nb, lut_scale,
+    njs, nja, esc); }
+
+extern "C" __global__ void sl_gather5_qm_band_f64(
+    const double* src, const double* xis, const double* phi, const double* zk,
+    const double* lat_ext, const double* mrden, const int* mlut,
+    const int* rowoff, const int* rowshift, double* out,
+    int F, int nk, int nj, int ni, int nb, double lut_scale,
+    int njs, int nja, int* esc)
+{ sl_gather_body<double, 1, 2, 0, 6, 1>(src, xis, phi, zk, lat_ext, mrden,
+    mlut, rowoff, rowshift, out, (double*)0, F, nk, nj, ni, nb, lut_scale,
+    njs, nja, esc); }
+
+/* ------------------------------------------------------------------ */
+/* The LOW-ORDER interpolant the Bermejo-Conde mass fixer weighs by.     */
+/*
+ * Trilinear interpolation at the departure point inside the limiter's own
+ * cell: the two columns floor(xi) and floor(xi)+1, the bracketing extended
+ * rows m0 and m0+1 (the cubic gather's inner pair, poles by the same
+ * reflection), and the levels kb and kb+1 with kb the cubic gather's own
+ * clamped base.  Its value therefore lies inside the quasi-monotone box
+ * [lo, hi] the cubic gather clips to, it is nonnegative wherever the
+ * source is, and at a zero displacement it returns the field exactly.
+ *
+ * The fixer's weight is max(0, sgn(d) (q_L - q_H)) with q_H the limited
+ * cubic value, d the mass to restore
+ * and q_L this one (the Bermejo-Conde fixer, Mon. Wea. Rev. 130, 2002, in
+ * the form the IFS tracer mass fixers use): the difference between a high
+ * and a low order interpolant is large exactly where the field is not
+ * resolved, which is where the interpolation made its mass error.
+ */
+template <typename T>
+__device__ __forceinline__ void sl_linear_body(
+    const T* __restrict__ src,
+    const T* __restrict__ xis, const T* __restrict__ phi,
+    const T* __restrict__ zk,
+    const T* __restrict__ lat_ext, const int* __restrict__ mlut,
+    const int* __restrict__ rowoff, const int* __restrict__ rowshift,
+    T* __restrict__ out, int F, int nk, int nj, int ni, int nb, T lut_scale)
+{
+    const long long n = (long long)nk * (long long)nj * (long long)ni;
+    const long long gid = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= n) return;
+
+    T p = phi[gid];
+    p = min(max(p, -(T)SL_HALF_PI_D), (T)SL_HALF_PI_D);
+    T xk = zk[gid];
+    xk = min(max(xk, (T)0), (T)(nk - 1));
+    const T xi = xis[gid];
+
+    const T fi = sl_traits<T>::floor_(xi);
+    const T ax = xi - fi;
+    int c0 = ((int)fi) % ni; if (c0 < 0) c0 += ni;
+    int c1 = c0 + 1; if (c1 >= ni) c1 -= ni;
+    const int half = ni >> 1;
+    int d0 = c0 + half; if (d0 >= ni) d0 -= ni;
+    int d1 = c1 + half; if (d1 >= ni) d1 -= ni;
+
+    const int m0 = sl_bracket<T>(p, lat_ext, mlut, nb, nj, lut_scale);
+    const T la = lat_ext[m0];
+    const T lb = lat_ext[m0 + 1];
+    T ay = (p - la) / (lb - la);
+    ay = min(max(ay, (T)0), (T)1);
+    const int r0 = rowoff[m0], s0 = rowshift[m0];
+    const int r1 = rowoff[m0 + 1], s1 = rowshift[m0 + 1];
+    const int i00 = r0 + (s0 ? d0 : c0), i01 = r0 + (s0 ? d1 : c1);
+    const int i10 = r1 + (s1 ? d0 : c0), i11 = r1 + (s1 ? d1 : c1);
+
+    const int kb = min(max((int)sl_traits<T>::floor_(xk), 0), nk - 2);
+    const T az = xk - (T)kb;
+
+    const long long plane = (long long)nj * (long long)ni;
+    const long long o0 = (long long)kb * plane;
+    const long long o1 = o0 + plane;
+    const T bx = (T)1 - ax, by = (T)1 - ay, bz = (T)1 - az;
+    for (int f = 0; f < F; ++f) {
+        const T* s = src + (long long)f * n;
+        const T t0 = by * (bx * s[o0 + i00] + ax * s[o0 + i01])
+                   + ay * (bx * s[o0 + i10] + ax * s[o0 + i11]);
+        const T t1 = by * (bx * s[o1 + i00] + ax * s[o1 + i01])
+                   + ay * (bx * s[o1 + i10] + ax * s[o1 + i11]);
+        out[(long long)f * n + gid] = bz * t0 + az * t1;
+    }
+}
+
+extern "C" __global__ void sl_linear_f32(
+    const float* src, const float* xis, const float* phi, const float* zk,
+    const float* lat_ext, const int* mlut,
+    const int* rowoff, const int* rowshift, float* out,
+    int F, int nk, int nj, int ni, int nb, float lut_scale)
+{ sl_linear_body<float>(src, xis, phi, zk, lat_ext, mlut, rowoff, rowshift,
+                        out, F, nk, nj, ni, nb, lut_scale); }
+
+extern "C" __global__ void sl_linear_f64(
+    const double* src, const double* xis, const double* phi, const double* zk,
+    const double* lat_ext, const int* mlut,
+    const int* rowoff, const int* rowshift, double* out,
+    int F, int nk, int nj, int ni, int nb, double lut_scale)
+{ sl_linear_body<double>(src, xis, phi, zk, lat_ext, mlut, rowoff, rowshift,
+                         out, F, nk, nj, ni, nb, lut_scale); }
 
 /* ------------------------------------------------------------------ */
 /* trilinear gather of four fields at one point, used by the search    */
 
-template <typename T>
+template <typename T, int BAND>
 __device__ __forceinline__ void sl_trilinear4(
     const T* __restrict__ f0, const T* __restrict__ f1,
     const T* __restrict__ f2, const T* __restrict__ f3,
@@ -441,7 +676,7 @@ __device__ __forceinline__ void sl_trilinear4(
     const T* __restrict__ lat_ext, const int* __restrict__ mlut,
     const int* __restrict__ rowoff, const int* __restrict__ rowshift,
     int nb, int nk, int nj, int ni, T inv_dlam, T lut_scale,
-    T* out)
+    T* out, int njs, int* __restrict__ esc)
 {
     const T p = min(max(phid, -(T)SL_HALF_PI_D), (T)SL_HALF_PI_D);
     const T xk = min(max(xkd, (T)0), (T)(nk - 1));
@@ -459,8 +694,15 @@ __device__ __forceinline__ void sl_trilinear4(
     const T la = lat_ext[m0];
     const T lb = lat_ext[m0 + 1];
     const T ay = (p - la) / (lb - la);
-    const int r0 = rowoff[m0], s0 = rowshift[m0];
-    const int r1 = rowoff[m0 + 1], s1 = rowshift[m0 + 1];
+    int r0 = rowoff[m0];
+    int r1 = rowoff[m0 + 1];
+    if (BAND && (r0 < 0 || r1 < 0)) {
+        atomicOr(esc, 1);
+        if (r0 < 0) r0 = 0;
+        if (r1 < 0) r1 = 0;
+    }
+    const int s0 = rowshift[m0];
+    const int s1 = rowshift[m0 + 1];
     const int i00 = r0 + (s0 ? d0 : c0), i01 = r0 + (s0 ? d1 : c1);
     const int i10 = r1 + (s1 ? d0 : c0), i11 = r1 + (s1 ? d1 : c1);
 
@@ -468,7 +710,7 @@ __device__ __forceinline__ void sl_trilinear4(
     k0 = min(max(k0, 0), nk - 2);
     const T az = xk - (T)k0;
 
-    const long long plane = (long long)nj * (long long)ni;
+    const long long plane = (long long)(BAND ? njs : nj) * (long long)ni;
     const long long o0 = (long long)k0 * plane;
     const long long o1 = o0 + plane;
     const T bx = (T)1 - ax, by = (T)1 - ay, bz = (T)1 - az;
@@ -495,7 +737,11 @@ __device__ __forceinline__ void sl_trilinear4(
  * continuous level index, and the size of the LAST iteration's move in
  * metres and in level indices, which is what the convergence gate reads.
  */
-template <typename T>
+/* BAND = 1: the arrival points are the nja rows starting at grid row ja0,
+   the advecting fields (vx, vy, vz, sv) hold the njs rows starting sja rows
+   below the first arrival row, and the extrapolated fields and every output
+   are arrival-shaped.  The arithmetic is the BAND = 0 arithmetic. */
+template <typename T, int BAND>
 __device__ __forceinline__ void sl_departure_body(
     const T* __restrict__ vx, const T* __restrict__ vy,
     const T* __restrict__ vz, const T* __restrict__ sv,
@@ -507,17 +753,23 @@ __device__ __forceinline__ void sl_departure_body(
     T* __restrict__ xi_d, T* __restrict__ phi_d, T* __restrict__ zk_d,
     T* __restrict__ move_m, T* __restrict__ move_k,
     int iters, T dt, T radius, T dlam,
-    int nb, int nk, int nj, int ni, T inv_dlam, T lut_scale)
+    int nb, int nk, int nj, int ni, T inv_dlam, T lut_scale,
+    int njs, int nja, int ja0, int sja, int* __restrict__ esc)
 {
-    const long long n = (long long)nk * (long long)nj * (long long)ni;
+    const int rows_out = BAND ? nja : nj;
+    const long long n = (long long)nk * (long long)rows_out * (long long)ni;
     const long long gid = (long long)blockIdx.x * blockDim.x + threadIdx.x;
     if (gid >= n) return;
-    const long long plane = (long long)nj * (long long)ni;
+    const long long plane = (long long)rows_out * (long long)ni;
     const int i = (int)(gid % ni);
-    const int j = (int)((gid / ni) % nj);
+    const int j = (int)((gid / ni) % rows_out);
     const int k = (int)(gid / plane);
+    /* the arrival point's own index in the advecting fields */
+    const long long here = BAND
+        ? ((long long)k * (long long)njs + (long long)(j + sja)) * (long long)ni + i
+        : gid;
 
-    const T phia = lat_ext[j + 2];
+    const T phia = lat_ext[j + (BAND ? ja0 : 0) + 2];
     const T lama = (T)i * dlam;
     T sph, cph, sla, cla;
     sl_traits<T>::sincos_(phia, &sph, &cph);
@@ -529,13 +781,21 @@ __device__ __forceinline__ void sl_departure_body(
 
     /* first guess: one explicit backward step on the time-n wind at the
        arrival point, which is exactly what the arrival index holds */
-    T qx = ax - dt * vx[gid] * inv_r;
-    T qy = ay - dt * vy[gid] * inv_r;
-    T qz = az - dt * vz[gid] * inv_r;
+    T qx = ax - dt * vx[here] * inv_r;
+    T qy = ay - dt * vy[here] * inv_r;
+    T qz = az - dt * vz[here] * inv_r;
     T rn = sl_traits<T>::rsqrt_(qx * qx + qy * qy + qz * qz);
     qx *= rn; qy *= rn; qz *= rn;
-    T qk = (T)k - dt * sv[gid];
-    qk = min(max(qk, (T)0), (T)(nk - 1));
+    /* The departure level is clamped at the lid and ground INTERFACES,
+       index -1/2 and nk - 1/2, not at the outermost full levels: a parcel
+       arriving at level 0 under descent departs from the half layer above
+       it, and clamping it to level 0 made it read its own value, so the
+       lid cooled under ascent and never warmed under descent (DYC-1).
+       The wind in that half layer is read at the outermost full level
+       (sl_trilinear4 keeps its own [0, nk-1] clamp). */
+    const T klo = (T)-0.5, khi = (T)nk - (T)0.5;
+    T qk = (T)k - dt * sv[here];
+    qk = min(max(qk, klo), khi);
 
     T last_m = (T)0, last_k = (T)0;
     const T hdt = (T)0.5 * dt;
@@ -543,16 +803,16 @@ __device__ __forceinline__ void sl_departure_body(
         const T lamd = sl_traits<T>::atan2_(qy, qx);
         const T phid = sl_latitude<T>(qx, qy, qz);
         T w[4];
-        sl_trilinear4<T>(vx, vy, vz, sv, lamd, phid, qk, lat_ext, mlut,
-                         rowoff, rowshift, nb, nk, nj, ni, inv_dlam,
-                         lut_scale, w);
+        sl_trilinear4<T, BAND>(vx, vy, vz, sv, lamd, phid, qk, lat_ext, mlut,
+                               rowoff, rowshift, nb, nk, nj, ni, inv_dlam,
+                               lut_scale, w, njs, esc);
         T px = ax - hdt * (ex + w[0]) * inv_r;
         T py = ay - hdt * (ey + w[1]) * inv_r;
         T pz = az - hdt * (ez + w[2]) * inv_r;
         rn = sl_traits<T>::rsqrt_(px * px + py * py + pz * pz);
         px *= rn; py *= rn; pz *= rn;
         T pk = (T)k - hdt * (es + w[3]);
-        pk = min(max(pk, (T)0), (T)(nk - 1));
+        pk = min(max(pk, klo), khi);
 
         const T cx = px - qx, cy = py - qy, cz = pz - qz;
         const T chord = sl_traits<T>::sqrt_(cx * cx + cy * cy + cz * cz);
@@ -577,10 +837,11 @@ extern "C" __global__ void sl_departure_f32(
     float* xi_d, float* phi_d, float* zk_d, float* move_m, float* move_k,
     int iters, float dt, float radius, float dlam,
     int nb, int nk, int nj, int ni, float inv_dlam, float lut_scale)
-{ sl_departure_body<float>(vx, vy, vz, sv, vxe, vye, vze, sve, lat_ext,
+{ sl_departure_body<float, 0>(vx, vy, vz, sv, vxe, vye, vze, sve, lat_ext,
                            mlut, rowoff, rowshift, xi_d, phi_d, zk_d,
                            move_m, move_k, iters, dt, radius, dlam, nb, nk,
-                           nj, ni, inv_dlam, lut_scale); }
+                           nj, ni, inv_dlam, lut_scale,
+                           0, 0, 0, 0, (int*)0); }
 
 extern "C" __global__ void sl_departure_f64(
     const double* vx, const double* vy, const double* vz, const double* sv,
@@ -590,7 +851,36 @@ extern "C" __global__ void sl_departure_f64(
     double* xi_d, double* phi_d, double* zk_d, double* move_m, double* move_k,
     int iters, double dt, double radius, double dlam,
     int nb, int nk, int nj, int ni, double inv_dlam, double lut_scale)
-{ sl_departure_body<double>(vx, vy, vz, sv, vxe, vye, vze, sve, lat_ext,
+{ sl_departure_body<double, 0>(vx, vy, vz, sv, vxe, vye, vze, sve, lat_ext,
                             mlut, rowoff, rowshift, xi_d, phi_d, zk_d,
                             move_m, move_k, iters, dt, radius, dlam, nb, nk,
-                            nj, ni, inv_dlam, lut_scale); }
+                            nj, ni, inv_dlam, lut_scale,
+                           0, 0, 0, 0, (int*)0); }
+
+extern "C" __global__ void sl_departure_band_f32(
+    const float* vx, const float* vy, const float* vz, const float* sv,
+    const float* vxe, const float* vye, const float* vze, const float* sve,
+    const float* lat_ext, const int* mlut,
+    const int* rowoff, const int* rowshift,
+    float* xi_d, float* phi_d, float* zk_d, float* move_m, float* move_k,
+    int iters, float dt, float radius, float dlam,
+    int nb, int nk, int nj, int ni, float inv_dlam, float lut_scale,
+    int njs, int nja, int ja0, int sja, int* esc)
+{ sl_departure_body<float, 1>(vx, vy, vz, sv, vxe, vye, vze, sve, lat_ext,
+    mlut, rowoff, rowshift, xi_d, phi_d, zk_d, move_m, move_k, iters, dt,
+    radius, dlam, nb, nk, nj, ni, inv_dlam, lut_scale, njs, nja, ja0, sja,
+    esc); }
+
+extern "C" __global__ void sl_departure_band_f64(
+    const double* vx, const double* vy, const double* vz, const double* sv,
+    const double* vxe, const double* vye, const double* vze, const double* sve,
+    const double* lat_ext, const int* mlut,
+    const int* rowoff, const int* rowshift,
+    double* xi_d, double* phi_d, double* zk_d, double* move_m, double* move_k,
+    int iters, double dt, double radius, double dlam,
+    int nb, int nk, int nj, int ni, double inv_dlam, double lut_scale,
+    int njs, int nja, int ja0, int sja, int* esc)
+{ sl_departure_body<double, 1>(vx, vy, vz, sv, vxe, vye, vze, sve, lat_ext,
+    mlut, rowoff, rowshift, xi_d, phi_d, zk_d, move_m, move_k, iters, dt,
+    radius, dlam, nb, nk, nj, ni, inv_dlam, lut_scale, njs, nja, ja0, sja,
+    esc); }

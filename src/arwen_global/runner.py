@@ -192,11 +192,31 @@ def build_diffusion(cfg: ArwenGlobalConfig):
     )
 
 
-def build_physics(cfg: ArwenGlobalConfig, backend):
+def build_physics(cfg: ArwenGlobalConfig, backend, clock=None):
+    """The physics suite, run on the forecast ``clock``
+    (arwen_global.clock.ForecastClock).  Without one the clock is resolved
+    from the config alone: its stated start_time_utc, else the idealized
+    fixture (a native suite with neither is refused by the clock)."""
+    from .clock import resolve_forecast_clock
+
     if cfg.physics_mode == "none":
         return None
+    if clock is None:
+        if cfg.initial_mode == "analysis":
+            # THE BREAKAGE THIS PREVENTS: without the analysis's clock the
+            # reference suite would radiate on the undated fixture sun and
+            # the native bridge on whatever literal the config carries,
+            # which is GI-1 again behind a caller that forgot the clock.
+            raise ValueError(
+                "an analysis-initialised physics suite runs on the analysis "
+                "valid time, and build_physics was handed no forecast clock; "
+                "build it from the analysis (arwen_global.clock) and pass it")
+        clock = resolve_forecast_clock(cfg, None)
     if cfg.physics_mode == "reference":
-        return ReferencePhysics(backend, cfg.reference_physics)
+        return ReferencePhysics(
+            backend, cfg.reference_physics,
+            start_utc=None if clock is None else clock.start_utc,
+        )
     if cfg.physics_mode == "arwen-native":
         # FOUR SIGNATURE REFUSALS STOOD HERE UNTIL 2026-09-09, and they are
         # retired rather than weakened.  Each named one engine callable this
@@ -216,10 +236,48 @@ def build_physics(cfg: ArwenGlobalConfig, backend):
         # fixed teaches a reader to expect a failure that cannot happen.
         # What CAN still move is the engine underneath the carried code: that
         # is the seam manifest's job, and the doctor reports it by file.
-        return NativeArwenPhysicsBridge(
-            cfg.native_adapter_name or "", cfg.native_adapter_options
-        )
+        options = dict(cfg.native_adapter_options)
+        if clock is not None and clock.dated:
+            # The radiation's declination and hour angle run on the
+            # forecast clock: the analysis valid time when the run starts
+            # from one (a stated start_time_utc has already been checked
+            # equal to it), never a literal the analysis has moved away from.
+            options["start_time_utc"] = clock.iso
+        return NativeArwenPhysicsBridge(cfg.native_adapter_name or "", options)
     raise AssertionError(cfg.physics_mode)
+
+
+def adopt_checkpoint_clock(model, state, label: str) -> None:
+    """Hold a state read from a checkpoint to the model's forecast clock:
+    refused by name when the checkpoint was integrated from another start
+    (arwen_global.clock.check_checkpoint_clock), stamped with the clock when
+    it was written before checkpoints carried one, so every checkpoint the
+    resumed run writes is dated like the uninterrupted run's."""
+    from .clock import FORECAST_CLOCK_KEY, check_checkpoint_clock
+
+    clock = getattr(model, "forecast_clock", None)
+    if clock is None:
+        return
+    metadata = state.physics_state.metadata
+    check_checkpoint_clock(metadata, clock, label)
+    if clock.dated and FORECAST_CLOCK_KEY not in metadata:
+        # Not silent: the checkpoint names no start of its own, so the
+        # config's clock is taken on trust (an analysis file re-fetched
+        # for another day under the same path would date it wrongly).
+        # The stamp says so in every checkpoint the run writes from it,
+        # and the operator is told once.
+        metadata[FORECAST_CLOCK_KEY] = {
+            **clock.metadata(),
+            "stamped_on_checkpoint_without_clock": str(label),
+        }
+        import sys
+
+        print(
+            f"gpuwm-global: {label} carries no forecast clock (written before "
+            f"checkpoints carried one); it is taken to start at {clock.iso}, "
+            "this config's clock, unchecked",
+            file=sys.stderr,
+        )
 
 
 def _card_gather_of(model, transform):
@@ -285,6 +343,21 @@ def latitude_bands_receipt(model, cfg, sized_by_door: bool) -> dict[str, object]
     }
 
 
+def place_rank_for(cfg) -> dict:
+    """Put this rank of a multi-card run on its own card (MG-4).
+
+    Called by the door before the sizer reads the card and by :func:`run`
+    before the first device byte; a no-op for one card and for NumPy."""
+    from . import cards as cards_module
+
+    return cards_module.place_rank(
+        int(getattr(cfg, "card_rank", 0) or 0),
+        int(getattr(cfg, "cards", 1) or 1),
+        tuple(getattr(cfg, "card_addresses", ()) or ()),
+        str(getattr(cfg, "backend", "numpy")),
+    )
+
+
 def open_card_session(cfg: ArwenGlobalConfig, transform, bands: int):
     """The card session this rank runs behind, or the single-card one.
 
@@ -323,11 +396,22 @@ def open_card_session(cfg: ArwenGlobalConfig, transform, bands: int):
         )
     for key, value in cards_module.launch_environment().items():
         os.environ.setdefault(key, value)
+    rank = int(getattr(cfg, "card_rank", 0) or 0)
+    addresses = tuple(getattr(cfg, "card_addresses", ()) or ())
+    # One rank, one card (MG-4).  The door placed this rank before the
+    # sizer read the card; asked again here for a library caller that
+    # skipped the door, and it returns the door's decision unchanged.
+    placement = cards_module.place_rank(
+        rank, world, addresses, transform.backend.name)
     transport = cards_module.open_transport(
-        int(getattr(cfg, "card_rank", 0) or 0), world,
-        tuple(getattr(cfg, "card_addresses", ()) or ()),
+        rank, world, addresses,
         prefer=str(getattr(cfg, "card_transport", "auto")),
+        device=transform.backend.name == "cupy",
     )
+    # Every rank's card, all-gathered before anything else crosses the
+    # wire: two ranks on one card are refused here by UUID, by name.
+    devices = cards_module.check_card_placement(
+        transport, cards_module.card_identity(transform.backend.xp))
     declared = tuple(getattr(cfg, "card_weights", ()) or ())
     band_ms = None
     weights = None
@@ -356,6 +440,8 @@ def open_card_session(cfg: ArwenGlobalConfig, transform, bands: int):
         weights=weights, band_ms=band_ms,
         agreement=str(getattr(cfg, "card_agreement", "refuse")),
     )
+    session.devices = devices
+    session.placement = placement
     # A gather run assembles a Fourier waist out of latitude rows computed
     # on both cards, so it reproduces the single-card answer only where the
     # cards return the same bits (lane 6's finding).  The check rides the
@@ -395,12 +481,23 @@ def build_model_and_cold_state(cfg: ArwenGlobalConfig, transform=None, *,
         cold, surface_geopotential, initial_provenance = analytic_initial_state(
             cfg, transform
         )
+    # The forecast clock (arwen_global.clock): the analysis valid time
+    # when the run starts from one, refused by name when a stated physics
+    # start_time_utc disagrees with it.  Resolved before the physics is
+    # built so the radiation can only ever run on the analysis's sun.
+    from .clock import FORECAST_CLOCK_KEY, resolve_forecast_clock
+
+    clock = resolve_forecast_clock(cfg, initial_provenance)
+    if clock.dated:
+        # Every checkpoint of this run carries the clock it was integrated
+        # under, so a restart or a render is checked against it.
+        cold.physics_state.metadata[FORECAST_CLOCK_KEY] = clock.metadata()
     diffusion = build_diffusion(cfg)
     model = MoistHybridModel(
         transform=transform,
         vertical=cfg.vertical,
         surface_geopotential=surface_geopotential,
-        physics=build_physics(cfg, transform.backend),
+        physics=build_physics(cfg, transform.backend, clock),
         physics_split=cfg.physics_split,
         integrator=cfg.integrator,
         diffusion=diffusion,
@@ -420,7 +517,7 @@ def build_model_and_cold_state(cfg: ArwenGlobalConfig, transform=None, *,
         water_fixer=cfg.water_fixer,
         positivity_repair=cfg.positivity_repair,
         maximum_cfl=cfg.maximum_cfl,
-        maximum_lipschitz=cfg.maximum_lipschitz,
+        minimum_fold_determinant=cfg.minimum_fold_determinant,
         semilag=cfg.semilag,
         sponge_base_pa=cfg.sponge_base_pa,
         sponge_lid_relaxation_time_s=cfg.sponge_lid_relaxation_time_s,
@@ -431,6 +528,7 @@ def build_model_and_cold_state(cfg: ArwenGlobalConfig, transform=None, *,
         cards=None if session is None else _row_exchange(session),
         card_halo_rows=int(getattr(cfg, "card_halo_rows", 16)),
     )
+    model.forecast_clock = clock
     cold, _, _, _ = model._repair_positivity(cold)
     model.initialize_mass_target(cold.atmosphere)
     model.initialize_water_target(cold)
@@ -595,7 +693,26 @@ SUPPLEMENTARY_TRACKER_KEYS = (
     "maximum_semilag_trajectory_move_cells",
     "maximum_semilag_tracer_mass_fixer_relative",
     "maximum_semilag_tracer_mass_fixer_water_relative",
+    # The trajectory fold gate's own number, a MINIMUM: it starts at one
+    # (the identity map, no step measured) and every other path keeps it
+    # there.  Receipt-only, for the reason above.
+    "minimum_semilag_fold_determinant",
+    # A COUNT: the steps whose departure search missed the convergence
+    # test at the configured iterations and was searched again at the
+    # most (semilag.trajectory.converged_departure_points).  Receipt-only.
+    "semilag_trajectory_retried_steps",
 )
+
+#: The value a supplementary tracker starts a run at, where it is not zero.
+SUPPLEMENTARY_TRACKER_STARTS = {"minimum_semilag_fold_determinant": 1.0}
+
+
+def fresh_supplementary() -> dict[str, float]:
+    """The supplementary trackers at the start of a run."""
+    return {
+        name: float(SUPPLEMENTARY_TRACKER_STARTS.get(name, 0.0))
+        for name in SUPPLEMENTARY_TRACKER_KEYS
+    }
 
 
 #: The per-species rows the semi-Lagrangian tracer fixer writes each step.
@@ -609,7 +726,158 @@ _SPECIES_FIXER_PREFIXES = (
     # made the correction necessary, and the two arms that separate the
     # limiter from the floor cannot be told apart at all.
     "semilag_tracer_positivity_clamp_kg_m2__",
+    # Where the correction landed, which the relative magnitude above
+    # cannot say: the uniform factor applied to EVERY point holding the
+    # species (the whole correction under 'mass_proportional', 0.116 for
+    # graupel in the worst step of the 2026-10-01 receipts; only the
+    # remainder under 'bermejo_conde') and the fraction of the species'
+    # mass at points changed by more than one percent of their own value.
+    "semilag_tracer_fixer_uniform_rescale__",
+    "semilag_tracer_fixer_touched_mass_fraction__",
+    # The share of the correction the local stage placed (the weighted
+    # Bermejo-Conde stage, or the additive form's clip record); the
+    # uniform rescale above carries only what it could not place.
+    "semilag_tracer_fixer_local_share__",
+    # The species' mass after the fix against its target, relative: the
+    # conservation the fixer exists for, read back from the field it
+    # returned rather than assumed from its construction.
+    "semilag_tracer_fixer_residual_relative__",
 )
+
+
+def _greenhouse_gas_receipt(cfg: ArwenGlobalConfig, clock=None) -> dict | None:
+    """The native radiation's greenhouse-gas record (source named), or
+    None when the run radiates nothing through RRTMGP.
+
+    The gases are dated by the forecast ``clock`` the physics ran on
+    (build_physics fills the suite's start_time_utc from it), not by the
+    config's literal: a config that follows its analysis states no
+    start_time_utc, as the clock's own refusal tells the reader to do, and
+    reading the date off the config alone refused every such run at its
+    receipt, after the whole forecast had been integrated."""
+    if cfg.physics_mode != "arwen-native":
+        return None
+    from .physics.native_options import NativePhysicsOptions
+
+    raw = dict(cfg.native_adapter_options)
+    if clock is not None and clock.dated:
+        raw["start_time_utc"] = clock.iso
+    options = NativePhysicsOptions.from_mapping(raw)
+    if options.radiation != "rrtmgp":
+        return None
+    return options.greenhouse_gas_record()
+
+
+class PositivityFixerLedger:
+    """The run's account of where the vapor positivity fixer moved water.
+
+    The four vapor clamps of a step (two positivity repairs, two physics
+    exchange clamps) clip the spectral ringing of vapor and pay the water
+    the clip creates out of the same column, first from the layers next to
+    each hole and then from the rest of the column in proportion.  Each
+    step's metrics carry the global-mean water the fill added to and took
+    from every level; this ledger sums them over the run segment, so the
+    receipt and every diagnostics record say how much water the fixer
+    moved vertically and across which interfaces, instead of leaving the
+    fixer's vertical transfer unattributed.
+    """
+
+    def __init__(self) -> None:
+        self.steps = 0
+        self.created_kg_m2 = 0.0
+        self.unfillable_kg_m2 = 0.0
+        self.neighbour_kg_m2 = 0.0
+        self.gain: list[float] | None = None
+        self.loss: list[float] | None = None
+
+    def add(self, metrics: dict[str, object]) -> None:
+        gain = metrics.get("positivity_fixer_level_gain_kg_m2")
+        loss = metrics.get("positivity_fixer_level_loss_kg_m2")
+        self.steps += 1
+        self.created_kg_m2 += float(metrics.get("positivity_fixer_water_kg_m2", 0.0))
+        self.unfillable_kg_m2 += float(
+            metrics.get("positivity_fixer_unfillable_kg_m2", 0.0))
+        self.neighbour_kg_m2 += float(
+            metrics.get("positivity_fixer_neighbour_kg_m2", 0.0))
+        if gain is None or loss is None:
+            return
+        if self.gain is None:
+            self.gain = [0.0] * len(gain)
+            self.loss = [0.0] * len(loss)
+        self.gain = [a + float(b) for a, b in zip(self.gain, gain)]
+        self.loss = [a + float(b) for a, b in zip(self.loss, loss)]
+
+    def record(self) -> dict[str, object]:
+        """Run-segment totals, global-mean kg/m2, levels top first.
+
+        ``upward_transfer_kg_m2[i]`` is the water the fill moved upward
+        across the interface below level ``i`` (negative: downward), the
+        running sum of the net gain from the top down.
+        """
+        out: dict[str, object] = {
+            "steps": self.steps,
+            "clip_created_kg_m2": self.created_kg_m2,
+            "unfillable_kg_m2": self.unfillable_kg_m2,
+            "paid_by_adjacent_layer_kg_m2": self.neighbour_kg_m2,
+            "level_order": "top_first",
+        }
+        if self.gain is None:
+            return out
+        net = [g - l for g, l in zip(self.gain, self.loss)]
+        upward = []
+        running = 0.0
+        for value in net:
+            running += value
+            upward.append(running)
+        out.update({
+            "level_gain_kg_m2": list(self.gain),
+            "level_loss_kg_m2": list(self.loss),
+            "level_net_kg_m2": net,
+            "upward_transfer_kg_m2": upward,
+            "maximum_upward_transfer_kg_m2": max(upward),
+            "vertically_moved_kg_m2": 0.5 * sum(abs(v) for v in net),
+        })
+        return out
+
+
+class StratosphericFloorLedger:
+    """The run's bill for the native suite's stratospheric floor.
+
+    The floor adds enthalpy to air above ``stratospheric_floor_pa`` that
+    is colder than ``stratospheric_floor_k``.  Each physics call reports
+    the area-mean enthalpy it added (J/m2) and how many grid points it
+    warmed; this ledger sums the heating and keeps the largest point count
+    over the run segment, so the receipt and every diagnostics record carry
+    what the floor did instead of only that it was configured.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.active_calls = 0
+        self.heating_j_m2 = 0.0
+        self.maximum_points = 0.0
+
+    def add(self, metrics: dict[str, object]) -> None:
+        for half in ("first_half_physics", "second_half_physics"):
+            value = metrics.get(half, {})
+            physics = value.get("physics") if isinstance(value, dict) else None
+            if not isinstance(physics, dict):
+                continue
+            heating = float(physics.get("mean_stratospheric_floor_heating_j_m2", 0.0))
+            points = float(physics.get("stratospheric_floor_points", 0.0))
+            self.calls += 1
+            self.heating_j_m2 += heating
+            if points > 0.0:
+                self.active_calls += 1
+            self.maximum_points = max(self.maximum_points, points)
+
+    def record(self) -> dict[str, object]:
+        return {
+            "physics_calls": self.calls,
+            "calls_that_warmed": self.active_calls,
+            "area_mean_heating_j_m2": self.heating_j_m2,
+            "maximum_points_warmed_in_a_call": self.maximum_points,
+        }
 
 
 def _update_trackers(
@@ -652,6 +920,12 @@ def _update_trackers(
         supplementary[key] = max(
             supplementary[key], abs(float(metrics.get(metric, 0.0)))
         )
+    supplementary["minimum_semilag_fold_determinant"] = min(
+        supplementary["minimum_semilag_fold_determinant"],
+        float(metrics.get("semilag_fold_determinant", 1.0)),
+    )
+    supplementary["semilag_trajectory_retried_steps"] += float(
+        metrics.get("semilag_trajectory_retried", 0.0))
     # Per species, so a receipt that reports a large correction says which
     # species carried it.  A run that moves four percent of the graupel and
     # nothing else per step is a different finding from one that moves four
@@ -792,8 +1066,8 @@ def cfl_headroom_receipt(cfg: ArwenGlobalConfig, trackers: dict[str, float]) -> 
 
     The gate is the spectral CFL dt |V|max sqrt(N(N+1))/a against
     ``[time] maximum_cfl``; on the Eulerian path it refuses, on the
-    semi-Lagrangian path it is measured and the Lipschitz gate refuses
-    instead.  The block carries the day's maximum, its fraction of the
+    semi-Lagrangian path it is measured and the trajectory fold gate
+    refuses instead.  The block carries the day's maximum, its fraction of the
     gate, the wind it implies, the largest step this day would have
     admitted at the gate and at the shipped rule, and the shipped step of
     this truncation so a reader sees whether the run took it.
@@ -816,7 +1090,7 @@ def cfl_headroom_receipt(cfg: ArwenGlobalConfig, trackers: dict[str, float]) -> 
     block: dict[str, object] = {
         "role": (
             "measurement: the semi-Lagrangian path has no advective bound, "
-            "the Lipschitz gate refuses instead"
+            "the trajectory fold gate refuses instead"
             if semi_lagrangian else "refusal: the Eulerian path refuses above the gate"
         ),
         "dt_s": dt,
@@ -840,7 +1114,7 @@ def cfl_headroom_receipt(cfg: ArwenGlobalConfig, trackers: dict[str, float]) -> 
     if semi_lagrangian:
         block["sentence"] = (
             f"spectral CFL reached {maximum:.3f} at dt {dt:g} s on the semi-Lagrangian "
-            f"path (no advective bound; the Lipschitz gate refuses instead); the "
+            f"path (no advective bound; the trajectory fold gate refuses instead); the "
             f"Eulerian core would have admitted dt <= {block['largest_step_at_gate_s']:.1f} s "
             f"on this day" if rate > 0.0 else "no CFL reading"
         )
@@ -1024,6 +1298,10 @@ def run(
     per-operator table; the profiled run is bit-identical to an
     unprofiled one (the hooks add no arithmetic).
     """
+    # One rank, one card, before the first device byte (MG-4): a rank of a
+    # multi-card run narrows CUDA_VISIBLE_DEVICES to its own card.  The
+    # door has already done it; this is for a caller that came in here.
+    place_rank_for(cfg)
     # The run's allocator is chosen and installed before the first device
     # byte, because the slab's arena has to be the first thing on the card
     # for the run's bytes to come out of it rather than beside it.
@@ -1171,8 +1449,10 @@ def _run_tracked(
     target_mass = cold_diag["global_mean_surface_pressure_pa"]
     target_water = cold_diag["global_mean_total_water_kg_m2"]
     trackers = normalize_trackers()
-    supplementary = {name: 0.0 for name in SUPPLEMENTARY_TRACKER_KEYS}
+    supplementary = fresh_supplementary()
     species_fixer: dict[str, float] = {}
+    fixer_ledger = PositivityFixerLedger()
+    floor_ledger = StratosphericFloorLedger()
     restart_targets = None
     if restart is None:
         state = cold
@@ -1180,6 +1460,7 @@ def _run_tracked(
         state = state_from_checkpoint(
             restart_metadata, restart_arrays, transform.backend
         )
+        adopt_checkpoint_clock(model, state, f"restart checkpoint {restart}")
         # The second time level rides with the state.  Without it the
         # resumed run would take a non-extrapolated start-up step in the
         # middle of a forecast, which is not the continuation of the
@@ -1300,11 +1581,15 @@ def _run_tracked(
                 model.pipeline.exchange.session.mark_step()
             _update_trackers(trackers, supplementary, metrics,
                              species_fixer)
+            fixer_ledger.add(metrics)
+            floor_ledger.add(metrics)
             due = state.step % output_every == 0 or state.step == total_steps
             if due:
                 with _section(profiler, "diagnostics"):
                     diag = model.diagnostics(state)
                 diag["step_metrics"] = metrics
+                diag["positivity_fixer_ledger"] = fixer_ledger.record()
+                diag["stratospheric_floor_ledger"] = floor_ledger.record()
                 _append_diagnostics(diagnostics_path, diag)
                 with _section(profiler, "checkpoint"):
                     checkpoint = writer.submit(
@@ -1363,6 +1648,12 @@ def _run_tracked(
             "cfl": cfl_headroom_receipt(cfg, trackers),
             **({"semilag_tracer_fixer_by_species": species_fixer}
                if species_fixer else {}),
+            "positivity_fixer_ledger": fixer_ledger.record(),
+            "stratospheric_floor_ledger": floor_ledger.record(),
+            # What the radiation ran with up to the failure: a dead run's
+            # receipt is the one artifact that has to say it.
+            "radiation_greenhouse_gases": _greenhouse_gas_receipt(
+                cfg, getattr(model, "forecast_clock", None)),
             "checkpoints": checkpoints,
             # The peak up to the failure: an out-of-memory death is
             # exactly when this number is wanted.
@@ -1427,6 +1718,13 @@ def _run_tracked(
             "mode": cfg.initial_mode,
             "provenance": model.initial_provenance,
         },
+        # The instant model time zero stands for and where it came from
+        # (arwen_global.clock): the one copy every reader of this run's
+        # valid times takes.
+        "forecast_clock": (
+            None if model.forecast_clock is None
+            else model.forecast_clock.receipt()
+        ),
         # The planet the land surface ran on, named at the top level so a
         # reader never has to know the synthetic arm is a provenance leaf.
         "statics": (
@@ -1497,8 +1795,14 @@ def _run_tracked(
         # level, the energy at the truncation it was read from); None under
         # the hyperdiffusion.
         "closure": getattr(model, "closure_record", None),
+        # What the native radiation radiated: the greenhouse-gas mole
+        # fractions of the run's valid year and the table they came from.
+        "radiation_greenhouse_gases": _greenhouse_gas_receipt(
+                cfg, getattr(model, "forecast_clock", None)),
         **({"semilag_tracer_fixer_by_species": species_fixer}
            if species_fixer else {}),
+        "positivity_fixer_ledger": fixer_ledger.record(),
+        "stratospheric_floor_ledger": floor_ledger.record(),
         "checkpoints": checkpoints,
         "segment_until_s": until_s,
         "restart_targets": restart_targets,
@@ -1522,6 +1826,39 @@ def _run_tracked(
     checked = json.loads(receipt_path.read_text(encoding="utf-8"))
     checked["receipt_path"] = str(receipt_path)
     return checked
+
+
+def wire_gate_row(cards) -> dict | None:
+    """Gate WIRE-1's row, or None on a single card.
+
+    Over TCP the rate is the run's own: bytes over the time the sender
+    threads spent in ``sendall`` while both cards compute.  Over NCCL that
+    quotient is not a link rate: a collective's device time includes its
+    wait on the slowest rank, so a rank that finished its compute first
+    reads its peer's compute as wire time (MEASURED 2026-10-05: 0.03 GB/s
+    on the waiting rank of a T31 run), and the floor would fail a healthy
+    link.  There the gate reads the device link probe the transport took
+    at session open, every rank released together
+    (cards.NcclCards._probe_link), and the in-run rate stays in the
+    receipt as the lower bound it is.
+    """
+    wire = dict((cards or {}).get("wire") or {})
+    if int((cards or {}).get("cards", 1) or 1) <= 1 or not wire:
+        return None
+    floor = float(wire.get("wire_floor_gb_s", 0.0))
+    probe = (cards or {}).get("link_probe_gb_s")
+    if (cards or {}).get("transport") == "nccl" and probe is not None:
+        value, measured = float(probe), "device link probe at session open"
+    else:
+        value = float(wire.get("achieved_gb_s", 0.0))
+        measured = "bytes over sender time while both cards compute"
+    return {
+        "value": value,
+        "limit": floor,
+        "direction": "floor",
+        "measured": measured,
+        "passed": bool(value >= floor),
+    }
 
 
 def run_gates(
@@ -1620,13 +1957,22 @@ def run_gates(
             "value": supplementary["maximum_semilag_trajectory_move_cells"],
             "limit": float(cfg.semilag.trajectory_convergence_cells),
         }
-        gates["semilag_lipschitz"] = {
-            "value": supplementary["maximum_semilag_lipschitz"],
-            "limit": float(cfg.maximum_lipschitz),
+        # The trajectory fold gate (semilag.trajectory.refuse_trajectory_
+        # fold), a FLOOR: the smallest det(I -+ (dt/2) J) the run met.  It
+        # replaced a ceiling on the deformation norm, which read shear and
+        # rotation as folding; that norm stays in the receipt as
+        # maximum_semilag_lipschitz and is not gated.
+        gates["semilag_trajectory_fold_determinant"] = {
+            "value": supplementary["minimum_semilag_fold_determinant"],
+            "limit": float(cfg.minimum_fold_determinant),
+            "direction": "floor",
         }
     for row in gates.values():
-        row["direction"] = "ceiling"
-        row["passed"] = bool(float(row["value"]) <= float(row["limit"]))
+        direction = row.setdefault("direction", "ceiling")
+        if direction == "floor":
+            row["passed"] = bool(float(row["value"]) >= float(row["limit"]))
+        else:
+            row["passed"] = bool(float(row["value"]) <= float(row["limit"]))
     # Gate WIRE-1.  It exists on a MULTI-CARD run only, because a single
     # card moves no bytes and a floor on zero would fail every run that
     # never opened a socket.
@@ -1639,16 +1985,9 @@ def run_gates(
     # four rank-legs -- a quarter below the priced rate, and three of the
     # four below this floor.  Without this row a run reports a speedup
     # priced on a link it did not get, and the receipt says "pass".
-    wire = dict((cards or {}).get("wire") or {})
-    if int((cards or {}).get("cards", 1) or 1) > 1 and wire:
-        achieved = float(wire.get("achieved_gb_s", 0.0))
-        floor = float(wire.get("wire_floor_gb_s", 0.0))
-        gates["two_card_wire_achieved_gb_s"] = {
-            "value": achieved,
-            "limit": floor,
-            "direction": "floor",
-            "passed": bool(achieved >= floor),
-        }
+    row = wire_gate_row(cards)
+    if row is not None:
+        gates["two_card_wire_achieved_gb_s"] = row
     # A gather run reproduces one card only where its cards return the same
     # bits for every contraction the step presents.  Under
     # card_agreement="record" a disagreeing pair carries on and this row is
@@ -1668,6 +2007,7 @@ def run_gates(
 
 
 __all__ = [
+    "adopt_checkpoint_clock",
     "build_model_and_cold_state", "build_physics", "build_transform",
     "run", "run_gates",
 ]

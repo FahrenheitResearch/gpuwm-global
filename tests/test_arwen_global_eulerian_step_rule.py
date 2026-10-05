@@ -247,7 +247,7 @@ def test_receipt_block_on_the_semi_lagrangian_path_is_a_measurement():
     block = cfl_headroom_receipt(cfg, {"maximum_spectral_cfl": 1.554})
     assert block["role"].startswith("measurement")
     assert block["shipped_rule"]["this_run_took_the_shipped_step"] is False
-    assert "Lipschitz" in block["sentence"]
+    assert "trajectory fold gate" in block["sentence"]
     assert block["largest_step_at_gate_s"] == pytest.approx(0.75 / (1.554 / 300.0))
 
 

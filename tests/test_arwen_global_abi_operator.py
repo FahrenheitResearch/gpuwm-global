@@ -324,3 +324,38 @@ def test_cli_parses_band_files_and_tiles():
     assert _parse_tiles(["t,0,10,-20,-5"]) == (("t", 0.0, 10.0, -20.0, -5.0),)
     with pytest.raises(ValueError, match="LABEL,LATMIN"):
         _parse_tiles(["t,0,10"])
+
+
+def test_a_reused_tape_must_carry_the_start_it_is_reused_for(tmp_path, monkeypatch):
+    """A tape reused under another --start-date skipped the export door's
+    clock check, so a disagreeing start was written into the receipt and
+    the state label unchecked.  A tape is reused only when its export
+    receipt records the same start; otherwise it goes back through the
+    door, which refuses a start that disagrees with the run's clock."""
+    import json
+
+    from arwen_global import abi_operator, wrfout_export
+
+    tapes = tmp_path / "tapes"
+    tapes.mkdir()
+    tape = tapes / "wrfout_d01_2026-09-01_06"
+    tape.write_bytes(b"tape")
+    (tapes / wrfout_export.EXPORT_RECEIPT_NAME).write_text(
+        json.dumps({"start_date": "2026-09-01_00:00:00"}), encoding="utf-8")
+    calls = []
+
+    def fake_export(cfg, checkpoints, outdir, **kwargs):
+        calls.append(kwargs["start_date"])
+        return [tape]
+
+    monkeypatch.setattr(wrfout_export, "export_wrfout", fake_export)
+    same = abi_operator.export_tile_tape(
+        None, "ck.npz", tapes, start_date="2026-09-01_00:00:00", bbox=None)
+    assert same == tape and calls == []
+    abi_operator.export_tile_tape(
+        None, "ck.npz", tapes, start_date="2026-09-02_00:00:00", bbox=None)
+    assert calls == ["2026-09-02_00:00:00"]
+    (tapes / wrfout_export.EXPORT_RECEIPT_NAME).unlink()
+    abi_operator.export_tile_tape(
+        None, "ck.npz", tapes, start_date="2026-09-01_00:00:00", bbox=None)
+    assert calls == ["2026-09-02_00:00:00", "2026-09-01_00:00:00"]

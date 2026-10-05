@@ -419,7 +419,7 @@ def measure_run(
     if start_utc_s is None:
         start_utc_s = cs.run_start_utc_s(receipt)
     if start_utc_s is None:
-        raise ValueError("neither the receipt nor the config carries start_time_utc; pass --start")
+        raise ValueError("neither the receipt nor the config carries a forecast clock or start_time_utc; pass --start")
     paths = sorted(Path(p) for p in (checkpoints or run_dir.glob("arwen_global_step*.npz")))
     if len(paths) < 2:
         raise ValueError(f"{len(paths)} checkpoints give no interval; at least 2 are needed")
@@ -680,7 +680,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-dir", help="directory of arwen_global_step*.npz checkpoints and the receipt")
     parser.add_argument("--checkpoints", nargs="*", help="explicit checkpoint paths (else every step file in --run-dir)")
     parser.add_argument("--config", help="the run's TOML, for a run still writing (no receipt yet)")
-    parser.add_argument("--start", help="run start, ISO UTC; else the receipt's start_time_utc")
+    parser.add_argument("--start", help="run start, ISO UTC; else the receipt's forecast clock")
     parser.add_argument("--regions", nargs="*", default=list(DEFAULT_REGIONS))
     parser.add_argument("--no-state", action="store_true", help="accumulator readings only (no soundings)")
     parser.add_argument("--label", default="")

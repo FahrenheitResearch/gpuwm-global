@@ -74,6 +74,13 @@ Eulerian upwind flux form's -0.090 K.  That is the whole of the 4.7 K
 lid disagreement the observation grade could not see, and it is why the
 variable is gathered whole.  :func:`reference_theta_faces` stays because
 the gate that rebuilds the operator's gamma matrix reads it.
+
+The clamp described above is itself retired (DYC-1): the departure level is
+now clamped at the lid and ground INTERFACES, so a parcel arriving at level
+0 under descent departs from the half layer above it and the gather reads
+the warmer air there (semilag.interpolate).  MEASURED on the bare T255 door
+from GDAS 2026-09-01 00Z with the physics off, the global-mean level-0
+drift went from -12.6 K a day to +0.47 K a day.
 """
 from __future__ import annotations
 
@@ -136,7 +143,22 @@ def linear_grid_tendencies(model, state, reference: ReferenceProfile):
     and the thermodynamic rows ``C D`` on the grid.
     """
     transform = model.transform
-    backend = transform.backend
+    phi_l, x_t = linear_spectral_rows(model, state, reference)
+    grid = transform.inverse(transform.project(x_t))
+    del x_t
+    return transform.project(phi_l), grid[:-1], grid[-1]
+
+
+def linear_spectral_rows(model, state, reference: ReferenceProfile):
+    """The two spectral products :func:`linear_grid_tendencies` is built
+    from, before any synthesis: ``(phi_l, x_t)``, the operator's ``B x``
+    and ``C D`` rows, unprojected.
+
+    Split out so the banded step can contract ``x_t`` to a waist once and
+    drain it a latitude band at a time; the products are the same
+    expressions either way.
+    """
+    backend = model.transform.backend
     xp = backend.xp
     operator = reference.operator
     b_matrix, c_matrix, _structure = operator.device_matrices(backend)
@@ -147,9 +169,7 @@ def linear_grid_tendencies(model, state, reference: ReferenceProfile):
     phi_l = weight * xp.einsum("ij,jnm->inm", b_matrix, x)
     del x
     x_t = weight * xp.einsum("ij,jnm->inm", c_matrix, state.divergence)
-    grid = transform.inverse(transform.project(x_t))
-    del x_t
-    return transform.project(phi_l), grid[:-1], grid[-1]
+    return phi_l, x_t
 
 
 def advective_tendencies(
@@ -216,5 +236,6 @@ __all__ = [
     "ReferenceProfile",
     "advective_tendencies",
     "linear_grid_tendencies",
+    "linear_spectral_rows",
     "reference_theta_faces",
 ]

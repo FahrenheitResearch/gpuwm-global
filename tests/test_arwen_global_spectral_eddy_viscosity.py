@@ -42,11 +42,13 @@ T = 31
 #: revision 6fcf1e932, before the closure existed (2026-09-08).  The
 #: closure's fields join the identity only when it is selected, so these
 #: must not move: a config that did not ask for the closure is the same run
-#: it was before the closure was written.
+#: it was before the closure was written.  Re-pinned 2026-10-05 for the
+#: native physics defaults that moved (dated greenhouse gases, the
+#: stratospheric floor's reach and then its retirement from the default).
 PINNED_HASHES = {
-    "configs/verify/arwen_global_gdas_t255_native_24h.toml": "93e5ee7500b8a57a",
-    "configs/verify/arwen_global_gdas_t255_native_imex_24h.toml": "ae84e41ebfc767a2",
-    "configs/verify/arwen_global_gdas_t383_native_24h.toml": "8d4a2799e40a8bc6",
+    "configs/verify/arwen_global_gdas_t255_native_24h.toml": "f7c96622dce0f5c0",
+    "configs/verify/arwen_global_gdas_t255_native_imex_24h.toml": "ca2a0ed96e0c6dc4",
+    "configs/verify/arwen_global_gdas_t383_native_24h.toml": "f735b5032b287787",
 }
 
 

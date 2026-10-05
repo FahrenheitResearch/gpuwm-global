@@ -10,8 +10,9 @@ trusted, because each one fails silently and each one has a cost:
     nothing.  If that guard is ever dropped from one job, the file
     goes from "reviewable" to "armed" without anything else changing, and
     nothing in a diff review reliably catches a deleted `if:` line.
-2.  **The selections agree.**  `test.yml` and `publish.yml` run the same
-    pytest selection, and `tools/ci_test_replay.py` parses it out of the
+2.  **The selections agree.**  `test.yml` runs two CPU tiers: the quick
+    one on every push and the full one nightly.  `publish.yml` runs the
+    full one, and `tools/ci_test_replay.py` parses the quick one out of the
     workflow rather than restating it.  A publish that trusts a green from
     another workflow is trusting a run against another ref, so the
     selection is written twice on purpose and checked here.
@@ -40,8 +41,12 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 #: exist, and creating it is the deliberate act that arms the publisher.
 PUBLISH_SWITCH = "GPUWM_GLOBAL_PUBLISH_AUTHORIZED"
 
-#: The exact pytest selection the CI test job runs.
+#: The exact pytest selection the CI test job runs: the QUICK CPU tier.
 SELECTION = "not gpu and not slow and not network"
+
+#: The FULL CPU tier: everything a host without a card can run.  test.yml's
+#: nightly `full` job and every publish run it.
+FULL_SELECTION = "not gpu"
 
 
 def workflow(name: str) -> str:
@@ -97,7 +102,8 @@ def test_the_reader_sees_the_jobs_that_are_there() -> None:
     publish = jobs(workflow("publish.yml"))
     assert set(publish) >= {"test", "cut", "prepare", "doors", "publish",
                             "release"}, sorted(publish)
-    assert set(jobs(workflow("test.yml"))) >= {"engine_availability", "test"}
+    assert set(jobs(workflow("test.yml"))) >= {"engine_availability", "test",
+                                               "full"}
     assert set(jobs(workflow("build.yml"))) >= {"build"}
     assert set(jobs(workflow("bridges.yml"))), "bridges.yml declares no jobs"
 
@@ -182,7 +188,27 @@ def _selections(text: str) -> list[str]:
 
 def test_the_test_job_runs_the_declared_selection() -> None:
     found = _selections(workflow("test.yml"))
-    assert found == [SELECTION], found
+    assert found == [SELECTION, FULL_SELECTION], found
+    by_job = jobs(workflow("test.yml"))
+    assert _selections(by_job["test"]) == [SELECTION]
+    assert _selections(by_job["full"]) == [FULL_SELECTION]
+
+
+def test_the_full_tier_runs_nightly_and_the_quick_tier_does_not() -> None:
+    """The full tier exists only if something runs it.
+
+    THE BREAKAGE THIS PREVENTS: the whole-model gates the quick tier
+    schedules out (tests/conftest.py FULL_TIER) would run nowhere if the
+    nightly trigger or the full job's guard were dropped, and a gate that
+    runs nowhere reports nothing.
+    """
+
+    text = workflow("test.yml")
+    assert re.search(r"^  schedule:\s*$", text, re.MULTILINE), text[:400]
+    assert re.search(r'^    - cron: "[^"]+"\s*$', text, re.MULTILINE)
+    by_job = jobs(text)
+    assert "github.event_name == 'schedule'" in by_job["full"]
+    assert "github.event_name != 'schedule'" in by_job["test"]
 
 
 def test_the_publish_job_runs_the_same_selection() -> None:
@@ -193,7 +219,7 @@ def test_the_publish_job_runs_the_same_selection() -> None:
     differ the release is proving something other than what CI proves.
     """
 
-    assert _selections(workflow("publish.yml")) == [SELECTION]
+    assert _selections(workflow("publish.yml")) == [FULL_SELECTION]
 
 
 def test_the_local_replay_parses_the_selection_out_of_the_workflow() -> None:
@@ -415,6 +441,85 @@ def test_the_suite_job_checks_out_the_history_its_gates_read() -> None:
         "line-ending gate has no `main` to compare against and skips")
 
 
+# ---------------------------------------------------------------------------
+# a correct install answers doctor with exit 0, where a cut is decided
+# ---------------------------------------------------------------------------
+_INSTALL_LINES = ("gpuwm fetch-bridges", "gpuwm-global fetch-doors",
+                  "gpuwm-global doctor")
+
+
+def _readme_install_lines() -> list[str]:
+    """The command lines of the README block that runs `doctor`."""
+
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    for block in re.findall(r"```bash\r?\n(.*?)```", text, re.DOTALL):
+        commands = [line.split("#", 1)[0].strip()
+                    for line in block.splitlines()]
+        commands = [line for line in commands if line]
+        if "gpuwm-global doctor" in commands:
+            return commands
+    return []
+
+
+def _doctor_step(body: str) -> str:
+    """The run block of the step that runs doctor, comments removed."""
+
+    lines = directives(body).splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() == "gpuwm-global doctor":
+            start = index
+            while start > 0 and not lines[start].strip().startswith("- "):
+                start -= 1
+            end = index + 1
+            while end < len(lines) and not lines[end].strip().startswith("- "):
+                end += 1
+            return chr(10).join(lines[start:end])
+    return ""
+
+
+@pytest.mark.parametrize("name", ["test.yml", "publish.yml"])
+def test_the_suite_job_runs_the_readme_install_and_needs_doctor_exit_0(
+        name: str) -> None:
+    """THE BREAKAGE THIS PREVENTS: the published 0.1.2 `doctor` exited 1
+    on every correct install against every published 2.8.x engine, and the
+    README told readers to ignore the exit code.  No job that decides a cut
+    ran doctor, so the wrong exit code shipped.  The job's step runs the
+    README's own install lines in order, and nothing in it swallows the
+    exit status.
+    """
+
+    readme = _readme_install_lines()
+    assert readme == list(_INSTALL_LINES), readme
+    step = _doctor_step(jobs(workflow(name))["test"])
+    assert step, f"{name}'s test job never runs gpuwm-global doctor"
+    commands = [line.strip() for line in step.splitlines()
+                if line.strip().startswith(("gpuwm ", "gpuwm-global "))]
+    assert commands == list(_INSTALL_LINES), commands
+    assert "|| true" not in step and "continue-on-error" not in step, step
+    assert "set +e" not in step, step
+
+
 @pytest.mark.parametrize("name", ["test.yml", "build.yml", "publish.yml"])
 def test_every_workflow_this_lane_owns_is_present(name: str) -> None:
     assert (WORKFLOWS / name).is_file()
+
+
+def test_the_pre_tag_replay_runs_the_full_tier_a_cut_runs() -> None:
+    """The replay that must be green before a tag defaults to publish.yml's
+    full CPU tier, and the full tier meets a release branch before its tag:
+    with the tiers split, a replay of the quick job and a nightly that runs
+    on the default branch only left the sixteen whole-model gates first
+    meeting a cut ref after the tag existed."""
+
+    import importlib.util
+
+    path = ROOT / "tools" / "ci_test_replay.py"
+    spec = importlib.util.spec_from_file_location("_ci_test_replay", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.WORKFLOW.name == "publish.yml"
+    marker, paths = module.parse_test_job(workflow("publish.yml"))
+    assert marker == "not gpu" and paths == ["tests"]
+    full = jobs(directives(workflow("test.yml")))["full"]
+    assert "refs/heads/release/" in full and "pull_request" in full

@@ -1303,6 +1303,25 @@ class SphericalHarmonicTransform:
         self._agree_across_cards("analysis", table, out)
         return out
 
+    def contract_values(self, values, table=None):
+        """:meth:`contract_waist` on a waist's buffer, or on a leading slice
+        of it: the tail of an analysis.
+
+        A banded caller that filled ONE waist for a stack the resident
+        route analyses in chunks contracts the chunks here, each at the
+        operand shape the resident chunk presents (the chunk is the GEMM's
+        M dimension, so it is arithmetic and not layout).  The same
+        expressions as :meth:`contract_waist`, which keeps its own body so
+        the waist it consumes is not held by a second frame through the
+        GEMMs.
+        """
+        table = self._analysis if table is None else table
+        with self._contraction_scope():
+            out = self._batched_contract(values, table)
+        out[..., :, 0] = out[..., :, 0].real
+        self._agree_across_cards("analysis", table, out)
+        return out
+
     def _analyze(self, field, table, *, bands: int | None = None):
         # No contraction scope here: contract_waist opens its own, and the
         # fill is an FFT and a divide.  _contraction_scope sets CuPy's

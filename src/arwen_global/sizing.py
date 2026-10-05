@@ -205,7 +205,7 @@ from arwen_global.spectral.legendre import (
     packed_table_elements,
 )
 
-from .constants import GRID_TRACERS, SPECTRAL_FIELDS
+from .constants import EARTH_RADIUS_M, GRID_TRACERS, SPECTRAL_FIELDS
 
 GIB = 1024 ** 3
 
@@ -244,6 +244,43 @@ SEMILAG_INTEGRATOR_NAMES = ("sl_si",)
 #: out inside this gather at 15.96 GB, with the physics banded.
 SEMILAG_GATHER_STACKS = 3
 SEMILAG_GATHERED_FIELDS = 11
+#: The levelled arrays the BANDED sl_si step holds whole beside its bands
+#: (semilag.step._semilag_step_banded): the advected grid tracers, which the
+#: bands fill row by row and the mass fixer reads as a globe, plus the
+#: limiter's clip deficits under the additive fixer and the assembled
+#: departure stencil (three coordinates) under the Bermejo-Conde fixer.  A
+#: band count divides the working set and leaves these standing.  MEASURED
+#: 2026-10-05 (four steps, every slice parked, live peak): T533 L40 read
+#: 11.82 GiB at 16 bands and 11.56 at 32 where the model without this
+#: term read 10.01 and 9.43, an under-read of 9.5 and 11.1 grid volumes;
+#: the ten advected species are ten.
+SEMILAG_BANDED_STENCIL_ARRAYS = 3
+#: The Bermejo-Conde fixer's own transient beside them, one species at a
+#: time: the staged source, the trilinear read, the room, the weight and
+#: the correction.  MEASURED 2026-10-05 on an RTX 5090, T533 L40, every
+#: slice parked, the merged tree: 13.01 GiB live at 16 bands (ten steps
+#: 13.84 GB at 32 bands, 12.89 GiB) where the term without the fixer read
+#: 12.50 and 11.91; six volumes close both (five leave the 32-band
+#: reading 0.02 GiB under).
+SEMILAG_BANDED_FIXER_TRANSIENT_ARRAYS = 6
+
+#: The banded semi-Lagrangian step's row halo, mirrored from
+#: semilag.halo.default_halo_rows so the sizer imports no core (a test
+#: holds the two equal): the rows one step's travel crosses at
+#: SEMILAG_HALO_WIND_M_S, plus the quintic stencil's three rows beyond its
+#: bracket and the Lipschitz difference's one.
+SEMILAG_HALO_WIND_M_S = 250.0
+SEMILAG_HALO_STENCIL_ROWS = 3
+SEMILAG_HALO_DIFFERENCE_ROWS = 1
+
+
+def semilag_halo_rows(nlat: int, dt_s: float, radius_m: float) -> int:
+    """The row halo a band of the banded sl_si step holds (semilag.halo)."""
+    n = int(nlat)
+    spacing = math.pi * float(radius_m) / n
+    travel = math.ceil(abs(float(dt_s)) * SEMILAG_HALO_WIND_M_S / spacing)
+    return int(min(n, travel + SEMILAG_HALO_STENCIL_ROWS
+                   + SEMILAG_HALO_DIFFERENCE_ROWS))
 
 #: Float64 band blocks live on the host at the construction peak: the
 #: recurrence's basis band and the analysis band being solved into.
@@ -1095,6 +1132,24 @@ class GlobalMemoryEstimate:
     #: band count that shrinks everything else leaves this standing
     #: (:func:`banded_device_peak_bytes`).  Zero for every other integrator.
     semilag_gather_bytes: int = 0
+    #: The banded sl_si step's row halo at this config's step
+    #: (:func:`semilag_halo_rows`): a band's gather reads its own rows and
+    #: this many either side, so the gather transient of a banded plan is
+    #: the whole figure above cut to those rows
+    #: (:func:`semilag_gather_bytes_at`).  Zero for every other integrator.
+    semilag_halo_rows: int = 0
+    #: How many cards share the band schedule ([memory] cards).  A card of
+    #: a multi-card sl_si run holds only its own rows of the trajectory
+    #: state (semilag.state.RowTrajectory), so that term divides by it;
+    #: nothing else in this estimate does, because the tables, the
+    #: spectral state and the grid tracers are held whole on every card.
+    cards: int = 1
+    #: What the banded sl_si step holds whole beside its bands
+    #: (:data:`SEMILAG_BANDED_STENCIL_ARRAYS` and the advected tracers):
+    #: zero at one band, where the fitted envelope already carries it, and
+    #: added whole above it (:func:`banded_device_peak_bytes`).  Appended
+    #: last so a positional construction keeps its meaning.
+    semilag_banded_held_bytes: int = 0
 
     @property
     def resident_bytes(self) -> int:
@@ -1210,8 +1265,9 @@ class GlobalMemoryEstimate:
                  f"{SEMILAG_GATHER_STACKS} stacks x min(gather_batch, "
                  f"{SEMILAG_GATHERED_FIELDS}) whole grid volumes, the "
                  "departure-point gather's own working set (counted, not "
-                 "fitted; inside the one-band envelope above, added whole "
-                 "to a banded peak because the band count does not divide it)"))
+                 "fitted; inside the one-band envelope above; a banded peak "
+                 "carries it at one band's rows plus a "
+                 f"{self.semilag_halo_rows}-row halo either side)"))
         if self.trajectory_bytes:
             rows.append(
                 ("semi-Lagrangian trajectory state", self.trajectory_bytes,
@@ -1329,7 +1385,71 @@ def estimate_global_memory(cfg) -> GlobalMemoryEstimate:
                       * nlev * points * itemsize)
             if str(getattr(cfg, "integrator", "")).lower() in SEMILAG_INTEGRATOR_NAMES
             else 0),
+        semilag_halo_rows=(
+            semilag_halo_rows(nlat, float(getattr(cfg, "dt_s", 0.0) or 0.0),
+                              EARTH_RADIUS_M)
+            if str(getattr(cfg, "integrator", "")).lower() in SEMILAG_INTEGRATOR_NAMES
+            else 0),
+        cards=max(1, int(getattr(cfg, "cards", 1) or 1)),
+        semilag_banded_held_bytes=(
+            semilag_banded_held_arrays(cfg) * nlev * points * itemsize
+            if str(getattr(cfg, "integrator", "")).lower() in SEMILAG_INTEGRATOR_NAMES
+            else 0),
     )
+
+
+def semilag_banded_held_arrays(cfg) -> int:
+    """How many levelled grid arrays the banded sl_si step holds whole."""
+    semilag = getattr(cfg, "semilag", None)
+    if str(getattr(semilag, "tracer_scheme", "semi_lagrangian")) != "semi_lagrangian":
+        return 0
+    fixer = str(getattr(semilag, "tracer_fixer", "bermejo_conde"))
+    held = len(GRID_TRACERS)
+    if fixer == "bermejo_conde_additive":
+        held += len(GRID_TRACERS)
+    if fixer == "bermejo_conde":
+        held += SEMILAG_BANDED_STENCIL_ARRAYS + SEMILAG_BANDED_FIXER_TRANSIENT_ARRAYS
+    return held
+
+
+def semilag_gather_bytes_at(estimate, bands: int) -> int:
+    """The semi-Lagrangian gather transient of a plan at ``bands`` bands.
+
+    One band is the whole grid, and the figure is
+    :attr:`GlobalMemoryEstimate.semilag_gather_bytes`.  Above one band the
+    gather reads a band's rows plus :attr:`semilag_halo_rows` either side
+    (semilag.step._semilag_step_banded), so its three stacks are that many
+    rows wide: the widest band of the schedule plus two halos, never more
+    than the grid.  Until the banded step existed every departure point
+    could read any row and the whole figure stood at every band count,
+    which priced T799 at 48.5 GiB of card against 30.9 free (audit
+    2026-10-05, MG-6).
+
+    The banded peak also carries what the banded step holds whole beside
+    its bands (:attr:`GlobalMemoryEstimate.semilag_banded_held_bytes`),
+    which the readings below lacked.
+
+    THE BANDED SL PEAKS THIS TERM SITS IN ARE NOT YET A CALIBRATION ROW.
+    MEASURED 2026-10-05 with tools/semilag_band_identity_run.py (four
+    steps, synthetic statics, live peak only, so not the probe of record):
+    T533 L40 at 16 bands with every slice parked reads 11.82 GiB live on
+    an RTX 5070 Ti where this model reads 10.01 (the tree before the
+    banded step ran out of memory there at step 1, 16.07 GB allocated);
+    T799 L40 at 150 s and 32 bands with every slice parked reads 27.27
+    GiB live on an RTX PRO 6000 where this model reads 20.46 (the tree
+    before read 49.35 against a model figure of 30.31).  Both are
+    under-reads, which is why T799 stays behind :func:`above_fitted_domain`
+    until a probe of record at that shape is added as a row.
+    """
+    whole = int(getattr(estimate, "semilag_gather_bytes", 0) or 0)
+    b = max(1, int(bands))
+    if whole == 0 or b == 1:
+        return whole
+    nlat = int(estimate.nlat)
+    halo = int(getattr(estimate, "semilag_halo_rows", 0) or 0)
+    widest = -(-nlat // b)
+    rows = min(nlat, widest + 2 * halo)
+    return int(math.ceil(whole * rows / nlat))
 
 
 def worst_model_under_read() -> float:
@@ -2246,13 +2366,24 @@ def banded_device_peak_bytes(estimate: GlobalMemoryEstimate, bands: int,
             getattr(estimate, "truncation", None))
         divisible = working * (1.0 - fraction)
         peak = int(peak - divisible * (1.0 - 1.0 / b))
-        # The semi-Lagrangian gather's whole-grid transient stands whatever
-        # the band count; once the bands have shrunk the rest it is what
-        # is left standing.  MEASURED 2026-09-07, RTX 5070 Ti, T533 L40
-        # sl_si, sixteen bands, every slice parked: out of memory inside
-        # the gather at 15.96 GB, where the same shape on the IMEX core
-        # ran at 9.59 GiB live.
-        peak += int(getattr(estimate, "semilag_gather_bytes", 0) or 0)
+        # The semi-Lagrangian gather's transient, at a band's rows plus its
+        # halo.  It stood whole whatever the band count until the step was
+        # banded: MEASURED 2026-09-07, RTX 5070 Ti, T533 L40 sl_si, sixteen
+        # bands, every slice parked, out of memory inside the gather at
+        # 15.96 GB where the same shape on the IMEX core ran at 9.59 GiB
+        # live.  The banded step reads a band and its halo
+        # (semilag_gather_bytes_at).
+        peak += semilag_gather_bytes_at(estimate, b)
+        # And what the banded step holds whole beside its bands: the
+        # advected species and, under the default fixer, the assembled
+        # stencil (SEMILAG_BANDED_STENCIL_ARRAYS says what was measured).
+        peak += int(getattr(estimate, "semilag_banded_held_bytes", 0) or 0)
+    # A card of a multi-card sl_si run holds its own rows of the trajectory
+    # state and no other card's (semilag.state.RowTrajectory).
+    cards = max(1, int(getattr(estimate, "cards", 1) or 1))
+    if cards > 1:
+        trajectory = int(getattr(estimate, "trajectory_bytes", 0) or 0)
+        peak -= int(trajectory * (1.0 - 1.0 / cards))
     relief = int(max(0, int(spilled_bytes)) * SPILL_RELIEF)
     return max(0, peak - relief)
 
@@ -2612,7 +2743,11 @@ def plan_run_memory(cfg, free_bytes: int | None, estimate=None,
 
     budget = int(DEVICE_BUDGET_FRACTION * float(free_bytes))
     widest = _widest_band_count(estimate.nlat)
-    ladder = [b for b in LATITUDE_BAND_LADDER if b <= widest] or [1]
+    # A multi-card run gives every card at least one band (cards.band_owners
+    # refuses an idle card), so no count below the card count is a plan.
+    cards = max(1, int(getattr(estimate, "cards", 1) or 1))
+    ladder = [b for b in LATITUDE_BAND_LADDER
+              if cards <= b <= widest] or [max(1, min(cards, widest))]
     if declared_bands > 0:
         ladder = [declared_bands]
 
@@ -2963,6 +3098,21 @@ def measured_runs_at(truncation: int, nlev: int, precision: str) -> tuple:
 #: a second time level and a whole-grid gather the Eulerian core does not,
 #: so neither bounds the other.
 COMPLETED_PLAN_PEAKS = (
+    {
+        "label": "T533 L40 on the semi-Lagrangian core, thirty-two bands, every slice parked, the ten-step probe of the merged tree",
+        "truncation": 533, "nlat": 801, "nlon": 1602, "nlev": 40,
+        "precision": "float32", "core": "semilag",
+        "radiation_column_chunk": 5_000,
+        "bands": 32, "spill_slices": ("physics", "surface", "tracers"),
+        "peak_used_bytes": 13_838_927_872, "held_bytes": 16_704_454_656,
+        "measured_on": "2026-10-05", "device": "NVIDIA GeForce RTX 5090",
+        "run": "ten steps at 300 s of the T533 GDAS semi-Lagrangian config "
+               "(arwen_global_gdas_t533_native_sl_si_24h.toml) at 32 bands "
+               "with all three slices parked, on the tree with the banded "
+               "step, the fold gate and the Bermejo-Conde fixer: status "
+               "pass, 13.53 s a step, 12.89 GiB live, 15.56 held "
+               "(x1.2071), 4.39 GiB parked",
+    },
     {
         "label": "T533 L40 on the semi-Lagrangian core, one band, every slice parked, the 25 km day",
         "truncation": 533, "nlat": 801, "nlon": 1602, "nlev": 40,

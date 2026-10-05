@@ -1,7 +1,9 @@
 """Replay this repository's CI test job locally, against the built wheel.
 
-The job replayed is ``.github/workflows/test.yml``'s ``test`` job: build
-the distribution, install it into a fresh environment, and run
+The job replayed is, by default, ``.github/workflows/publish.yml``'s
+``test`` job, the FULL CPU tier a cut runs (``--tier quick`` replays
+``test.yml``'s per-push ``test`` job instead): build the distribution,
+install it into a fresh environment, and run
 
     python -m pytest -q -m "<marker filter>" tests
 
@@ -56,7 +58,18 @@ import venv
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = REPO_ROOT / ".github" / "workflows" / "test.yml"
+#: The workflow each tier is read from.  THE BREAKAGE THE DEFAULT PREVENTS:
+#: when the suite split into a per-push quick tier and a full tier, the
+#: replay kept parsing test.yml's quick job, so the replay that must be
+#: green BEFORE a tag ran none of the sixteen whole-model gates the full
+#: tier holds, and the full tier first met a cut ref in publish.yml, after
+#: the tag and the release existed -- a gate failure there spends a
+#: version, which is the failure this replay was built to prevent.
+WORKFLOWS = {
+    "full": REPO_ROOT / ".github" / "workflows" / "publish.yml",
+    "quick": REPO_ROOT / ".github" / "workflows" / "test.yml",
+}
+WORKFLOW = WORKFLOWS["full"]
 
 #: Seeded into the replay venv before anything else, because the CI
 #: interpreter already carries them and a fresh venv on 3.12+ does not.
@@ -258,8 +271,14 @@ def main() -> int:
     parser.add_argument("--python", default=sys.executable,
                         help="interpreter to build the venv from "
                              "(CI runs 3.11 and 3.12; default: this one)")
+    parser.add_argument("--tier", choices=sorted(WORKFLOWS), default="full",
+                        help="full (default): the selection a cut runs in "
+                             "publish.yml, which is what must be green before "
+                             "a tag; quick: test.yml's per-push selection")
     args = parser.parse_args()
 
+    global WORKFLOW
+    WORKFLOW = WORKFLOWS[args.tier]
     workflow_text = WORKFLOW.read_text(encoding="utf-8")
     marker, test_paths = parse_test_job(workflow_text)
     pytest_flags = parse_test_job_flags(workflow_text)

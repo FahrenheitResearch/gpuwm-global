@@ -11,7 +11,9 @@ from ..constants import (
     NUMBER_MOMENTS,
     WATER_SPECIES,
 )
-from ..export import read_parent_export
+from .. import render_kernels
+from ..export import PARENT_WATER_SPECIES, read_parent_export
+from ..physics.native_batch import mixing_ratio_from_specific_humidity
 from .artifact import (
     file_hash,
     read_regional_target,
@@ -65,20 +67,12 @@ def _vertical(parent_pressure, parent_value, target_pressure, bottom_values=None
 
 
 def _hydrostatic_half(virtual_temperature, p_half, terrain_geopotential):
-    nlev = virtual_temperature.shape[0]
-    half = np.empty((nlev + 1, *terrain_geopotential.shape), np.float64)
-    half[-1] = terrain_geopotential
-    for k in range(nlev - 1, -1, -1):
-        half[k] = half[k + 1] + DRY_AIR_GAS_CONSTANT * virtual_temperature[k] * np.log(
-            p_half[k + 1] / p_half[k]
-        )
-    full = np.empty_like(virtual_temperature)
-    for k in range(nlev):
-        p_full = np.sqrt(p_half[k] * p_half[k + 1])
-        full[k] = half[k + 1] + DRY_AIR_GAS_CONSTANT * virtual_temperature[k] * np.log(
-            p_half[k + 1] / p_full
-        )
-    return half, full
+    """Half- and full-level geopotential reintegrated up from the target
+    terrain, in the Rust render kernels."""
+    return render_kernels.hydrostatic(
+        virtual_temperature, p_half, terrain_geopotential,
+        gas_constant=DRY_AIR_GAS_CONSTANT, full_levels=True,
+    )
 
 
 def _mu_at_u(mu):
@@ -125,10 +119,9 @@ def translate_parent_to_regional_frame(
     )
     if np.any(ps < 30_000.0) or np.any(ps > 120_000.0):
         raise ValueError("terrain-adjusted regional surface pressure is outside bounds")
-    p_half = a[:, None, None] + b[:, None, None] * ps[None]
+    p_half, p_full = render_kernels.hybrid_pressure(a, b, ps)
     if np.any(np.diff(p_half, axis=0) <= 0.0):
         raise ValueError("target hybrid pressure is not monotonic")
-    p_full = np.sqrt(p_half[:-1] * p_half[1:])
     dp = p_half[1:] - p_half[:-1]
 
     parent_p_full = _horizontal(parent, "p_full_pa", target_lat, target_lon)
@@ -158,6 +151,20 @@ def translate_parent_to_regional_frame(
             ),
             0.0,
         )
+    # The parent carries the model's specific humidities; the regional
+    # engine's qv, its dry column (dp / (1 + r)) and its dry specific volume
+    # are dry-mixing-ratio quantities, so the water converts here with the
+    # model's own r_x = q_x / (1 - q_v) (GI-5, audit 2026-10-05).  An
+    # export written before the convention was recorded carries q as well.
+    convention = parent_meta.get("water_species", PARENT_WATER_SPECIES)
+    if convention != PARENT_WATER_SPECIES:
+        raise ValueError(
+            f"parent export water convention {convention!r} is not "
+            f"{PARENT_WATER_SPECIES!r}; installing it as the regional "
+            "mixing ratio would mis-state every water species"
+        )
+    tracers.update(mixing_ratio_from_specific_humidity(
+        {name: tracers[name] for name in WATER_SPECIES}))
     for name in NUMBER_MOMENTS:
         tracers[name] = np.maximum(
             _vertical(
@@ -189,9 +196,10 @@ def translate_parent_to_regional_frame(
     if nlev > 1:
         w_half[1:-1] = 0.5 * (w_full[:-1] + w_full[1:])
 
-    temperature = theta * (p_full / _REFERENCE_PRESSURE_PA) ** _KAPPA
-    condensate = sum(tracers[name] for name in ("qc", "qr", "qi", "qs", "qg"))
-    virtual_temperature = temperature * (1.0 + 0.61 * tracers["qv"] - condensate)
+    temperature, virtual_temperature = render_kernels.virtual_temperature(
+        theta, tracers, p_full,
+        reference_pressure_pa=_REFERENCE_PRESSURE_PA, kappa=_KAPPA,
+    )
     phi_half, phi_full = _hydrostatic_half(
         virtual_temperature, p_half, target_phi_surface
     )
@@ -289,6 +297,7 @@ def translate_parent_to_regional_frame(
             "geopotential": "target-terrain-hydrostatic-reintegration-v1",
             "vertical_velocity": "interpolated-parent-w-with-zero-boundary-flux-v1",
             "dry_mass": "sum-dp-over-one-plus-total-water-v1",
+            "water": "parent-specific-humidity-to-dry-mixing-ratio-q-over-one-minus-qv-v1",
             "coupling": "existing-Arwen-WRF-u-v-theta-phi-mu-qv-units-v1",
         },
         "extrapolated_fraction": extrapolated,

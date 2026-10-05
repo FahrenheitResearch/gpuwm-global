@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from conftest import requires_netcdf_writer  # noqa: E402
+from conftest import requires_netcdf_writer, requires_render_kernels  # noqa: E402
 
 from arwen_global import surface_seeding as seeding
 from arwen_global.analysis_initial import _global_regridder, analysis_initial_state
@@ -616,6 +616,7 @@ def test_xland_plane_is_shared_by_the_statics_and_the_runtime():
 
 
 @requires_netcdf_writer
+@requires_render_kernels
 def test_the_render_tape_carries_the_seeded_surface(tmp_path):
     import netCDF4
 

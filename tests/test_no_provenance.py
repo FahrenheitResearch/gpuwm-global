@@ -358,7 +358,7 @@ def lane_vocabulary_tally() -> dict[str, int]:
 #: moves the count turns this red and moves the number here, which is the
 #: failure mode both earlier tallies had.
 _RECORDED_LANE_TALLY: dict[str, int] = {
-    "docs": 8, "src": 57, "tests": 16, "tools": 1, "total": 82,
+    "docs": 8, "src": 56, "tests": 16, "tools": 1, "total": 81,
 }
 
 

@@ -62,15 +62,17 @@ def test_the_25_km_day_is_admitted_on_the_32_gb_card_at_the_plan_that_completed(
 
 
 def test_a_ceiling_never_raises_the_model_and_never_crosses_a_core():
-    # T533 at 32 bands with every slice parked: the model reads under the
-    # two-band completion, and the model stands.
+    # T533 at 32 bands with every slice parked: the merged tree's own
+    # ten-step completion at that count is the lightest applicable row, and
+    # the model, which now carries what the banded step holds whole, reads
+    # above it; the ceiling can only lower the model to what a run took.
     cfg = load_config(T533_DAY)
     estimate = dataclasses.replace(sizing.estimate_global_memory(cfg), backend="cupy")
     sizes = sizing._spill_census_estimate(cfg, estimate)
     model = sizing.banded_device_peak_bytes(estimate, 32, spilled_bytes=sum(sizes.values()))
     row = sizing.completed_plan_ceiling(estimate, 32, ALL)
-    assert row is not None and int(row["peak_used_bytes"]) == 21_152_070_656
-    assert model < int(row["peak_used_bytes"])
+    assert row is not None and int(row["peak_used_bytes"]) == 13_838_927_872
+    assert model >= int(row["peak_used_bytes"])
     # The Eulerian core has no row: it holds neither the second time level
     # nor the gather, so the semi-Lagrangian rows do not speak for it.
     eulerian = dataclasses.replace(sizing.estimate_global_memory(load_config(T383_EULERIAN_DAY)), backend="cupy")
@@ -82,6 +84,7 @@ def test_a_ceiling_never_raises_the_model_and_never_crosses_a_core():
     (1, ALL, 5_000, 24_940_350_464),           # the one-band day IS one band's figure
     (2, ALL, 5_000, 21_152_070_656),           # the two-band probe is the smaller bound at two
     (4, ALL, 5_000, 21_152_070_656),           # and the lightest applicable row bounds every count above
+    (32, ALL, 5_000, 13_838_927_872),          # until a row measured at a higher count is lighter
     (2, ("physics",), 5_000, None),            # a plan that parks less is not bounded
     (2, ALL, 12_500, None),                    # a larger radiation chunk is not bounded by a smaller one's run
     (1, ("physics", "surface"), 5_000, None),  # the surface alone is not every slice

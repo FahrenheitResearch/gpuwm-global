@@ -1,5 +1,477 @@
 # Changelog
 
+## 0.1.3
+
+### Added
+
+- `gpuwm-global score RUN_DIR --out DIR` scores a finished run of any
+  truncation (T255, T383, T533) in one command.  The verification of record
+  is observations: ASOS/METAR stations through `rw_asos` (2 m temperature,
+  2 m dewpoint, 10 m wind speed, sea-level pressure) and IGRA2 radiosondes
+  through `rw_igra2` (500 hPa height, 850 and 500 hPa temperature, 250 and
+  850 hPa vector wind).  The GFS analysis (GDAS f000) and the IFS analysis
+  (ECMWF open data, 0 h) are secondary references, scored on the run's grid
+  and labelled as a distance from another model, not as skill.  Every decode
+  is a Rust door; the doors and the analyses are fetched when not given.
+  Before it, observation scores came from two module entrances fed by a
+  Python IGRA2 extract, and T383 and T533 had none.
+
+### Fixed
+
+- The cold start's regrid of the analysis onto the Gaussian grid and its
+  ln(p) remap onto model levels run in Rust: `rw_global_coldstart`, a
+  library built from this package's own `rust/` workspace and carried in the
+  companion bundle from this release.  Both ran in host NumPy on every
+  analysis-initialised start, which the Python boundary forbids on the data
+  path.  The Rust output is byte-identical to the NumPy it replaces, so no
+  analysis-initialised answer moves.  There is no NumPy fallback: without
+  the library a cold start refuses as a missing door, and `doctor` names it.
+- The render tapes and the regional translation run in Rust.  Every tape
+  `export`, `render` and `go` write was regridded from the Gaussian grid
+  with NumPy and its hydrostatic column integrated in a Python loop per
+  level, and `translate-regional-frame` interpolated each target column in
+  ln p with its own Python call to np.interp.  Both now run in
+  `global_render_kernels`, the second library built from this package's
+  own `rust/` workspace and carried in the companion bundle from this
+  release, with no NumPy fallback: without it those commands refuse as a
+  missing door.  Measured on Linux (glibc, AVX2) the output is bit for bit
+  what the NumPy wrote.  On an AVX-512 machine (measured on an EPYC 9554)
+  NumPy's own exp, log and pow differ from the C library's in the last
+  bit, so the float64 regional frames differ from the earlier NumPy ones by
+  about 1 ulp there (the float32 tapes did not change); the library gives
+  the same bits on both.  The Windows build has not been measured against
+  the Windows NumPy.  The companion bundle now carries ten Rust doors, the
+  cold-start library and the render kernels among them.
+- The semi-Lagrangian tracer mass fixer no longer rescales a whole species by
+  one factor.  The default `[semilag] tracer_fixer = "bermejo_conde"` is now
+  the published Bermejo-Conde fixer in its IFS form: each point is corrected
+  in proportion to the gap between its cubic and its trilinear value at the
+  departure point, toward the trilinear value and never past it.  On the T255
+  bare forecast day the uniform factor fell from 0.119 (graupel), 0.057
+  (snow), 0.050 and 0.043 (their number moments) in the worst step to float32
+  roundoff (2.4e-7), with every species still closed to 2.9e-7 of its mass per
+  step.  Answers change: after 24 h the global graupel content is 10.7
+  percent lower, accumulated graupel 8.9 percent lower, accumulated rain 1.3
+  percent lower and cloud water 5.3 percent higher than on 0.1.2.  The old
+  uniform form is selectable as `mass_proportional`.  Restarts written by
+  0.1.2 under the semi-Lagrangian core stay inspectable and are not resumed,
+  because the scalar transport pin moved to v4.
+- `gpuwm-global doctor` exits 0 on a correct install against the published
+  gpuwm 2.8.0.  It graded `preflight.measured_free_vram_bytes` and
+  `surface_bias.interpolate_to_tape`, which that engine does not carry, as
+  gaps and exited 1, though no documented command reaches either.  Both now
+  print as optional notes; calling either still refuses by name.
+- A Rust door the installed engine's own bundle declares is the engine's
+  door.  `doctor` grades it against the engine's pins and names the
+  engine's `fetch-bridges` as its remedy, and `fetch-doors` leaves it to the
+  engine.  On an install whose engine bundle carries every door this model
+  runs on, `doctor` graded the engine's `rw_asos` and `rw_goes` against this
+  package's pins for a different build, reported the other six as not
+  staged, and failed with eight gaps; there `fetch-doors` now says it has
+  nothing to stage and succeeds.  The contract literal still has to be in
+  the bytes, so an engine build older than the contract is still a gap.
+- `fetch-doors` downloads from the repository the installed distribution's
+  own metadata names, not from an address written into the source.
+- An open-water column starts on a water temperature.  Open water holds its
+  starting skin temperature for the whole forecast (there is no ocean model;
+  an inland lake now follows its own heat budget, below), and the cold start
+  took that skin from a plain bilinear regrid of the analysis skin
+  temperature, which mixes in the analysis's land points wherever the run's
+  land fraction calls a column water and the analysis calls part of its
+  stencil land.  On the GDAS 2026-09-30 12Z analysis the north basin of Lake
+  Turkana (4.45 N, 36.09 E on the T255 grid) started at 321.1 K, the
+  afternoon desert around the lake, where the analysis's own lake point read
+  300.8 K.  Held for the forecast, that column evaporated about 1.2e-3
+  kg/m2/s, near 3,000 W/m2 of latent heat, day and night, and emptied its
+  500 kg/m2 surface reservoir at hour 117.3 of a 120 h T255 forecast, which
+  ended with "native physics water closure exceeds the explicit surface
+  reservoir".  The water books were exact; the flux they booked was wrong.
+  Open-water columns now take the analysis skin over the analysis's own
+  water points only: the bilinear weights renormalised over the stencil's
+  water points, and a stencil with none reads the analysis water values
+  grown outward over its land, the rule metgrid applies to SST.  Land and
+  sea-ice columns keep the plain regrid.  On that analysis the rule changed
+  1,784 of the 164,018 open-water columns by more than 1 K, and the run
+  receipt records it under `initial.provenance.open_water_skin`.
+- The land surface never receives convective rain the atmosphere did not
+  lose.  Grell-Freitas's deep arm reports more rain than its own tendencies
+  take out of the column: 1.27 times over the raining columns of WRF
+  v4.6.1's oracle fixture, and 1.77 times over the globe and 2.28 times over
+  land in the first day of the T255 GDAS 2026-09-30 12Z forecast.  Noah was
+  forced with the reported number, so its soil, canopy and runoff gained
+  water that never left the atmosphere, and the surface reservoir paid for
+  it: in a 240 h forecast from that analysis the reservoir of a convective
+  column in Colombia fell to 124 kg/m2 as the scheme reported 660 kg/m2 of
+  rain and removed 288, about 1.6 kg/m2/h, enough to stop a forecast of
+  about two weeks with the same refusal as the lake.  The land bucket now
+  takes the reported rain only up to the water the call removed, and `RAINC`
+  carries that same number, so the maps and the water budget's evaporation
+  read the convective rain that left the atmosphere rather than the scheme's
+  larger report (the scheme reported 660 kg/m2 on that Colombian column and
+  removed 288).  What a call reported beyond the removed water is kept as its
+  diagnostic `cumulus_rain_withheld_kg_m2`, beside
+  `cumulus_rain_reported_kg_m2` and `cumulus_water_removed_kg_m2`.  The
+  atmosphere is unchanged.  On the GDAS 2026-09-25 12Z case the lowest
+  reservoir at 120 h rises from 267 to 399 kg/m2; the global 2 m temperature
+  and 500 hPa height errors against the GDAS analyses at 24, 72 and 120 h (a
+  diagnostic, not the verification of record) change by less than 0.01 K
+  and 0.5 m.
+  Against observations on that case, the verification of record (one
+  T255 case, 1 degree boxes), the four-day precipitation total over 60 S
+  to 60 N falls from 1.43 to 1.06 times CMORPH's gauge-adjusted total, over
+  land from 1.45 to 1.05 times the CPC gauge analysis, and over the
+  contiguous United States from 1.59 to 1.17 times the MRMS multi-sensor
+  total, and the equitable threat score at 10 and 25 mm rises against all
+  three.  At about 2,700 to 2,950 surface stations (METAR, 12Z, 24 to
+  120 h) the 2 m temperature error rises by 0.002 to 0.022 K, the 2 m
+  dewpoint error moves by -0.034 to +0.195 K (the largest at 96 h, where
+  the dry bias grows from 1.83 to 1.98 K) and the sea-level pressure error
+  by +0.002 to +0.224 hPa; against about 470 to 540 radiosondes (12 to
+  72 h) the 500 hPa height error falls by 0.02 to 0.18 m and the 850 hPa
+  temperature error by 0.002 to 0.015 K.
+- An inland lake's water temperature follows its own heat budget.  Open
+  water held its starting skin temperature for the whole forecast.  On the
+  ocean that is the analysis SST; on an inland lake it is the analysis's
+  lake temperature, which is weakly observed.  GDAS carried Lake Tana (11.9
+  N, 37.5 E) at 304.8 to 305.1 K at all eight cycles of 2026-09-29 and
+  2026-09-30, 9.2 K above the 2 m air over it, and held for a 240 h T255
+  forecast that column evaporated about 22 kg/m2 a day, several times
+  published estimates of the lake's open-water evaporation (about 4 to 5 mm
+  a day); the warm lakes were the columns whose surface reservoirs would
+  next reach "native physics water closure exceeds the explicit surface
+  reservoir", about 23 days out.  A lake column (WRF's LAKEMASK rule: open
+  water whose lake share in the statics' land-use fractions beats its ocean
+  share; 920 columns at T255, from the Black Sea, the Caspian and the Great
+  Lakes to Tana and Turkana) now integrates its skin on the land cadence
+  from the shortwave and longwave it absorbs, its own emission and the
+  surface layer's sensible and latent fluxes, over the water heat capacity
+  the state carries (a 10 m mixed layer), and is not cooled below 273.15 K.
+  The ocean, land and sea ice are unchanged, and a run without lakes is bit
+  for bit the previous runtime.  The statics carry the lake share as the new
+  surface member `lake_fraction`: a checkpoint written before it reads with
+  no lakes and records the absence, so it resumes and runs as it did, and a
+  checkpoint written with it is refused by a reader from before it
+  ("checkpoint has an unknown array namespace").  Against observations on
+  the GDAS 2026-09-25 12Z case (T255, 120 h, one RTX PRO 4500, both arms
+  with the two fixes above): against OISST v2.1 on the lake columns it
+  covers, the lake surface temperature error at 120 h falls from 1.37 to
+  1.11 K RMSE (bias +0.37 to -0.35 K), because the observed lakes cooled 1.0
+  K over the five days and a held skin cannot follow;  Lake Superior 1.49 to
+  0.66 K, Lake Huron 1.09 to 0.68 K, Lake Michigan 1.15 to 0.68 K, the Black
+  Sea 1.22 to 0.99 K, the Caspian 1.64 to 1.39 K, while Lakes Erie and
+  Ontario (1.15 to 1.51 K) and Ladoga (0.75 to 0.80 K) move the other way.
+  Lake Tana's column cools from 305.3 to 299.6 K by 120 h and evaporates
+  13.7 kg/m2 a day over the five days instead of 20.7.  At about 2,700 to
+  2,960 surface stations (METAR, 12Z, 24 to 120 h) the 2 m temperature RMSE
+  moves by -0.013 to +0.019 K, the 2 m dewpoint by -0.041 to +0.086 K and
+  the sea-level pressure by -0.164 to +0.016 hPa; at the 210 to 220 of them
+  within 100 km of a lake column the 2 m temperature moves by -0.025 to
+  +0.171 K (the largest at 96 h) and the dewpoint by -0.031 to +0.067 K.
+  Against 425 to 540 radiosondes (IGRA2, 12 to 72 h, the two arms rerun on
+  one RTX 5090) the 500 hPa height RMSE moves by -0.085 to +0.059 m and the
+  850 hPa temperature by -0.011 to +0.020 K.  The precipitation total
+  against CMORPH (60 S to 60 N), the CPC gauges and MRMS moves by at most
+  0.017 of its ratio to the observed total.
+- A render tape names its model.  Every wrfout-shaped tape the export
+  writes carries the global attribute `GPUWM_MODEL_LABEL`, so the engine's
+  renderer draws the global model's name in each map's metadata row.  The
+  renderer imported any such file under its generic WRF identity, so every
+  global map said WRF.  An engine whose renderer does not read the
+  attribute ignores it and draws as before.
+- A configuration that omits `[time] dt_s` under the semi-Lagrangian core
+  takes the core's 300 s step at every truncation, T533 included.  A
+  truncation-scaled step (225 s at T533) was carried briefly as the remedy
+  for the 0.75 trajectory norm gate's stop of a T533 forecast at 66.3 h; it
+  is retired with that gate (below), and the T533 presets are back on
+  300 s with their 1500 s radiation and 300 s land buckets, so their
+  identities are the 0.1.2 ones apart from the dated greenhouse gases.
+- The physics registry and the documentation keep verification, validation
+  and device qualification apart.  An adapter contract that has passed its
+  device battery is `device-qualified`, a statement about the device, not a
+  validation against observations.  A contract spelled `validated` is still
+  accepted as an alias and keeps its spelling, so its hash and every bridge
+  or checkpoint identity bound to it are unchanged.
+- Grell-Freitas reports the convective rain its own tendencies take out of
+  the column.  The deep arm added the downdraft evaporation the detrained
+  cloud water could not supply to the rain instead of subtracting it, a
+  sign WRF 4.7.1 carries (`module_cu_gf_deep.F:3348`), so the reported rain
+  was 1.27 times the water removed over the WRF oracle capture's raining
+  columns and, on the T255 GDAS 2026-09-30 12Z day, 1.77 times globally and
+  2.28 times over land; Noah was forced with the excess and the surface
+  reservoir paid for it.  It is now 1.004 times on the oracle capture and
+  1.03 globally and 1.02 over land on that day, the remainder being the
+  model's specific-humidity water metric against the kernel's
+  mixing-ratio one (the oracle capture reads 1.025 in the model's metric).
+  Day-one convective rain falls from 1.570 to 0.913 kg/m2 globally and from
+  1.727 to 0.764 kg/m2 over land; the land's top soil water ends the day
+  1.2 percent drier, its evaporation 3.9 percent lower and its 2 m
+  temperature 0.02 K warmer.
+- Grell-Freitas's undilute buoyancy integral keeps its cloud-base layer
+  (WRF `module_cu_gf_deep.F:3024`), so the deep and the shallow closures no
+  longer read one layer short.  Deep convection ran in 0.08 percent more
+  column calls on the T255 day and the day's convective rain moved by 0.09
+  percent.
+- YSU runs its thermal-enhanced Richardson sweep only where the
+  boundary-layer flag is set (WRF `bl_ysu.F90:703-728`), so a column whose
+  first boundary-layer top sat below the first interface stays in the local
+  diffusion regime as WRF keeps it; on the engine's measured onset column
+  the boundary layer reads 95 m, not 431 m.  Global and land means on the
+  T255 day move by about 0.001 K in 2 m temperature and 0.3 m in
+  boundary-layer height.
+- The semi-Lagrangian core no longer stops a forecast on shear or
+  rotation.  Its trajectory gate refused when dt times a norm of the flow
+  Jacobian passed 0.75, and a norm cannot tell a fold from a rotation: it
+  refused a T533 forecast at 66.3 h (norm 0.7511) and a six-iteration
+  T799 run at 0.25 h.  The gate now refuses where the trajectory map
+  actually folds, when the smallest det(I -+ (dt/2) J) over the grid falls
+  below `[time] minimum_fold_determinant` (default 0.2), and the norms stay
+  in the receipt as diagnostics.  A departure search that misses its
+  convergence test is searched again at eight iterations before the step is
+  refused, and the receipt counts those steps.  `maximum_lipschitz = 0.75`
+  in an existing config is accepted and does nothing; any other value is
+  refused, because it would no longer be read.  Every configuration keeps
+  its identity, so existing checkpoints still restart, and a run the old
+  gate admitted is bit-identical (T255, six hours: all 133 checkpoint
+  arrays equal).  MEASURED 2026-10-05 on an RTX PRO 6000, GDAS 2026-09-25
+  12Z at the shipped 300 s step: T533 now completes 120 h with every gate
+  passing (smallest fold determinant 0.808, largest norm 0.772), where
+  0.1.2 stops at 41.9 h on a norm of 0.757; T799 completes six hours
+  (fold determinant 0.674, norm 1.085), where 0.1.2's three-iteration
+  search is refused by its convergence test at the first step (the retry
+  at eight iterations admits that run, not the fold gate).  On the merged
+  0.1.3 tree the same T799 case runs the whole day at 300 s with the
+  native suite (RTX PRO 6000, 7.2 s a step): every gate passes, the
+  smallest fold determinant is 0.633, and every one of the 288 steps took
+  the eight-iteration retry, so a truncation-scaled iteration count would
+  save time there.  A dry T799 day (physics off) is refused by the fold
+  gate at 2.9 h after its grid-scale noise trip: with no boundary-layer
+  drag the flow really folds.
+- Every physics menu row answers the engine's `urban_scheme_id` with 0.
+  The gpuwm 2.8.5 menu rows carry that field, so a picker keyed on the
+  engine's own rows took a KeyError on every row of this menu, and the
+  suite's engine-measured menu test failed on the engine a fresh install
+  resolves.  No shipped experiment selects an urban canopy scheme, so 0,
+  the engine's own spelling of none, is true of every row.
+- The forecast clock is the analysis valid time.  The native suite's solar
+  geometry ran on the config's `start_time_utc` literal and the reference
+  suite on a 00 UTC equinox fixture, so a config repointed at another
+  analysis radiated on the wrong sun.  A run that starts from an analysis
+  now takes its clock from the analysis itself, a stated literal that
+  disagrees with it is refused naming the fix, the reference suite's
+  zenith follows the same dated geometry as RRTMGP, checkpoints carry the
+  clock and a restart from another start is refused, and a render tape's
+  valid time comes from the run's clock (`--start-date` is optional and
+  refused when it disagrees).  The 30 shipped GDAS native configs state the
+  clock their analysis carries, so their identities do not move.  The run
+  receipt's greenhouse-gas record is dated by the same clock: a config that
+  follows its analysis and states no `start_time_utc`, as the clock's own
+  refusal tells the reader to write it, integrated its whole forecast and
+  then died writing the receipt.  Measured on a T255 48 h run from GDAS
+  2026-10-02 00Z with no `start_time_utc`: before, all 576 steps ran and
+  the run exited 1 at the receipt; after, it ends with status pass.
+- RRTMGP runs with the dated present-day well-mixed gases.  It ran with
+  369.55 ppm CO2 (the year-2000 value) and the RFMIP climatology's CH4 and
+  N2O; CO2, CH4 and N2O now come from the run's valid year in a pinned
+  NOAA GML table, and the receipt records what the radiation ran with.
+- The native suite's stratospheric temperature floor is off by default.
+  Default-on at 50 hPa it pulled the analysed polar-night stratosphere
+  toward 195 K on a 30 minute timescale, warming the cold vortex the
+  analysis carried.  The hour-83.4 top-sag death it was installed for does
+  not reproduce on this tree: a 240 h T255 run with the floor off passes
+  every gate, its top level is 189 K at its coldest at 240 h where the
+  floored run holds 195 K, and the two runs are identical through hour 144.
+  An arm that turns it on reaches only above 5 hPa, and every receipt books
+  the floor's heating and the points it touched in a ledger.
+- The spectral water vapour's per-step hole filler takes a negative value's
+  deficit from its own column's neighbouring levels first, and the
+  receipt carries a ledger of how much water it moved and how far.  The
+  proportional refill it replaced moved water up and down the column with
+  no record; measured on the T255 day its vertical transfer is far below
+  the 2 m dewpoint dry bias, so the fixer is not that bias's cause.
+- An analysis whose top lies below the model lid is extended upward on the
+  standard atmosphere's shape from the analysed top value.  The IFS
+  open-data start tops at 10 hPa under a 1 hPa lid and held the 10 hPa
+  temperature into the lid, 20 to 40 K colder than the stratopause; the
+  extension warms the levels at 1.2 to 7.55 hPa by 41.2 to 3.6 K.  A
+  float32 run keeps its bits on every level below the analysis top.
+- Render tapes and regional frames write water as WRF's dry mixing ratio.
+  They wrote the model's specific humidity under WRF's QVAPOR..QGRAUP and
+  Q2 names, 2 percent dry at q = 0.02 (a 0.33 K dewpoint bias in every
+  WRF-shaped reader); the conversion is the model's own q / (1 - qv), the
+  tape names its convention, and the regional dry column and specific
+  volume use the mixing ratio.
+- The assimilation's 2 m temperature operator is the model's own
+  screen-level diagnostic, as its 10 m wind operator already was, instead
+  of a 6.5 K/km lapse reduction of the lowest level that injected a cold
+  bias under inversions.  The door's successive-correction gain for a 2 m
+  report is the optimal-interpolation gain of that operator: it follows
+  the lowest level by only h kelvin per kelvin (the rest of the 2 m
+  temperature is the skin's), so the spread takes the innovation d/h under
+  the gain g h^2, with h measured per report through the same diagnostic
+  and floored at 0.25; the report records h.  Spread with unit
+  sensitivity, as the lapse operator's door did, the first analysis of the
+  smoke case removed 17 percent of the 2 m misfit; with the operator's
+  gain it removes 20 percent.  The lapse operator's 58 percent came from
+  reading a 2 m report as the lowest level itself, which is the inversion
+  injection this fixes, so the cycling test's bar is now the OI one (0.85
+  of the background misfit, measured 0.80) instead of the lapse
+  operator's 0.6 or the 0.9 it had been loosened to.
+- IFS soil layers are remapped onto Noah's layers by depth.  They were
+  handed over by position, so the IFS 0 to 7 cm layer was read as Noah's 0
+  to 10 cm and the 100 to 289 cm layer as the 100 to 200 cm one.  The GDAS
+  layers already match Noah's and pass through bit for bit.
+- The semi-Lagrangian departure level is clamped at the lid and ground
+  interfaces, not at the outermost full levels, and the level rate divides
+  by the geometric spacing of the full levels the gather reads.  Clamped at
+  level 0 a parcel arriving there under descent read its own value, so the
+  lid cooled under ascent and never warmed under descent; the arithmetic
+  layer means made vertical advection 1.7 to 4 percent too slow.  The
+  Eulerian cores' top and bottom faces take the one-sided gradient to their
+  neighbour.  On the dry T255 day the level-0 theta drift goes from -12.6
+  to +0.5 K a day.  The ln ps continuity's ride on the lowest level was
+  measured at T63 and showed no orography error there.
+- A forecast stopped by a refusal inside the model still delivers the
+  pictures of the hours it reached: `go` renders the checkpoints the
+  stopped forecast wrote and exits 5, and the run-plan `go` route renders
+  them before it reports the stop.  A five-day forecast whose one column's
+  surface reservoir ran dry used to deliver nothing.
+- Multi-card runs split the work and carry it on the device link.  The
+  physics runs only the latitude bands a card owns and the semi-Lagrangian
+  step runs a band at a time behind a row halo, each card holding its own
+  rows of the trajectory, so P cards return one card's bits; device
+  exchanges ride NCCL when every rank can open it (the gpu extras now
+  install the NCCL wheel CuPy's own does not), with a watchdog that fails a
+  stuck collective by name and a running check that the ranks ran the same
+  exchanges; `card_transport = "auto"` no longer refuses a box where NCCL
+  imports; each rank is placed on its own card; and the halo goes to the
+  two neighbours only.  Gate WIRE-1 grades the device link's probe on
+  NCCL, because a collective's in-run time includes its wait on the
+  slowest rank.  The in-box rate and the GPU 1-vs-P identity at T255 and
+  T383 on a multi-card box are measured separately (see Measured).
+- The render tape names the model WOOF Global.
+- `da fresh` from an analytic native base (the level-5 smoke) dates the
+  physics with `--start-utc`; it kept the base's own date and the cycle
+  refused every other start.
+- `abi-score` reuses an existing tape only when the tape was written for
+  the same start; a disagreeing `--start-date` goes back through the
+  export door's clock check.
+- `score` fetches its reference analyses with the engine its own Python
+  imports; a `gpuwm` on PATH belonging to another interpreter left a
+  scorecard with no analysis rows.
+- The longwave radiates the air above a 1 hPa model top.  WRF v4.6.1's
+  RRTMG longwave adds nint(p_top / 4 hPa) buffer layers above the model
+  top and, when that rounds to none, moves the top interface to zero
+  pressure, so the air above the top is always radiated.  The carried
+  driver kept the count and not the zero top, so under the global model's
+  1 hPa lid the top layer received no downward longwave from above and
+  cooled to space.  The driver now carries at least one longwave layer
+  from the model top to the coefficient floor; a top of 2 hPa or more
+  keeps WRF's count exactly, so no regional top moves.  Global-mean
+  potential temperature drift of the top level on the T255 native suite,
+  every gate passing: GDAS 2026-09-01 00Z 24 h, -59.4 to -10.6 K/day;
+  GDAS 2026-10-02 00Z 48 h, -47.5 to -8.1 K/day (levels 1 to 3 move
+  from -13.7/-6.6/-2.8 to -3.7/-2.3/-0.9 on the second case).  Rain
+  against CPC gauges and MRMS on the 48 h case moves from 1.210 to 1.200
+  and from 1.279 to 1.262 of the observed total, within noise.
+- The cold-start and render libraries honour `RAYON_NUM_THREADS` and
+  `OMP_NUM_THREADS`; they took every core of a shared box.
+- Smaller: the tracer fixer's local share reaches the receipt, a failed
+  run's receipt records the greenhouse gases it radiated with, the soil
+  depth refusals name the breakage, and an empty `CUDA_VISIBLE_DEVICES` is
+  left as the operator set it.
+
+### Changed
+
+- CI proves `doctor` on a correct install.  The test job (every push) and
+  the publish job run the README's three install lines, `gpuwm
+  fetch-bridges`, `gpuwm-global fetch-doors` and `gpuwm-global doctor`, and
+  fail on any gap.  Nothing that decided the 0.1.2 cut ran doctor, which is
+  how a doctor that exited 1 on every correct install shipped.  The suite
+  holds the job's lines and the README's lines in step.
+- The CPU suite runs in two tiers.  The quick tier,
+  `-m "not gpu and not slow and not network"`, runs on every push.  The
+  full tier, `-m "not gpu"`, runs nightly and on every publish.  Sixteen
+  whole-model gates (the IMEX and semi-Lagrangian rest, energy and
+  nonlinear runs, and the profiled runs), each 6 s or more on its own, move
+  to the full tier by name in `tests/conftest.py`, each with its measured
+  time; none is skipped.
+- The engine seam is proven at `gpuwm 2.8.5`, the engine a fresh install
+  resolves (GV-6).  The pins stood at 2.8.0, so on 2.8.5 `doctor` proved
+  22 of 47 files, and the two seam hash nodes and the two carried-physics
+  divergence comparisons skipped.  The 2.8.0-to-2.8.5 change was read hunk
+  by hunk.  Sixteen symbols this package reaches in the 25 moved seam files
+  changed definition, and none of them is reached by a shipped experiment:
+  the native suite calls the carried scheme modules directly with a
+  namespace configuration and never builds `RunConfig`, `DomainState` or
+  the carried physics driver; its radiation, surface layer, land surface,
+  boundary layer and microphysics slots each admit one scheme (RRTMGP,
+  sfclay, Noah, YSU, Morrison) and the cumulus slot GF, New Tiedtke, the
+  mass-flux scheme or none; and the reference suite reaches no engine
+  module.  Per symbol: `RunConfig` flips `moist_cq` on and appends
+  regional fields that default off; `DomainState` gains a device face-mass
+  kernel and a host copy option, and `init_at_rest` an admission refusal,
+  both reached only from two reference-state builders nothing calls, as is
+  `update_diagnostics`, which gains an opt-in strict-arithmetic branch;
+  `KainFritsch` gains an adaptive-step cumulus period and uncleared output
+  buffers and is selected only at `cu_physics=1`;
+  `launch_mynn_surface_layer` and `mynn_pbl_step` gain stochastic
+  perturbation and scalar mixing (MYNN is not admitted);
+  `NoahmpRuntimeParameters`, `noahmp_cold_start` and `noahmp_lsm_step`
+  gain the urban arm (Noah-MP is not admitted); `RucRuntimeParameters`
+  and `ruc_lsm_step` gain mosaic, lake and soil-property options (RUC is
+  not admitted); `launch_shinhong` moves to a tiled global workspace
+  (that boundary layer is not admitted); and `AnalyticClearSkyRadiation`,
+  `DudhiaShortwaveRadiation` and `RRTMGLegacyRadiation` take the
+  adaptive-step period and a device adapter, behind a radiation selector
+  the native suite never reaches.  Every name the shipped path binds in
+  those files is unchanged in its definition and in everything it calls
+  inside its file.  The 2.8.5 package init also installs a process-wide
+  strict-arithmetic compile hook when `GPUWM_WRF_EXACT=1` is set, which
+  would reach the carried kernels too; nothing in this package sets it.
+  The pins are re-taken at 2.8.5 with `tools/pin_engine_seam.py` (47 of
+  47, every file byte-identical to the public `v2.8.5` tag), and the
+  divergence baseline with `tools/fingerprint_engine_divergence.py
+  --rewrite`: 850 hunks, 371 carried forward, 53 dropped and 479 read and
+  classified in `docs/CARRIED-PHYSICS-DIVERGENCE.md`.  None of them moves
+  a shipped number, because the shipped path runs the carried copy and
+  reaches the engine's copy of a carried file only through
+  `load_trace_climatology`, unchanged.  Newly owed there, not taken here:
+  the engine's respelling of constant divisions for Blackwell cards (five
+  kernel rows, the only pull that moves bits once taken), per-card and
+  per-stream caches, a value-keyed land-surface table cache, and an FP32
+  literal in the cold-start soil water.  On 2.8.5 the two hash nodes and
+  the two divergence comparisons now run and pass; on any other engine
+  they skip by name.
+
+### Measured
+
+- The README install, then `doctor`, against `gpuwm 2.8.5` from PyPI on a
+  Linux CPU host with no card, Python 3.11: exit 0, with the two absent
+  engine symbols printed as optional notes, every observation binary ok (eight), of which
+  `fetch-doors` staged six and the engine's own bundle carried `rw_asos`
+  and `rw_goes`, and the engine seam at 22 of 47 against the 2.8.0 pins.
+  Measured 2026-10-05.  After the re-pin (Fixed above), the same `doctor`
+  on the same engine reads `ok seam 47/47 files proven, pinned against
+  gpuwm 2.8.5`, exit 0; Linux CPU host, Python 3.12, 2026-10-05.
+- The CPU suite from the installed wheel against `gpuwm 2.8.5`, one
+  process, on a 24-thread Linux CPU host: the quick tier 1,908 passed,
+  82 skipped, none failed in 205.6 s; the full tier 1,930 passed, 82
+  skipped, none failed in 609.8 s.  Before the menu fix the same
+  `-m "not gpu"` selection on this engine failed one test, the menu
+  test above.
+  Measured 2026-10-05.
+
+### Open
+
+- The top model level still cools under the physics, about 8 to 11 K a
+  day of potential temperature at level 0 on the measured cases (Fixed
+  above), against under a kelvin a day for the dry dynamics alone.  The
+  remainder has not been attributed.
+- The dry nine-day steady-state test (Jablonowski-Williamson) drifts in
+  surface pressure under the shipped float32 state: 1.51 hPa by day 9,
+  past the 1 hPa bar from day 6, where the same run in float64 stays
+  within 0.25 hPa.  Measured 2026-10-05; a precision fix is in progress.
+
 ## 0.1.2
 
 ### Fixed
@@ -420,7 +892,7 @@ was previously reachable only from inside the engine's own checkout.
 
 ### New
 
-- `gpuwm-global`, one console script with 48 commands: the forecast door, the
+- `gpuwm-global`, one console script with 49 commands: the forecast door, the
   statics builder, the assimilation door and its five ensemble legs, the render
   tape export, the regional parent bridge, the radiance operators and every
   inspection and validation leg. The engine's `gpuwm global` reached eleven of

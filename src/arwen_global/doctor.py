@@ -40,10 +40,13 @@ from .doors import (
     DOORS,
     ENGINE_BUNDLE,
     artifact_filename,
+    carried_by,
     companion_door_dir,
     companion_pins,
     current_platform,
+    pinned_bundle_predates,
     find_door,
+    publisher,
     sha256_file,
     verify_staged,
 )
@@ -213,9 +216,14 @@ def _boundary_section(report: Report) -> None:
     TWO KINDS OF ANSWER, and the difference decides the verdict:
 
     * A NAME that does not resolve.  A carried CONTRACT is a note (the
-      package supplies it and nothing stops); a refused COMPUTATION is a gap
-      (a command stops, and this package will not answer with a second
-      instrument).
+      package supplies it and nothing stops).  A refused COMPUTATION that a
+      documented command reaches is a gap (that command stops, and this
+      package will not answer with a second instrument).  A refused
+      computation no documented command reaches is a note marked optional:
+      calling it still refuses by name, but the exit code says whether every
+      documented command can run, and on a correct install against the
+      published 2.8.0 both absent symbols are of this kind, so grading them
+      gaps made a correct install exit 1.
     * A SIGNATURE that does not take an argument this package passes.  Always
       a gap, and the worst-placed kind: the name resolves, so the install and
       every version check report success, and the call fails inside the run.
@@ -239,17 +247,28 @@ def _boundary_section(report: Report) -> None:
     rows = report.section("engine boundary")
     missing = engine_gaps()
     for gap in missing:
-        carried = gap.handling == "carried"
+        label = f"{gap.module.split('.')[-1]}.{gap.symbol}"
+        stops = f"the installed engine does not carry it; it stops {gap.stops}"
+        if gap.handling == "carried":
+            rows.append(Row(label, "carried by this package", verdict="note",
+                            detail=(stops, "carried here as a contract, so "
+                                           "nothing stops")))
+            continue
+        refused = ("this package does not reimplement it: a second "
+                   "instrument answering the same question is how two "
+                   "numbers get reported with equal confidence and one "
+                   "of them is wrong")
+        if gap.stops_a_documented_command:
+            rows.append(Row(label, "absent", verdict="gap",
+                            detail=(stops, refused)))
+            continue
         rows.append(Row(
-            f"{gap.module.split('.')[-1]}.{gap.symbol}",
-            "carried by this package" if carried else "absent",
-            verdict="note" if carried else "gap",
-            detail=((f"the installed engine does not carry it; it stops {gap.stops}",)
-                    + (("carried here as a contract, so nothing stops",) if carried
-                       else ("this package does not reimplement it: a second "
-                             "instrument answering the same question is how two "
-                             "numbers get reported with equal confidence and one "
-                             "of them is wrong",)))))
+            label, "absent (optional)", verdict="note",
+            detail=(stops,
+                    "no documented command reaches it, so it does not move "
+                    "the exit code; a call to it still refuses by name",
+                    refused,
+                    f"an engine that carries {gap.symbol} closes this row")))
     signature_gaps = engine_signature_gaps()
     for gap, lacking in signature_gaps:
         rows.append(Row(
@@ -391,15 +410,23 @@ def _doors_section(report: Report) -> None:
     companion_dir = companion_door_dir()
     for door in DOORS:
         staged = find_door(door.name)
-        origin = ("`gpuwm fetch-bridges`" if door.bundle == ENGINE_BUNDLE
+        # Who publishes it ON THIS INSTALL, not only what the table says:
+        # a door the installed engine's own bundle declares is the engine's,
+        # graded against the engine's pins and restaged by the engine's
+        # command (doors.publisher says why).
+        bundle = publisher(door.name)
+        origin = ("`gpuwm fetch-bridges`" if bundle == ENGINE_BUNDLE
                   else f"`{CONSOLE_SCRIPT} fetch-doors`")
         used = ", ".join(door.used_by)
         if staged is None:
             detail = [f"{door.role}",
                       (f"does not stop {used}: {door.fallback}" if door.fallback
                        else f"stops: {used}"),
-                      f"published by the {door.bundle} bundle; stage it with {origin}"]
-            if door.bundle == COMPANION_BUNDLE and not published:
+                      f"published by the {bundle} bundle; stage it with {origin}"]
+            if (bundle == COMPANION_BUNDLE and published
+                    and not carried_by(door, pins.get("release"))):
+                detail.append(pinned_bundle_predates(door))
+            if bundle == COMPANION_BUNDLE and not published:
                 detail.append(
                     "no companion bundle has been published for this platform yet, so "
                     "there is nothing to stage: build the crate from the engine's "
@@ -410,14 +437,14 @@ def _doors_section(report: Report) -> None:
             continue
         size = staged.stat().st_size
         verdict, checked = verify_staged(door.name, staged)
-        detail = [f"published by the {door.bundle} bundle, resolved from "
+        detail = [f"published by the {bundle} bundle, resolved from "
                   f"{_origin(door, staged)}: {staged}", checked]
         detail.extend(_shadow_notes(door, staged, companion_dir))
         if verdict == "gap":
             detail.append(f"breakage: {door.marker_breakage or door.role}")
             detail.append(f"does not stop {used}: {door.fallback}" if door.fallback
                           else f"stops: {used}")
-            detail.append(f"restage it from the {door.bundle} bundle with {origin}")
+            detail.append(f"restage it from the {bundle} bundle with {origin}")
             rows.append(Row(door.name, f"staged but wrong: {checked}",
                             verdict="gap", detail=tuple(detail)))
             continue
@@ -449,7 +476,8 @@ def _origin(door, staged) -> str:
         # package's own binding would have produced, the same rule
         # fetch-doors applies when it says what outranks a staging.
         own = companion_door_dir() / artifact_filename(door.name)
-        if door.bundle == COMPANION_BUNDLE and own.resolve() == staged.resolve():
+        if (publisher(door.name) == COMPANION_BUNDLE
+                and own.resolve() == staged.resolve()):
             return ("the companion door directory, named to the engine as "
                     f"{door.env_var}")
         return f"the {door.env_var} override, set outside this program"

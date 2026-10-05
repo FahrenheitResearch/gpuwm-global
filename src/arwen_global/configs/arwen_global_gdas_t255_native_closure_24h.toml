@@ -20,8 +20,8 @@
 # Everything else this file leaves out reads the semi-Lagrangian core's own
 # defaults, which are the values every graded arm ran at: [semi_implicit]
 # off_centring_weight 0.55 (config.SEMILAG_OFF_CENTRING_WEIGHT), [time]
-# maximum_lipschitz 0.75 (the trajectory-fold gate that refuses where the
-# Eulerian CFL would), the six-point quintic gather with three trajectory
+# minimum_fold_determinant 0.2 (the trajectory fold gate that refuses where
+# the Eulerian CFL would), the six-point quintic gather with three trajectory
 # iterations ([semilag] defaults), and the order 16 / 12 min hyperdiffusion
 # (config.SEMILAG_DIFFUSION_*, set on the dry ladder of 2026-09-07).
 [arwen_global]
@@ -39,7 +39,7 @@ dealias_factor = 1.5
 # spectral CFL is measured and written into the receipt's `cfl` block as a
 # reading (about 1.55 at 300 s on the 2026-09-01 00Z day); it is not a bound
 # on this core, whose trajectories are gathered and not stepped, and the
-# Lipschitz gate refuses instead where the trajectory map would fold.
+# trajectory fold gate refuses instead where the trajectory map would fold.
 [time]
 duration_s = 86400.0
 output_interval_s = 10800.0

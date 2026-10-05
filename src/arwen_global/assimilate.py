@@ -129,9 +129,61 @@ DEFAULT_AIRCRAFT_LEVEL_SCALE_M = 1000.0
 # cut sits at sqrt(ln 1000) = 2.63 zrange = 2.63 km-equivalent = 0.346 in
 # ln p.
 VERTICAL_WEIGHT_FLOOR = 1.0e-3
-# Lapse rate used to move the lowest-model-level temperature to 2 m above
-# the station, and the model surface pressure to station elevation.
+# Lapse rate used to move the model's 2 m temperature from the model
+# terrain to the station elevation, and the model surface pressure to
+# station elevation.  The 2 m temperature itself is the surface layer's
+# (screen_level); before GI-6 (audit 2026-10-05) this lapse rate carried
+# the lowest model level all the way down, blind to the skin.
 SURFACE_LAPSE_K_M = 0.0065
+#: The screen-level operators need the lowest-level wind speed, which the
+#: gradient sampling cannot evaluate at an exact pole (cos(lat) = 0); a
+#: polar point reads it this many degrees off the pole along its own
+#: longitude (about 1 km), where the field is continuous.
+SCREEN_WIND_POLE_OFFSET_DEG = 0.01
+#: A point this close to a pole takes the offset above.
+_POLAR_LATITUDE_DEG = 90.0 - 1.0e-6
+#: Why the 2 m dewpoint operator does NOT take the similarity q2 the
+#: temperature now takes (GI-6).  Measured on a T255 40-level checkpoint
+#: (108 h, 00 UTC valid, land columns) against the model's own native Q2
+#: (sfclay on water, Noah SFCDIAGS on land): the lowest level's vapour
+#: reads the native dewpoint at mean -0.09 K, RMS 1.19 K; the similarity
+#: q2, whose surface humidity is the reference bucket's soil-wetness beta,
+#: reads it at +1.45 K, RMS 2.19 K.  The same checkpoint's similarity t2
+#: tracks the native T2 at RMS 0.72 K where the lapse form missed it by
+#: RMS 1.32 K (+0.99 K warm at night, the inversion GI-6 named).
+DEWPOINT_OPERATOR = (
+    "lowest full level's specific humidity at the station pressure; the "
+    "similarity q2 with the bucket surface humidity read the model's own "
+    "2 m dewpoint 1.45 K moist on land"
+)
+
+#: The successive correction spreads a 2 m temperature innovation into the
+#: lowest model level and the levels above it, and the screen-level
+#: operator moves by only ``h = d t2 / d t_low`` of a lowest-level change
+#: (the rest of the 2 m temperature is the skin's).  The door's gain for a
+#: surface temperature row is therefore the optimal-interpolation gain of
+#: an operator with that sensitivity: per column
+#: ``sum w g h d / (1 + sum w g h^2)``, which the spread takes as the
+#: innovation ``d / h`` under the gain ``g h^2``.  Before this the door
+#: spread the 2 m innovation with unit sensitivity, which the lapse-rate
+#: operator had and the screen-level one does not (GI-6 follow-up): on the
+#: smoke grid the first analysis removed 17 percent of the 2 m misfit
+#: where the lapse-rate operator's analysis removed 58.
+SCREEN_TEMPERATURE_GAIN = (
+    "optimal-interpolation gain of the screen-level operator: innovation "
+    "d/h under gain g h^2, h = d t2 / d t_low by a centred 0.5 K difference "
+    "through the same similarity diagnostic, floored at "
+    "SCREEN_SENSITIVITY_FLOOR"
+)
+#: The smallest sensitivity a row's gain is built on.  Where the 2 m
+#: temperature hardly follows the lowest level (a very stable layer over a
+#: skin that sets it), d / h asks the lowest level for many times the
+#: innovation; that is a linearisation the similarity diagnostic does not
+#: support, so h is held at or above this floor and such a row's
+#: increment stays near the unit-sensitivity one.
+SCREEN_SENSITIVITY_FLOOR = 0.25
+#: Half-width of the centred difference that measures h.
+SCREEN_SENSITIVITY_STEP_K = 0.5
 
 # How the analysed wind increment enters the state.  "rotational" keeps
 # the vorticity (streamfunction) part and discards the divergence the
@@ -588,6 +640,56 @@ def _sample_grid(field: np.ndarray, grid, lat_deg, lon_deg) -> np.ndarray:
     )
 
 
+def screen_wind_latitude(lat) -> np.ndarray:
+    """``lat`` with an exact-pole point moved
+    :data:`SCREEN_WIND_POLE_OFFSET_DEG` toward the equator, so the
+    lowest-level wind feeding the screen-level diagnostic is defined
+    there; every other point is returned unchanged."""
+    lat = np.asarray(lat, dtype=np.float64)
+    polar = np.abs(lat) >= _POLAR_LATITUDE_DEG
+    if not polar.any():
+        return lat
+    return np.where(
+        polar, np.sign(lat) * (90.0 - SCREEN_WIND_POLE_OFFSET_DEG), lat)
+
+
+def _screen_level(
+    u_low, v_low, t_low, qv_low, p_full_low, ps, skin_k, land_fraction,
+    soil_wetness, roughness_m,
+) -> dict[str, np.ndarray]:
+    """The model's screen-level state at points: 2 m temperature and
+    specific humidity and 10 m wind from the lowest full level, the skin
+    and the column's surface state through the model's own Monin-Obukhov
+    similarity diagnostic (``physics.surface_diagnostics``), the
+    formulation that writes T2/Q2/U10/V10 to the render tapes.
+
+    The 2 m temperature and 10 m wind operators read it (GI-6, audit
+    2026-10-05): the 2 m temperature was a fixed lapse rate from the
+    lowest level, blind to the skin, so under a nocturnal inversion the
+    inversion itself became the innovation and the filter cooled the
+    lowest model level.  The dewpoint operator does not
+    (:data:`DEWPOINT_OPERATOR`).
+    """
+    humidity = effective_surface_humidity(
+        skin_k, ps, land_fraction, soil_wetness, np.maximum(qv_low, 0.0), np
+    )
+    return similarity_surface_diagnostics(
+        u_lowest=np.asarray(u_low, dtype=np.float64),
+        v_lowest=np.asarray(v_low, dtype=np.float64),
+        temperature_lowest=t_low, qv_lowest=np.maximum(qv_low, 0.0),
+        p_full_lowest_pa=p_full_low, p_surface_pa=ps,
+        skin_temperature_k=skin_k, surface_humidity=humidity,
+        roughness_m=roughness_m, xp=np,
+    )
+
+
+def station_temperature(t2, z_model, elevation):
+    """The model's 2 m temperature moved from the model terrain to the
+    station elevation by :data:`SURFACE_LAPSE_K_M`; only the terrain
+    mismatch is lapsed."""
+    return t2 + SURFACE_LAPSE_K_M * (z_model - elevation)
+
+
 def _anemometer_wind(
     u_low, v_low, t_low, qv_low, p_full_low, ps, skin_k, land_fraction,
     soil_wetness, roughness_m,
@@ -602,16 +704,9 @@ def _anemometer_wind(
     fixed sign, larger than the report's own error (audit 2026-09-01,
     DA-4).
     """
-    humidity = effective_surface_humidity(
-        skin_k, ps, land_fraction, soil_wetness, np.maximum(qv_low, 0.0), np
-    )
-    out = similarity_surface_diagnostics(
-        u_lowest=np.asarray(u_low, dtype=np.float64),
-        v_lowest=np.asarray(v_low, dtype=np.float64),
-        temperature_lowest=t_low, qv_lowest=np.maximum(qv_low, 0.0),
-        p_full_lowest_pa=p_full_low, p_surface_pa=ps,
-        skin_temperature_k=skin_k, surface_humidity=humidity,
-        roughness_m=roughness_m, xp=np,
+    out = _screen_level(
+        u_low, v_low, t_low, qv_low, p_full_low, ps, skin_k, land_fraction,
+        soil_wetness, roughness_m,
     )
     return out["u10"], out["v10"]
 
@@ -777,6 +872,72 @@ class _ModelSpace:
             _sample_grid(self.roughness_m, grid, lat, lon),
         )
 
+    def screen_level(self, atmosphere, lat, lon) -> dict[str, np.ndarray]:
+        """The model's 2 m temperature and specific humidity and 10 m wind
+        at points (``_screen_level``), from the lowest level, the skin and
+        the surface state; an exact-pole point reads the lowest-level wind
+        :data:`SCREEN_WIND_POLE_OFFSET_DEG` off the pole."""
+        lat = np.asarray(lat, dtype=np.float64)
+        lon = np.asarray(lon, dtype=np.float64)
+
+        def build():
+            ctx = self.surface_context(atmosphere, lat, lon)
+            u_low, v_low = self.lowest_wind(
+                atmosphere, screen_wind_latitude(lat), lon)
+            grid = self.transform.grid
+            return _screen_level(
+                u_low, v_low, ctx["t_low"], ctx["qv_low"], ctx["p_full_low"],
+                ctx["ps"],
+                _sample_grid(self.skin_k, grid, lat, lon),
+                np.clip(_sample_grid(self.land_fraction, grid, lat, lon), 0.0, 1.0),
+                _sample_grid(self.soil_wetness, grid, lat, lon),
+                _sample_grid(self.roughness_m, grid, lat, lon),
+            )
+
+        return self._memo(
+            ("screen_level", id(atmosphere), *self._point_key(lat, lon)),
+            atmosphere, build,
+        )
+
+    def screen_temperature_sensitivity(
+        self, atmosphere, family: _Family
+    ) -> np.ndarray:
+        """``(count,)``: how far the 2 m temperature operator moves per
+        kelvin of lowest-level temperature at each row's point (a centred
+        difference of ``SCREEN_SENSITIVITY_STEP_K`` through the same
+        screen-level diagnostic, the skin and surface state held), floored
+        at :data:`SCREEN_SENSITIVITY_FLOOR`.  An aloft row reads the
+        profile itself and has sensitivity one."""
+        out = np.ones(family.count, dtype=np.float64)
+        surface = family.surface
+        if not surface.any():
+            return out
+        ulat, ulon, at = self._unique_points(
+            family.latitude[surface], family.longitude[surface])
+        ctx = self.surface_context(atmosphere, ulat, ulon)
+        u_low, v_low = self.lowest_wind(
+            atmosphere, screen_wind_latitude(ulat), ulon)
+        grid = self.transform.grid
+        surface_state = (
+            _sample_grid(self.skin_k, grid, ulat, ulon),
+            np.clip(_sample_grid(self.land_fraction, grid, ulat, ulon), 0.0, 1.0),
+            _sample_grid(self.soil_wetness, grid, ulat, ulon),
+            _sample_grid(self.roughness_m, grid, ulat, ulon),
+        )
+        step = SCREEN_SENSITIVITY_STEP_K
+        t2 = [
+            _screen_level(
+                u_low, v_low, ctx["t_low"] + sign * step, ctx["qv_low"],
+                ctx["p_full_low"], ctx["ps"], *surface_state,
+            )["t2"]
+            for sign in (1.0, -1.0)
+        ]
+        h = (np.asarray(t2[0], dtype=np.float64)
+             - np.asarray(t2[1], dtype=np.float64)) / (2.0 * step)
+        h = np.where(np.isfinite(h), h, 1.0)
+        out[surface] = np.clip(h, SCREEN_SENSITIVITY_FLOOR, 1.0)[at]
+        return out
+
     def evaluate(self, atmosphere, family: _Family) -> dict[str, np.ndarray]:
         """Every variable's operator at the family's points, ``(count,)``
         each.  A surface row is compared at its own height: pressure
@@ -826,19 +987,24 @@ class _ModelSpace:
                 / (DRY_AIR_GAS_CONSTANT * ctx["tv_low"])
             )
             out["surface_pressure_pa"][surface] = p_station
-            out["temperature_k"][surface] = ctx["t_low"] + SURFACE_LAPSE_K_M * (
-                ctx["z_low_msl"] - (elevation + 2.0)
-            )
-            # The lowest full level's vapor (23 m up on the default grid;
-            # the surface humidity gradient over that height is inside the
-            # report's error) at the model surface pressure reduced to the
-            # station, the same column the pressure operator uses.
+            # The 2 m temperature is the surface layer's, as the 10 m wind
+            # is (GI-6); only the model-terrain to station difference is
+            # lapsed.
+            screen = {
+                name: value[at]
+                for name, value in self.screen_level(atmosphere, ulat, ulon).items()
+            }
+            out["temperature_k"][surface] = station_temperature(
+                screen["t2"], ctx["z_model"], elevation)
+            # The dewpoint stays the lowest full level's vapour (20 m up on
+            # the 40-level grid) at the station pressure: DEWPOINT_OPERATOR.
             out["dewpoint_k"][surface] = dewpoint_from_specific_humidity(
                 ctx["qv_low"], p_station
             )
             # A surface report is an anemometer at 10 m: reduce the lowest
             # full level to it, never compare it raw (DA-4).
-            u_low, v_low = self.lowest_wind(atmosphere, ulat, ulon)
+            u_low, v_low = self.lowest_wind(
+                atmosphere, screen_wind_latitude(ulat), ulon)
             u10, v10 = self.anemometer_wind(atmosphere, u_low, v_low, ulat, ulon)
             out["wind_u_m_s"][surface] = u10[at]
             out["wind_v_m_s"][surface] = v10[at]
@@ -1615,10 +1781,16 @@ def analyse(
     ))
     xp = _spread_module(transform)
 
-    def spread(variable: str, innovation: np.ndarray, volume: bool):
+    def spread(variable: str, innovation: np.ndarray, volume: bool,
+               sensitivity: np.ndarray | None = None):
         family = families[variable]
         ratio = options.background_error(variable) / family.error
         gains = ratio * ratio
+        if sensitivity is not None:
+            # OI gain of an operator with sensitivity h per row
+            # (SCREEN_TEMPERATURE_GAIN): innovation d/h under gain g h^2.
+            gains = gains * sensitivity * sensitivity
+            innovation = innovation / sensitivity
         return _spread_column(
             family, innovation, gains, grid_lat_rad, grid_lon_rad, options,
             ps_columns=ps_columns if volume else None,
@@ -1645,10 +1817,28 @@ def analyse(
         increments_maxabs["log_surface_pressure"] = float(np.max(np.abs(delta)))
         add_spectral(3, delta.reshape(nlat, nlon))
 
+    screen_gain: dict[str, object] | None = None
     if families["temperature_k"].count:
         family = families["temperature_k"]
         d_t = family.value - background_hx["temperature_k"]
-        delta_t = spread("temperature_k", d_t, volume=True)
+        sensitivity = space.screen_temperature_sensitivity(
+            state.atmosphere, family)
+        screen_gain = {
+            "rule": SCREEN_TEMPERATURE_GAIN,
+            "floor": SCREEN_SENSITIVITY_FLOOR,
+        }
+        if family.surface.any():
+            h_surface = sensitivity[family.surface]
+            screen_gain.update({
+                "surface_rows": int(h_surface.size),
+                "sensitivity_min": float(np.min(h_surface)),
+                "sensitivity_median": float(np.median(h_surface)),
+                "sensitivity_max": float(np.max(h_surface)),
+                "rows_at_floor": int(np.count_nonzero(
+                    h_surface <= SCREEN_SENSITIVITY_FLOOR)),
+            })
+        delta_t = spread("temperature_k", d_t, volume=True,
+                         sensitivity=sensitivity)
         increments_maxabs["temperature_k"] = float(np.max(np.abs(delta_t)))
         exner = (p_full_grid / REFERENCE_PRESSURE_PA) ** KAPPA
         add_spectral(2, delta_t.reshape(nlev, nlat, nlon) / exner)
@@ -1903,6 +2093,7 @@ def analyse(
         },
         "obs_sources": sources,
         "options": options.identity(),
+        "screen_temperature_gain": screen_gain,
         "rejections": rejections,
         "rejection_breakage": REJECTION_BREAKAGE,
         "assimilated_by_source": per_source_counts,

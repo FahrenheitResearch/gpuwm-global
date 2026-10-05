@@ -17,7 +17,12 @@ CUMULUS_COMPONENTS = {"gf": "gf", "own": "arwen-massflux-v1", "ntiedtke": "ntied
 @dataclass(frozen=True)
 class NativePhysicsOptions:
     acknowledgement: str
-    start_time_utc: str
+    # The instant model time zero stands for (arwen_global.clock).  An
+    # analysis start takes it from the analysis frame's valid time, so a
+    # config that initialises from an analysis leaves it out; a config that
+    # states it anyway is cross-checked against the frame and refused when
+    # the two disagree.  Only a run with no analysis needs to state it.
+    start_time_utc: str | None = None
     radiation: str = "rrtmgp"
     radiation_interval_s: float = 1800.0
     radiation_column_chunk: int = 12_500
@@ -192,22 +197,37 @@ class NativePhysicsOptions:
     read_lai_2d: bool = True
     noah_thermal_conductivity_option: int = 1
     wrf_rrtmg_compatibility: str = "none"
-    trace_co2_ppm: float = 369.55
-    # Stratospheric cold-top floor (default ON).  Defect: the 384 h native
-    # baseline arm (T255, GDAS 2026-09-01 00Z) died at hour 83.4 --
-    # "temperature outside research bounds: 139.995..298.852 K" -- via a slow
-    # polar-night top sag (~5e-5 K/s, 144.2 -> 141.7 K across the final
-    # diagnostics) with winds healthy.  RRTMGP carries ozone shortwave, but a
-    # 20-level hydrostatic top cannot supply the residual-circulation warming
-    # that holds the real polar-night stratopause near 200-230 K at 1-3 hPa,
-    # so the top relaxes radiatively downward without bound.  Same
-    # Held-Suarez-style scaffold the reference suite has carried since v5
-    # (reference.py _stratospheric_floor_pull), same defaults; against the
-    # measured sag rate the one-sided pull balances 0.09 K below the floor.
-    # stratospheric_floor_k <= 0 disables (research arms measuring the
-    # unfloored sag).
-    stratospheric_floor_k: float = 195.0
-    stratospheric_floor_pa: float = 5_000.0
+    # CO2 override in ppm.  None (the default) radiates the present-day
+    # CO2, CH4 and N2O of the run's valid year from the dated NOAA GML
+    # table in physics/greenhouse_gases.py; a number overrides CO2 alone,
+    # for an arm that must hold a declared concentration.  Until 2026-10-05
+    # the default was a fixed 369.55 ppm, the air of about 2000.
+    trace_co2_ppm: float | None = None
+    # Stratospheric cold-top floor: OFF by default (retired 2026-10-05),
+    # kept as an option for research arms.  It was installed after the 384 h
+    # native baseline arm (T255, GDAS 2026-09-01 00Z) died at hour 83.4
+    # ("temperature outside research bounds: 139.995..298.852 K") by a slow
+    # top sag with winds healthy.  That death does not reproduce on the
+    # 0.1.3 tree (the dynamics' lid read fixed): MEASURED 2026-10-05, the
+    # same case run 240 h with the floor off (T255 L40 sl_si, RTX 4090)
+    # passes every gate, its top full level (about 1.2 hPa) holds a minimum
+    # potential temperature of 1290 K (about 189 K) at 240 h against 1332 K
+    # (195 K) floored, and its global mean differs from the floored run's
+    # by 0.12 K of potential temperature; the global minimum temperature
+    # stays at 178.9 to 185.6 K in both arms, set by the analysed Antarctic
+    # vortex, never near the 140 K bound.  The two arms are identical
+    # through hour 144.  With no breakage left to name, a default-on pull of
+    # the model top toward 195 K is an unbooked heat source, not a guard.
+    # The top level's remaining cooling under the physics, about 8 to 11 K
+    # a day at level 0 once the longwave radiates the air above the lid,
+    # stays open on its own (CHANGELOG 0.1.3 Open).  At its former 50 hPa
+    # reach the floor also
+    # warmed ANALYSED Antarctic vortex air (4.6 percent of the GDAS points
+    # above 50 hPa are below 195 K), so an arm that turns it on keeps the
+    # 5 hPa reach.  Same one-sided Held-Suarez-style pull as reference.py
+    # _stratospheric_floor_pull; stratospheric_floor_k <= 0 disables.
+    stratospheric_floor_k: float = 0.0
+    stratospheric_floor_pa: float = 500.0
     stratospheric_relaxation_time_s: float = 1_800.0
 
     @classmethod
@@ -262,6 +282,10 @@ class NativePhysicsOptions:
             del payload["gf_resolved_convergence_closure"]
         if self.sfclay_iz0tlnd == 0:
             del payload["sfclay_iz0tlnd"]
+        # A config that follows its analysis states no clock; the analysis
+        # (initial.analysis_grib, in the identity) is what dates the run.
+        if self.start_time_utc is None:
+            del payload["start_time_utc"]
         return payload
 
     @property
@@ -287,6 +311,13 @@ class NativePhysicsOptions:
     @property
     def start_time(self) -> datetime:
         text = self.start_time_utc
+        if text is None:
+            raise ValueError(
+                "the native suite has no forecast clock: start_time_utc is "
+                "filled from the analysis valid time when the model is built "
+                "(arwen_global.clock), or stated in the config for a run with "
+                "no analysis"
+            )
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"
         value = datetime.fromisoformat(text)
@@ -294,13 +325,36 @@ class NativePhysicsOptions:
             raise ValueError("start_time_utc must carry an explicit UTC offset")
         return value.astimezone(timezone.utc)
 
+    def greenhouse_gas_overrides(self) -> dict[str, float]:
+        """The well-mixed gas mole fractions handed to RRTMGP over its
+        climatology: the dated present-day CO2, CH4 and N2O of the run's
+        valid year, with ``trace_co2_ppm`` over CO2 when it is set."""
+        from .greenhouse_gases import present_day_greenhouse_gases
+
+        gases = present_day_greenhouse_gases(self.start_time)
+        if self.trace_co2_ppm is not None:
+            gases["co2"] = float(self.trace_co2_ppm) * 1.0e-6
+        return gases
+
+    def greenhouse_gas_record(self) -> dict[str, object]:
+        """The receipt's record of what the radiation ran with, its source
+        named."""
+        from .greenhouse_gases import greenhouse_gas_record
+
+        overrides = (
+            None if self.trace_co2_ppm is None
+            else {"co2": float(self.trace_co2_ppm) * 1.0e-6}
+        )
+        return greenhouse_gas_record(self.start_time, overrides)
+
     def validate(self) -> None:
         if self.acknowledgement != NATIVE_PHYSICS_ACKNOWLEDGEMENT:
             raise ValueError(
                 "native adapter acknowledgement must be exactly "
                 f"{NATIVE_PHYSICS_ACKNOWLEDGEMENT!r}"
             )
-        _ = self.start_time
+        if self.start_time_utc is not None:
+            _ = self.start_time
         required = {
             "radiation": (self.radiation, "rrtmgp"),
             "surface_layer": (self.surface_layer, "sfclay"),
@@ -360,13 +414,22 @@ class NativePhysicsOptions:
             "radiation_interval_s", "land_surface_interval_s", "dx_m",
             "water_fix_tolerance_kg_m2", "energy_change_advisory_j_m2",
             "initial_pbl_height_m", "initial_soil_temperature_k",
-            "initial_soil_water_fraction", "trace_co2_ppm",
+            "initial_soil_water_fraction",
             "stratospheric_floor_k", "stratospheric_floor_pa",
             "stratospheric_relaxation_time_s",
         ):
             raw = getattr(self, name)
             if isinstance(raw, bool) or not math.isfinite(float(raw)):
                 raise ValueError(f"{name} must be finite")
+        if self.trace_co2_ppm is not None and (
+            isinstance(self.trace_co2_ppm, bool)
+            or not math.isfinite(float(self.trace_co2_ppm))
+            or not 0.0 < float(self.trace_co2_ppm) < 1.0e4
+        ):
+            raise ValueError(
+                "trace_co2_ppm must be None (the dated present-day table) "
+                "or a finite concentration in (0, 1e4) ppm"
+            )
         if self.radiation_interval_s <= 0.0 or self.land_surface_interval_s <= 0.0:
             raise ValueError("native physics intervals must be positive")
         if self.stratospheric_floor_pa <= 0.0:

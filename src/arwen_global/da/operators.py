@@ -6,9 +6,10 @@ points.  Here the members' coefficients are stacked on a leading axis and
 ``sample_scalar`` / ``sample_wind`` (which keep leading coefficient
 dimensions) build the associated Legendre basis once per member chunk.
 The arithmetic per member is the door's: surface pressure reduced to the
-station through the lowest level's virtual temperature, temperature to
-2 m at 6.5 K/km, the dewpoint of the lowest level's vapor at the station
-pressure, the 10 m wind from the lowest level through the model's own
+station through the lowest level's virtual temperature, 2 m temperature
+through the model's own screen-level diagnostic with the member's surface,
+then to the station's height, the dewpoint of the lowest level's vapor at
+the station pressure, the 10 m wind from the lowest level through the model's own
 similarity diagnostic with the MEMBER's surface (skin, land fraction, soil
 wetness, roughness); aloft rows read the member's profiles interpolated
 in ln p to the report's level.
@@ -90,11 +91,12 @@ import numpy as np
 from arwen_global.spectral.sampling import sample_scalar, sample_wind
 
 from ..assimilate import (
-    SURFACE_LAPSE_K_M,
-    _anemometer_wind,
     _interp_ln_pressure,
     _sample_grid,
+    _screen_level,
     _to_numpy_spectral,
+    screen_wind_latitude,
+    station_temperature,
 )
 from ..constants import (
     DRY_AIR_GAS_CONSTANT,
@@ -406,13 +408,25 @@ class MemberOperators:
                                     precision=self._sample_precision(stack))  # (Rc, 3, U)
             del stack
             want_wind = bool(wanted & {"wind_u_m_s", "wind_v_m_s"})
-            if want_wind:
+            # 2 m temperature and 10 m wind come from the surface layer
+            # (GI-6), which needs the lowest-level wind.
+            want_screen = want_wind or "temperature_k" in wanted
+            if want_screen:
                 zeta = xp.stack([self._coeff(m.atmosphere, "vorticity")[-1:] for m in chunk])
                 div = xp.stack([self._coeff(m.atmosphere, "divergence")[-1:] for m in chunk])
                 u_low, v_low = self._wind_at(zeta, div, ulat, ulon)  # (Rc, 1, U) on the host, NaN at a pole
-                del zeta, div
                 u_low = u_low[:, 0]
                 v_low = v_low[:, 0]
+                # The screen scalars read an exact-pole point's wind just
+                # off the pole; the 10 m wind rows stay NaN there.
+                screen_lat = screen_wind_latitude(ulat)
+                if np.array_equal(screen_lat, ulat):
+                    u_screen, v_screen = u_low, v_low
+                else:
+                    u_screen, v_screen = self._wind_at(zeta, div, screen_lat, ulon)
+                    u_screen = u_screen[:, 0]
+                    v_screen = v_screen[:, 0]
+                del zeta, div
             for c, member in enumerate(chunk):
                 k = start + c
                 ps = np.exp(sampled[c, 0])
@@ -420,19 +434,16 @@ class MemberOperators:
                 t_low = sampled[c, 1] * (p_full_low / REFERENCE_PRESSURE_PA) ** KAPPA
                 qv_low = np.maximum(sampled[c, 2], 0.0)
                 tv_low = t_low * (1.0 + 0.61 * qv_low)
-                z_low_msl = z_model + (DRY_AIR_GAS_CONSTANT * tv_low / GRAVITY_M_S2) * np.log(ps / p_full_low)
                 ps_all[k] = ps
                 elev_u = elev  # per row, gathered below
                 p_station = ps[at] * np.exp(
                     -GRAVITY_M_S2 * (elev_u - z_model[at]) / (DRY_AIR_GAS_CONSTANT * tv_low[at])
                 )
                 out["surface_pressure_pa"][k, rows] = p_station
-                if "temperature_k" in wanted:
-                    out["temperature_k"][k, rows] = t_low[at] + SURFACE_LAPSE_K_M * (
-                        z_low_msl[at] - (elev_u + 2.0))
                 if "dewpoint_k" in wanted:
+                    # The lowest level's vapour (assimilate.DEWPOINT_OPERATOR).
                     out["dewpoint_k"][k, rows] = dewpoint_from_specific_humidity(qv_low[at], p_station)
-                if not want_wind:
+                if not want_screen:
                     continue
                 surface_state = member.surface
                 to_numpy = self.transform.backend.to_numpy
@@ -443,15 +454,24 @@ class MemberOperators:
                     np.asarray(to_numpy(surface_state.soil_water_fraction[0]), dtype=np.float64)
                     / self.soil_wetness_capacity, 0.0, 1.0)
                 rough = np.asarray(to_numpy(surface_state.roughness_m), dtype=np.float64)
-                u10, v10 = _anemometer_wind(
-                    u_low[c], v_low[c], t_low, qv_low, p_full_low, ps,
+                planes = (
                     _sample_grid(skin, grid, ulat, ulon),
                     np.clip(_sample_grid(land, grid, ulat, ulon), 0.0, 1.0),
                     _sample_grid(wet, grid, ulat, ulon),
                     _sample_grid(rough, grid, ulat, ulon),
                 )
-                out["wind_u_m_s"][k, rows] = u10[at]
-                out["wind_v_m_s"][k, rows] = v10[at]
+                if "temperature_k" in wanted:
+                    # The door's screen_level arithmetic, member by member.
+                    screen = _screen_level(
+                        u_screen[c], v_screen[c], t_low, qv_low, p_full_low, ps, *planes)
+                    out["temperature_k"][k, rows] = station_temperature(
+                        screen["t2"][at], z_model[at], elev_u)
+                if not want_wind:
+                    continue
+                wind = _screen_level(
+                    u_low[c], v_low[c], t_low, qv_low, p_full_low, ps, *planes)
+                out["wind_u_m_s"][k, rows] = wind["u10"][at]
+                out["wind_v_m_s"][k, rows] = wind["v10"][at]
         ln_pressure[rows] = np.log(ps_all.mean(axis=0))[at]
 
     def _aloft_rows(self, members, lat, lon, level, out, mask, wanted=frozenset(OPERATOR_VARIABLES)):

@@ -1,9 +1,16 @@
 {
   "engine_source_rev": "0164ae0f2d707fa176c9c2f120dca61f9f15e485",
-  "note": "Size and SHA-256 pins for the companion Rust bundle `gpuwm-global fetch-doors` stages into ~/.gpuwm/global-doors, beside the engine's own bundle rather than inside it.  The bundle carries exactly the doors `arwen_global.doors.doors_from_bundle('gpuwm-global')` names: six binaries no published gpuwm bridge bundle carries at all (rw_atms, rw_gnssro, rw_ndbc, rw_igra2, rw_amv, rw_wis2), and two the engine's bundle carries under the same filename in an older build that has none of the subcommands this package calls (rw_asos, rw_goes).  This file is written by tools/build_door_bundle.py from the exact bytes a release published, never by hand.  `platforms` is empty until the first release is cut, and `gpuwm-global fetch-doors` reports that as 'no companion bundle has been published yet' rather than inventing a download URL.  If the engine takes those crates onto its own line, this file goes empty permanently and every door resolves from `gpuwm fetch-bridges`.",
+  "note": "Size and SHA-256 pins for the companion Rust bundle `gpuwm-global fetch-doors` stages into ~/.gpuwm/global-doors, beside the engine's own bundle rather than inside it.  The bundle carries the doors `arwen_global.doors.doors_from_bundle('gpuwm-global')` names that its release carries (doors.carried_by): six binaries no published gpuwm bridge bundle carries at all (rw_atms, rw_gnssro, rw_ndbc, rw_igra2, rw_amv, rw_wis2) and two the engine's bundle carries under the same filename in an older build that has none of the subcommands this package calls (rw_asos, rw_goes).  From v0.1.3 it also carries the two libraries built from this package's own rust/ workspace and stamped with this package's commit: rw_global_coldstart (the cold start's analysis regrid and ln(p) remap) and global_render_kernels (the render tapes' regrid and column and the regional translation); a bundle pinned for an earlier release does not carry them (doors.Door.since), and a package version at or past a door's since with pins older than it is refused by tests/test_doors_bundle.py.  This file is written by tools/build_door_bundle.py from the exact bytes a release published, never by hand.  `platforms` is empty until the first release is cut, and `gpuwm-global fetch-doors` reports that as 'no companion bundle has been published yet' rather than inventing a download URL.  If the engine takes the observation crates onto its own line, this file shrinks to the two package libraries.",
+  "package_source_rev": "49d2d701701758660c4ed37cd9de8fe7f08ee22d",
   "platforms": {
     "linux-x86_64": {
       "binaries": [
+        {
+          "artifact": "rw_global_coldstart",
+          "bytes": 515232,
+          "filename": "librw_global_coldstart.so",
+          "sha256": "43b5da9bd3b6356fc1458914482266cdfc4556154b55a80f7fdc47b4b7cb4168"
+        },
         {
           "artifact": "rw_asos",
           "bytes": 3657472,
@@ -15,6 +22,12 @@
           "bytes": 6424784,
           "filename": "rw_goes",
           "sha256": "6c82500fe9efa76d9b18ac38afda01a06d1073da83095af6f527d265190e88db"
+        },
+        {
+          "artifact": "global_render_kernels",
+          "bytes": 553752,
+          "filename": "libglobal_render_kernels.so",
+          "sha256": "1f62e2db052c3dfbbfe8d7e7d222fb73adf8a68a0f61194818aec611d12c11c1"
         },
         {
           "artifact": "rw_atms",
@@ -54,18 +67,24 @@
         }
       ],
       "bundle": {
-        "bytes": 12627333,
-        "filename": "arwen-global-doors-v0.1.2-linux-x86_64.zip",
-        "sha256": "6ec99289721d5e8f621bfb956f5973d6f33083c6ff599fa670aeee57d398db7b"
+        "bytes": 13074926,
+        "filename": "arwen-global-doors-v0.1.3-linux-x86_64.zip",
+        "sha256": "03bdc2805223d7df4f1a165021c710e6f260ef8fd2eddc3d3f5677a3f1ca05aa"
       },
       "notice": {
-        "bytes": 516971,
+        "bytes": 517464,
         "filename": "THIRD-PARTY-LICENSES.txt",
-        "sha256": "13e579828557d18c3d9fdc4f9fcdcd9b3e868fd384241a05392239b16a5676a5"
+        "sha256": "b77b80db68754522d58de2c86446dc8ee12a8dba9af1567969ba4a0c48bf72fb"
       }
     },
     "win-x86_64": {
       "binaries": [
+        {
+          "artifact": "rw_global_coldstart",
+          "bytes": 1135104,
+          "filename": "rw_global_coldstart.dll",
+          "sha256": "5b07c2734c1bcf2f32eb5f27eb846c9bbd87b4a15be4312bf1955c1f1210c7b0"
+        },
         {
           "artifact": "rw_asos",
           "bytes": 2950656,
@@ -77,6 +96,12 @@
           "bytes": 5496320,
           "filename": "rw_goes.exe",
           "sha256": "b3f8390686ed6891afb8f6d519227e291580b0d7b69d08e7c865dd0b3dc6a6f9"
+        },
+        {
+          "artifact": "global_render_kernels",
+          "bytes": 1172480,
+          "filename": "global_render_kernels.dll",
+          "sha256": "2eb4f8c816cd15783cba37ca6ddb4cfaf5aae0f25357a818a275d03fd4d86341"
         },
         {
           "artifact": "rw_atms",
@@ -116,17 +141,17 @@
         }
       ],
       "bundle": {
-        "bytes": 11899895,
-        "filename": "arwen-global-doors-v0.1.2-win-x86_64.zip",
-        "sha256": "f424dd7d56bbe82679009bae20935674e22792b5bf4305b9cae0bfd6078f35ee"
+        "bytes": 12881859,
+        "filename": "arwen-global-doors-v0.1.3-win-x86_64.zip",
+        "sha256": "884444e42f81abf8e1f81a6b5811e97a830514fb1a4a4a5f867da0e2d63fe68a"
       },
       "notice": {
-        "bytes": 501173,
+        "bytes": 501666,
         "filename": "THIRD-PARTY-LICENSES.txt",
-        "sha256": "17432a0a0a593b7fa22423ff6e791718e35d7638bc162f5cb5e6c7a2aa879321"
+        "sha256": "34f37fef56f590f673b30cf06821a058aa426e581a7bee53717bd0ed61201227"
       }
     }
   },
-  "release": "v0.1.2",
+  "release": "v0.1.3",
   "schema": "gpuwm-global-door-pins-v1"
 }

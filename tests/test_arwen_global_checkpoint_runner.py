@@ -25,9 +25,10 @@ CONFIG = str(_shipped_configs() / "arwen_global_moist_smoke.toml")
 #: STRING is the one every archive carried before the vertical-mode
 #: scheme existed; its digest moved with the grid tracers (2026-09-02),
 #: whose transport of the condensate is not the arithmetic those
-#: archives were advanced with.
+#: archives were advanced with, and again with the one-sided boundary-layer
+#: gradient (DYC-1).
 EXTERNAL_SCHEME_PINS_HASH = (
-    "f536e10061499732a08bd6e32cb45160820bb55519df5c0721be4c33fbf573a0"
+    "76b4f67b5e4270cdab3bff8482191308234772081cf86cef82de7f6e9186fc1a"
 )
 
 

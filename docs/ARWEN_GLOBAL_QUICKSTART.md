@@ -127,13 +127,16 @@ continues from a checkpoint.
 ```bash
 gpuwm-global export arwen_global_t255_quickstart \
   out/arwen-global-24h/arwen_global_step*.npz \
-  --outdir out/arwen-global-tapes --start-date 2026-08-30_18:00:00
+  --outdir out/arwen-global-tapes
 ```
 
 One `wrfout_d01_<valid time>` NetCDF tape per checkpoint, on a regular
 lat/lon grid (360 x 720 by default; `--nlat`/`--nlon` change it, `--bbox`
-crops to a window). `--start-date` is the analysis valid time -- the cycle
-you fetched -- and every checkpoint's time is offset from it.
+crops to a window). Every tape's valid time is the run's forecast clock plus
+the checkpoint's model time, and the forecast clock is the analysis frame's
+own valid time (the cycle you fetched). The same instant dates the physics:
+the sun the radiation runs on is the analysis's sun. `--start-date` is
+optional and is refused when it disagrees with the analysis.
 
 ## 5. Render
 
@@ -154,11 +157,16 @@ a large number of files.
 
 ## Moving to a current cycle
 
-Exactly three spellings travel together, and they are all the same instant:
+Exactly two spellings travel together, and they are the same instant:
 
 1. `--cycle` in step 1,
-2. the `tHHz` in `initial.analysis_grib` in the config,
-3. `--start-date` in step 4.
+2. the `tHHz` in `initial.analysis_grib` in the config.
+
+No date is typed anywhere else. The forecast clock is read off the analysis
+frame, so the physics' solar geometry, the run receipt and every tape's valid
+time follow the cycle you fetched. A native-physics config that still states
+`start_time_utc` in its physics options is checked against the analysis and
+refused by name when the two disagree; delete the key to follow the analysis.
 
 GDAS publishes on the 00/06/12/18 UTC grid and lags its cycle by about seven
 hours. An older cycle still fetches: anything past the operational window

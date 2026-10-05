@@ -173,8 +173,9 @@ ten-step identity pinned in the changelog. The default was chosen on
 the wall per forecast day, and this page carries both;
 [ARWEN_GLOBAL_FULL.md](ARWEN_GLOBAL_FULL.md) carries the scheme. What a
 config leaves out under `sl_si` reads that core's own defaults:
-`[semi_implicit] off_centring_weight` 0.55 and `[time] maximum_lipschitz`
-0.75 (the values every graded arm ran at), and the drain and gather the dry
+`[semi_implicit] off_centring_weight` 0.55 (the value every graded arm ran
+at), `[time] minimum_fold_determinant` 0.2 (the trajectory fold gate, which
+replaced the 0.75 norm ceiling the graded arms ran under), and the drain and gather the dry
 ladder of 2026-09-07 chose for the 300 s step, order 16 at 720 s at the
 truncation on the six-point quintic gather with three trajectory iterations
 (`config.SEMILAG_DIFFUSION_ORDER`, `_EFOLD_S`,
@@ -183,13 +184,24 @@ below ran the quasi-monotone cubic gather at order 8 and 2,160 s, the
 core's values before the ladder was read; the shipped package's own rows
 against the same Eulerian arms are in the second table.
 
-**The grade at equal cost.** One forecast day from the GDAS 2026-09-01 00Z
+The omitted semi-Lagrangian step is 300 s at every truncation
+(`config.DEFAULT_SEMILAG_STEP_S`); a written `dt_s` is read as written.
+Under the trajectory fold gate the T533 300 s forecast from GDAS
+2026-09-25 12Z completes 120 h with every gate passing (smallest fold
+determinant 0.808), where the retired 0.75 norm gate stopped the same
+configuration at 41.9 h. This is a stability statement and does not
+establish forecast skill.
+
+**The grade at equal cost, on one forecast day.** One forecast day from the GDAS 2026-09-01 00Z
 analysis, the whole native suite, both cores on one tree, scored at the
 ASOS stations at 18Z and 00Z and the IGRA2 radiosondes at 12Z and 00Z
 with the GFS and IFS forecasts beside them, eighteen rows, each
 difference a paired bootstrap over stations and sites with the project's
 0.03 admission bar in the row's unit (`tools/semilag_grade_tables.py`).
-MEASURED 2026-09-06, the scorecard of record:
+The bootstrap resamples stations and sites within that day; its intervals do
+not sample variation across weather days. These win and loss counts are
+single-case validation evidence, not an estimate of skill across seasons or
+regimes. MEASURED 2026-09-06, the scorecard of record:
 
 | pair (candidate against reference) | wins | losses | ties | the losing rows | wall, same card |
 |---|---|---|---|---|---|
@@ -198,8 +210,8 @@ MEASURED 2026-09-06, the scorecard of record:
 | `sl_si` T383 at 300 s against `imex_ssp3` T383 at 80 s | 4 | 5 | 9 | 18Z MSLP +0.080 hPa, 00Z Td2 +0.259 K, 12Z Z500 +0.43 m, 12Z W250 +0.129 m/s, 00Z T850 +0.101 K | 394 s against 1,267 s (shared card), RTX 5090 |
 | `imex_ssp3` T383 at 80 s against `imex_ssp3` T255 at 120 s (resolution alone) | 4 | 1 | 13 | 18Z Td2 +0.039 K | 1,267 s against 673 s, two cards |
 
-The semi-Lagrangian core wins at the surface on temperature and wind and
-loses on dewpoint and aloft, at every truncation; in the equal-cost pair
+On this case, at the measured truncations, the semi-Lagrangian core wins
+at the surface on temperature and wind and loses on dewpoint and aloft; in the equal-cost pair
 its 00Z 2 m dewpoint is 0.31 K worse than the T255 Eulerian arm's, ten
 times the bar, while its 00Z 2 m temperature is 0.24 K better, eight times
 the bar. The rule this line uses is that the core which, at the same
@@ -265,9 +277,16 @@ top level and -12.0 K at the second, zonally uniform at every latitude,
 within 0.1 K from the fourth level down, with the eddies at the lid agreeing
 to 2 percent: half the +33.6 K the fix removed, of the same shape, inside
 the three-level sponge of a column whose top is 1 hPa, forty levels above
-the highest scorecard row. It is a defect against the Eulerian core's lid
-and is carried as open (`tools/semilag_lid_structure.py` reads it from any
-two checkpoints).
+the highest scorecard row. It was carried as open
+(`tools/semilag_lid_structure.py` reads it from any two checkpoints), and
+its dynamical cause is now fixed (DYC-1): both cores read the top layer
+one-sidedly, the semi-Lagrangian search clamping departures at the top full
+level instead of the lid interface and the Eulerian flux keeping a zero
+boundary gradient. With the physics off, the bare T255 day's global-mean
+level-0 drift went from -12.6 K a day to +0.5 K a day (MEASURED 2026-10-05,
+RTX 4090, GDAS 2026-09-01 00Z); with the native suite it went from -62.4 to
+-54.2 K a day, and that remainder arrives with the physics and stays open
+against it (ARWEN_GLOBAL_FULL.md has the level-by-level numbers).
 
 **By scale.** `tools/arwen_global_spectrum_bands.py`, 24 h, vorticity
 power by total wavenumber in the candidate over the reference, read on the
@@ -336,8 +355,8 @@ for a stronger day. The Eulerian configs are
 (60 s) and `..._t533_native_imex_24h.toml` (40 s); the semi-Lagrangian
 core's spectral CFL is written into the same receipt block as a reading
 (about 1.55 at 300 s on the day of record at T255, 2.36 at T383), not a
-bound: its trajectories are gathered, not stepped, and the Lipschitz gate
-refuses instead where the trajectory map would fold.
+bound: its trajectories are gathered, not stepped, and the trajectory fold
+gate refuses instead where the trajectory map would fold.
 
 **Walls and memory.** MEASURED 2026-09-06 and 07, one forecast day,
 in-process wall from the receipt; the card and its other tenants are
@@ -500,6 +519,16 @@ Model terrain is the spectrally resolved version of the analysis orography
 and surface pressure moves hypsometrically onto it, so the lowest layers
 stay hydrostatically consistent with the smoothed mountains.
 
+Model levels above the analysis top (every level above 10 hPa on the IFS
+open-data start under the 1 hPa lid) take the analysis top temperature
+plus the ICAO standard atmosphere's change from the top pressure to the
+level, so the column's departure from the standard atmosphere at the
+analysis top is carried up through the stratospheric warming; humidity
+and wind are held at the top value. The receipt's `analysis_top` block
+names the analysis top pressure, the number of model levels above it and
+both rules. Holding temperature as well left the IFS start 20 to 40 K cold
+between 10 and 1 hPa.
+
 A second analysis source is another mapping row. The ECMWF IFS open-data
 step-0 object (0.25 degree, 14 pressure levels from 1000 to 10 hPa,
 surface pressure, skin temperature, land-sea mask, 2 m and 10 m fields,
@@ -518,6 +547,15 @@ analysis_mapping = "ecmwf-open-data-global-forecast"
 analysis_fill_grib = "data/gdas-analysis/gdas.t00z.pgrb2.0p25.f000"
 analysis_fill_mapping = "gdas-global"
 ```
+
+The IFS open-data soil layers (0-7, 7-28, 28-100 and 100-289 cm) reach Noah's
+(0-10, 10-40, 40-100 and 100-200 cm) by depth: each Noah layer is the
+depth-overlap mean of the source layers, which keeps the column's soil
+water over the top 2 m. A GRIB soil-level index carries no depth, so the
+depths come from `arwen_global/data/soil-level-depths.json` under the
+mapping's name, and a level-index source without a row there is refused
+rather than handed to Noah by position. The GDAS layers are Noah's and pass
+unchanged. The receipt's `soil_layers` block names both sets of bounds.
 
 The fill is by surface group (soil temperature with soil moisture, snow
 water with snow depth, sea-ice concentration with thickness): a group the
@@ -581,7 +619,8 @@ adapter's evidence currently covers is in the envelope below.
 The native suite's schemes are inside this package, at
 `arwen_global.core`: the radiation, cumulus, surface-layer, boundary-layer,
 land-surface and microphysics modules, the land-use rulebook, the float64
-mirror the scorecards grade against, the CUDA loader, twelve kernels and
+mirror used by the kernel scorecards to compare GPU arithmetic (code
+verification, not an observation score), the CUDA loader, twelve kernels and
 three headers, and the four Noah and land-use tables.
 
 They are carried rather than imported because the published engine's copy of
@@ -615,7 +654,7 @@ installed engine's copies and prints an `engine seam` section:
 engine seam
 -----------
   ok   seam                       47/47 files proven
-                                  pinned against gpuwm 2.8.0
+                                  pinned against gpuwm 2.8.5
                                   the scope is the DIRECT engine imports of
                                   the carried physics, plus the assimilation's
                                   filter, the local-GPU switch and two files
@@ -909,9 +948,10 @@ VRAM and refuse before they allocate anything;
 starting a run. On a published 2.7.0 and 2.8.0 the engine's `gpuwm check`
 refuses a global config outright (measured, desktop, 2026-09-10 and
 2026-09-29): its sizing route knows the regional tables only. `arwen_global.sizing.global_check_main` is
-the itemizing entry the engine's door would call, and no command reaches it
-today, which `gpuwm-global doctor` prints as a gap of its own along with the
-engine symbol it also needs.
+the itemizing entry the engine's door would call. No command reaches it
+today, so `gpuwm-global doctor` prints the engine symbol it also needs,
+`preflight.measured_free_vram_bytes`, as an optional note that does not move
+the exit code; the row becomes a gap the day a door is wired to it.
 
 ### What the door decides, with nothing set
 
@@ -1078,9 +1118,19 @@ run crossed the 140 K research floor at hour 3 without it -- but it does
 not reach the 50 to 200 hPa cooling that drives the thermal wind. **Treat
 a reference-suite forecast beyond about three days as outside the
 envelope.** The native suite is the arm under test against this, because
-RRTMGP carries an ozone climatology; it carries the same floor, added
+RRTMGP carries an ozone climatology. It carried the same floor, added
 after a 384 h native arm died at hour 83.4 by a slow polar-top sag with
-its winds healthy.
+its winds healthy, and it no longer does by default: on the 0.1.3 tree
+that death does not reproduce. The same T255 case run 240 h with the floor
+off passes every gate, with its top level (about 1.2 hPa) at 189 K at its
+coldest point where the floored arm holds 195 K, and the two arms are
+identical through hour 144. An arm can still turn it on
+(`stratospheric_floor_k = 195`); it then reaches only the levels above
+5 hPa (`stratospheric_floor_pa = 500`), because at its former 50 hPa reach
+it warmed analysed Antarctic vortex air (4.6 percent of the GDAS
+2026-09-01 00Z points above 50 hPa are colder than 195 K) toward 195 K
+within an hour. Every receipt carries the floor's bill
+(`stratospheric_floor_ledger`), zero when it is off.
 
 ### The native suite is experimental, and its evidence has a gap
 
@@ -1129,9 +1179,15 @@ python -m gpuwm.verify.harness run dynamics.spectrum --config CONFIG.toml \
   --checkpoints out/global/arwen_global_step*.npz
 ```
 
-**This core has been read by it at T255, and only there.** Measured
-2026-09-01 and 2026-09-02 on a 48 h native run and on both arms of a 24 h
-A/B, at 250 and 500 hPa. The reading is that there is no half-variance
+**The Eulerian core at dt = 50 s has been read by it at T255, and only
+there.** These measurements were made on 2026-09-01 and 2026-09-02 on a
+48 h native run and both arms of a 24 h A/B, at 250 and 500 hPa, before the
+semi-Lagrangian core became the default on 2026-09-06. The fractions below
+have not been measured with this instrument for that default. A separate
+one-level comparison found that the semi-Lagrangian core retained 0.30 of
+the Eulerian arm's vorticity power at wavenumbers 181-230 at T255 (0.34
+after the lid fix), so the Eulerian measurements must not be quoted for it.
+For the measured Eulerian runs, there is no half-variance
 scale to quote: the control's spectrum never falls below half of the
 observed reference inside the resolved range, so every sample returns
 `unresolved`, and the gate that would divide such a scale by the
@@ -1168,10 +1224,66 @@ readings, is
 Quote from that document, and quote its wavelengths against the truncation
 scale, never as a multiple of grid spacing.
 
+### Scoring a run against observations
+
+One command scores a finished run of any truncation against what was
+measured, with the two operational analyses beside it:
+
+```bash
+gpuwm-global score out/global --out out/global-scorecard
+```
+
+The observations are the verification of record: ASOS/METAR stations
+through `rw_asos` (2 m temperature and dewpoint, 10 m wind speed, sea-level
+pressure) and IGRA2 radiosondes through `rw_igra2` (500 hPa height, 850 and
+500 hPa temperature, 250 and 850 hPa vector wind), fetched and decoded by
+the two Rust doors when not given. The GFS analysis (GDAS f000) and the IFS
+analysis (ECMWF open data, 0 h) are fetched for every lead at one of their
+cycle hours and read two ways: the model minus each analysis on the run's
+grid, a distance from another model and not skill, and each analysis scored
+alone against the same reports, the floor of instrument and
+representativeness error the model's rows sit on. A radiosonde value every
+analysis present at the lead puts beyond a gross-error bar (500 hPa height
+80 m, temperature 6 K, vector wind 25 m/s) is dropped from the model's row
+and named in the record. At 06Z and 18Z only the GFS analysis exists, so
+there one analysis screens; at 00Z and 12Z both do. A lead whose screen
+lacked an analysis its rule expects (a failed fetch) is marked degraded in
+the record and printed under the scorecard, because the model's sounding
+rows then rest on fewer analyses. Each analysis's own floor row is read on
+soundings screened by the other analyses only, never by itself. A height
+the radiosonde door stamped from the standard atmosphere is never scored as
+a height.
+
+The first case through it (MEASURED 2026-10-05, the shipped T255
+semi-Lagrangian native configuration from the GDAS 2026-10-01 00Z analysis,
+RTX 5070 Ti, 350 s for the forecast day, every gate green), model minus
+observation, bias / rmse:
+
+| lead | stations | T2 K | Td2 K | WS10 m/s | MSLP hPa | sondes | Z500 m | T850 K | W250 rmsve |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 12 h | 2,633 | -0.04 / 2.15 | -1.63 / 2.87 | +1.05 / 2.04 | +0.16 / 1.41 | 492 | -9.14 / 16.21 | -0.33 / 1.29 | 4.83 |
+| 24 h | 2,635 | -0.03 / 2.14 | -1.71 / 3.29 | +0.93 / 2.10 | -0.25 / 1.99 | 531 | -10.84 / 18.31 | -0.41 / 1.48 | 5.60 |
+| GFS analysis, 24 h | 3,085 | -0.31 / 1.92 | -1.49 / 2.78 | +0.48 / 1.72 | -0.93 / 2.18 | 531 | -7.25 / 13.58 | -0.23 / 0.97 | 3.51 |
+| IFS analysis, 24 h | 3,220 | -0.39 / 1.57 | -0.01 / 1.95 | +0.18 / 1.67 | -0.73 / 2.47 | 531 | -1.46 / 10.89 | -0.11 / 0.73 | 2.84 |
+
+Two of the biases the model is charged with are mostly the analysis it
+starts from. On the stations both admit (about 2,365 to 2,410; the model
+admits fewer, because the T255 terrain refuses 1,190 for terrain mismatch),
+the GDAS analysis reads a 2 m dewpoint bias of -1.49 to -1.71 K against the
+forecast's -1.69 to -1.90 K (the IFS analysis -0.01 to -0.13 K on its own
+station set), and two thirds of the low 500 hPa height (-6.7 to -7.3 m at
+00Z and 12Z, against -1.2 to -1.5 m for the IFS). On the same intersected
+stations about two thirds of the 10 m wind excess is inherited (+0.39 to
++0.83 m/s in the GDAS analysis against +0.59 to +1.13 m/s in the forecast). Against the GFS analysis on the
+run's grid the 500 hPa height rmse grows from 5.3 m at 6 h to 10.4 m at
+24 h, anomaly correlation 0.995 at 24 h. One case is one case: the
+multi-cycle scorecard is this command run over many cycles.
+
 ### What is not claimed
 
-Operational forecast skill. GPU validation without a target-device
-receipt. Direct reuse of unadapted regional Arwen physics wrappers. A
+Operational forecast skill. Correct execution on a GPU without a
+target-device qualification receipt (code verification, not a comparison
+with observations). Direct reuse of unadapted regional Arwen physics wrappers. A
 complete energy and angular-momentum conserving hybrid vertical scheme.
 The T533 grade of the two cores (the semi-Lagrangian T533 day was not
 run in the window; the T533 default follows the two graded truncations,

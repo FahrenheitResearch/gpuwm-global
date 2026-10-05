@@ -300,6 +300,48 @@ def _surface(transform):
 
 
 # ------------------------------------------------------------ the operator
+def _gamma_with_faces(operator, vertical, one_sided):
+    """The operator's gamma block rebuilt from the reference interface
+    values, with the boundary layers' gradient zero (the operator's own,
+    ``one_sided=False``) or one-sided to their neighbour (the coded flux
+    since DYC-1)."""
+    nlev = operator.nlev
+    theta_ref, p_full, p_half = operator.theta_ref, operator.p_full, operator.p_half
+    gradient = np.zeros(nlev)
+    above = (theta_ref[1:-1] - theta_ref[:-2]) / (p_full[1:-1] - p_full[:-2])
+    below = (theta_ref[2:] - theta_ref[1:-1]) / (p_full[2:] - p_full[1:-1])
+    product = above * below
+    monotone = product > 0.0
+    gradient[1:-1] = np.where(
+        monotone, 2.0 * product / np.where(monotone, above + below, 1.0), 0.0)
+    if one_sided:
+        gradient[0] = (theta_ref[1] - theta_ref[0]) / (p_full[1] - p_full[0])
+        gradient[-1] = (theta_ref[-1] - theta_ref[-2]) / (p_full[-1] - p_full[-2])
+    lower = np.minimum(theta_ref[:-1], theta_ref[1:])
+    upper = np.maximum(theta_ref[:-1], theta_ref[1:])
+    face_above = np.clip(theta_ref[:-1] + gradient[:-1] * (p_half[1:nlev] - p_full[:-1]), lower, upper)
+    face_below = np.clip(theta_ref[1:] + gradient[1:] * (p_half[1:nlev] - p_full[1:]), lower, upper)
+    face = np.zeros(nlev + 1)
+    face[1:nlev] = 0.5 * (face_above + face_below)
+    dp = np.diff(p_half)
+    delta_b = np.diff(vertical.b_half)
+    gamma = np.zeros((nlev, nlev))
+    for j in range(nlev):
+        divergence = np.zeros(nlev)
+        divergence[j] = 1.0
+        flux_divergence = dp * divergence
+        dp_t = delta_b * -np.sum(flux_divergence)
+        omega = np.zeros(nlev + 1)
+        for k in range(nlev):
+            omega[k + 1] = omega[k] - dp_t[k] - flux_divergence[k]
+        omega[-1] = 0.0
+        flux = omega * face
+        theta_t = (-dp * theta_ref * divergence - (flux[1:] - flux[:-1])
+                   - theta_ref * dp_t) / dp
+        gamma[:, j] = -theta_t
+    return gamma
+
+
 @pytest.mark.parametrize(
     "nlev,coordinate,b_bound,c_bound",
     [
@@ -311,7 +353,16 @@ def _surface(transform):
 def test_operator_is_the_linearization_of_the_coded_rhs(nlev, coordinate, b_bound, c_bound):
     """Measured: B 3.3e-10 / C 2.5e-15 (20-level pressure_blend), 2.1e-9 /
     4.0e-15 (40-level surface_stretched), 1.4e-10 / 1.4e-15 (4-level);
-    the bounds sit 2-3 orders above the central-difference truncation."""
+    the bounds sit 2-3 orders above the central-difference truncation.
+
+    One documented exception (DYC-1): the coded flux gives the top and
+    bottom layers the one-sided gradient to their neighbour, and the
+    operator keeps the zero-gradient reference faces there, because
+    mirroring them into gamma MEASURED the split's off-centred rest
+    ceiling falling from 1822 s to 391 s at T533 (semi_implicit module
+    docstring).  So the coded Jacobian is gated against the operator with
+    exactly that substitution, to the same 1e-12, and against the operator
+    itself on every theta row the two boundary faces do not touch."""
     transform = SphericalHarmonicTransform.create(5, backend="numpy", precision="float64")
     vertical = getattr(HybridCoordinate, coordinate)(nlev, 100.0)
     semi = VerticalModeSemiImplicit()
@@ -326,9 +377,20 @@ def test_operator_is_the_linearization_of_the_coded_rhs(nlev, coordinate, b_boun
     k2 = _wavenumber(transform, 5) ** 2
     b_num, c_num = _split_blocks(_rhs_jacobian(model, state, 5), nlev, k2)
     b_err = np.max(np.abs(operator.b_matrix - b_num)) / np.max(np.abs(b_num))
-    c_err = np.max(np.abs(operator.c_matrix - c_num)) / np.max(np.abs(c_num))
+    coded = operator.c_matrix.copy()
+    coded[:nlev] = -_gamma_with_faces(operator, vertical, one_sided=True)
+    np.testing.assert_allclose(
+        operator.c_matrix[:nlev], -_gamma_with_faces(operator, vertical, one_sided=False),
+        rtol=0.0, atol=1.0e-12 * np.max(np.abs(operator.c_matrix)))
+    c_err = np.max(np.abs(coded - c_num)) / np.max(np.abs(c_num))
+    untouched = np.ones(nlev + 1, dtype=bool)
+    untouched[[0, 1, nlev - 2, nlev - 1]] = False
+    interior_err = np.max(
+        np.abs(operator.c_matrix[untouched] - c_num[untouched]), initial=0.0
+    ) / np.max(np.abs(c_num))
     assert b_err < b_bound, b_err
     assert c_err < c_bound, c_err
+    assert interior_err < c_bound, interior_err
     # The operator is degree-independent per unit k^2 (the Jacobian's
     # k-scaling the audit verified to 1.7e-9).
     k2_3 = _wavenumber(transform, 3) ** 2
@@ -580,7 +642,9 @@ def test_linearized_rest_ceiling_rises_at_t21_and_t533():
     102.0 s at T533 against the audit's 104.7 (the audit read n = T only;
     the minimum over degrees sits 3% lower) and 3003 s at T21 (audit
     3007.6).  Vertical-mode scheme (symmetric split, T_ref 320 K), weight
-    0.5: 445 s at T533 (4.4x) and 16771 s at T21 (5.6x); the audit's
+    0.5: 445 s at T533 (4.4x) and 16771 s at T21 (5.6x) under the zero
+    boundary-layer gradient, 387 s (3.7x) and 14507 s (4.7x) since DYC-1
+    gave the coded flux the one-sided one (0.55: 1689 s and 65040 s); the audit's
     4-mode ladder (325/191/121/81 m/s) is entirely inside the implicit
     operator, so what bounds the step is the split's own residual against
     the reference (DN-2), not an explicit wave.  At off-centring 0.55:

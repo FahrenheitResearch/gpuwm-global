@@ -173,6 +173,14 @@ PROFILE_FIELDS_NOT_CARRIED = {
                        "for the same reason.",
 }
 
+#: The engine's `urban_scheme_id` (its row field from gpuwm 2.8.5, read off
+#: `sf_urban_physics`), ANSWERED rather than named: unlike the scheme ids
+#: above it has one true value for every row.  WOOF Global runs no urban
+#: canopy scheme in any experiment; an urban cell is a land-use category the
+#: land surface model reads, and nothing here selects an sf_urban_physics
+#: option, so the answer is the engine's own spelling of "none".
+URBAN_SCHEME_ID = 0
+
 #: The same, for the fields the engine's document carries at its TOP level.
 PROFILE_DOCUMENT_FIELDS_NOT_CARRIED = {
     "physics_registry_sha256": "the engine's menu is built from one registry "
@@ -916,7 +924,7 @@ def _physics_snapshot(cfg) -> dict[str, Any]:
         "adapter": cfg.native_adapter_name,
         "options": dict(cfg.native_adapter_options),
         "scheme_identity": contract.get("scheme_identity"),
-        "admission_status": contract.get("admission_status"),
+        "admission_status": entry.get("admission_status") if isinstance(entry, dict) else None,
     }
 
 
@@ -965,7 +973,7 @@ def _config_snapshot(cfg, config_path: Path) -> dict[str, Any]:
     }
 
 
-def _render_skip_reason(options: Mapping[str, Any]) -> str | None:
+def _render_skip_reason(options: Mapping[str, Any], cfg=None) -> str | None:
     """Why the render stage will skip itself on this plan, or ``None``.
 
     ONE spelling of each condition, read by :func:`_render_stage` when it
@@ -978,8 +986,19 @@ def _render_skip_reason(options: Mapping[str, Any]) -> str | None:
     if not options.get("render", True):
         return "run_options.render is false"
     if not options.get("start_date"):
-        return ("run_options.start_date was not given, and a tape with no "
-                "valid time is a tape nobody can place in time")
+        # A config that starts from an analysis (or states start_time_utc)
+        # renders on its own forecast clock (arwen_global.clock); only an
+        # undated, idealized config needs the plan to name a start date.
+        from .clock import undated_render_reason
+
+        undated = (
+            "the config is not known" if cfg is None
+            else undated_render_reason(cfg)
+        )
+        if undated is not None:
+            return (f"run_options.start_date was not given and {undated}, "
+                    "and a tape with no valid time is a tape nobody can place "
+                    "in time")
     return None
 
 
@@ -1047,7 +1066,7 @@ def _render_products_check(products: str) -> dict[str, Any]:
     }
 
 
-def _render_products_resolution(plan: RunPlan) -> dict[str, Any] | None:
+def _render_products_resolution(plan: RunPlan, cfg=None) -> dict[str, Any] | None:
     """What the render stage will draw, whether it will run, and with what.
 
     The stage list a reviewer reads is the route's, and the route's list
@@ -1068,7 +1087,7 @@ def _render_products_resolution(plan: RunPlan) -> dict[str, Any] | None:
     options = plan.run_options
     chosen = options.get("render_products")
     products = chosen or DEFAULT_PRODUCTS
-    skipped = _render_skip_reason(options)
+    skipped = _render_skip_reason(options, cfg)
     return {
         "products": products,
         "basis": "run_options.render_products" if chosen
@@ -1134,7 +1153,7 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
         "basis": sizer["host_spill_chosen_by"],
         "note": sizer["verdict"]})
 
-    products = _render_products_resolution(plan)
+    products = _render_products_resolution(plan, cfg)
     if products is not None:
         resolutions.append({
             "scope": "render", "key": "render_products",
@@ -1764,6 +1783,7 @@ def physics_profile_menu() -> dict[str, Any]:
         "experiments": sorted(binding.get("reference-suite-v1", ())),
         "experiments_not_plannable": not_plannable(
             binding.get("reference-suite-v1", ())),
+        "urban_scheme_id": URBAN_SCHEME_ID,
         "not_applicable": dict(PROFILE_FIELDS_NOT_CARRIED),
     }, {
         "profile_id": "dry-core-v1",
@@ -1777,6 +1797,7 @@ def physics_profile_menu() -> dict[str, Any]:
         "experiments": sorted(binding.get("dry-core-v1", ())),
         "experiments_not_plannable": not_plannable(
             binding.get("dry-core-v1", ())),
+        "urban_scheme_id": URBAN_SCHEME_ID,
         "not_applicable": dict(PROFILE_FIELDS_NOT_CARRIED),
     }]
     # Every native adapter the REGISTRY declares, plus any a shipped
@@ -1808,13 +1829,14 @@ def physics_profile_menu() -> dict[str, Any]:
             "registered": registered,
             "arithmetic": contract.get("precision"),
             "scheme_identity": contract.get("scheme_identity"),
-            "admission_status": contract.get("admission_status"),
+            "admission_status": entry.get("admission_status") if isinstance(entry, dict) else None,
             "limitations": contract.get("limitations"),
             "admissible": admissible,
             "why_not": why_not,
             "backends": ["cupy"],
             "experiments": sorted(binding.get(adapter, ())),
             "experiments_not_plannable": not_plannable(binding.get(adapter, ())),
+            "urban_scheme_id": URBAN_SCHEME_ID,
             "not_applicable": dict(PROFILE_FIELDS_NOT_CARRIED),
         })
 
@@ -2542,6 +2564,34 @@ def _statics_stage(plan: RunPlan, cfg, config_path: Path, *,
 _RENDER_FAILURE_CHARS = 300
 
 
+def _render_reached(plan: RunPlan, config_path: Path, stopped: BaseException,
+                    *, runner: "_StageRunner") -> None:
+    """The render stage over the checkpoints a stopped forecast wrote.
+
+    Nothing here replaces the forecast's failure: a render that cannot run
+    (no checkpoint past the start, no valid time, a render error) is noted
+    and the original stop is what the caller reports.
+    """
+    from .runner import CHECKPOINT_PREFIX
+
+    reached = sorted(runner.run_dir.glob(f"{CHECKPOINT_PREFIX}*.npz"))
+    if len(reached) < 2:
+        return
+    runner.warn("forecast", "the forecast stopped ({}: {}); drawing the {} "
+                "checkpoints it wrote before reporting the stop".format(
+                    type(stopped).__name__, stopped, len(reached)))
+    try:
+        runner.commit_new_checkpoints()
+        _render_stage(plan, config_path, runner=runner)
+    except Exception as failure:  # noqa: BLE001 - the forecast's stop is the report
+        runner.warn("render", "the render of the hours the stopped forecast "
+                    "reached did not finish: {}: {}".format(
+                        type(failure).__name__, failure))
+    finally:
+        # The failure that follows is the forecast's, and names its stage.
+        runner.stage = "forecast"
+
+
 def _render_report(text: str) -> dict[str, Any] | None:
     """The JSON document ``arwen_global.render_door.render`` printed, if any.
 
@@ -2591,8 +2641,10 @@ def _render_stage(plan: RunPlan, config_path: Path, *,
     from .render_door import DEFAULT_PRODUCTS, render
     from .runner import CHECKPOINT_PREFIX
 
+    from .config import load_config
+
     options = plan.run_options
-    skipped = _render_skip_reason(options)
+    skipped = _render_skip_reason(options, load_config(config_path))
     if skipped is not None:
         runner.skip("render", skipped)
         return
@@ -2615,7 +2667,7 @@ def _render_stage(plan: RunPlan, config_path: Path, *,
         with contextlib.redirect_stdout(captured):
             code = render(types.SimpleNamespace(
                 config=config_path, inputs=checkpoints, outdir=outdir,
-                start_date=options["start_date"],
+                start_date=options.get("start_date"),
                 products=options.get("render_products") or DEFAULT_PRODUCTS,
                 size="1600x1000", nlat=360, nlon=720, bbox=None,
                 tapes_dir=None, keep_tapes=False,
@@ -2806,7 +2858,17 @@ def execute_plan(plan: RunPlan, *, events: EventStream,
 
         if plan.route == "go":
             _statics_stage(plan, cfg, config_path, runner=stages)
-        result = _forecast(plan, cfg, config_path, runner=stages)
+        try:
+            result = _forecast(plan, cfg, config_path, runner=stages)
+        except Exception as stopped:
+            # A forecast stopped by a refusal inside the model (one
+            # column's surface reservoir running dry stopped a five-day
+            # forecast at hour 117, GP-2) still draws the hours it reached
+            # before the failure is reported: the stop stays the run's
+            # failure, and the pictures are not lost with it.
+            if plan.route == "go":
+                _render_reached(plan, config_path, stopped, runner=stages)
+            raise
         if plan.route == "go":
             _render_stage(plan, config_path, runner=stages)
 

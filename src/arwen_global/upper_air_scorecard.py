@@ -475,17 +475,14 @@ def read_receipt(run_dir: Path) -> dict:
 
 
 def receipt_start_utc(receipt: dict) -> datetime:
-    options = receipt.get("config", {}).get("native_adapter_options", {})
-    start = options.get("start_time_utc") if isinstance(options, dict) else None
-    if not start:
-        raise ValueError("the run receipt carries no start_time_utc; checkpoints cannot be paired with a valid time")
-    value = str(start)
-    if value.endswith("Z"):
-        value = value[:-1] + "+00:00"
-    stamp = datetime.fromisoformat(value)
-    if stamp.tzinfo is not None:
-        stamp = stamp.astimezone(timezone.utc).replace(tzinfo=None)
-    return stamp
+    """The run's start (naive UTC) from its forecast clock, or for a receipt
+    written before the clock existed, its physics start_time_utc."""
+    from .clock import receipt_start_utc as clock_start
+
+    stamp = clock_start(receipt)
+    if stamp is None:
+        raise ValueError("the run receipt carries no forecast clock and no start_time_utc; checkpoints cannot be paired with a valid time")
+    return stamp.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def receipt_initial_analysis(receipt: dict) -> tuple[str | None, dict[str, str], str | None]:
@@ -651,8 +648,9 @@ class ModelReader:
         # without one (a synthetic floor receipt) can still read columns,
         # and sample() carries receipt_start_utc's own refusal.
         self._receipt = receipt
-        options = receipt.get("config", {}).get("native_adapter_options", {})
-        self.start_utc = receipt_start_utc(receipt) if isinstance(options, dict) and options.get("start_time_utc") else None
+        from .clock import receipt_start_utc as clock_start
+
+        self.start_utc = receipt_start_utc(receipt) if clock_start(receipt) is not None else None
         self.config_hash = receipt.get("config_hash")
 
     def _grid_field(self, value: np.ndarray) -> np.ndarray:

@@ -97,6 +97,21 @@ class EngineGap:
     #: A row without this field will not construct, so a symbol added later
     #: cannot inherit an answer nobody gave.
     stops_a_native_forecast: bool
+    #: Whether a documented command reaches the refusal: a subcommand of the
+    #: console script, or a `python -m` entry the README or a page under
+    #: docs/ tells a reader to run.  It decides the doctor's verdict: a row that
+    #: stops a documented command is a gap and moves the exit code, and one
+    #: no documented command reaches is reported as optional.
+    #:
+    #: NO DEFAULT, for the reason the field above has none.  The doctor
+    #: used to grade every refused row a gap, and its exit code is "every
+    #: documented command can run"; neither row left here stops one, so a
+    #: correct 0.1.2 install against the published 2.8.0 exited 1 and the
+    #: README had to tell readers to ignore the exit code.
+    #: `tests/test_engine_signature_gaps.py` walks the package's call graph
+    #: and fails when a row that says False becomes reachable from a
+    #: documented entry.
+    stops_a_documented_command: bool
 
     def present(self) -> bool:
         try:
@@ -143,18 +158,31 @@ GAPS: tuple[EngineGap, ...] = (
         # Measured on the Windows desktop 2026-09-10 against gpuwm 2.7.2:
         # `run` and `go` price the card through `sizing.run_memory_gate`,
         # which does not read this symbol.  No forecast reaches it.
-        stops_a_native_forecast=False),
+        stops_a_native_forecast=False,
+        # No subcommand of `gpuwm-global` or of the engine's `gpuwm global`
+        # is wired to `global_check_main`, and the engine's `gpuwm check`
+        # does not call into this package.  Wiring a door to it makes this
+        # True, and then the doctor reports the row as a gap.
+        stops_a_documented_command=False),
     EngineGap(
         module="gpuwm.verify.harness.surface_bias",
         symbol="interpolate_to_tape",
         stops="regridding a reference analysis onto the tape in the surface "
-              "energy scorecard",
+              "energy scorecard (`python -m arwen_global.surface_energy`, "
+              "a research entry no page documents)",
         handling="refused",
         # The only caller is `surface_energy.interpolate_to_grid`, reached
         # from `surface_energy.regrid_reference`, which is scorecard code:
         # no subcommand and no stage of `run` or `go` enters it.  Measured
         # the same day, on the same install.
-        stops_a_native_forecast=False),
+        stops_a_native_forecast=False,
+        # `localize` and `bias_planes` reach it, and only the module's own
+        # `python -m` entry calls them, which neither the README nor any
+        # page under docs/ tells a reader to run.  The radiation scorecard,
+        # which docs/ARWEN_GLOBAL_LEVEL5.md does document, regrids with its
+        # own function and does not read this symbol.  Documenting the
+        # surface-energy entry makes this True.
+        stops_a_documented_command=False),
 )
 
 

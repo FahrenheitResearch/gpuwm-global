@@ -1243,7 +1243,7 @@ __device__ float gfd_cup_up_aa0(GfColC z, GfColC zu,
     float aa0 = K_ZERO;
     if (ierr != 0) return aa0;
     for (int k = 2; k <= ktf; k++) {
-        if (k <= kbcon || k > ktop) continue;
+        if (k < kbcon || k > ktop) continue;
         float dz = FSUB(z[k], z[k - 1]);
         float da = FDIV(
             FMUL(FMUL(FMUL(zu[k], dz),
@@ -1541,7 +1541,15 @@ __device__ void gfd_cup_output_ens_3d(float *xf_ens, int *ierr_io,
             xf_ens[nn] = FMUL(sig, xf_ens[nn]);
         pre = FSUB(pre, FMUL(xmb, dtpwd));
     }
-    pre = FADD(-pre, FMUL(xmb, pwtot));
+    // DIVERGENCE, deliberate (row GF-CU-10): the rain is the updraft's
+    // condensate less the downdraft evaporation the detrained cloud water
+    // could not supply.  pre holds minus that remainder here, so it is
+    // ADDED to xmb*pwtot.  WRF 4.7.1 module_cu_gf_deep.F:3348 writes
+    // PRE = -PRE + XMB*pwtot, which reports xmb*(pwtot + remainder): more
+    // rain than the applied rqvcuten/rqccuten take out of the column
+    // (1.27 times over the oracle capture's raining columns), and the
+    // land surface was forced with water the atmosphere never lost.
+    pre = FADD(pre, FMUL(xmb, pwtot));
     *pre_out = pre;
 }
 

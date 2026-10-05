@@ -661,12 +661,24 @@ class _RadiationColumnProfile:
 def rrtmgp_above_model_layer_counts(
         p_top: float, *, pressure_floor: float = RRTMGP_TOA_PRESSURE_PA,
 ) -> tuple[int, int]:
-    """Return WRF v4.6.1's ``(LW, SW)`` above-model layer counts.
+    """Return the ``(LW, SW)`` above-model layer counts.
 
-    LW uses ``nint(p_top*.01/4)`` 4-hPa layers
-    (module_ra_rrtmg_lw.F:11565,12998-13001).  SW uses one model-top-to-TOA
-    layer (:10756-10760).  A column whose possible layer midpoint is already
-    below the pinned coefficient floor needs no representable extra layer.
+    LW uses WRF v4.6.1's ``nint(p_top*.01/4)`` 4-hPa layers
+    (module_ra_rrtmg_lw.F:11565,12998-13001), and at least one: below a
+    2 hPa top that rule rounds to none, and WRF then moves the model's own
+    top interface to zero pressure (``plev(ncol,nlayers+1) = 0.00``,
+    module_ra_rrtmg_lw.F:12344), so the air above the top is still
+    radiated, merged into the top model layer.  This driver keeps the
+    model's top interface (the heating is formed on the model's own layer
+    thicknesses), so the air above it rides as one layer from the model top
+    to the coefficient floor, the shape the SW already uses.  Before
+    2026-10-05 a 1 hPa top took no LW layer at all: the top model layer
+    (1.0 to 1.4 hPa on the default 40-level stack) saw no downward
+    longwave from the 1 hPa of air above it and cooled to space about 9 K
+    a day too fast (CHANGELOG 0.1.3, the top level's cooling).  SW uses one
+    model-top-to-TOA layer (:10756-10760).  A column whose possible layer
+    midpoint is already below the pinned coefficient floor needs no
+    representable extra layer.
     """
     p_top = float(p_top)
     pressure_floor = float(pressure_floor)
@@ -678,7 +690,7 @@ def rrtmgp_above_model_layer_counts(
     # Fortran NINT is nearest integer, with a positive half rounded upward.
     lw = int(np.floor(p_top / WRF_LW_UPPER_DELTA_P_PA + 0.5))
     sw = int(0.5 * p_top >= pressure_floor)
-    return max(0, lw), sw
+    return max(sw, lw), sw
 
 
 def _validate_model_top_interface(plev, p_top: float, *, xp=None) -> None:

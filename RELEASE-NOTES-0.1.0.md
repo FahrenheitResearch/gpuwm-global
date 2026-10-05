@@ -11,7 +11,7 @@ gpuwm-global go arwen_global_gdas_t255_native_sl_si_24h --outdir out/day
 
 ## New
 
-- One console script, `gpuwm-global`, with 48 commands. Forecast, statics,
+- One console script, `gpuwm-global`, with 49 commands. Forecast, statics,
   assimilation and its five ensemble legs, render tape export, the regional
   parent bridge, the radiance operators, and every inspection and validation
   leg.

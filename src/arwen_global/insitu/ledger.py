@@ -114,7 +114,10 @@ class InsituLedger:
         self.nlev = int(model.nlev)
         self.geometry = LedgerGeometry(model.transform, model.rotation_rate_s)
         self.spectra = SpectralKineticEnergy(model.transform)
-        self.capture = ComponentCapture(model.transform.grid.quadrature_weights)
+        self.capture = ComponentCapture(
+            model.transform.grid.quadrature_weights,
+            exchange=getattr(model.pipeline, "exchange", None),
+        )
         self.energy = OperatorEnergyLedger(model)
         self.tripwires = TripwireSet(
             precision=cfg.precision,
@@ -124,7 +127,7 @@ class InsituLedger:
             # The CFL pre-warning is armed only where the refusal it warns
             # about exists.  The semi-Lagrangian core measures the
             # advective Courant number and does not refuse on it; its
-            # refusal is the Lipschitz gate, which has its own.
+            # refusal is the trajectory fold gate, which has its own.
             advective_cfl_refusal=not getattr(model, "semi_lagrangian", False),
         )
         self._pending: list[dict] = []

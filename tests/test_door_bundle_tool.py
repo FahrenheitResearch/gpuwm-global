@@ -30,8 +30,27 @@ import pytest
 
 from arwen_global import doors
 
+
+@pytest.fixture(autouse=True)
+def _the_table_as_this_package_releases_it(monkeypatch):
+    """These tests are about this package's own bundle and the table it is
+    built from.  An engine whose bundle declares a companion door takes that
+    door over at run time (doors.publisher, tested on its own in
+    test_doors_engine_publisher.py), so the engine's roster is held silent
+    here and the result does not depend on which engine the suite runs on."""
+
+    monkeypatch.setattr(doors, "engine_bundle_names", lambda: frozenset())
+
 REPO = Path(__file__).resolve().parents[1]
 TOOL_PATH = REPO / "tools" / "build_door_bundle.py"
+
+if not (REPO / "src" / "arwen_global" / "doors.py").is_file():
+    # The tool builds this repository's own companion bundle from its own
+    # source layout.  A tree that carries the model inside another
+    # distribution has neither: that distribution's one bundle ships every
+    # door, and the tool has no table to load.
+    pytest.skip("no src/arwen_global door table beside this tool: this tree "
+                "publishes no companion bundle", allow_module_level=True)
 
 
 def _tool():
@@ -47,20 +66,25 @@ tool = _tool()
 PLATFORM = "linux-x86_64"
 RELEASE = "v0.0.0-test"
 REV = "ab12" * 10
+#: The commit a door built from this repository's own crate is stamped with.
+PACKAGE_REV = "cd34" * 10
 
 
-def _payload(door, extra: bytes = b"") -> bytes:
-    stamp = tool.SOURCE_REV_MARKER + REV.encode("ascii")
+def _payload(door, extra: bytes = b"", package_rev: str = PACKAGE_REV) -> bytes:
+    rev = package_rev if doors.built_from_this_repository(door) else REV
+    stamp = tool.SOURCE_REV_MARKER + rev.encode("ascii")
     return b"\x7fELF" + stamp + b"\x00" + (door.marker or b"") + b"\x00" + extra
 
 
 def _bundle(tmp_path: Path, *, notice: bool = True,
-            extra: dict[str, bytes] | None = None) -> Path:
+            extra: dict[str, bytes] | None = None,
+            package_rev: str = PACKAGE_REV) -> Path:
     archive = tmp_path / doors.bundle_filename(RELEASE, PLATFORM)
     with zipfile.ZipFile(archive, "w") as zf:
         for door in doors.doors_from_bundle(doors.COMPANION_BUNDLE):
             name = doors.artifact_filename(door.name, PLATFORM)
-            zf.writestr(name, _payload(door, (extra or {}).get(door.name, b"")))
+            zf.writestr(name, _payload(door, (extra or {}).get(door.name, b""),
+                                       package_rev))
         if notice:
             zf.writestr(tool.NOTICE_MEMBER, "THIRD-PARTY LICENCES\n")
     return archive
@@ -74,8 +98,10 @@ def _pins_copy(tmp_path: Path) -> Path:
 
 def test_a_clean_bundle_with_its_notice_pins_and_records_the_notice(tmp_path):
     out = _pins_copy(tmp_path)
-    tool.pin(RELEASE, [_bundle(tmp_path)], out, REV, set(), None)
-    record = json.loads(out.read_text(encoding="utf-8"))["platforms"][PLATFORM]
+    tool.pin(RELEASE, [_bundle(tmp_path)], out, REV, set(), None, PACKAGE_REV)
+    document = json.loads(out.read_text(encoding="utf-8"))
+    assert document["package_source_rev"] == PACKAGE_REV
+    record = document["platforms"][PLATFORM]
     assert record["notice"]["filename"] == "THIRD-PARTY-LICENSES.txt"
     assert record["notice"]["bytes"] == len("THIRD-PARTY LICENCES\n")
     assert len(record["binaries"]) == len(
@@ -85,8 +111,28 @@ def test_a_clean_bundle_with_its_notice_pins_and_records_the_notice(tmp_path):
 def test_a_bundle_without_the_notice_is_refused_by_name(tmp_path):
     with pytest.raises(SystemExit) as caught:
         tool.pin(RELEASE, [_bundle(tmp_path, notice=False)],
-                 _pins_copy(tmp_path), REV, set(), None)
+                 _pins_copy(tmp_path), REV, set(), None, PACKAGE_REV)
     assert "THIRD-PARTY-LICENSES.txt" in str(caught.value)
+
+
+def test_a_door_built_here_is_checked_against_the_package_commit(tmp_path):
+    """The render kernels are built from this repository, so their stamp
+    names a package commit: a cut that does not say which one, or a
+    library built from another one, is refused by name."""
+
+    here = [d for d in doors.doors_from_bundle(doors.COMPANION_BUNDLE)
+            if doors.built_from_this_repository(d)]
+    assert here, "no door of the bundle is built from this repository"
+    with pytest.raises(SystemExit) as caught:
+        tool.pin(RELEASE, [_bundle(tmp_path)], _pins_copy(tmp_path), REV,
+                 set(), None)
+    assert "--package-rev" in str(caught.value)
+    stale = tmp_path / "stale"
+    stale.mkdir()
+    with pytest.raises(SystemExit) as caught:
+        tool.pin(RELEASE, [_bundle(stale, package_rev="ef56" * 10)],
+                 _pins_copy(stale), REV, set(), None, PACKAGE_REV)
+    assert "refusing to pin a stale door" in str(caught.value)
 
 
 @pytest.mark.parametrize(("leak", "kind"), [
@@ -103,7 +149,7 @@ def test_a_member_carrying_a_build_path_is_refused_naming_the_kind(
 
     with pytest.raises(SystemExit) as caught:
         tool.pin(RELEASE, [_bundle(tmp_path, extra={"rw_ndbc": leak})],
-                 _pins_copy(tmp_path), REV, set(), None)
+                 _pins_copy(tmp_path), REV, set(), None, PACKAGE_REV)
     assert kind in str(caught.value) and "rw_ndbc" in str(caught.value)
 
 
@@ -208,3 +254,26 @@ def test_the_notice_header_names_the_triple_the_doors_were_built_for(
 
     with pytest.raises(SystemExit):
         tool.build_notice(workspace, "win-x86_64", "x86_64-unknown-linux-gnu")
+
+
+def test_every_library_built_here_is_checked_against_the_package_commit(tmp_path):
+    """The cold-start library and the render kernels are built from this
+    repository's `rust/`, so their stamp is this package's commit: a cut
+    that names no package commit is refused by name, and one built from
+    another commit is stale."""
+
+    built_here = sorted(d.name for d in doors.doors_from_bundle(doors.COMPANION_BUNDLE)
+                        if d.built_here)
+    assert built_here == ["global_render_kernels", "rw_global_coldstart"]
+    with pytest.raises(SystemExit) as caught:
+        tool.pin(RELEASE, [_bundle(tmp_path)], _pins_copy(tmp_path), REV,
+                 set(), None)
+    assert "--package-rev" in str(caught.value)
+    with pytest.raises(SystemExit) as caught:
+        tool.pin(RELEASE, [_bundle(tmp_path)], _pins_copy(tmp_path), REV,
+                 set(), None, "ef56" * 10)
+    assert "refusing to pin a stale door" in str(caught.value)
+    out = _pins_copy(tmp_path)
+    tool.pin(RELEASE, [_bundle(tmp_path)], out, REV, set(), None, PACKAGE_REV)
+    assert json.loads(out.read_text(encoding="utf-8"))[
+        "package_source_rev"] == PACKAGE_REV

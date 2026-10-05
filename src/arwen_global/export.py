@@ -161,9 +161,13 @@ def export_parent(
         [:, None, None]
         * ps_t_native[None]
     )
+    # The model's water fields are SPECIFIC humidities (kg per kg of moist
+    # air), so the dry fraction of a layer is 1 - q_total; dp / (1 + q) is
+    # the mixing-ratio form and overstated the dry column by q squared
+    # (GI-5, audit 2026-10-05).
     total_water_native = sum(native[name] for name in WATER_SPECIES)
     dry_column_native = xp.sum(
-        native["dp"] / xp.maximum(1.0 + total_water_native, 1.0e-12), axis=0
+        native["dp"] * (1.0 - total_water_native), axis=0
     ) / GRAVITY_M_S2
 
     sampled: dict[str, np.ndarray] = {
@@ -235,8 +239,9 @@ def export_parent(
         "continuity": {
             "pressure_velocity": "hybrid-layer mass continuity; top/bottom pinned zero",
             "vertical_velocity": "hydrostatic -omega/(rho*g) approximation",
-            "dry_column_mass": "sum(dp/(1+total-water))/g",
+            "dry_column_mass": "sum(dp*(1-total-specific-water))/g",
         },
+        "water_species": PARENT_WATER_SPECIES,
         "arrays": {
             name: {
                 "shape": list(np.asarray(value).shape),
@@ -270,6 +275,12 @@ def export_parent(
         os.fsync(stream.fileno())
     os.replace(temporary, target)
     return target
+
+
+#: The water species' convention in a parent export (GI-5): the model's own
+#: specific humidities, sampled as they are.  The regional translation
+#: converts them to the regional engine's dry mixing ratios.
+PARENT_WATER_SPECIES = "specific-humidity-kg-per-kg-of-moist-air-v1"
 
 
 def read_parent_export(path: str | Path) -> tuple[dict, dict[str, np.ndarray]]:
@@ -314,4 +325,4 @@ def read_parent_export(path: str | Path) -> tuple[dict, dict[str, np.ndarray]]:
     return metadata, arrays
 
 
-__all__ = ["export_parent", "read_parent_export"]
+__all__ = ["PARENT_WATER_SPECIES", "export_parent", "read_parent_export"]

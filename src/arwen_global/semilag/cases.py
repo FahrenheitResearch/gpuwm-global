@@ -658,7 +658,7 @@ def run_deformational_transport(
                 advanced, deficits = rows[0], None
             fixed, marks = fix_mass(
                 {"q": advanced}, {"q": field}, dp, dp, transform,
-                scheme=fixer, deficits=deficits,
+                scheme=fixer, deficits=deficits, stencil=stencil,
             )
             field = fixed["q"]
             fixer_max = max(

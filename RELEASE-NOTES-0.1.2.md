@@ -53,3 +53,34 @@ Attached to this release and pinned inside the wheel:
   `x86_64-pc-windows-gnu`)
 
 Both are built from engine commit `0164ae0f2d70` (tag `v2.8.0`).
+
+## Found after release
+
+These hold for the published 0.1.2. Each is stated with the measurement
+that found it; the release that changes it says so in its own notes.
+
+- `gpuwm-global doctor` exits 1 on a correct install against every published
+  2.8 engine. It grades `preflight.measured_free_vram_bytes` and
+  `surface_bias.interpolate_to_tape`, which no published engine carries and
+  no documented command reaches, as gaps. Every command still runs; only the
+  exit code is wrong. Fixed in 0.1.3.
+- `gpuwm 2.8.5`, published inside this release's range, is what a fresh
+  install resolves (2026-10-05). Against it the physics menu rows lack the
+  engine's new `urban_scheme_id` field (fixed in 0.1.3), and the engine seam
+  proves 22 of its 47 pinned files, not the 47 these notes state for 2.8.0.
+- The default T255 forecast puts more rain on the ground than the model
+  removes from the air. Grell-Freitas reports its downdraft evaporation as
+  rain instead of subtracting it, an open-water column takes its skin
+  temperature from a regrid that mixes in land points, and every lake holds
+  its analysis skin temperature for the whole run. From the GDAS analysis of
+  2026-09-30 12Z the reported convective rain was 1.77 times the water the
+  scheme removed (2.28 times over land), four-day totals were 1.43 times
+  CMORPH, 1.45 times CPC and 1.59 times MRMS, and the 120 hour run stopped
+  at hour 117.3 on the surface-reservoir refusal from a lake that started at
+  321.1 K (measured 2026-10-01).
+- The radiation clock of the native physics is the configuration's
+  `start_time_utc`, which each shipped native GDAS experiment fixes at the
+  analysis it was built on (2026-09-01 00Z, or 2026-08-30 18Z for a few) and
+  which `da fresh` does not change, so a forecast from a newer analysis runs
+  its solar geometry on that date and hour. Nothing compares it with the
+  analysis valid time.

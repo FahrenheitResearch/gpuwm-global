@@ -66,8 +66,12 @@ def add_render_arguments(parser: argparse.ArgumentParser) -> None:
         "--outdir", type=Path, required=True,
         help="where the pictures go, laid out <outdir>/<domain>/<product>/<valid-day>/")
     parser.add_argument(
-        "--start-date", required=True,
-        help="analysis valid time as YYYY-MM-DD_HH:MM:SS; checkpoint times offset from it")
+        "--start-date", default=None,
+        help="analysis valid time as YYYY-MM-DD_HH:MM:SS.  Optional: a run "
+             "that starts from an analysis (or states start_time_utc) stamps "
+             "its tapes from its own forecast clock, and a value that "
+             "disagrees with that clock is refused; required only for an "
+             "idealized run with no date")
     parser.add_argument(
         "--products", default=DEFAULT_PRODUCTS, metavar="LIST",
         help=f"comma-separated products, or 'all' (default: {DEFAULT_PRODUCTS})")

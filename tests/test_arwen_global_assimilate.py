@@ -1246,8 +1246,20 @@ def test_cycling_refuses_reports_already_in_the_background_chain(spun_up, tmp_pa
     # The full 80-row fit: the first analysis moves it, the second only
     # by what its eight new reports say, and the third cycle is refused
     # outright, so the fit cannot collapse any further.
+    # The first analysis moves the fit by what the 2 m operator lets the
+    # lowest level carry.  On this 4-level smoke grid the lowest level is
+    # about 2 km up, so the surface layer's 2 m temperature (GI-6) follows
+    # it by under a quarter of a kelvin per kelvin (every row sits at
+    # SCREEN_SENSITIVITY_FLOOR), and the door's gain is the OI gain of that
+    # sensitivity (SCREEN_TEMPERATURE_GAIN): 1.211 -> 0.971 K.  Spread with
+    # unit sensitivity, the screen-level operator's first analysis read
+    # 1.006 K.  The 0.6 bar this assertion carried before GI-6 was met by
+    # the lapse-rate operator (0.508 K), which read a 2 m report as the
+    # lowest level itself and so put the whole inversion into it, the
+    # defect GI-6 removed; an analysis of the lowest level cannot fit
+    # reports its 2 m diagnostic hardly follows, and OI says by how much.
     assert fits[0] == pytest.approx(1.211, abs=0.01)
-    assert fits[1] < 0.6 * fits[0]
+    assert fits[1] < 0.85 * fits[0]
     assert fits[2] < fits[1]
     with pytest.raises(ValueError, match="already in the background's assimilation chain"):
         assimilate(

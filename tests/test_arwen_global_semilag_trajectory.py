@@ -25,7 +25,7 @@ from arwen_global.semilag.trajectory import (
     level_rate_from_mass_flux,
     lipschitz,
     local_wind,
-    refuse_beyond_lipschitz,
+    refuse_trajectory_fold,
 )
 
 NLEV = 4
@@ -249,17 +249,18 @@ def test_lipschitz_scales_with_the_time_step():
 
 def test_level_rate_boundaries_are_zero():
     nlev = 6
-    dp = np.full((nlev, 2, 4), 2500.0)
+    # full levels 2500 Pa apart: the distance per unit level index
+    p_full = 1000.0 + 2500.0 * np.arange(nlev)[:, None, None] + np.zeros((nlev, 2, 4))
     omega = np.zeros((nlev + 1, 2, 4))
     omega[1:nlev] = 5.0
-    rate = level_rate_from_mass_flux(omega, dp)
+    rate = level_rate_from_mass_flux(omega, p_full=p_full)
     assert rate.shape == (nlev, 2, 4)
     # interior interfaces give 5/2500 per interface, averaged onto levels
     assert rate[0] == pytest.approx(0.5 * 5.0 / 2500.0)
     assert rate[-1] == pytest.approx(0.5 * 5.0 / 2500.0)
     assert rate[2] == pytest.approx(5.0 / 2500.0)
     with pytest.raises(ValueError, match="interfaces"):
-        level_rate_from_mass_flux(np.zeros((nlev, 2, 4)), dp)
+        level_rate_from_mass_flux(np.zeros((nlev, 2, 4)), p_full=p_full)
 
 
 def test_wind_round_trip():
@@ -291,12 +292,13 @@ def test_refusals_name_their_breakage():
         lipschitz_frobenius=1.2, lipschitz_horizontal=0.4,
         jacobian_spectral_s=0.003, jacobian_frobenius_s=0.004,
         jacobian_horizontal_s=0.001,
+        fold_determinant_arrival=0.1, fold_determinant_departure=0.6,
     )
-    with pytest.raises(ValueError, match="Lipschitz number"):
-        refuse_beyond_lipschitz(lip, 0.75)
-    refuse_beyond_lipschitz(lip, 1.0)
-    with pytest.raises(ValueError, match="not invertible at all"):
-        refuse_beyond_lipschitz(lip, 1.5)
+    with pytest.raises(ValueError, match="share a departure point"):
+        refuse_trajectory_fold(lip, 0.2)
+    refuse_trajectory_fold(lip, 0.05)
+    with pytest.raises(ValueError, match="fold itself"):
+        refuse_trajectory_fold(lip, 1.5)
 
 
 def test_the_departure_latitude_survives_float32_near_a_pole():

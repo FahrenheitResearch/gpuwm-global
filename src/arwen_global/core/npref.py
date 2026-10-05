@@ -6456,8 +6456,14 @@ def np_ysu_column(u, v, theta, qv, qc, qi, p, p_interface, exner, dz, *,
     sflux = hfx / rho / c.CP + qfx / rho * ep1 * theta[0]
     dt2, rdt = 2.0 * dt, 1.0 / (2.0 * dt)
 
-    def diagnose(thermal, brcrit):
-        """WRF bulk-Richardson crossing; returns hpbl and 1-based kpbl."""
+    def diagnose(thermal, brcrit, clamp=True):
+        """WRF bulk-Richardson crossing; returns hpbl and 1-based kpbl.
+
+        ``clamp`` is bl_ysu.F90's ``if(hpbl(i).lt.zq(i,2)) kpbl(i) = 1``,
+        which follows the sweep at :646 and :823 but NOT at :718-728 --
+        that sweep's result reaches the theta-li scan unclamped, and WRF
+        interpolates and clamps it once afterwards at :764-765.
+        """
         brup = float(br)
         brdn = brup
         kp = 1
@@ -6478,7 +6484,7 @@ def np_ysu_column(u, v, theta, qv, qc, qi, p, p_interface, exner, dz, *,
             frac = (brcrit - brdn) / (brup - brdn)
         kh = kp - 1                          # Python index of upper level
         hp = za[kh - 1] + frac * (za[kh] - za[kh - 1])
-        if hp < zq[1]:
+        if clamp and hp < zq[1]:
             kp = 1
         return float(hp), int(kp), brdn, brup
 
@@ -6519,8 +6525,23 @@ def np_ysu_column(u, v, theta, qv, qc, qi, p, p_interface, exner, dz, *,
         cg = (-15.9 * ust * ust / max(wspd, 1.0e-9) * wstar3
               / max(wscale ** 4, 1.0e-20))
         hgamu, hgamv = cg * u[0], cg * v[0]
-        hpbl, kpbl, brdn, brup = diagnose(thermal, brcr_ub)
-        pblflg = kpbl > 1
+        # bl_ysu.F90:703-728 guards all three thermal-enhanced statements
+        # with if(pblflg(i)), and :684-698 can only LOWER pblflg -- WRF has
+        # no path that raises it here.  A column whose FIRST guess sat below
+        # zq(i,2) (:646-647) therefore keeps kpbl=1 and stays in the local-K
+        # regime for the whole step, however far the thermal excess could
+        # have pushed the enhanced sweep.
+        #
+        # The sweep is the WHOLE of :703-728: it leaves hpbl at the
+        # zq(i,1) of :706 and never touches pblflg.  WRF interpolates hpbl
+        # and applies the zq(i,2) clamp exactly once, at :754-768, AFTER
+        # the theta-li scan -- so the scan below must see this sweep's
+        # kpbl >= 2 and an unchanged pblflg.  The hpbl this returns is
+        # dead for this call: the post-scan ``if pblflg`` block recomputes
+        # it from the same brdn/brup before any reader, as :764 does.
+        if pblflg:
+            hpbl, kpbl, brdn, brup = diagnose(thermal, brcr_ub,
+                                              clamp=False)
     else:
         pblflg = False
 

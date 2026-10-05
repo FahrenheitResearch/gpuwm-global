@@ -424,6 +424,20 @@ def build_notice(workspace: Path, platform: str,
         lines.append("")
         lines.append(body.rstrip("\n"))
         lines.append("")
+    own = [door for door in _companion_doors() if door.built_here]
+    if own:
+        lines += [
+            "3. DOORS BUILT FROM THIS PACKAGE'S OWN WORKSPACE",
+            "-" * 72,
+            "",
+            "Built from the Rust workspace inside the gpuwm-global source",
+            "(`rust/`), not the engine's.  Each is std-only: it links no crate",
+            "beyond the Rust standard library, and it is distributed under the",
+            "licence of gpuwm-global itself (Apache-2.0, LICENSE in the wheel).",
+            "",
+        ]
+        lines += [f"  {door.name}  <-  {door.crate}" for door in own]
+        lines.append("")
     return "\n".join(lines) + "\n"
 
 
@@ -467,7 +481,8 @@ def _verify_source_revision(payload: bytes, expected: str, label: str) -> None:
 
 
 def _pin_bundle(archive: Path, release: str, source_rev: str,
-                unstamped: set[str]) -> tuple[str, dict]:
+                unstamped: set[str],
+                package_rev: str | None = None) -> tuple[str, dict]:
     platform = _platform_of(archive, release)
     expected = [(door, door_table.artifact_filename(door.name, platform))
                 for door in _companion_doors()]
@@ -505,6 +520,18 @@ def _pin_bundle(archive: Path, release: str, source_rev: str,
             if door.name in unstamped:
                 print(f"  {name}: source stamp NOT CHECKED "
                       f"(--allow-unstamped {door.name})")
+            elif door.built_here:
+                # Built from this repository's own crate, so stamped with
+                # this repository's commit; checked against the package
+                # revision, never against the engine's.
+                if not package_rev:
+                    raise SystemExit(
+                        f"build_door_bundle: {name} is built from this "
+                        f"repository's {door.crate}, so its stamp names a "
+                        "package commit; pass --package-rev with the commit "
+                        "the bundle was built from")
+                _verify_source_revision(
+                    payload, package_rev, f"{archive.name}: {name}")
             else:
                 _verify_source_revision(
                     payload, source_rev, f"{archive.name}: {name}")
@@ -539,10 +566,12 @@ def _pin_bundle(archive: Path, release: str, source_rev: str,
 
 
 def pin(release: str, archives: list[Path], out: Path, source_rev: str,
-        unstamped: set[str], engine_rev: str | None) -> Path:
+        unstamped: set[str], engine_rev: str | None,
+        package_rev: str | None = None) -> Path:
     platforms: dict[str, dict] = {}
     for archive in archives:
-        platform, record = _pin_bundle(archive, release, source_rev, unstamped)
+        platform, record = _pin_bundle(archive, release, source_rev, unstamped,
+                                       package_rev)
         if platform in platforms:
             raise SystemExit(f"build_door_bundle: two bundles for {platform}")
         platforms[platform] = record
@@ -554,6 +583,8 @@ def pin(release: str, archives: list[Path], out: Path, source_rev: str,
         "note": existing.get("note"),
         "platforms": platforms,
     }
+    if package_rev:
+        document["package_source_rev"] = package_rev
     if unstamped:
         document["unstamped"] = sorted(unstamped)
     out.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n",
@@ -607,6 +638,10 @@ def main(argv: list[str] | None = None) -> int:
     pinner.add_argument("--engine-rev", default=None,
                         help="recorded in the pins as the engine revision the "
                              "crates came from (defaults to --source-rev)")
+    pinner.add_argument("--package-rev", default=None,
+                        help="the 40-hex commit of THIS repository the doors "
+                             "built from its own rust/ crates came from; "
+                             "required when the bundle carries one")
     pinner.add_argument("--allow-unstamped", action="append", default=[],
                         metavar="DOOR",
                         help="doors whose build is known not to keep the "
@@ -632,7 +667,7 @@ def main(argv: list[str] | None = None) -> int:
             f"build_door_bundle: --allow-unstamped names doors this package "
             f"does not publish: {', '.join(unknown)}")
     pin(args.release, list(args.archives), args.out, args.source_rev,
-        unstamped, args.engine_rev)
+        unstamped, args.engine_rev, args.package_rev)
     return 0
 
 

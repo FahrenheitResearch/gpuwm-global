@@ -467,17 +467,12 @@ def read_receipt_or_config(run_dir: str | Path, config: str | Path | None = None
 
 
 def run_start_utc_s(receipt: dict) -> float | None:
-    """The run's start instant from the receipt's physics options, or None."""
-    from datetime import datetime, timezone
+    """The run's start instant from the receipt's forecast clock (or, for a
+    receipt written before the clock, its physics options), or None."""
+    from .clock import receipt_start_utc
 
-    options = (receipt.get("config") or {}).get("native_adapter_options") or {}
-    text = options.get("start_time_utc")
-    if not text:
-        return None
-    text = str(text)
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    return datetime.fromisoformat(text).astimezone(timezone.utc).timestamp()
+    start = receipt_start_utc(receipt)
+    return None if start is None else start.timestamp()
 
 
 __all__ = [

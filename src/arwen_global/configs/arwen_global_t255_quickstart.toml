@@ -16,8 +16,8 @@
 #              a whole 36 steps, so the nine checkpoints (step 0 through
 #              step 288) land exactly on output times.
 #   step       a semi-Lagrangian step has no advective CFL limit; the runner
-#              gates on the Lipschitz number of the trajectory map, dt times
-#              the flow deformation, at 0.75 (the day of record reads 0.23).
+#              gates on the fold of the trajectory map, the minimum over
+#              the grid of det(I -+ (dt/2) J), at a floor of 0.2.
 #              integrator = "imex_ssp3" selects the Eulerian core instead,
 #              whose step the wind bounds: it gates on
 #              dt * |V|max * sqrt(N(N+1)) / a, so dt = 60 s at T255 holds a
@@ -46,11 +46,13 @@
 #   gpuwm-global run "$(gpuwm-global configs --paths | grep t255_quickstart)" \
 #       --outdir out/arwen-global-24h
 #   gpuwm-global render out/arwen-global-24h \
-#       --outdir out/arwen-global-png --start-date 2026-08-30_18:00:00
+#       --outdir out/arwen-global-png
 #
 # TO MOVE TO A CURRENT CYCLE, exactly two spellings travel together: the
-# --cycle you fetch and the tHHz in initial.analysis_grib below (and the
-# --start-date you export with, which is that same cycle instant).  GDAS
+# --cycle you fetch and the tHHz in initial.analysis_grib below.  The
+# forecast clock (the sun the physics runs on, the receipt's start and
+# every tape's valid time) is the analysis frame's own valid time, so no
+# date is typed anywhere.  GDAS
 # publishes on the 00/06/12/18 UTC grid and lags its cycle by about seven
 # hours.  Older cycles still fetch: the routes table sends anything past the
 # operational window straight to the unbounded AWS Open Data archive.
@@ -82,7 +84,7 @@ dt_s = 300.0
 duration_s = 86400.0
 output_interval_s = 10800.0
 integrator = "sl_si"
-maximum_lipschitz = 0.75
+minimum_fold_determinant = 0.2
 
 [vertical]
 coordinate = "surface_stretched"

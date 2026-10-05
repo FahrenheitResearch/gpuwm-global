@@ -35,11 +35,13 @@ apart. `gpu-cu13` pulls `cupy-cuda13x[ctk]`, `gpu-cu12` pulls
 `cupy-cuda12x[ctk]`, and the bare `gpu` alias is `gpu-cu13`, the stack the
 card figures on this page came off. Either line also resolves the engine
 `gpuwm>=2.8.0,<2.9`, its data companion `gpuwm-data` beside it, numpy, scipy
-and netCDF4. That range resolves `gpuwm 2.8.0` and `gpuwm-data 2.8.0` from
-the public index, where `python tools/measure_boundary.py` reads 234 symbols
-across 67 modules with no gap among the 194 a host without a CUDA runtime can
-resolve (node CPU, 2026-09-29). Without either extra the package installs and
-every CPU door runs; the forecast needs the card.
+and netCDF4. On 2026-10-05 that range resolves `gpuwm 2.8.5` and
+`gpuwm-data 2.8.5` from the public index, where
+`python tools/measure_boundary.py` reads 234 symbols across 67 modules with
+no gap among the 194 a host without a CUDA runtime can resolve (Linux CPU
+host, 2026-10-05; the same reading on 2.8.0, 2026-09-29). Without either
+extra the package installs and every CPU door runs; the forecast needs the
+card.
 
 No published engine produced the forecast and assimilation figures further
 down this page. They were taken on 2026-09-06 and 2026-09-07 in the engine
@@ -55,19 +57,34 @@ used, never from a local `cargo` build:
 
 ```bash
 gpuwm fetch-bridges        # the engine's own bundle
-gpuwm-global fetch-doors   # the eight observation binaries only this package publishes
+gpuwm-global fetch-doors   # the doors the engine's bundle does not carry: observation binaries and this package's own libraries
 gpuwm-global doctor        # what is installed, staged and missing
 ```
 
-`doctor` exits 1 while any boundary gap stands, and every line that says no
-names the command it stops and the remedy. Two gaps stand on the published
-2.8.0 as on every 2.7: `preflight.measured_free_vram_bytes` and
-`surface_bias.interpolate_to_tape` are absent from it, so a correct install of
-this release exits 1 as well. Neither stops a command this page or
-[docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) documents: the first stops the
-standalone card-pricing check that no subcommand is wired to, and the second
-the surface-energy scorecard's regrid onto the tape. Read the section bodies
-for install health, not the exit code.
+Of the eight observation doors, `rw_asos` and `rw_goes` arrive in the
+engine's own bundle on 2.8.x, so `fetch-doors` stages the other six.  From
+0.1.3 it also stages the two libraries this package builds from its own
+`rust/` workspace: `rw_global_coldstart` (the cold start's analysis regrid
+and ln p remap) and `global_render_kernels` (the render tapes' regrid and
+column and the regional translation).  Neither has a NumPy fallback, so an
+install whose bundle predates them builds them from the source
+(`cargo build --release` in `rust/`) and names each library in its
+variable, as `doctor` says.
+
+`doctor` exits 1 when a command this page or
+[docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) documents cannot run, and every
+line that says no names the command it stops and the remedy. Two engine
+symbols are absent from the published 2.8.0 and 2.8.5 as from every 2.7:
+`preflight.measured_free_vram_bytes` and `surface_bias.interpolate_to_tape`.
+Neither stops a documented command (the first stops the standalone
+card-pricing check that no subcommand is wired to, the second the
+surface-energy scorecard's regrid onto the tape), so `doctor` prints both as
+optional notes and a correct install exits 0: the three lines above, then
+`doctor`, exited 0 against `gpuwm 2.8.5` on a Linux CPU host with no card
+(MEASURED 2026-10-05). CI runs the same three lines on every push and every
+publish and fails on any gap. Calling either symbol still refuses by name.
+The published 0.1.2 graded both as gaps and exited 1 on every correct
+install; that is fixed from 0.1.3.
 
 `gpuwm-global` needs `gpuwm>=2.8.0,<2.9`. The floor names a breakage: the
 carried radiation reads its trace-gas and ozone table through the engine's
@@ -78,19 +95,32 @@ trees are not supersets of each other across minors, and this package
 imports 234 symbols across that boundary. `python tools/measure_boundary.py`
 regenerates the measurement rather than trusting a table, and names the
 symbols it could not check on a host without a CUDA runtime instead of
-counting them clean. The physics the model was graded with is INSIDE this
+counting them clean. The physics used in the observation-scored runs is INSIDE this
 package (`arwen_global.core`: the radiation, cumulus, surface-layer,
 boundary-layer, land-surface and microphysics schemes, their kernels, the
-CUDA loader, the float64 mirror the scorecards grade against and the Noah
-tables). The engine files the carried code still reaches are pinned by path,
+CUDA loader, the float64 mirror used by kernel scorecards to compare GPU
+arithmetic (code verification, not an observation score), and the Noah tables). The engine files the carried code still reaches are pinned by path,
 size and SHA-256 in `arwen_global/data/engine-seam.json`, and
-`gpuwm-global doctor` re-hashes them and prints an `engine seam` section: 47
-of 47 files proven against `gpuwm 2.8.0`, the version a fresh install of
-this release resolves. The pins were read off the PyPI wheel and match the
-same files in the Windows wheel, the pure wheel and the public `v2.8.0` tag
-byte for byte. Eighteen of the 46 files pinned at 2.7.3 moved by 2.8.0, and
-`gpuwm/core/rfmip_upstream.py` joined the table, because the RFMIP oracle
-now fetches through it.
+`gpuwm-global doctor` re-hashes them and prints an `engine seam` section.
+The pins are taken at `gpuwm 2.8.5`, the engine a fresh install resolves
+(2026-10-05), where all 47 files are proven; they were read off the PyPI
+manylinux wheel and match the same files in the Windows wheel, the pure
+wheel and the public `v2.8.5` tag byte for byte. They stood at 2.8.0 until
+the 2.8.0-to-2.8.5 change had been read hunk by hunk: 25 of the 47 files
+moved, and 16 symbols this package reaches in them changed definition
+(`RunConfig`, `DomainState`, `init_at_rest`, `KainFritsch`,
+`launch_mynn_surface_layer`, `NoahmpRuntimeParameters`, `noahmp_cold_start`,
+`noahmp_lsm_step`, `RucRuntimeParameters`, `ruc_lsm_step`, `mynn_pbl_step`,
+`launch_shinhong`, `AnalyticClearSkyRadiation`, `DudhiaShortwaveRadiation`,
+`RRTMGLegacyRadiation` and `update_diagnostics`). None of them moves a
+number on a shipped experiment: the native suite calls the carried scheme
+modules with a namespace configuration and never builds `RunConfig`,
+`DomainState` or the carried physics driver, each of its non-cumulus slots
+admits one scheme, the moved schemes are ones it never selects, and the
+reference suite reaches no engine module. The CHANGELOG's 0.1.3 Fixed entry
+records the review symbol by symbol. On 2.8.0, one release inside the
+declared range, `doctor` now prints those 25 files as moved, unproven, not
+refused.
 
 The two nodes of `tests/test_arwen_global_engine_seam.py` that compare
 hashes run against the pinned version and skip, naming both versions, on any
@@ -101,7 +131,8 @@ that code should be taken, refused or offered back, is one row per
 difference in
 [docs/CARRIED-PHYSICS-DIVERGENCE.md](docs/CARRIED-PHYSICS-DIVERGENCE.md), held
 to the installed engine by `tests/test_engine_divergence.py`, which is
-baselined on 2.8.0 and skips its two comparisons on any other.
+baselined on 2.8.5 and skips its two comparisons, naming both versions, on
+any other.
 
 ---
 
@@ -218,19 +249,28 @@ door each one decodes through, whether that decoder is built, and its measured
 latency behind real time; `gpuwm-global obs fetch` writes a stream's table to
 disk for `--obs`.
 
-**What the cycle is worth, measured.** Six hourly LETKF cycles from the
-GDAS 2026-08-31 18Z analysis, 32 T127 members under a T255 control, METAR,
-IGRA2, NDBC and GOES derived motion winds, 879,488 rows offered over the six
-windows: the METAR surface-pressure o-minus-b grew from 115 to 158 Pa across
-the six hours while the o-minus-a held at 76 to 82 Pa (MEASURED 2026-09-06).
-Scored at the stations against the GDAS analysis of the same instant, the
-handed-back analysis reads 2 m temperature +0.45 / 2.10 K against GDAS's
--0.35 / 2.35, 2 m dewpoint +0.16 / 2.60 against -2.53 / 4.10, mean sea level
-pressure -1.05 / 2.44 hPa against -1.68 / 2.79, and 10 m wind 2.05 against
-1.91 m/s, on a common set of 1,591 stations; at the soundings it is worse than
-the GDAS analysis on every row (MEASURED 2026-09-06). **The system ships
-selectable, not default**: the cycle beats the analysis it started from at the
-surface and does not reach it aloft, and the door says so.
+**Two measured assimilation arms.** The first used six hourly LETKF cycles
+from the GDAS 2026-08-31 18Z analysis, 32 T127 members under a T255 control,
+and METAR, IGRA2, NDBC and GOES derived motion winds. It offered 879,488 rows
+over six windows; METAR surface-pressure o-minus-b grew from 115 to 158 Pa
+while o-minus-a held at 76 to 82 Pa (measured 2026-09-06).
+
+A later arm started from GDAS 2026-09-01 18Z and cycled to 2026-09-02 00Z.
+Against the stations, its handed-back analysis reads 2 m temperature
++0.45 / 2.10 K against the same-instant GDAS analysis's -0.35 / 2.35,
+2 m dewpoint +0.16 / 2.60 against -2.53 / 4.10, and mean sea-level pressure
+-1.05 / 2.44 hPa against -1.68 / 2.79 (bias / RMSE). Its 10 m wind RMSE is
+worse: 2.05 against 1.91 m/s, on the same 1,591 stations. These reports
+come from the METAR/ASOS record the cycle assimilated, so the analysis scores
+measure fit to assimilated data, not independent forecast accuracy. It is
+also worse than same-instant GDAS at the soundings (measured 2026-09-06).
+
+The later arm's subsequent 24 h forecasts improve 2 m temperature and dewpoint
+relative to the GDAS cold start but lose on sea-level pressure, 10 m wind,
+500 hPa height at 12 h, and every sounding temperature and wind row. The
+[DA evidence](docs/ARWEN_GLOBAL_DA.md#the-first-real-arm-and-what-ships)
+separates the two analysis times and the forecast scores. The system remains
+**selectable, not default**; these case results do not establish general skill.
 
 The analysis runs on the card. The analysis proper (the step less the members'
 forecast hour and the control re-integration) costs 26.4 s on an RTX 5090,
@@ -306,7 +346,7 @@ band counts 2 to 32, and 892 of 892 waist comparisons bit-exact on each card
 
 ## The doors
 
-One console script, 48 commands. `gpuwm-global <command> --help` prints every
+One console script, 49 commands. `gpuwm-global <command> --help` prints every
 option; [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) is the same surface on
 one page, generated from the parser.
 
@@ -320,6 +360,7 @@ one page, generated from the parser.
 | `configs` | list the experiments that ship inside the package |
 | `doctor`, `fetch-doors` | what is installed, staged and missing; and stage what is missing |
 | `fetch-analysis` | fetch the one whole-globe GDAS object a cold start needs, and print the run it feeds |
+| `score` | score a finished run against ASOS stations and radiosondes through `rw_asos` and `rw_igra2`, with the GFS and IFS analyses as secondary references, one row per lead, at any truncation |
 | `assimilate` | assimilate point observations into one checkpoint |
 | `cycle` | forecast and assimilate in one process, an analysis every interval |
 | `da init`, `da cycle`, `da analyze`, `da fresh`, `da forecast`, `da static-covariance`, `da localisation` | the ensemble door: build, cycle, analyse one instant, do all of it from nothing, forecast from the analysis, estimate the hybrid's static covariance from lagged forecast pairs, derive the localisation radii from the members |
@@ -341,7 +382,9 @@ of them reads its stage, its progress and its ending from that file rather
 than by scraping a growing console. The shorter commands print their answer
 and are read by watching stdout. Exit codes are `0` success, `1` a refusal
 that names its reason, `2` an argument error, `3` a Rust door missing or
-failing its pin, `4` the device declining admission. Every finished run leaves
+failing its pin, `4` the device declining admission, and, from `go` only,
+`5` a forecast that stopped before its end (a refusal inside the model)
+after the hours it reached were drawn into `pictures/`. Every finished run leaves
 a self-hashed receipt carrying the configuration identity, the arithmetic
 pins, the library versions the numbers rode on, the engine version and the
 staged binary digests, so a run can be compared to a configuration without
@@ -420,6 +463,11 @@ on a different day through a different export and a different render call
   networks), `rw_igra2` (radiosondes), `rw_ndbc` (buoys), `rw_amv` (satellite
   motion vectors), `rw_gnssro` (radio occultation), `rw_wis2` (the WMO
   information system), `rw_goes` (ABI) and `rw_atms` (microwave).
+- **The render kernels** (`global_render_kernels`, built from this
+  repository's `rust/global-render-kernels`) regrid the Gaussian grid onto
+  every render tape, integrate the tape's hydrostatic column and translate
+  parent exports onto regional targets. They ship in the same companion
+  bundle as the observation doors.
 - **Statics** come from the public geography archive through the engine, cached
   once per truncation.
 

@@ -311,8 +311,9 @@ The shipped CPU reference gates include:
 - regular lat/lon export validation;
 - CLI and no-CuPy CPU operation.
 
-CuPy arithmetic is implemented but is not called “GPU validated” until the
-same battery and benchmark run on the actual target card.
+CuPy arithmetic is implemented but is not called GPU-verified until the same
+code-verification battery and benchmark run on the actual target card. This
+qualification does not compare forecasts with observations.
 
 ## Non-claims and limitations
 

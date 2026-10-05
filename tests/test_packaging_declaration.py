@@ -618,3 +618,18 @@ def test_every_root_document_is_in_the_source_distribution():
         "a root document is not in the source distribution, so a reader of "
         "the sdist does not have it and any test that reads it fails "
         f"there: {missing}")
+
+
+def test_each_gpu_extra_carries_the_nccl_its_cupy_does_not(declaration):
+    """MG-2: CuPy's `ctk` extra carries no NCCL, so without the wheel beside
+    it a stock `pip install gpuwm-global[gpu]` box has no device transport
+    and every in-box exchange goes host-staged over TCP."""
+
+    import re
+
+    extras = declaration["project"]["optional-dependencies"]
+    for name, major in (("gpu-cu12", "12"), ("gpu-cu13", "13")):
+        names = {re.split(r"[\[<>=!~ ]", entry, maxsplit=1)[0].lower()
+                 for entry in extras[name]}
+        assert f"cupy-cuda{major}x" in names, name
+        assert f"nvidia-nccl-cu{major}" in names, name

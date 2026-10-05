@@ -18,6 +18,17 @@ import pytest
 from arwen_global import doors
 
 
+@pytest.fixture(autouse=True)
+def _the_table_as_this_package_releases_it(monkeypatch):
+    """These tests are about this package's own bundle and the table it is
+    built from.  An engine whose bundle declares a companion door takes that
+    door over at run time (doors.publisher, tested on its own in
+    test_doors_engine_publisher.py), so the engine's roster is held silent
+    here and the result does not depend on which engine the suite runs on."""
+
+    monkeypatch.setattr(doors, "engine_bundle_names", lambda: frozenset())
+
+
 def test_every_door_names_a_bundle_and_a_command_it_stops():
     """A row with no bundle cannot be staged; a row with no consumer is not
     a door, it is a binary somebody remembered."""
@@ -99,7 +110,10 @@ def test_the_pins_document_is_shaped_the_way_the_stager_reads_it():
         assert platform in doors.SUPPORTED_PLATFORMS
         assert set(record["bundle"]) >= {"filename", "bytes", "sha256"}
         pinned = {entry["artifact"] for entry in record["binaries"]}
-        expected = {d.name for d in doors.doors_from_bundle(doors.COMPANION_BUNDLE)}
+        # The set the release these pins describe PUBLISHED: a door the
+        # table gained after that release (`Door.since`) is not in its bytes.
+        expected = {d.name for d in doors.doors_from_bundle(doors.COMPANION_BUNDLE)
+                    if doors.carried_by(d, pins.get("release"))}
         assert pinned == expected, (
             f"{platform} pins {sorted(pinned)} and this package publishes "
             f"{sorted(expected)}; a bundle that is not the door set cannot "
@@ -229,7 +243,8 @@ def test_the_pins_note_and_the_table_agree_on_the_count():
     """The note is read by a person deciding whether to trust the file."""
 
     pins = doors.companion_pins()
-    published = doors.doors_from_bundle(doors.COMPANION_BUNDLE)
+    published = [d for d in doors.doors_from_bundle(doors.COMPANION_BUNDLE)
+                 if doors.carried_by(d, pins.get("release"))]
     note = pins.get("note") or ""
     assert "fetch-doors" in note
     for door in published:
@@ -307,6 +322,23 @@ def test_staging_somewhere_the_ladder_does_not_look_says_so(
     assert doors.COMPANION_DIR_ENV in printed, printed
 
 
+def test_every_door_spells_out_the_variable_that_overrides_it():
+    """The override name is written whole on each row, never composed.
+
+    THE BREAKAGE THIS PREVENTS: a composed name is invisible to anything
+    that reads the table for the variables it names, so a distribution that
+    renamed the engine's variables left this table reading the old ones and
+    an override the engine honoured was one the doctor never saw.
+    """
+
+    import re
+
+    for door in doors.DOORS:
+        assert re.fullmatch(r"[A-Z][A-Z0-9_]+", door.env_var), (
+            f"{door.name} names no override variable")
+    assert len({door.env_var for door in doors.DOORS}) == len(doors.DOORS)
+
+
 def test_the_published_door_count_is_the_number_in_the_table():
     """Two release surfaces state how many Rust doors this package publishes.
 
@@ -326,6 +358,9 @@ def test_the_published_door_count_is_the_number_in_the_table():
     import re
 
     root = Path(__file__).resolve().parents[1]
+    # The newest section describes the bundle this tree builds, which
+    # carries every companion door the table names, the two libraries
+    # built from this repository's own `rust/` among them.
     published = len(list(doors.doors_from_bundle(doors.COMPANION_BUNDLE)))
     words = {
         "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
@@ -334,12 +369,24 @@ def test_the_published_door_count_is_the_number_in_the_table():
     }
     # Whitespace is collapsed first: both sentences wrap, and a pattern
     # that stopped at a newline found nothing and reported a clean page.
+    # A count does not reach across a semicolon or into a code span: "eight
+    # gaps; there `fetch-doors` says" counts gaps, not doors.
     pattern = re.compile(
-        r"\b(" + "|".join(words) + r"|\d+) [^.]{0,40}?\bdoors\b",
+        r"\b(" + "|".join(words) + r"|\d+) [^.;`]{0,40}?\bdoors\b",
         re.IGNORECASE)
 
-    for name in ("CHANGELOG.md", "RELEASE-NOTES-0.1.0.md"):
-        text = " ".join((root / name).read_text(encoding="utf-8").split())
+    # The claim a release surface makes is about the release it describes.
+    # The changelog's newest section describes the artefact this tree
+    # builds; an older section, and the 0.1.0 notes, describe artefacts
+    # already published with the door set they had, and rewriting them to
+    # today's count would make them wrong about what they shipped.  So the
+    # newest section is required to state the count and to state it right.
+    assert (root / "CHANGELOG.md").is_file()
+    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    sections = re.split(r"(?m)^## ", changelog)
+    newest = sections[1] if len(sections) > 1 else changelog
+    for name, body in (("CHANGELOG.md (newest section)", newest),):
+        text = " ".join(body.split())
         stated = [
             words.get(value.lower(), None) or int(value)
             for value in pattern.findall(text)
@@ -433,3 +480,62 @@ def test_the_doctor_names_this_programs_own_binding_as_the_companion_directory(
     # and no variable at all resolves to the directory by name
     monkeypatch.delenv(door.env_var, raising=False)
     assert doctor._origin(door, own) == "the companion door directory"
+
+
+def _pyproject_version() -> str:
+    import re
+
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    return re.search(r'(?m)^version\s*=\s*"([^"]+)"', text).group(1)
+
+
+def _doors_the_pins_owe(version: str, release: str | None) -> list[str]:
+    """Companion doors a package ``version`` carries by its table but the
+    pins of ``release`` do not."""
+
+    return sorted(
+        door.name for door in doors.doors_from_bundle(doors.COMPANION_BUNDLE)
+        if door.since is not None
+        and doors.carried_by(door, "v" + version.lstrip("vV"))
+        and not doors.carried_by(door, release))
+
+
+def test_a_version_at_a_doors_since_ships_pins_that_carry_it():
+    """THE BREAKAGE THIS PREVENTS: the cold start and the render tape run
+    only through libraries a bundle carries from their `since` release on,
+    and `fetch-doors` stages only what the pins' release carries.  A wheel
+    of that release cut with the previous release's pins passed every other
+    test here, and on every wheel install every analysis-initialised run
+    and every render would refuse with exit 3.  The cut has to repin from
+    the published bundle before the version reaches the door's `since`."""
+
+    # The rule can fail: a 0.1.3 wheel with the 0.1.2 pins owes both
+    # libraries, and the same pins on a 0.1.2 wheel owe nothing.
+    assert _doors_the_pins_owe("0.1.3", "v0.1.2") == [
+        "global_render_kernels", "rw_global_coldstart"]
+    assert _doors_the_pins_owe("0.1.2", "v0.1.2") == []
+    owed = _doors_the_pins_owe(_pyproject_version(),
+                               doors.companion_pins().get("release"))
+    assert owed == [], (
+        f"pyproject version {_pyproject_version()} carries {owed} by the door "
+        f"table but door-pins.json describes release "
+        f"{doors.companion_pins().get('release')}, which does not: repin with "
+        "tools/build_door_bundle.py pin from the published bundle")
+
+
+def test_a_door_the_pins_predate_is_not_sent_to_fetch_doors(monkeypatch):
+    """`fetch-doors` cannot stage a door the pinned bundle predates, so the
+    refusal must not name it; it names the build and the variable, the
+    same sentence `doctor` prints."""
+
+    monkeypatch.setattr(doors, "companion_pins",
+                        lambda: {"release": "v0.1.2", "platforms": {}})
+    refusal = str(doors.missing_door_refusal("rw_global_coldstart"))
+    assert "stage it with `gpuwm-global fetch-doors`" not in refusal
+    assert "predates this door" in refusal
+    assert "GPUWM_GLOBAL_COLDSTART_BRIDGE" in refusal
+    monkeypatch.setattr(doors, "companion_pins",
+                        lambda: {"release": "v0.1.3", "platforms": {}})
+    refusal = str(doors.missing_door_refusal("rw_global_coldstart"))
+    assert "stage it with `gpuwm-global fetch-doors`" in refusal

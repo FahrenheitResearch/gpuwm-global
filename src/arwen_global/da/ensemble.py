@@ -676,11 +676,12 @@ def recut_config(cfg, truncation: int, *, dt_s: float | None = None, name: str |
     dst_t = int(truncation)
     if dt_s is None and str(cfg.integrator).lower() in SEMILAG_INTEGRATORS:
         # The semi-Lagrangian step is bounded by the flow deformation (the
-        # Lipschitz number dt |grad v|, semilag.trajectory), not by the grid
+        # fold of the trajectory map, semilag.trajectory), not by the grid
         # spacing, so a coarser re-cut keeps the config's step: the T127
         # members of a T255 control at 300 s were re-cut to 600 s by the
         # Eulerian rule below and the third hour of the case's real cycle
-        # refused at a Lipschitz number of 0.7689 against 0.75 (2026-09-07).
+        # refused at a Lipschitz number of 0.7689 against 0.75 (2026-09-07,
+        # under the norm gate the fold gate replaced).
         dt_s = float(cfg.dt_s)
     if dt_s is None:
         ratio = (src_t + 1) / (dst_t + 1)

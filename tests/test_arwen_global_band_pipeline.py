@@ -567,7 +567,10 @@ def test_the_semi_lagrangian_core_is_priced_with_its_second_time_level():
         assert sl.device_peak_bytes == imex.device_peak_bytes + sl.trajectory_bytes
     assert any("trajectory" in row[0] for row in sl.itemization())
     assert any("gather" in row[0] for row in sl.itemization())
-    # The gather transient enters the banded peak whole and the one-band peak not at all.
+    # The gather transient enters a banded peak at one band's rows plus the
+    # row halo (the banded sl_si step reads nothing wider), and the
+    # one-band peak not at all.  It entered whole at every band count until
+    # the step was banded (audit 2026-10-05, MG-6).
     for bands in (1, 8):
         both = sizing.banded_device_peak_bytes(sl, bands)
         one = sizing.banded_device_peak_bytes(imex, bands)
@@ -576,7 +579,9 @@ def test_the_semi_lagrangian_core_is_priced_with_its_second_time_level():
         elif bands == 1:
             assert both == one + sl.trajectory_bytes
         else:
-            assert both == one + sl.trajectory_bytes + sl.semilag_gather_bytes
+            banded = sizing.semilag_gather_bytes_at(sl, bands)
+            assert 0 < banded < sl.semilag_gather_bytes
+            assert both == one + sl.trajectory_bytes + banded
 
 
 def test_the_door_prices_the_band_count_the_run_will_take():

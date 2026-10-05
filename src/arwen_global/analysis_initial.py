@@ -65,7 +65,6 @@ _REQUIRED_FIELDS = (
     # snow are read from the analysis, never zero-filled.
     *SEEDED_ANALYSIS_FIELDS,
 )
-_SOIL_LAYERS = 4
 #: Noah's snow store, depth and cover flag in the physics namespace
 #: (native_state.PersistentNativeState seeds its own from these when the
 #: cold state carries them), from the seeded planes of the same name.
@@ -402,6 +401,114 @@ def _onto_primary_grid(values: np.ndarray, source_lat, source_lon,
 #: receipt counts and locates it (``assumed_snow_free_points``).
 COASTAL_FILL_PASSES = 8
 
+#: The open-water skin's search reach, in analysis cells: a run water
+#: column whose bilinear stencil holds none of the analysis's own water
+#: points reads the analysis water values grown outward over its land this
+#: many passes at most (the reach doubles from one pass until the stencil
+#: is filled).  At 0.25 degrees, 512 passes cross any continent, so the
+#: cap is a guarantee that the search ends, not a reach anything needs:
+#: the GDAS 2026-09-30 12Z analysis on the T255 grid searched 220 columns
+#: (Antarctic ice-shelf water the analysis calls land) and reached all of
+#: them in 7 passes.
+OPEN_WATER_SKIN_SEARCH_PASSES = 512
+
+
+def open_water_skin_temperature(skin_src, land_src, regrid, open_water, *,
+                                latitude_deg=None, longitude_deg=None):
+    """The skin temperature of the run's open-water columns, from the
+    analysis's OWN water points only.
+
+    An open-water column starts from this skin and the ocean holds it for
+    the whole run (no ocean model: Noah skips it, the surface layer reads
+    it as the sea surface temperature; an inland lake's skin then follows
+    its own surface energy budget, native_runtime._lake_surface_step), so
+    that skin must be a water temperature.  The plain bilinear regrid of the analysis skin is not
+    one wherever the run's land fraction calls a column water and the
+    analysis calls a point of its stencil land: the stencil mixes in a
+    land skin, at the analysis hour.  On the GDAS 2026-09-30 12Z analysis
+    the north basin of Lake Turkana (4.45 N, 36.09 E, land fraction
+    0.485) started at 321.1 K, the 15:00 desert ground around the lake,
+    where the one analysis water point in its stencil read 300.8 K; held
+    for the run, a 48 C saturated lake under the Turkana jet evaporated
+    1.2e-3 kg/m2/s (about 3000 W/m2 latent) day and night, and the column
+    drained its 500 kg/m2 surface reservoir by hour 117 ("native physics
+    water closure exceeds the explicit surface reservoir").
+
+    The rule is metgrid's masked interpolation of SST over the analysis
+    land-sea mask (WPS METGRID.TBL, masked=land with search): the bilinear
+    weights renormalised over the stencil's analysis water points
+    (``land_src < 0.5``); a column whose stencil holds none reads the
+    analysis water values grown outward over the analysis land
+    (:func:`_grow_over_primary_land`, the 3 x 3 finite-neighbour mean)
+    until its stencil is filled.  Land and sea-ice columns keep the plain
+    regrid (Noah and the frozen-surface step integrate their skins from
+    the first call).  ``open_water`` is the run's open-water plane
+    (:func:`arwen_global.statics.water_columns`); ``latitude_deg`` and
+    ``longitude_deg`` (the target grid's axes) only locate the record's
+    largest changes.
+
+    Returns ``(skin, record)``: the open-water skin plane (equal to the
+    plain regrid everywhere else) and the provenance record that counts
+    and locates what the rule changed.
+    """
+    skin_src = np.asarray(skin_src, dtype=np.float64)
+    water_src = np.asarray(land_src, dtype=np.float64) < 0.5
+    plain = regrid(skin_src)
+    open_water = np.asarray(open_water, dtype=bool)
+    weight = regrid(water_src.astype(np.float64))
+    total = regrid(np.where(water_src, skin_src, 0.0))
+    has_water = weight > 0.0
+    skin = np.where(
+        open_water & has_water, total / np.where(has_water, weight, 1.0), plain
+    )
+    need = open_water & ~has_water
+    searched = int(np.count_nonzero(need))
+    passes = 0
+    if searched and water_src.any():
+        grown = np.where(water_src, skin_src, np.nan)
+        step = 1
+        while True:
+            grown, _filled, _left = _grow_over_primary_land(grown, ~water_src, step)
+            passes += step
+            values = regrid(grown)
+            reached = need & np.isfinite(values)
+            skin = np.where(reached, values, skin)
+            need = need & ~reached
+            if not need.any() or passes >= OPEN_WATER_SKIN_SEARCH_PASSES:
+                break
+            step = min(step * 2, OPEN_WATER_SKIN_SEARCH_PASSES - passes)
+    unreached = int(np.count_nonzero(need))
+    change = np.where(open_water, skin - plain, 0.0)
+    order = np.argsort(np.abs(change), axis=None)[::-1][:5]
+    rows, columns = np.unravel_index(order, change.shape)
+    record = {
+        "rule": (
+            "open-water columns take the analysis skin over the analysis's "
+            "own water points only: bilinear weights renormalised over the "
+            "stencil's water points (land_fraction < 0.5 in the analysis), "
+            "and a stencil with none reads the water values grown outward "
+            "over the analysis land by the 3 x 3 finite-neighbour mean; "
+            "land and sea-ice columns keep the plain bilinear regrid"
+        ),
+        "open_water_columns": int(np.count_nonzero(open_water)),
+        "stencil_with_analysis_land": int(np.count_nonzero(
+            open_water & has_water & (weight < 1.0 - 1.0e-12))),
+        "searched_columns": searched,
+        "search_passes": int(passes),
+        "unreached_columns_kept_plain_regrid": unreached,
+        "changed_by_more_than_1_k": int(np.count_nonzero(np.abs(change) > 1.0)),
+        "largest_cooling_k": float(-min(0.0, float(change.min()))),
+        "largest_warming_k": float(max(0.0, float(change.max()))),
+        "largest_changes": [
+            {"latitude_deg": None if latitude_deg is None else float(np.asarray(latitude_deg)[j]),
+             "longitude_deg": None if longitude_deg is None else float(np.asarray(longitude_deg)[i]),
+             "row": int(j), "column": int(i),
+             "plain_regrid_k": float(plain[j, i]), "open_water_k": float(skin[j, i])}
+            for j, i in zip(rows, columns) if change[j, i] != 0.0
+        ],
+    }
+    return skin, record
+
 
 def _grow_over_primary_land(values: np.ndarray, land: np.ndarray, passes: int):
     """A plane carrying a bitmap (NaN over the second product's water)
@@ -622,17 +729,24 @@ def floor_soil_water(soil_moisture, soil_category_top, landuse_category,
 
 
 def _global_regridder(latitude: np.ndarray, longitude: np.ndarray, grid):
-    """Periodic bilinear interpolation weights from a regular global
-    lat-lon grid onto the transform's Gaussian grid."""
+    """Periodic bilinear interpolation from a regular global lat-lon grid
+    onto the transform's Gaussian grid.
+
+    The refusals live here, ahead of any data: a grid that is not regular,
+    not a full longitude ring, or does not reach both poles cannot initialize
+    the global model, and each says which.  The interpolation itself runs in
+    the Rust cold-start door (:mod:`arwen_global.coldstart_bridge`),
+    byte-identical to the NumPy expression it replaced, which survives only
+    as the test oracle."""
+    from . import coldstart_bridge
+
     lat = np.asarray(latitude, dtype=np.float64)
     lon = np.asarray(longitude, dtype=np.float64)
-    flip = lat[0] > lat[-1]
-    if flip:
-        lat = lat[::-1]
-    dlat = np.diff(lat)
-    dlon = np.diff(lon)
     if lat.size < 2 or lon.size < 2:
         raise ValueError("analysis grid must be two-dimensional")
+    ascending = lat[::-1] if lat[0] > lat[-1] else lat
+    dlat = np.diff(ascending)
+    dlon = np.diff(lon)
     if np.max(np.abs(dlat - dlat[0])) > 1.0e-6 or np.max(np.abs(dlon - dlon[0])) > 1.0e-6:
         raise ValueError("analysis grid must be regular in latitude and longitude")
     span = float(dlon[0]) * lon.size
@@ -643,35 +757,17 @@ def _global_regridder(latitude: np.ndarray, longitude: np.ndarray, grid):
         )
     target_lat = np.asarray(grid.latitude_deg, dtype=np.float64)
     target_lon = np.asarray(grid.longitude_deg, dtype=np.float64)
-    if target_lat[0] < lat[0] - 1.0e-9 or target_lat[-1] > lat[-1] + 1.0e-9:
+    if target_lat[0] < ascending[0] - 1.0e-9 or target_lat[-1] > ascending[-1] + 1.0e-9:
         raise ValueError(
             "analysis latitudes do not cover the Gaussian grid; the source "
             "must reach both poles"
         )
-    fy = np.clip((target_lat - lat[0]) / dlat[0], 0.0, lat.size - 1.0)
-    y0 = np.minimum(fy.astype(np.int64), lat.size - 2)
-    wy = fy - y0
-    fx = np.mod(target_lon - lon[0], 360.0) / dlon[0]
-    x0 = np.mod(fx.astype(np.int64), lon.size)
-    wx = fx - np.floor(fx)
-    x1 = np.mod(x0 + 1, lon.size)
+    # Bind the door now, so a missing library refuses before any field is
+    # read rather than after the first one.
+    coldstart_bridge.load()
 
     def regrid(values: np.ndarray) -> np.ndarray:
-        field = np.asarray(values, dtype=np.float64)
-        if flip:
-            field = field[..., ::-1, :]
-        yl = y0[:, None]
-        yu = (y0 + 1)[:, None]
-        a = field[..., yl, x0[None, :]]
-        b = field[..., yl, x1[None, :]]
-        c = field[..., yu, x0[None, :]]
-        d = field[..., yu, x1[None, :]]
-        wyc = wy[:, None]
-        wxc = wx[None, :]
-        return (
-            (1.0 - wyc) * ((1.0 - wxc) * a + wxc * b)
-            + wyc * ((1.0 - wxc) * c + wxc * d)
-        )
+        return coldstart_bridge.regrid(values, lat, lon, target_lat, target_lon)
 
     return regrid
 
@@ -680,16 +776,209 @@ def _to_model_levels(values, ln_source, ln_target, *, extrapolate_below=False):
     """Linear-in-ln(p) interpolation from source pressure levels to model
     full levels.  Above the top source level the value is held; below the
     bottom the value is held unless ``extrapolate_below`` continues the
-    bottom layer's ln(p) gradient (temperature's lapse continuation)."""
-    upper = np.clip(np.searchsorted(ln_source, ln_target), 1, ln_source.size - 1)
-    lower = upper - 1
-    weight = (ln_target - ln_source[lower]) / (ln_source[upper] - ln_source[lower])
-    weight = np.maximum(weight, 0.0)
-    if not extrapolate_below:
-        weight = np.minimum(weight, 1.0)
-    low = np.take_along_axis(values, lower, axis=0)
-    high = np.take_along_axis(values, upper, axis=0)
-    return low * (1.0 - weight) + high * weight
+    bottom layer's ln(p) gradient (temperature's lapse continuation).
+
+    Runs in the Rust cold-start door (:mod:`arwen_global.coldstart_bridge`),
+    byte-identical to the NumPy searchsorted/take_along_axis form it
+    replaced, which survives only as the test oracle."""
+    from . import coldstart_bridge
+
+    return coldstart_bridge.remap(
+        values, np.asarray(ln_source, dtype=np.float64), ln_target,
+        extrapolate_below=extrapolate_below)
+
+
+#: How the remap fills model levels above the analysis top (GI-4, audit
+#: 2026-10-05).  The receipt carries these sentences verbatim.
+TEMPERATURE_ABOVE_ANALYSIS_TOP = (
+    "analysis-top temperature plus the ICAO standard atmosphere's change "
+    "from the analysis top pressure to the level's pressure (the column's "
+    "departure from the standard atmosphere at the analysis top is carried "
+    "unchanged up to the lid)"
+)
+OTHERS_ABOVE_ANALYSIS_TOP = "held at the analysis top value"
+
+
+def analysis_to_model_levels(fields, levels_pa, p_full):
+    """Remap isobaric analysis fields onto model full levels.
+
+    ``fields`` maps a field name to its ``(nlevel, ...)`` source stack on
+    ascending ``levels_pa`` (top first); ``p_full`` is the model's full
+    level pressure ``(nlev, ...)``.  Returns ``(remapped, record)``.
+
+    Between the analysis levels every field is linear in ln p.  Below the
+    bottom level temperature continues the bottom layer's ln p gradient and
+    the rest are held.  Above the analysis TOP, temperature is the analysis
+    top value plus the ICAO standard atmosphere's change between the top
+    pressure and the level (:data:`TEMPERATURE_ABOVE_ANALYSIS_TOP`); the
+    rest are held.  Holding temperature too was the defect GI-4 named: the
+    IFS open-data product tops at 10 hPa and the default lid is 1 hPa, so
+    every level above 10 hPa took the 10 hPa temperature, 20 to 40 K colder
+    than the stratopause.  Carrying the top's departure keeps a cold winter
+    pole cold and a warm summer pole warm while the column rises through
+    the stratospheric warming the analysis does not reach.
+    """
+    from .vertical import standard_atmosphere_temperature_k
+
+    levels = np.asarray(levels_pa, dtype=np.float64)
+    ln_source = np.log(levels)
+    # The log is taken in the model's own pressure dtype, as the remap
+    # always took it: a float32 run's levels interpolate on float32 ln p,
+    # so a column with nothing above the analysis top keeps the bits it
+    # had before the extension existed.  Only the standard-atmosphere rise
+    # is formed in float64.
+    p_full = np.asarray(p_full)
+    ln_target = np.log(p_full)
+    p_full_64 = p_full.astype(np.float64)
+    top = float(levels[0])
+    above = p_full_64 < top
+    remapped = {}
+    for name, values in fields.items():
+        is_temperature = name == "air_temperature"
+        out = _to_model_levels(
+            np.asarray(values, dtype=np.float64), ln_source, ln_target,
+            extrapolate_below=is_temperature,
+        )
+        if is_temperature and above.any():
+            rise = (
+                standard_atmosphere_temperature_k(p_full_64)
+                - standard_atmosphere_temperature_k(top)
+            )
+            out = np.where(above, out + rise, out)
+        remapped[name] = out
+    levels_above = int(np.count_nonzero(
+        np.any(above.reshape(above.shape[0], -1), axis=1)
+    ))
+    record = {
+        "analysis_top_pa": top,
+        "model_full_levels_above_analysis_top": levels_above,
+        "model_top_full_level_min_pa": float(np.min(p_full[0])),
+        "temperature_above_top": TEMPERATURE_ABOVE_ANALYSIS_TOP,
+        "humidity_and_wind_above_top": OTHERS_ABOVE_ANALYSIS_TOP,
+    }
+    return remapped, record
+
+
+#: Depths of GRIB "soil level" indices (code table 4.5 type 151), which a
+#: message does not carry: the producer defines them.  Keyed by the
+#: mapping document's ``name``; each entry lists the interface depths (m)
+#: of soil levels 0, 1, 2, ..., so the layer between levels a and b spans
+#: ``interfaces[a]`` to ``interfaces[b]``.  Adding a source is a row in this
+#: data file, not code.
+SOIL_LEVEL_DEPTHS_FILE = "soil-level-depths.json"
+#: GRIB code table 4.5: depth below land surface in metres.
+_GRIB_DEPTH_BELOW_LAND_M = 106
+#: GRIB code table 4.5: soil level (a producer-defined index).
+_GRIB_SOIL_LEVEL_INDEX = 151
+
+
+def noah_soil_layer_bounds_m():
+    """Noah's four layer bounds (m): 0-0.1, 0.1-0.4, 0.4-1.0, 1.0-2.0."""
+    from .core.noah import SOIL_LAYER_THICKNESS_M
+
+    edges = np.concatenate([[0.0], np.cumsum(SOIL_LAYER_THICKNESS_M)])
+    return tuple((float(edges[k]), float(edges[k + 1]))
+                 for k in range(len(SOIL_LAYER_THICKNESS_M)))
+
+
+def soil_layer_bounds_m(mapping_path, field_name="soil_temperature"):
+    """The depth bounds (m) of each source soil layer ``field_name`` decodes
+    to, in the mapping's selector order.
+
+    A depth-below-land selector (type 106) states its depths.  A soil-level
+    index selector (type 151) takes them from :data:`SOIL_LEVEL_DEPTHS_FILE`
+    under the mapping's name.  Refuses a soil selector of any other level
+    type, or a level-index mapping the depth table does not carry, because
+    the layers would otherwise be handed to Noah by position, the defect
+    GI-7 (audit 2026-10-05) named: an IFS 0-7 cm layer read as Noah's
+    0-10 cm one and the 100-289 cm layer as the 100-200 cm one.
+    """
+    import json
+
+    document = json.loads(Path(mapping_path).read_text(encoding="utf-8"))
+    selectors = document["fields"][field_name]["selectors"]
+    bounds = []
+    table = None
+    for index, selector in enumerate(selectors):
+        kind = selector.get("level_type")
+        second = selector.get("second_level_type", kind)
+        if kind != second:
+            raise ValueError(
+                f"{Path(mapping_path).name} {field_name} selector {index} mixes "
+                f"level types {kind} and {second}; its layer has no depth, "
+                "so it would reach Noah by position instead of at its depth"
+            )
+        top, bottom = selector["level_value"], selector["second_level_value"]
+        if kind == _GRIB_DEPTH_BELOW_LAND_M:
+            bounds.append((float(top), float(bottom)))
+        elif kind == _GRIB_SOIL_LEVEL_INDEX:
+            if table is None:
+                from importlib.resources import files
+
+                rows = json.loads(
+                    files("arwen_global").joinpath("data", SOIL_LEVEL_DEPTHS_FILE)
+                    .read_text(encoding="utf-8")
+                )["interfaces_m"]
+                if document["name"] not in rows:
+                    raise ValueError(
+                        f"{Path(mapping_path).name} names {field_name} by soil "
+                        f"level index and {SOIL_LEVEL_DEPTHS_FILE} carries no "
+                        f"depths for {document['name']!r}; add its row so the "
+                        "layers reach Noah at their depths instead of by position"
+                    )
+                table = rows[document["name"]]
+            bounds.append((float(table[int(top)]), float(table[int(bottom)])))
+        else:
+            raise ValueError(
+                f"{Path(mapping_path).name} {field_name} selector {index} has "
+                f"level type {kind}, which carries no soil depth, so it "
+                "would reach Noah by position instead of at its depth"
+            )
+    return tuple(bounds)
+
+
+SOIL_LAYER_REMAP_RULE = (
+    "each model soil layer is the depth-overlap mean of the source layers; "
+    "a model layer reaching below the deepest source layer (or above the "
+    "shallowest) takes that layer's value over the uncovered depth"
+)
+
+
+def remap_soil_layers(stack, source_bounds, target_bounds):
+    """Remap a ``(nsource, ...)`` soil stack onto ``target_bounds`` by depth.
+
+    Each target layer is the overlap-weighted mean of the source layers,
+    which keeps the column's volumetric water and its depth-mean
+    temperature over the covered depth.  Identical bounds return the stack
+    unchanged, bit for bit.  Returns ``(stack, record)``.
+    """
+    stack = np.asarray(stack)
+    source = np.asarray(source_bounds, dtype=np.float64)
+    target = np.asarray(target_bounds, dtype=np.float64)
+    record = {
+        "source_bounds_m": [[float(v) for v in b] for b in source],
+        "model_bounds_m": [[float(v) for v in b] for b in target],
+        "rule": SOIL_LAYER_REMAP_RULE,
+    }
+    if source.shape == target.shape and np.array_equal(source, target):
+        record["remapped"] = False
+        return np.ascontiguousarray(stack), record
+    order = np.argsort(source[:, 0], kind="stable")
+    source = source[order]
+    stack = stack[order]
+    reach = source.copy()
+    reach[0, 0] = min(reach[0, 0], target[0, 0])
+    reach[-1, 1] = max(reach[-1, 1], target[-1, 1])
+    overlap = np.clip(
+        np.minimum(target[:, None, 1], reach[None, :, 1])
+        - np.maximum(target[:, None, 0], reach[None, :, 0]),
+        0.0, None,
+    )
+    weights = overlap / overlap.sum(axis=1, keepdims=True)
+    out = np.tensordot(weights, stack, axes=(1, 0))
+    record["remapped"] = True
+    record["weights"] = [[float(v) for v in row] for row in weights]
+    return np.ascontiguousarray(out), record
 
 
 def surface_virtual_temperature(temperature_src, humidity_src, ln_source, ps_src):
@@ -860,14 +1149,23 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
 
     pressure = cfg.vertical.pressure(ps_model, transform.backend)
     p_full = transform.backend.to_numpy(pressure["p_full"])
-    ln_target = np.log(p_full)
 
-    temperature = _to_model_levels(
-        temperature_src, ln_source, ln_target, extrapolate_below=True
+    # Above the analysis top temperature follows the standard atmosphere's
+    # shape from the analysed top value (GI-4); the receipt names how many
+    # model levels that covers.
+    remapped, analysis_top = analysis_to_model_levels(
+        {
+            "air_temperature": temperature_src,
+            "specific_humidity": humidity_src,
+            "eastward_wind": u_src,
+            "northward_wind": v_src,
+        },
+        levels, p_full,
     )
-    humidity = np.clip(_to_model_levels(humidity_src, ln_source, ln_target), 0.0, None)
-    u = _to_model_levels(u_src, ln_source, ln_target)
-    v = _to_model_levels(v_src, ln_source, ln_target)
+    temperature = remapped["air_temperature"]
+    humidity = np.clip(remapped["specific_humidity"], 0.0, None)
+    u = remapped["eastward_wind"]
+    v = remapped["northward_wind"]
 
     exner = (p_full / REFERENCE_PRESSURE_PA) ** KAPPA
     theta = temperature / exner
@@ -918,14 +1216,32 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
     soil_temperature = regrid(soil_temperature_src)
     soil_moisture = np.clip(regrid(soil_moisture_src), 0.0, 1.0)
 
-    def _soil_layers(stack: np.ndarray) -> np.ndarray:
-        if stack.shape[0] >= _SOIL_LAYERS:
-            return np.ascontiguousarray(stack[:_SOIL_LAYERS])
-        pad = np.repeat(stack[-1:], _SOIL_LAYERS - stack.shape[0], axis=0)
-        return np.concatenate([stack, pad], axis=0)
-
-    soil_temperature = _soil_layers(soil_temperature)
-    soil_moisture = _soil_layers(soil_moisture)
+    # The source's soil layers reach Noah by DEPTH, not by position (GI-7):
+    # each Noah layer is the depth-overlap mean of the source layers, the
+    # source bounds read from the mapping that supplied the soil group.
+    soil_field = frame.fields["soil_temperature"]
+    soil_mapping_path = (
+        fill_mapping_path
+        if getattr(soil_field, "source", "primary") == "fill"
+        and fill_mapping_path is not None
+        else mapping_path
+    )
+    soil_layers = {}
+    for name, stack in (("soil_temperature", soil_temperature),
+                        ("volumetric_soil_moisture", soil_moisture)):
+        bounds = soil_layer_bounds_m(soil_mapping_path, name)
+        if len(bounds) != stack.shape[0]:
+            raise ValueError(
+                f"{name} decoded {stack.shape[0]} layers but "
+                f"{Path(soil_mapping_path).name} declares {len(bounds)}; the "
+                "layers could not be placed at their depths"
+            )
+        remapped, soil_layers[name] = remap_soil_layers(
+            stack, bounds, noah_soil_layer_bounds_m())
+        if name == "soil_temperature":
+            soil_temperature = remapped
+        else:
+            soil_moisture = remapped
 
     # Sea ice and snow, from the analysis (surface_seeding: unit trap
     # closed by value, bitmap read as no snow on open water only, every
@@ -1015,8 +1331,26 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
         statics_metadata[SURFACE_STATICS_METADATA_KEY]["ice_category"],
     )
 
+    # The open-water skin is a water temperature the ocean holds for the
+    # run (open_water_skin_temperature): the analysis's own water points,
+    # never a land skin its stencil mixed in.  The columns are the runtime's own
+    # open-water test on the planes in the state's precision.
+    from .statics import water_columns
+
+    surface_dtype = np.dtype(b.float_dtype)
+    open_water_skin, open_water_skin_record = open_water_skin_temperature(
+        frame.fields["skin_temperature"].values,
+        frame.fields["land_fraction"].values,
+        regrid,
+        water_columns(
+            np.asarray(land_fraction, dtype=surface_dtype),
+            sea_ice_fraction=np.asarray(seeded.sea_ice_fraction, dtype=surface_dtype),
+        ),
+        latitude_deg=grid.latitude_deg, longitude_deg=grid.longitude_deg,
+    )
+
     surface = SurfaceState(
-        temperature_k=b.asarray(skin_temperature, dtype=b.float_dtype),
+        temperature_k=b.asarray(open_water_skin, dtype=b.float_dtype),
         water_kg_m2=b.xp.full(
             grid.shape, float(cfg.surface_water_kg_m2), dtype=b.float_dtype
         ),
@@ -1072,6 +1406,7 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
         "valid_time": None if getattr(frame, "valid_time", None) is None
         else str(frame.valid_time),
         "analysis_levels": int(levels.size),
+        "analysis_top": _json_safe(analysis_top),
         "surface_pressure_adjustment_pa": {
             "max": float(np.max(ps_model - ps_src)),
             "min": float(np.min(ps_model - ps_src)),
@@ -1101,6 +1436,8 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
         "decode": _json_safe(decode_receipts) or None,
         "fill": _json_safe(getattr(frame, "fill", None)),
         "soil_water_floor": _json_safe(soil_water_floor),
+        "open_water_skin": _json_safe(open_water_skin_record),
+        "soil_layers": _json_safe(soil_layers),
     }
     return (
         ArwenGlobalState(
@@ -1114,9 +1451,15 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
 
 __all__ = [
     "COASTAL_FILL_PASSES",
+    "OPEN_WATER_SKIN_SEARCH_PASSES",
+    "open_water_skin_temperature",
     "FILL_GROUPS",
     "CompositeFrame",
     "analysis_initial_state",
+    "analysis_to_model_levels",
+    "noah_soil_layer_bounds_m",
+    "remap_soil_layers",
+    "soil_layer_bounds_m",
     "fill_frame",
     "floor_soil_water",
     "MappingResolution",

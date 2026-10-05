@@ -642,15 +642,12 @@ class GridTracerTransport:
         del ratio
         metrics["floor_clip_kg_m2"] = float(clipped)
         metrics["floor_clip_relative"] = float(largest_negative)
-        # THE ONE PLACE THE GRID TRACERS CROSS A CARD BOUNDARY.  Every
-        # other writer of the ten grid tracers leaves the whole globe on
-        # every card -- the positivity repair floors a whole array, the
-        # physics half-step runs its bands on every card and assembles the
-        # globe (dynamics.whole_globe_slices) -- so the sweeps are the
-        # only band-wise writer and the state is whole again the moment
-        # this returns.  Eleven volumes, 498 MB at T255 L40
-        # float32 per card per step; that figure and the physics
-        # duplication are what the two-card verdict is made of.
+        # The flux-form sweeps write the ten grid tracers band-wise, so the
+        # bands are gathered here and the state is whole on every card the
+        # moment this returns.  They are not the only band-wise writer:
+        # the physics half-step also runs only its own card's bands and
+        # gathers the tracers in dynamics.apply_physics (_gather_card_rows).
+        # Eleven volumes, 498 MB at T255 L40 float32 per card per step.
         if cards > 1:
             for name in names:
                 out[name] = exchange.fill_rows(

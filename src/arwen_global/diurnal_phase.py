@@ -626,9 +626,12 @@ def run_start_utc(run_dir: Path) -> float | None:
         return None
     with receipt.open("r", encoding="utf-8") as stream:
         payload = json.load(stream)
-    options = payload.get("config", {}).get("native_adapter_options", {})
-    start = options.get("start_time_utc") if isinstance(options, dict) else None
-    return parse_utc(start) if start else None
+    # The run's forecast clock (arwen_global.clock), which a run that
+    # follows its analysis carries without stating start_time_utc.
+    from .clock import receipt_start_utc
+
+    start = receipt_start_utc(payload)
+    return None if start is None else start.timestamp()
 
 
 def read_checkpoint_series(
@@ -1027,7 +1030,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="diurnal-phase instrument for surface precipitation")
     parser.add_argument("--run-dir", help="directory of arwen_global_step*.npz checkpoints")
     parser.add_argument("--checkpoints", nargs="*", help="explicit checkpoint paths (else every step file in --run-dir)")
-    parser.add_argument("--start", help="run start, ISO UTC; else the run receipt's start_time_utc")
+    parser.add_argument("--start", help="run start, ISO UTC; else the run receipt's forecast clock")
     parser.add_argument("--obs-packs", help="glob of Stage-IV hourly packs (gpuwm-obs.obs-grid.v1)")
     parser.add_argument("--obs-geo", help="the packs' geometry pack (gpuwm-obs.obs-geo.v1)")
     parser.add_argument("--label", default="")
@@ -1058,7 +1061,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         start_s = run_start_utc(Path(args.run_dir)) if args.run_dir else None
         if start_s is None:
-            parser.error("--start is required when the run directory carries no receipt with start_time_utc")
+            parser.error("--start is required when the run directory carries no receipt with a forecast clock or start_time_utc")
     total, convective, land, record = read_checkpoint_series(paths, start_utc_s=start_s)
     observation = None
     obs_record: dict[str, object] = {}

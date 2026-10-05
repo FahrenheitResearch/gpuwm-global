@@ -34,6 +34,8 @@ import tempfile
 
 import pytest
 
+from conftest import requires_render_kernels  # noqa: E402
+
 from arwen_global import runplan
 from arwen_global.configs_dir import config_root, list_configs
 
@@ -492,7 +494,9 @@ def test_a_symbol_gap_that_does_stop_a_forecast_closes_the_native_suite(
         symbol="a_symbol_no_engine_carries_" + "for_this_arm",
         stops="the native column forecast, in this test only",
         handling="refused",
-        stops_a_native_forecast=True)
+        stops_a_native_forecast=True,
+        # A forecast is `run` and `go`, which are documented commands.
+        stops_a_documented_command=True)
     monkeypatch.setattr(engine_compat, "GAPS",
                         engine_compat.GAPS + (blocker,))
     document = runplan.physics_profile_menu()
@@ -552,6 +556,28 @@ def test_the_physics_menu_names_the_engine_fields_it_does_not_answer():
     top = (set(engine) - set(document)
            - set(document["engine_fields_not_carried"]))
     assert not top, sorted(top)
+
+
+def test_every_physics_row_answers_the_urban_scheme_with_none():
+    """The engine's menu rows carry `urban_scheme_id` from gpuwm 2.8.5 on.
+
+    THE BREAKAGE THIS PREVENTS: a picker written against the engine's own
+    physics menu reads `urban_scheme_id` off every row, and a row here that
+    neither answers it nor names it hands that picker a KeyError.  Measured
+    against gpuwm 2.8.5, the engine a fresh install resolves on 2026-10-05:
+    the menu test above failed with ('reference-suite-v1',
+    ['urban_scheme_id']).  WOOF Global runs no urban canopy scheme in any
+    experiment (urban cells are a land-use category the land surface model
+    reads, nothing selects an sf_urban_physics option), so the answer is the
+    engine's own spelling of "none", the same on every row, and it is held
+    here without needing that engine installed.
+    """
+
+    document = runplan.physics_profile_menu()
+    assert document["profiles"]
+    for row in document["profiles"]:
+        assert row["urban_scheme_id"] == 0, row["profile_id"]
+        assert "urban_scheme_id" not in row["not_applicable"]
 
 
 @pytest.mark.doors
@@ -1525,6 +1551,7 @@ def test_the_go_route_runs_every_stage_and_commits_real_pictures(tmp_path):
 
 
 @pytest.mark.doors
+@requires_render_kernels
 def test_a_failed_render_names_what_did_not_draw(tmp_path):
     """The failure a client is handed names the cause, not the exit code.
 

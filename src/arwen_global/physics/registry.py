@@ -14,7 +14,20 @@ from typing import Callable
 
 
 _SHA_ZERO = "0" * 64
-_ALLOWED_STATUS = {"device-pending", "experimental", "validated"}
+_ALLOWED_STATUS = {"device-pending", "experimental", "device-qualified"}
+_STATUS_ALIASES = {"validated": "device-qualified"}
+
+
+def _canonical_admission_status(status: object) -> str:
+    if not isinstance(status, str):
+        raise ValueError("adapter admission_status must be a string")
+    canonical = _STATUS_ALIASES.get(status, status)
+    if canonical not in _ALLOWED_STATUS:
+        raise ValueError(
+            f"adapter admission_status must be one of {sorted(_ALLOWED_STATUS)}; "
+            "legacy alias 'validated' is also accepted"
+        )
+    return canonical
 
 
 @dataclass(frozen=True)
@@ -37,6 +50,11 @@ class GlobalPhysicsAdapterRegistration:
     #: the "fixed" length, and the probe that restarted the control read a
     #: kernel word that was not the control's).
     options_identity: Callable[[dict[str, object]], dict[str, object]] | None = None
+
+    @property
+    def admission_status(self) -> str:
+        """Canonical display name without rewriting a hash-bound old contract."""
+        return _canonical_admission_status(self.contract["admission_status"])
 
     @property
     def contract_hash(self) -> str:
@@ -93,7 +111,7 @@ def _normalize_contract(contract: dict[str, object]) -> dict[str, object]:
         raise TypeError("global physics adapter contract must be a dict")
     value = dict(contract)
     # Third-party v1 registrations are retained as experimental candidates;
-    # absence of device evidence can never be interpreted as validation.
+    # absence of device evidence can never be interpreted as device qualification.
     if value.get("schema") == "gpuwm.arwen-global-native-physics-adapter/v1":
         value.update(
             schema="gpuwm.arwen-global-native-physics-adapter/v2",
@@ -122,10 +140,10 @@ def _normalize_contract(contract: dict[str, object]) -> dict[str, object]:
         raise ValueError("adapter required_fields must be a nonempty list")
     if not all(isinstance(item, str) and item for item in value["required_fields"]):
         raise ValueError("adapter required_fields entries must be nonempty strings")
-    if value["admission_status"] not in _ALLOWED_STATUS:
-        raise ValueError(
-            f"adapter admission_status must be one of {sorted(_ALLOWED_STATUS)}"
-        )
+    status = _canonical_admission_status(value["admission_status"])
+    # Preserve a legacy contract's spelling: changing a sealed contract would
+    # change its hash and break existing bridge/checkpoint identities. Summaries
+    # use registration.admission_status for the canonical vocabulary instead.
     if not isinstance(value["limitations"], list) or not all(
         isinstance(item, str) and item for item in value["limitations"]
     ):
@@ -134,8 +152,8 @@ def _normalize_contract(contract: dict[str, object]) -> dict[str, object]:
         "evidence_receipt_sha256", "arithmetic_sha256", "device_evidence_sha256"
     ):
         value[digest_name] = _digest(value[digest_name], digest_name)
-    if value["admission_status"] == "validated" and value["device_evidence_sha256"] == _SHA_ZERO:
-        raise ValueError("validated adapter requires nonzero device evidence")
+    if status == "device-qualified" and value["device_evidence_sha256"] == _SHA_ZERO:
+        raise ValueError("device-qualified adapter requires nonzero device evidence")
     json.dumps(value, sort_keys=True, allow_nan=False)
     return value
 
@@ -200,7 +218,7 @@ def registered_global_physics_adapters() -> tuple[str, ...]:
 def global_physics_manifest() -> dict[str, object]:
     return {
         name: {
-            "admission_status": registration.contract["admission_status"],
+            "admission_status": registration.admission_status,
             "contract": registration.contract,
             "contract_hash": registration.contract_hash,
             "options_validation": (

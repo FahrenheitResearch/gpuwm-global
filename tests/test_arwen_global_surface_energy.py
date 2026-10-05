@@ -14,7 +14,7 @@ import json
 import numpy as np
 import pytest
 
-from conftest import requires_netcdf_writer  # noqa: E402
+from conftest import requires_netcdf_writer, requires_render_kernels  # noqa: E402
 
 from arwen_global import surface_energy as se
 from arwen_global.constants import (
@@ -312,6 +312,7 @@ def test_bias_planes_are_named_for_the_renderer_and_masked_to_land():
 
 
 @requires_netcdf_writer
+@requires_render_kernels
 def test_export_carries_the_surface_energy_planes_and_the_instrument_extras(tmp_path):
     """A native-suite checkpoint's energy books reach the render tape in
     WRF's names, LH split land/water, VEGFRA in percent, and the extra

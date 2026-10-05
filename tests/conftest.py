@@ -90,6 +90,56 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.gpu)
         if NO_LOCAL_GPU and item.get_closest_marker("gpu") is not None:
             item.add_marker(_SKIP_LOCAL)
+        if full_tier_key(item) in FULL_TIER and "slow" not in item.keywords:
+            item.add_marker(pytest.mark.slow)
+
+
+# ------------------------------------------------------- the two CPU tiers
+
+#: The CPU tests that run in the FULL tier only, by `file::function`, with
+#: the seconds each took on its own (every parametrisation summed).
+#:
+#: THE BREAKAGE THIS PREVENTS: the CPU suite had one tier, and on a shared
+#: desktop it ran past a 10 minute budget and was killed at 96 percent, so
+#: its last failures were never named.  Measured on a 24-thread Linux CPU
+#: host on 2026-10-05 against gpuwm 2.8.5, `-m "not gpu"`, four
+#: workers: 2,007 tests whose times sum to 554 s, of which these sixteen
+#: functions are 293 s.  Each is a whole-model integration (an IMEX or
+#: semi-Lagrangian gate run for model hours, or a profiled run) rather
+#: than a check of one rule, and each takes 6 s or more alone.
+#:
+#: THE TIERS.  Quick: `-m "not gpu and not slow and not network"`, run on
+#: every push.  Full: `-m "not gpu"`, which is everything a host without a
+#: card can run, these included, run nightly and by every publish.  A test
+#: lands here by name, with its measured time, never by a guess; nothing
+#: here is skipped, only scheduled.  `tests/test_suite_device_and_gap_marks.py`
+#: refuses an entry that names no test, so a rename cannot leave a dead row.
+FULL_TIER: dict[str, float] = {
+    "test_arwen_global_imex.py::test_gate_h_rotational_kinetic_energy_is_not_damped": 41.3,
+    "test_arwen_global_imex.py::test_gate_b_rest_over_a_mountain_for_an_hour": 51.0,
+    "test_arwen_global_imex.py::test_gate_c_rest_ceiling_holds_at_the_shipped_diffusion": 18.7,
+    "test_arwen_global_imex.py::test_gate_e_t21_nonlinear_run_is_bounded_at_4x_the_former_ceiling": 11.4,
+    "test_arwen_global_imex.py::test_gate_c_linearized_rest_ceiling_on_the_default_stack": 10.8,
+    "test_arwen_global_imex.py::test_gate_g_conservation_on_the_t21_moist_day": 7.7,
+    "test_arwen_global_semilag_step.py::test_rest_over_a_mountain_reads_the_same_floor_as_the_shipped_core": 28.4,
+    "test_arwen_global_semilag_step.py::test_a_balanced_rest_state_is_a_fixed_point": 6.1,
+    "test_arwen_global_profile.py::test_calibration_refuses_when_the_clock_lies": 17.5,
+    "test_arwen_global_profile.py::test_an_imex_run_profiles_its_stage_solves": 16.7,
+    "test_arwen_global_profile.py::test_a_profiled_run_is_bit_identical_and_writes_the_profile": 16.3,
+    "test_arwen_global_profile.py::test_calibration_reads_a_planted_sleep_and_nothing_else": 13.8,
+    "test_arwen_global_run_plan.py::test_a_restart_plan_counts_only_the_checkpoints_it_will_write": 11.7,
+    "test_arwen_global_vertical_modes.py::test_t21_nonlinear_run_is_bounded_at_4x_and_8x_the_former_ceiling": 22.8,
+    "test_arwen_global_vertical_modes.py::test_rest_over_a_mountain_through_the_full_step": 11.1,
+    "test_arwen_global_vertical_modes.py::test_linearized_rest_ceiling_rises_at_t21_and_t533": 7.8,
+}
+
+
+def full_tier_key(item) -> str:
+    """`file::function` for a collected test, parametrisation dropped."""
+
+    path = getattr(item, "path", None)
+    name = getattr(item, "originalname", None) or item.name.split("[", 1)[0]
+    return f"{Path(str(path)).name}::{name}" if path is not None else name
 
 
 # ------------------------------------------------- the engine's own gaps
@@ -448,3 +498,38 @@ requires_netcdf_writer = pytest.mark.skipif(
            "`netcdf_writer` in the engine's bridge bundle) is not staged "
            "here, so no product tape can be written: run `gpuwm "
            "fetch-bridges`.  " + (NETCDF_WRITER_REASON or ""))
+
+
+def _render_kernels_reason() -> str | None:
+    """Why the Rust render kernels cannot be loaded here, or None.
+
+    The render tape's regrid and column and the regional translation run in
+    `global_render_kernels`, a door this package's own bundle publishes
+    (crate `rust/global-render-kernels`).  A checkout without it built and a
+    clean HOME without the bundle refuse those paths, correctly; a skip
+    naming the door says the same thing without four red rows.  The CI
+    test job builds the crate first, so there these tests run.
+
+    Asked by TRYING to load, never by looking for a file.
+    """
+
+    try:
+        from arwen_global import render_kernels
+
+        render_kernels.library()
+    except Exception as failure:  # noqa: BLE001 - the refusal is the reason
+        return str(failure).splitlines()[0]
+    return None
+
+
+RENDER_KERNELS_REASON = _render_kernels_reason()
+
+#: Skip a test that runs the render or regional kernels when the library is
+#: not built or staged.
+requires_render_kernels = pytest.mark.skipif(
+    RENDER_KERNELS_REASON is not None,
+    reason="the Rust render kernels (global_render_kernels, crate "
+           "rust/global-render-kernels in this package's door bundle) are not "
+           "staged here: run `gpuwm-global fetch-doors`, or build the crate "
+           "and point ARWEN_GLOBAL_RENDER_KERNELS at it.  "
+           + (RENDER_KERNELS_REASON or ""))

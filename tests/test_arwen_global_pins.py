@@ -64,21 +64,81 @@ GRID_TRACER_IMEX_EXTERNAL_PINS_HASH = (
 #: pin went to v2, and when theta stopped being advected as a deviation
 #: from the reference profile (the reference's grid tendency warmed the lid
 #: by 32 K a day where the trajectory is clamped, semilag.rhs) it went to
-#: v3, this hash moving with it each time.  The other four are untouched.
+#: v3, this hash moving with it each time.  On 2026-10-05 two lines each
+#: took the pin to a v4 of its own: the default mass fixer became the
+#: published Bermejo-Conde weighting (this digest), and the departure level
+#: was clamped at the boundary interfaces with the geometric level rate
+#: (LID_V4_PINS_HASH).  Merged, the string carries both and reads v5; v3
+#: (the WOOF Global 1.0.x arithmetic) and both v4 digests are retired and
+#: inspectable.  The other four are untouched.
 SEMILAG_VERTICAL_MODE_PINS_HASH = (
+    "5344d698e0ebdcf62080871b37b55516691fb3b81f79a65c542857ab8f19c3f2"
+)
+LID_V4_PINS_HASH = (
+    "9f2c83af1c759b5be69cf6b55936e2deb0a9097431f05ffa7aab88927b33f5de"
+)
+SEMILAG_V3_PINS_HASH = (
     "d82dc8ae4b0b5ea75aadccbf8b2ef5f8b3330d5b36670f00234f28bfe6e9d5d8"
 )
 
+#: The five CURRENT digests (DYC-1, DYC-3).  The four Eulerian documents
+#: moved when the top and bottom layers took the one-sided gradient to
+#: their neighbour instead of zero (the zero gradient carried the top
+#: layer's own theta out under descent and cooled the lid), and the
+#: semi-Lagrangian one when its departure level was clamped at the
+#: boundary interfaces and its level rate took the geometric full-level
+#: spacing, then again (v5) when that string and the Bermejo-Conde fixer's
+#: were merged.  Every digest above that was current until then is
+#: retired: inspectable, never resumable.
+CURRENT_SPLIT_VERTICAL_MODE_PINS_HASH = (
+    "eb45fdb232e2af9e53b841a712114fdca59e34638a7da7b161f1ed3f65750fcc"
+)
+CURRENT_SPLIT_EXTERNAL_PINS_HASH = (
+    "76b4f67b5e4270cdab3bff8482191308234772081cf86cef82de7f6e9186fc1a"
+)
+CURRENT_IMEX_VERTICAL_MODE_PINS_HASH = (
+    "84a38ed0c4ca28255497b27fca5c068e64deefc7d570a5e9d20225184c148c98"
+)
+CURRENT_IMEX_EXTERNAL_PINS_HASH = (
+    "37a75cb316831c821a7961ad6f9c746f1bd6556234ae6a7fca95de2bb38f68bf"
+)
+CURRENT_SEMILAG_VERTICAL_MODE_PINS_HASH = (
+    "04527ce96c45834329cd131c8f5428f623ec0d0216ac085f10b2b15da3e0c23d"
+)
+
+
+def test_the_lid_clamp_era_pins_are_inspectable_and_never_current():
+    retired = {
+        GRID_TRACER_SPLIT_VERTICAL_MODE_PINS_HASH,
+        GRID_TRACER_SPLIT_EXTERNAL_PINS_HASH,
+        GRID_TRACER_IMEX_VERTICAL_MODE_PINS_HASH,
+        GRID_TRACER_IMEX_EXTERNAL_PINS_HASH,
+    }
+    assert pins.RETIRED_BOUNDARY_FACE_PINS_HASHES == frozenset(retired)
+    assert SEMILAG_VERTICAL_MODE_PINS_HASH in pins.RETIRED_SEMILAG_PINS_HASHES
+    assert LID_V4_PINS_HASH in pins.RETIRED_SEMILAG_PINS_HASHES
+    for digest in (*retired, SEMILAG_VERTICAL_MODE_PINS_HASH, LID_V4_PINS_HASH):
+        assert digest in pins.INSPECTABLE_RETIRED_PINS_HASHES
+        assert digest not in pins.KNOWN_PINS_HASHES
+        assert pins.scheme_of_pins_hash(digest) is None
+
+
+def test_the_v3_semilag_pin_is_retired_inspectable_and_never_current():
+    assert SEMILAG_V3_PINS_HASH in pins.RETIRED_SEMILAG_PINS_HASHES
+    assert SEMILAG_V3_PINS_HASH in pins.INSPECTABLE_RETIRED_PINS_HASHES
+    assert SEMILAG_V3_PINS_HASH not in pins.KNOWN_PINS_HASHES
+    assert pins.scheme_of_pins_hash(SEMILAG_V3_PINS_HASH) is None
+
 
 def test_the_external_scheme_keeps_its_proxy_pin_string_under_the_grid_tracers():
-    assert pins.pins_hash("external", "ssprk3") == GRID_TRACER_SPLIT_EXTERNAL_PINS_HASH
-    assert pins.PINS_HASH_BY_SCHEME["external"] == GRID_TRACER_SPLIT_EXTERNAL_PINS_HASH
+    assert pins.pins_hash("external", "ssprk3") == CURRENT_SPLIT_EXTERNAL_PINS_HASH
+    assert pins.PINS_HASH_BY_SCHEME["external"] == CURRENT_SPLIT_EXTERNAL_PINS_HASH
     assert (
         pins.pin_document("external", "ssprk3")["semi_implicit"]
         == "barotropic-crank-nicolson-helmholtz-mode-v1"
     )
-    assert pins.pins_hash("external") == GRID_TRACER_IMEX_EXTERNAL_PINS_HASH
-    assert pins.pins_hash("external") != GRID_TRACER_SPLIT_EXTERNAL_PINS_HASH
+    assert pins.pins_hash("external") == CURRENT_IMEX_EXTERNAL_PINS_HASH
+    assert pins.pins_hash("external") != CURRENT_SPLIT_EXTERNAL_PINS_HASH
 
 
 def test_the_spectral_tracer_era_pins_are_inspectable_and_never_current():
@@ -102,13 +162,13 @@ def test_the_vertical_mode_scheme_is_the_default_pin_and_its_committed_literal()
     assert pins.DEFAULT_SEMI_IMPLICIT_SCHEME == "vertical_modes"
     # The split-era vertical-mode pin under the split steppers; the
     # default arithmetic is the IMEX pair.
-    assert pins.pins_hash("vertical_modes", "ssprk3") == GRID_TRACER_SPLIT_VERTICAL_MODE_PINS_HASH
-    assert pins.pins_hash("vertical_modes", "rk4") == GRID_TRACER_SPLIT_VERTICAL_MODE_PINS_HASH
-    assert pins.PINS_HASH_BY_SCHEME["vertical_modes"] == GRID_TRACER_SPLIT_VERTICAL_MODE_PINS_HASH
+    assert pins.pins_hash("vertical_modes", "ssprk3") == CURRENT_SPLIT_VERTICAL_MODE_PINS_HASH
+    assert pins.pins_hash("vertical_modes", "rk4") == CURRENT_SPLIT_VERTICAL_MODE_PINS_HASH
+    assert pins.PINS_HASH_BY_SCHEME["vertical_modes"] == CURRENT_SPLIT_VERTICAL_MODE_PINS_HASH
     assert pins.DEFAULT_INTEGRATOR == "imex_ssp3"
     assert pins.pins_hash() == pins.PINS_HASH == pins.pins_hash("vertical_modes", "imex_ssp3")
-    assert pins.PINS_HASH == GRID_TRACER_IMEX_VERTICAL_MODE_PINS_HASH
-    assert pins.PINS_HASH != GRID_TRACER_SPLIT_VERTICAL_MODE_PINS_HASH
+    assert pins.PINS_HASH == CURRENT_IMEX_VERTICAL_MODE_PINS_HASH
+    assert pins.PINS_HASH != CURRENT_SPLIT_VERTICAL_MODE_PINS_HASH
     assert pins.PIN_DOCUMENT == pins.pin_document("vertical_modes")
     assert (
         pins.PIN_DOCUMENT["semi_implicit"]
@@ -133,15 +193,15 @@ def test_the_two_schemes_pin_apart_and_nothing_else_differs():
     # with the vertical-mode operator alone: five arithmetics, five pins.
     assert len(pins.KNOWN_PINS_HASHES) == 5
     assert pins.KNOWN_PINS_HASHES == frozenset({
-        GRID_TRACER_SPLIT_VERTICAL_MODE_PINS_HASH,
-        GRID_TRACER_SPLIT_EXTERNAL_PINS_HASH,
-        GRID_TRACER_IMEX_VERTICAL_MODE_PINS_HASH,
-        GRID_TRACER_IMEX_EXTERNAL_PINS_HASH,
-        SEMILAG_VERTICAL_MODE_PINS_HASH,
+        CURRENT_SPLIT_VERTICAL_MODE_PINS_HASH,
+        CURRENT_SPLIT_EXTERNAL_PINS_HASH,
+        CURRENT_IMEX_VERTICAL_MODE_PINS_HASH,
+        CURRENT_IMEX_EXTERNAL_PINS_HASH,
+        CURRENT_SEMILAG_VERTICAL_MODE_PINS_HASH,
     })
     assert set(pins.PINS_HASH_BY_SCHEME.values()) < pins.KNOWN_PINS_HASHES
     assert pins.scheme_of_pins_hash(pins.pins_hash("external", "ssprk3")) == "external"
-    assert pins.scheme_of_pins_hash(GRID_TRACER_SPLIT_VERTICAL_MODE_PINS_HASH) == "vertical_modes"
+    assert pins.scheme_of_pins_hash(CURRENT_SPLIT_VERTICAL_MODE_PINS_HASH) == "vertical_modes"
     assert pins.scheme_of_pins_hash(pins.PINS_HASH) == "vertical_modes/imex_ssp3"
     assert pins.scheme_of_pins_hash("f" * 64) is None
     assert pins.scheme_of_pins_hash(None) is None
@@ -155,7 +215,7 @@ def test_every_config_selectable_scheme_carries_a_pin():
 
 def test_pins_receipt_carries_the_scheme_document_and_its_digest():
     receipt = pins.pins_receipt("external", "ssprk3")
-    assert receipt["sha256"] == GRID_TRACER_SPLIT_EXTERNAL_PINS_HASH
+    assert receipt["sha256"] == CURRENT_SPLIT_EXTERNAL_PINS_HASH
     assert receipt["pins"] == pins.pin_document("external", "ssprk3")
     default = pins.pins_receipt()
     assert default["sha256"] == pins.PINS_HASH

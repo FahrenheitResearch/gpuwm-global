@@ -590,6 +590,28 @@ class HostTier:
         # ``source`` must outlive the copy, so the pending entry holds it.
         self._pending[id(handle)] = (rows, device, event, source)
 
+    def fill_host(self, handle: SpilledArray, fill) -> None:
+        """Let ``fill(host)`` write rows of the slot's host copy in place.
+
+        For the card gather: the rows another card computed arrive as host
+        bytes, and the slot IS a host buffer, so they are written straight
+        into it rather than staged to the card and stored back.  Both
+        directions are retired first, exactly as a CPU :meth:`store` does,
+        because neither stream is ordered against the host's own write; a
+        prefetch of the slot still pending would hand its next reader the
+        bytes from before the fill, so it is finished and dropped; and the
+        slot's version moves, because its bytes did.
+        """
+        self.host_ready(handle)
+        event = self._slot_in.get(id(handle))
+        if event is not None:
+            event.synchronize()
+        pending = self._pending.pop(id(handle), None)
+        if pending is not None and pending[2] is not None:
+            pending[2].synchronize()
+        fill(handle.host)
+        handle.version += 1
+
     def store(self, handle: SpilledArray, value, rows: slice | None = None) -> None:
         """Write a device array (or a band of one) back into the tier.
 

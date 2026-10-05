@@ -229,14 +229,35 @@ bounds are not its neighbours' values; `[semilag] quasi_monotone_dynamics`
 reaches the other arm.
 
 The gates, and what each refuses. The advective CFL becomes a MEASUREMENT on
-this path and the Lipschitz number becomes the refusal: above one the
-trajectory map is not invertible, two arrival points share a departure point,
-and the model does not blow up when that happens, it mislocates silently.
-`[time] maximum_lipschitz` defaults to 0.75. The departure-point search's last
+this path and the fold of the trajectory map becomes the refusal. The search
+solves `r_D = r_A - (dt/2) [V_ex(r_A) + V(r_D)]`, so the departure point's
+derivative with respect to the arrival point is `(I + (dt/2) J)^-1 (I - (dt/2)
+J_ex)`: where `det(I - (dt/2) J_ex)` reaches zero two arrival points share a
+departure point, where `det(I + (dt/2) J)` does the search has no unique
+solution, and the model does not blow up when either happens, it mislocates
+silently. The gate refuses when the smaller of the two minima over the grid
+falls below `[time] minimum_fold_determinant`, default 0.2. It replaced a
+ceiling of 0.75 on dt times a NORM of the flow Jacobian, which cannot tell a
+fold from a rotation: a pure shear `u(y)` reads a norm of `|du/dy|` and a fold
+determinant of exactly one. That ceiling refused a T533 forecast at 66.3 h on
+a norm of 0.7511 (2026-09-30), and on the audit's T127 shear case at dt = 7200 s
+it read 0.861 where the determinant reads 1.000000 and the search converges to
+2.6e-4 cells. MEASURED 2026-10-05 on an RTX PRO 6000 at the shipped 300 s step
+from GDAS 2026-09-25 12Z: under the fold gate T533 completes 120 h (smallest
+determinant 0.808, largest norm 0.772) where the norm gate stopped the same run
+at 41.9 h on 0.757, and T799 completes six hours (determinant 0.674, norm
+1.085, the search retried at eight iterations at both sampled steps) where the
+norm gate and the three-pass search stopped it at the first step. The norms stay in every receipt (`maximum_semilag_lipschitz`)
+and are not gated; `maximum_lipschitz = 0.75` in an old config is accepted
+as a no-op and any other value is refused, because it would no longer be
+read. The departure-point search's last
 iteration is measured every step against `[semilag]
 trajectory_convergence_cells` (0.01 of the local meridional grid length),
 because an unconverged trajectory reads as a Rossby phase error and produces
-no other symptom. The flux-form tracer sweep is routed around rather than
+no other symptom. A step whose search misses it at the configured
+`trajectory_iterations` is searched again at eight before it is refused, and
+the receipt counts those steps (`semilag_trajectory_retried_steps`); a step
+that converges never reaches the retry, so its bits are the plain search's. The flux-form tracer sweep is routed around rather than
 sub-cycled 37 times at T255 and 160 at T533, with its own path still
 selectable as `[semilag] tracer_scheme = "flux_form"`. The barotropic
 semi-implicit proxy, a disabled operator and a partial `[semi_implicit]
@@ -318,11 +339,13 @@ named follow-up, and the top of the model the place to look: at 24 h the two
 cores' potential temperature differs by 1.39 percent of its own value on the top
 two levels and by 0.06 percent on the levels the radiosondes read.
 
-How it grades against the observations. MEASURED 2026-09-06 on an RTX 5070 Ti: the same
-day, both cores on the same tree from the same analysis, scored at the ASOS
+How it grades against observations on one forecast day. MEASURED 2026-09-06
+on an RTX 5070 Ti: both cores on the same tree from the same analysis, scored at the ASOS
 stations at 18Z and 00Z and the IGRA2 radiosondes at 12Z and 00Z with the GFS
 and the IFS forecasts beside them, 18 rows, root mean square error, each
-difference read with a paired bootstrap over the stations and sites. **Four
+difference read with a paired bootstrap over the stations and sites. This
+resamples locations within one day, not day-to-day weather variability, so the
+counts below remain a single-case result. **Four
 rows better, four worse, ten level.** The semi-Lagrangian day is the better one
 at the surface: 2 m temperature 2.430 against 2.540 K at 18Z and 2.790 against
 2.889 at 00Z, 2 m dewpoint 4.244 against 4.277 K, 10 m wind 1.548 against 1.601
@@ -461,6 +484,28 @@ form is retired and refused by name: once every conservative form floors the
 field at zero before it measures the mass, its weighting and `bermejo_conde`'s
 are the same array, and it was a door whose two values produced the same run
 under two config hashes.
+
+Where that correction lands is the fixer's choice, and until 0.1.3 the default
+chose badly: it rescaled every point holding the species by one factor, so the
+worst T255 step of the bare forecast day (GDAS 2026-09-01 00Z) multiplied every
+graupel value on the planet by 0.881 to pay for positivity mass created at the
+shoulders of a few storms. The default `bermejo_conde` is now the Bermejo-Conde
+fixer in the form the IFS tracer mass fixers use (Geosci. Model Dev. 7,
+965-979, 2014): the correction at a point is proportional to how far the
+limited cubic value sits from the trilinear value at the same departure point,
+on the side the correction needs, and no point is moved past its trilinear
+value, so the corrected field lies between the two interpolants and inside the
+limiter's box. MEASURED on that day: the uniform factor left over is float32
+roundoff (2.4e-7 at most, every species, every step, against 0.119 for graupel,
+0.057 snow, 0.050 graupel number and 0.043 snow number before), each species
+closes to 2.9e-7 of its mass every step, and the median step changes 0.1
+percent of the snow mass, 12 percent of the rain and 29 percent of the cloud
+water by more than one percent where the uniform form changed all of it. Graupel
+is the exception: at T255 on forty levels nearly all of it sits in features the
+four-point stencil cannot resolve, so 81 percent of it is still touched in the
+median step, but each point by its own interpolation error rather than by the
+planet's. The uniform form stays selectable as `mass_proportional`, the
+counter-arm.
 
 `[semilag] tracer_scheme = "flux_form"` runs the same day with the ten tracers
 on the shipped van Leer sweep instead, everything else identical, for the arm
@@ -637,7 +682,39 @@ Eulerian 24 h checkpoint of the same day reads +16.4 K at the top level and
 -12.0 K at the second, zonally uniform, within 0.1 K from the fourth level
 down, the eddies at the lid agreeing to 2 percent; half the +33.6 K of the
 mechanism above and of the same shape, inside the sponge, unread by every
-scorecard row, and carried as open against the Eulerian core's lid. Under the decision, on the scorecard of
+scorecard row, and carried as open against the Eulerian core's lid. That
+residual's dynamical part is now closed (DYC-1): the departure level was
+clamped at the top and bottom FULL levels instead of the boundary
+interfaces, so a parcel arriving at level 0 under descent read its own
+theta and one under ascent read the colder level below, and the Eulerian
+flux kept a zero gradient in the boundary layers, the same one-sided read.
+The search and the gathers now clamp at the interfaces (with the half-layer
+read held between the outermost level and the linear interface value), the
+Eulerian boundary layers take the one-sided gradient, and the level-index
+rate takes the geometric full-level spacing (DYC-3). MEASURED 2026-10-05 on
+an RTX 4090, the bare T255 door from GDAS 2026-09-01 00Z, global-mean
+potential temperature drift per day at levels 0 / 1 / 2 / 3: with the
+physics off, -12.63 / +0.12 / +0.16 / -0.05 K before and +0.47 / +0.15 /
++0.03 / -0.06 K after; with the whole native suite, -62.37 / -12.78 /
+-5.51 / -1.95 K before and -54.23 / -12.52 / -5.51 / -1.91 K after. The
+dynamics no longer cool the lid; the -54 K a day that remained at level 0,
+and the -12.5 K at level 1, arrived with the physics suite. Most of it was
+the longwave taking no layer above the 1 hPa top (CHANGELOG 0.1.3 Fixed):
+with that layer the top level still cools about 8 to 11 K a day of
+potential temperature on the measured cases, against under a kelvin a day
+for the dry dynamics, and the remainder is open and unattributed
+(CHANGELOG 0.1.3 Open). A neighbouring suspicion was measured and closed (DYC-4): ln ps
+rides the lowest level's trajectory, which leaves the shear between the
+surface wind and the dB-weighted column wind, dotted into grad ln ps, in
+the explicitly extrapolated residual, where the IFS rides the column-mean
+wind. On a T63 L40 sheared moist state over a 3 km Gaussian mountain
+(numpy, 6 h, 1200 s against a 150 s reference), the surface-pressure step
+error over the mountain was 24.17 Pa riding the lowest level and 24.79 Pa
+riding the column-mean wind (84.27 and 84.13 Pa elsewhere), the mean
+absolute ps tendency over the mountain 0.0502 Pa/s at 1200 s against
+0.0516 at 150 s, and the two references agreed to 0.44 Pa: no orographic
+noise at the long step for the mean-wind trajectory to remove, so the
+lowest-level trajectory stays. Under the decision, on the scorecard of
 record and the wall, `sl_si` is the shipped default
 (`config.DEFAULT_TIME_INTEGRATOR`, `config.SHIPPED_INTEGRATOR`) at T255, T383
 and T533, at about a quarter of the Eulerian wall per forecast day (T255
@@ -942,8 +1019,13 @@ what it has never seen, and refuses outright when nothing new survives.
 Before this, the same hourly reports offered every 15 minutes inside the
 90-minute age window were re-accepted at full gain up to seven times, and
 the temperature O-B rms against reports that never changed fell 1.21 ->
-0.51 -> 0.42 -> 0.41 K cycle over cycle; now it moves once (1.21 -> 0.52
-K), once more by the previously withheld tenth (0.46 K), and then stands.
+0.51 -> 0.42 -> 0.41 K cycle over cycle; now it moves once, once more by
+the previously withheld tenth, and then stands (1.21 -> 0.52 -> 0.46 K
+under the lapse-rate 2 m operator; 1.211 -> 0.971 K on the first analysis
+since the screen-level operator, whose sensitivity to the lowest level is
+under a quarter on the smoke grid's 2 km lowest level, and whose gain is
+the OI gain of that sensitivity, SCREEN_TEMPERATURE_GAIN; spread with unit
+sensitivity it read 1.006 K).
 Chain entries older than the age window at an analysis time are dropped,
 since they fail that window at every later cycle.
 
@@ -1013,9 +1095,11 @@ gpuwm-global export-parent \
 
 `tools/arwen_global.py` delegates to the same CLI from a source checkout.
 
-## Current evidence
+<a id="current-evidence"></a>
+## Release gates
 
-The recovered release gates:
+These are code-verification, conservation and integrity checks. None of the
+checks in this list compares the model with observations. The recovered gates:
 
 - Level-3 scalar and vector transform controls;
 - hybrid-pressure monotonicity and continuity closure;
@@ -1038,7 +1122,8 @@ machine precision.
 This release does not claim:
 
 - operational forecast skill;
-- GPU validation without a target-device receipt;
+- correct execution on a GPU without a target-device qualification receipt
+  (code verification, not a comparison with observations);
 - direct reuse of unadapted regional Arwen physics wrappers;
 - a complete energy/angular-momentum-conserving hybrid vertical scheme;
 - the T533 grade of the two cores (the semi-Lagrangian T533 day was not run;

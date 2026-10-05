@@ -690,6 +690,28 @@ def _tape_of(tapes_dir: Path) -> Path | None:
     return found[0] if found else None
 
 
+def _tape_start_agrees(tapes_dir: Path, start_date: str | None) -> bool:
+    """Whether an existing tape may be reused for ``start_date``.
+
+    The export door refuses a --start-date that disagrees with the run's
+    clock, and a reused tape skips that door.  So a tape is reused only
+    when its export receipt records the same start (or none was given);
+    otherwise it is exported again, where the clock check runs, because a
+    reused tape stamped from another start would put every brightness
+    temperature at a valid time the forecast never reached."""
+    from .wrfout_export import EXPORT_RECEIPT_NAME, parse_start_date
+
+    given = parse_start_date(start_date)
+    receipt = tapes_dir / EXPORT_RECEIPT_NAME
+    try:
+        recorded = json.loads(receipt.read_text(encoding="utf-8")).get("start_date")
+    except (OSError, ValueError):
+        return False
+    if recorded is None:
+        return False
+    return given is None or parse_start_date(recorded) == given
+
+
 def export_tile_tape(cfg, checkpoint: str | os.PathLike, tapes_dir: str | os.PathLike, *,
                      start_date: str, bbox: tuple[float, float, float, float] | None,
                      nlat: int = 720, nlon: int = 1440, reuse: bool = True) -> Path:
@@ -700,7 +722,7 @@ def export_tile_tape(cfg, checkpoint: str | os.PathLike, tapes_dir: str | os.Pat
     tapes_dir = Path(tapes_dir)
     if reuse:
         existing = _tape_of(tapes_dir)
-        if existing is not None:
+        if existing is not None and _tape_start_agrees(tapes_dir, start_date):
             return existing
     written = export_wrfout(cfg, [Path(checkpoint)], tapes_dir, nlat=nlat, nlon=nlon,
                             start_date=start_date, overwrite=True, bbox=bbox)

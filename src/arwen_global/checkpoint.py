@@ -26,6 +26,7 @@ from .pins import (
     DEFAULT_SEMI_IMPLICIT_SCHEME,
     KNOWN_PINS_HASHES,
     INSPECTABLE_RETIRED_PINS_HASHES,
+    RETIRED_BOUNDARY_FACE_PINS_HASHES,
     RETIRED_SEMILAG_PINS_HASHES,
     SPECTRAL_TRACER_ERA_PINS_HASHES,
     arithmetic_label,
@@ -453,10 +454,18 @@ def read_checkpoint(
                         if metadata["pins_hash"] in SPECTRAL_TRACER_ERA_PINS_HASHES
                         else (
                             "written under a retired semi-Lagrangian pin "
-                            "(the arithmetic before 2026-09-06's whole-theta "
-                            "gather; inspectable, not resumable)"
+                            "(an arithmetic before the departure level was "
+                            "clamped at the boundary interfaces; inspectable, "
+                            "not resumable)"
                             if metadata["pins_hash"] in RETIRED_SEMILAG_PINS_HASHES
-                            else "written under a pin no shipped scheme carries"
+                            else (
+                                "written under a retired Eulerian pin (the "
+                                "zero boundary-layer gradient that cooled the "
+                                "lid; inspectable, not resumable)"
+                                if metadata["pins_hash"]
+                                in RETIRED_BOUNDARY_FACE_PINS_HASHES
+                                else "written under a pin no shipped scheme carries"
+                            )
                         )
                     )
                 )

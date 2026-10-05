@@ -12,9 +12,18 @@ it: :mod:`arwen_global.doctor`, which reports each row against what is
 actually staged on the machine, and the release process, which builds the
 rows this package's own bundle has to carry.
 
-WHERE A BINARY COMES FROM.  Six of the fourteen ship in the engine's own
+WHERE A BINARY COMES FROM.  Six of the doors ship in the engine's own
 bridge bundle, which ``gpuwm fetch-bridges`` stages into ``~/.gpuwm/bridges``
-and pins by size and SHA-256.  Eight do not, and the reason splits in two.
+and pins by size and SHA-256.  The rest do not.  Two of them,
+``rw_global_coldstart`` and ``global_render_kernels``, are libraries built
+from this repository's OWN Rust workspace (``rust/``) rather than the
+engine's: the cold start's regrid of the analysis onto the Gaussian grid
+and its ln(p) remap onto model levels, and the render tape's regrid,
+hydrostatic column and regional translation, belong to the global model
+alone, so no engine bundle will ever carry them.  They are stamped with
+this package's commit, not the engine's, and a bundle carries them from
+the release their row names in ``since`` on.  For the other eight the
+reason splits in two.
 
 Six of the eight -- ``rw_atms``, ``rw_gnssro``, ``rw_ndbc``, ``rw_igra2``,
 ``rw_amv``, ``rw_wis2`` -- have no binary in any published bundle at all,
@@ -35,7 +44,7 @@ the handshake in the table below catches both statically.  By the rule that
 a capability a user cannot reach does not exist, those two are doors this
 package publishes, not doors it inherits.
 
-Those eight are this package's own bundle, staged by
+Those ten are this package's own bundle, staged by
 ``gpuwm-global fetch-doors`` into :func:`companion_door_dir`
 (``~/.gpuwm/global-doors``) and pinned by size and SHA-256 in
 ``arwen_global/data/door-pins.json``.
@@ -52,6 +61,25 @@ If the engine takes those crates onto its own line, this package's bundle
 becomes empty and ``fetch-doors`` collapses to a pointer at
 ``gpuwm fetch-bridges``.  That is the better end state and the table says so
 per row, so the day it happens the change here is a column, not a redesign.
+
+THE COLUMN IS READ FROM THE INSTALLED ENGINE, NOT ONLY FROM THIS TABLE.
+``Door.bundle`` says who publishes a door when the engine does not: it is
+what this package's own release builds and pins.  At run time the answer is
+:func:`publisher`, and a door the installed engine's own bundle declares
+(``gpuwm.bridge_assets.BUNDLED_ARTIFACTS``, the one roster ``gpuwm
+fetch-bridges`` stages from and the engine's release cut builds, pins and
+probes) is the engine's door, resolved from the engine's bundle and checked
+against the engine's pins.  The contract literal still has to be in the
+bytes, so an engine build that predates the contract is still a gap by name.
+
+THE BREAKAGE THIS PREVENTS, measured 2026-09-29 on a clean install of a
+distribution that carries this model and the engine together and ships all
+fourteen doors in its one bundle: ``doctor`` graded the engine's own
+``rw_asos`` and ``rw_goes`` against this package's pins for a different
+build and called them wrong, reported the six others as not staged, and
+told the reader to download a companion bundle that distribution never
+publishes, so a correct install exited 1 with eight gaps and every
+observation and DA command pointed at a remedy that could not help.
 """
 from __future__ import annotations
 
@@ -75,17 +103,25 @@ __all__ = [
     "SUPPORTED_PLATFORMS",
     "artifact_filename",
     "bind_companion_doors",
+    "built_from_this_repository",
+    "pinned_bundle_predates",
     "bundle_filename",
+    "carried_by",
     "companion_door_dir",
+    "companion_doors",
     "companion_pins",
     "companion_pins_path",
     "current_platform",
     "door_by_name",
     "door_environment",
     "doors_from_bundle",
+    "engine_bundle_names",
     "engine_pin_for",
     "find_door",
+    "package_build_dir",
+    "pinned_companion_doors",
     "pin_for",
+    "publisher",
     "search_path",
     "sha256_file",
     "stage_from_directory",
@@ -115,6 +151,11 @@ BUNDLE_NOTICE = "THIRD-PARTY-LICENSES.txt"
 
 #: Override the directory the companion doors stage into.
 COMPANION_DIR_ENV = "ARWEN_GLOBAL_DOOR_DIR"
+
+#: This repository's own Rust workspace.  A door whose ``crate`` starts here
+#: is built from this package's source, not the engine's, and is stamped with
+#: this package's commit.
+PACKAGE_WORKSPACE = "rust"
 
 _BLOCK_BYTES = 8 * 1024 * 1024
 
@@ -149,16 +190,46 @@ def missing_door_refusal(name: str, detail: str | None = None) -> DoorMissing:
     """
 
     door = door_by_name(name)
-    origin = ("`gpuwm fetch-bridges`" if door.bundle == ENGINE_BUNDLE
+    bundle = publisher(door.name)
+    origin = ("`gpuwm fetch-bridges`" if bundle == ENGINE_BUNDLE
               else "`gpuwm-global fetch-doors`")
     lines = [
         f"the Rust door {door.name} is not staged: {door.role}",
         f"it stops: {', '.join(door.used_by)}",
-        f"published by the {door.bundle} bundle; stage it with {origin}",
     ]
+    predates = (pinned_bundle_predates(door) if bundle == COMPANION_BUNDLE
+                else None)
+    if predates is None:
+        lines.append(f"published by the {bundle} bundle; stage it with {origin}")
+    else:
+        # `fetch-doors` stages only what the pinned bundle carries, so
+        # naming it here would send the user to a command that cannot
+        # stage this door.  `doctor` prints the same sentence.
+        lines.append(f"published by the {bundle} bundle; {predates}")
     if detail:
         lines.append(_without_the_checkout_remedy(detail))
     return DoorMissing("\n".join(lines))
+
+
+def pinned_bundle_predates(door: "Door") -> str | None:
+    """The remedy for a companion door the pinned bundle does not carry yet,
+    or ``None`` when the pins carry it.
+
+    Between the release that adds a door to the table and the cut that
+    publishes it, the pins in this wheel describe a bundle without it, and
+    ``fetch-doors`` cannot stage it.  The refusal and ``doctor`` both print
+    this one sentence, so neither names a command that cannot work.
+    """
+
+    release = companion_pins().get("release")
+    if carried_by(door, release):
+        return None
+    return (f"the companion bundle this install pins ({release}) predates "
+            f"this door, which bundles carry from {door.since}, so "
+            f"`gpuwm-global fetch-doors` cannot stage it; build {door.crate} "
+            f"from this package's source (cargo build --release in rust/) and "
+            f"name the library in {door.env_var}, or install {door.since} or "
+            "later")
 
 
 #: The first line of the engine's build recipe, in every spelling measured.
@@ -203,7 +274,8 @@ class Door:
     #: The executable's basename, without the platform suffix.
     name: str
     #: The crate that builds it, inside the engine's `tools/rustwx` workspace
-    #: (or `tools/rw_wps` for the mapped engine).
+    #: (or `tools/rw_wps` for the mapped engine), or under this repository's
+    #: own `rust/` for a door with no engine counterpart.
     crate: str
     #: Which bundle publishes it: ENGINE_BUNDLE or COMPANION_BUNDLE.
     bundle: str
@@ -235,6 +307,27 @@ class Door:
     #: Measured, never assumed: this field is filled in only for a fallback
     #: that has been watched happen.
     fallback: str | None = None
+    #: The environment variable that overrides this door, spelled out
+    #: whole on its row.  It used to be composed from a prefix and the
+    #: door's name, and a composed name is invisible to anything that
+    #: reads the table for the variables it names: a distribution that
+    #: renames the engine's variables renamed the engine's copy of each
+    #: one and not this table's, so an override the engine honoured was
+    #: one this package's doctor and ladder never read.
+    env: str = ""
+    #: The first release of this package whose companion bundle carries the
+    #: door, or ``None`` for a door every published bundle carries.  The pins
+    #: inside a wheel describe the bundle a release PUBLISHED, so a door added
+    #: to the table after that release is not in those bytes: the stager and
+    #: the pin checks ask :func:`carried_by` instead of assuming the table and
+    #: the published bundle are the same set.
+    since: str | None = None
+
+    @property
+    def built_here(self) -> bool:
+        """True for a door built from this repository's own Rust workspace."""
+
+        return self.crate.startswith(PACKAGE_WORKSPACE + "/")
 
     @property
     def env_var(self) -> str:
@@ -247,22 +340,15 @@ class Door:
         another without anyone being told.
         """
 
-        if self.name == "gpuwm_mapped_engine":
-            return "GPUWM_MAPPED_ENGINE_BIN"
-        if self.name == "obs_regrid":
-            return "GPUWM_OBSREGRID_BRIDGE"
-        if self.name == "static_fields":
-            return "GPUWM_STATIC_BRIDGE"
-        if self.name == "netcdf_writer":
-            return "GPUWM_NCWRITE_BRIDGE"
-        return f"GPUWM_{self.name.upper()}"
+        return self.env
 
 
-#: The fourteen doors, in the order a reader meets them: the analysis and the
+#: The doors, in the order a reader meets them: the analysis and the
 #: statics first, then the observations, then the pictures.
 DOORS: tuple[Door, ...] = (
     Door(
         name="gpuwm_mapped_engine",
+        env="GPUWM_MAPPED_ENGINE_BIN",
         crate="tools/rw_wps",
         bundle=ENGINE_BUNDLE,
         role="decode a GRIB2 analysis or forecast through a source mapping",
@@ -272,7 +358,25 @@ DOORS: tuple[Door, ...] = (
             "an older mapped engine writes a frameset this package cannot read, so every analysis-initialised run dies after the decode instead of before it"),
     ),
     Door(
+        # One of the two doors built from THIS repository's own Rust
+        # workspace (`rust/`), not the engine's: the cold start's regrid and remap
+        # belong to the global model alone, so no engine bundle carries
+        # them.  Its stamp is this package's commit, not the engine's.
+        name="rw_global_coldstart",
+        env="GPUWM_GLOBAL_COLDSTART_BRIDGE",
+        crate="rust/rw-global-coldstart",
+        bundle=COMPANION_BUNDLE,
+        since="v0.1.3",
+        role="regrid the analysis onto the Gaussian grid and remap it onto model levels",
+        used_by=("run", "cycle", "da fresh", "go", "upper-air scoring"),
+        library=True,
+        marker=b'arwen-global-coldstart-abi-v1',
+        marker_breakage=(
+            "an older cold-start library takes its arguments in a different order, so the analysis would be regridded from the wrong buffers; without the literal the bridge refuses at load instead of initialising from garbage"),
+    ),
+    Door(
         name="rw_fetch",
+        env="GPUWM_RW_FETCH",
         crate="tools/rustwx/crates/rw-fetch",
         bundle=ENGINE_BUNDLE,
         role="fetch analyses, forecasts and observation archives",
@@ -290,6 +394,7 @@ DOORS: tuple[Door, ...] = (
     ),
     Door(
         name="rw_netcdf",
+        env="GPUWM_RW_NETCDF",
         crate="tools/rustwx/crates/rw-netcdf",
         bundle=ENGINE_BUNDLE,
         role="read and write NetCDF without a Python decoder on the data path",
@@ -307,6 +412,7 @@ DOORS: tuple[Door, ...] = (
         # write the tape it draws from, and the refusal arrived as exit 1
         # carrying the engine's `cargo build`.
         name="netcdf_writer",
+        env="GPUWM_NCWRITE_BRIDGE",
         crate="tools/rustwx/crates/netcdf-writer",
         bundle=ENGINE_BUNDLE,
         role="write the wrfout product tapes every picture is drawn from",
@@ -315,6 +421,7 @@ DOORS: tuple[Door, ...] = (
     ),
     Door(
         name="static_fields",
+        env="GPUWM_STATIC_BRIDGE",
         crate="tools/rustwx/crates/static-fields",
         bundle=ENGINE_BUNDLE,
         role="build land use, soil, vegetation, albedo and deep soil temperature from the geography archive",
@@ -326,6 +433,7 @@ DOORS: tuple[Door, ...] = (
     ),
     Door(
         name="obs_regrid",
+        env="GPUWM_OBSREGRID_BRIDGE",
         crate="tools/rustwx/crates/obs-regrid",
         bundle=ENGINE_BUNDLE,
         role="regrid observation fields onto the model grid",
@@ -337,6 +445,7 @@ DOORS: tuple[Door, ...] = (
     ),
     Door(
         name="rw_asos",
+        env="GPUWM_RW_ASOS",
         crate="tools/rustwx/crates/rw-obs",
         bundle=COMPANION_BUNDLE,
         role="decode surface station observations",
@@ -347,6 +456,7 @@ DOORS: tuple[Door, ...] = (
     ),
     Door(
         name="rw_goes",
+        env="GPUWM_RW_GOES",
         crate="tools/rustwx/crates/rw-goes",
         bundle=COMPANION_BUNDLE,
         role="decode GOES-R ABI Level 1b radiances and run the clear-sky forward operator",
@@ -357,6 +467,7 @@ DOORS: tuple[Door, ...] = (
     ),
     Door(
         name="rw_wrfbatch",
+        env="GPUWM_RW_WRFBATCH",
         crate="tools/rustwx/crates/rw-wrfbatch",
         bundle=ENGINE_BUNDLE,
         role="draw every weather-field picture this package produces",
@@ -366,7 +477,28 @@ DOORS: tuple[Door, ...] = (
             "the render path drives the batch renderer by store root and output directory, and a build that does not take those is not the renderer this package calls; the render law leaves no second way to draw a weather field"),
     ),
     Door(
+        # The other door built from THIS repository's `rust/` workspace
+        # rather than the engine's: its kernels sample this model's own Gaussian grid onto
+        # the tape's regular grid, integrate the tape's hydrostatic column
+        # and translate a parent export onto a regional target, and nothing
+        # in the engine does any of that, so there is no engine copy to
+        # drift from.  Its source stamp is this package's commit
+        # (`build_door_bundle.py pin --package-rev`).
+        name="global_render_kernels",
+        env="ARWEN_GLOBAL_RENDER_KERNELS",
+        crate="rust/global-render-kernels",
+        bundle=COMPANION_BUNDLE,
+        since="v0.1.3",
+        role="regrid the Gaussian grid onto every render tape, integrate the tape's column and translate parent exports onto regional targets",
+        used_by=("export", "render", "go", "translate-regional-frame"),
+        library=True,
+        marker=b'woof-global-render-kernels-v1',
+        marker_breakage=(
+            "the render tape and the regional translation call the kernels through positional C signatures of this contract, and a library of another contract would be called with the wrong arguments"),
+    ),
+    Door(
         name="rw_atms",
+        env="GPUWM_RW_ATMS",
         crate="tools/rustwx/crates/rw-atms",
         bundle=COMPANION_BUNDLE,
         role="decode and thin ATMS microwave brightness temperatures",
@@ -377,6 +509,7 @@ DOORS: tuple[Door, ...] = (
     ),
     Door(
         name="rw_gnssro",
+        env="GPUWM_RW_GNSSRO",
         crate="tools/rustwx/crates/rw-obs",
         bundle=COMPANION_BUNDLE,
         role="decode GNSS radio-occultation bending angles and refractivity",
@@ -387,6 +520,7 @@ DOORS: tuple[Door, ...] = (
     ),
     Door(
         name="rw_ndbc",
+        env="GPUWM_RW_NDBC",
         crate="tools/rustwx/crates/rw-obs",
         bundle=COMPANION_BUNDLE,
         role="decode marine buoy and coastal station observations",
@@ -397,6 +531,7 @@ DOORS: tuple[Door, ...] = (
     ),
     Door(
         name="rw_igra2",
+        env="GPUWM_RW_IGRA2",
         crate="tools/rustwx/crates/rw-obs",
         bundle=COMPANION_BUNDLE,
         role="decode radiosonde soundings",
@@ -407,6 +542,7 @@ DOORS: tuple[Door, ...] = (
     ),
     Door(
         name="rw_amv",
+        env="GPUWM_RW_AMV",
         crate="tools/rustwx/crates/rw-obs",
         bundle=COMPANION_BUNDLE,
         role="decode atmospheric motion vectors",
@@ -417,6 +553,7 @@ DOORS: tuple[Door, ...] = (
     ),
     Door(
         name="rw_wis2",
+        env="GPUWM_RW_WIS2",
         crate="tools/rustwx/crates/rw-obs",
         bundle=COMPANION_BUNDLE,
         role="decode the WIS2 surface and upper-air feeds",
@@ -429,9 +566,15 @@ DOORS: tuple[Door, ...] = (
 
 _BY_NAME = {door.name: door for door in DOORS}
 
+def built_from_this_repository(door: Door) -> bool:
+    """True for a door whose crate lives in this repository's own ``rust/``
+    workspace, not the engine's (:attr:`Door.built_here`)."""
+
+    return door.built_here
+
 
 def door_by_name(name: str) -> Door:
-    """The row for ``name``, or a refusal naming the fourteen that exist."""
+    """The row for ``name``, or a refusal naming the doors that exist."""
 
     try:
         return _BY_NAME[name]
@@ -443,9 +586,102 @@ def door_by_name(name: str) -> Door:
 
 
 def doors_from_bundle(bundle: str) -> tuple[Door, ...]:
-    """Every door published by ``bundle``."""
+    """Every door this table assigns to ``bundle``.
+
+    The static column: what this package's own release builds and pins.
+    What a running install resolves is :func:`publisher`, which also asks
+    the installed engine.
+    """
 
     return tuple(door for door in DOORS if door.bundle == bundle)
+
+
+def engine_bundle_names() -> frozenset[str]:
+    """The artifacts the installed engine's own bundle declares, by name.
+
+    Read from ``gpuwm.bridge_assets.BUNDLED_ARTIFACTS``: the roster ``gpuwm
+    fetch-bridges`` stages from, and the one the engine's release cut
+    builds, pins and probes, so a name on it is a door that engine
+    publishes bytes and pins for.  Empty when the engine or its roster
+    cannot be read, which leaves every door where this table puts it.
+    """
+
+    try:
+        from gpuwm import bridge_assets
+    except Exception:
+        return frozenset()
+    roster = getattr(bridge_assets, "BUNDLED_ARTIFACTS", ())
+    return frozenset(
+        name for name in (getattr(entry, "name", None) for entry in roster)
+        if isinstance(name, str))
+
+
+def publisher(name: str) -> str:
+    """Which bundle publishes one door on this install.
+
+    The engine's, for a door this table gives the engine and for any door
+    the installed engine's own bundle declares; this package's otherwise.
+    One copy of a door per install, from the bundle that actually ships it:
+    a door the engine publishes is resolved from the engine's bundle and
+    checked against the engine's pins, and is never sent to ``fetch-doors``.
+    """
+
+    door = door_by_name(name)
+    if door.bundle == ENGINE_BUNDLE or door.name in engine_bundle_names():
+        return ENGINE_BUNDLE
+    return COMPANION_BUNDLE
+
+
+def _release_key(tag: str) -> tuple[int, ...]:
+    digits = tag.strip().lstrip("vV").split("+")[0].split("-")[0]
+    return tuple(int(part) for part in digits.split(".") if part.isdigit())
+
+
+def carried_by(door: Door, release: str | None) -> bool:
+    """Whether the companion bundle of ``release`` carries ``door``.
+
+    A door with no ``since`` is in every bundle.  One added later is in the
+    bundles from its ``since`` release on, and in no bundle when no release
+    is named at all.
+    """
+
+    if door.since is None:
+        return True
+    if not release:
+        return False
+    return _release_key(release) >= _release_key(door.since)
+
+
+def pinned_companion_doors() -> tuple[Door, ...]:
+    """The companion doors the bundle this wheel's pins describe carries.
+
+    The set ``fetch-doors`` stages and the pins document is checked against.
+    It differs from :func:`companion_doors` only between a release that adds
+    a door to the table and the cut that publishes it.
+    """
+
+    release = companion_pins().get("release")
+    return tuple(door for door in companion_doors() if carried_by(door, release))
+
+
+def package_build_dir() -> Path:
+    """Where a source checkout's own ``cargo build --release`` puts the
+    doors built from this repository (``rust/target/release``)."""
+
+    return (Path(__file__).resolve().parents[2] / PACKAGE_WORKSPACE
+            / "target" / "release")
+
+
+def companion_doors() -> tuple[Door, ...]:
+    """The doors this package itself has to supply on this install.
+
+    Empty when the installed engine's bundle publishes every door, which is
+    the end state this module's docstring names: ``fetch-doors`` then has
+    nothing to stage and points at ``gpuwm fetch-bridges``.
+    """
+
+    return tuple(door for door in DOORS
+                 if publisher(door.name) == COMPANION_BUNDLE)
 
 
 def companion_pins_path() -> Path:
@@ -553,12 +789,17 @@ def search_path(name: str) -> tuple[Path, ...]:
     override = os.environ.get(door.env_var)
     if override:
         candidates.append(Path(override))
-    if door.bundle == COMPANION_BUNDLE:
+    if publisher(door.name) == COMPANION_BUNDLE:
         candidates.append(companion_door_dir() / filename)
     candidates.extend((
         packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
     ))
+    if door.built_here:
+        # A source checkout's own build, last: a door built from this
+        # repository is reachable from a checkout before any bundle carries
+        # it, and anything staged or named outranks it.
+        candidates.append(package_build_dir() / filename)
     return tuple(candidates)
 
 
@@ -583,7 +824,7 @@ def door_environment() -> dict[str, str]:
     """
 
     environment: dict[str, str] = {}
-    for door in doors_from_bundle(COMPANION_BUNDLE):
+    for door in companion_doors():
         if os.environ.get(door.env_var):
             continue
         staged = companion_door_dir() / artifact_filename(door.name)
@@ -692,7 +933,7 @@ def verify_staged(name: str, path: Path) -> tuple[str, str]:
 
     door = door_by_name(name)
     checks: list[str] = []
-    pin = (pin_for(name) if door.bundle == COMPANION_BUNDLE
+    pin = (pin_for(name) if publisher(name) == COMPANION_BUNDLE
            else engine_pin_for(name))
     size = path.stat().st_size
     if pin is None:
@@ -739,9 +980,14 @@ def stage_from_directory(source: Path, dest: Path,
             "no companion bundle is published for this operating system and "
             "machine architecture; build the doors from the engine's "
             "tools/rustwx workspace instead")
-    dest.mkdir(parents=True, exist_ok=True)
     wanted = {artifact_filename(door.name, platform): door
-              for door in doors_from_bundle(COMPANION_BUNDLE)}
+              for door in pinned_companion_doors()}
+    if not wanted:
+        raise DoorStagingError(
+            "the installed engine's bundle publishes every door this package "
+            "runs on, so there is nothing here to stage; stage them with "
+            "`gpuwm fetch-bridges`")
+    dest.mkdir(parents=True, exist_ok=True)
     staged: list[Path] = []
     if source.is_file() and zipfile.is_zipfile(source):
         with zipfile.ZipFile(source) as archive:

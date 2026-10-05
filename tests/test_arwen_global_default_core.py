@@ -57,7 +57,12 @@ QUICKSTART = _shipped_configs() / "arwen_global_t255_quickstart.toml"
 #: the Eulerian arithmetic did.  The door's default moved to the
 #: semi-Lagrangian core without moving either, because a config that names
 #: its integrator reads exactly what it always read.
-IMEX_RECORD_CONFIG_HASH = "ae84e41ebfc767a2aa0afab4368595c2d26a1f4eedb2e88b28698078bd4cb4e1"
+#: Moved 2026-10-05 (ae84e41e... before) with two native physics defaults
+#: that change the trajectory: the dated present-day greenhouse gases in
+#: place of a fixed 369.55 ppm CO2, and the stratospheric floor's 5 hPa
+#: reach.  Moved again the same day (c2b410ea... before) when the native
+#: suite's stratospheric floor left the default.
+IMEX_RECORD_CONFIG_HASH = "ca2a0ed96e0c6dc4d19a119e81fcdc325ee82e8e3e3fffa8a6d3e9026a0a2ddb"
 
 MINIMAL = """
 [arwen_global]

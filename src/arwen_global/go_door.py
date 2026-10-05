@@ -32,7 +32,16 @@ import types
 from .configs_dir import config_argument
 from .status import StatusWriter
 
-__all__ = ["add_go_arguments", "go"]
+__all__ = ["EXIT_PARTIAL", "add_go_arguments", "go"]
+
+#: ``go``'s exit when the forecast stopped before its end and the hours it
+#: reached were drawn.  THE BREAKAGE THIS PREVENTS: a five-day forecast
+#: stopped at hour 117 by a refusal inside the physics (the surface
+#: reservoir of one column running dry, GP-2) delivered no picture at all,
+#: although 117 hours of checkpoints were on disk.  The stop is still a
+#: failure and the code says so; it is not 0 and not the refusal's 1, so a
+#: caller can tell "nothing to show" from "the hours before the stop".
+EXIT_PARTIAL = 5
 
 #: The stages, in order, so `status.json` can size its own progress from the
 #: first write rather than growing a stage count as it goes.
@@ -49,9 +58,12 @@ def add_go_arguments(parser: argparse.ArgumentParser) -> None:
              "go here, and pictures under <outdir>/pictures")
     parser.add_argument(
         "--start-date", default=None,
-        help="analysis valid time as YYYY-MM-DD_HH:MM:SS for the render stage; "
-             "without it the forecast still runs and the render stage is "
-             "skipped out loud, because a tape with no valid time is a tape "
+        help="analysis valid time as YYYY-MM-DD_HH:MM:SS for the render stage.  "
+             "Optional: a config that starts from an analysis (or states "
+             "start_time_utc) renders on its own forecast clock, and a value "
+             "that disagrees with it is refused.  An idealized config with no "
+             "date and no --start-date still forecasts and skips the render "
+             "stage out loud, because a tape with no valid time is a tape "
              "nobody can place in time")
     parser.add_argument(
         "--products", default=None, metavar="LIST",
@@ -120,7 +132,13 @@ def go(args: argparse.Namespace) -> int:
         status.stage("forecast")
         print("go: forecasting")
         leg = _run_namespace(args)
-        code = cli._run(leg)
+        stopped = None
+        try:
+            code = cli._run(leg)
+        except Exception as exc:  # noqa: BLE001 - re-raised unless the hours before it are drawn
+            stopped, code = exc, None
+        if stopped is not None:
+            return _partial(args, cfg, outdir, status, stopped, render)
         if code != 0:
             status.failed("the forecast stage did not finish")
             return code
@@ -130,11 +148,15 @@ def go(args: argparse.Namespace) -> int:
             status.note("render skipped: --no-render")
             status.done("forecast complete, render skipped by request")
             return 0
-        if not args.start_date:
+        from .clock import undated_render_reason
+
+        undated = None if args.start_date else undated_render_reason(cfg)
+        if undated is not None:
             status.note(
-                "render skipped: --start-date was not given, and a tape with "
-                "no valid time is a tape nobody can place in time")
-            print("go: render skipped, --start-date was not given")
+                f"render skipped: {undated}, and a tape with no valid time is "
+                "a tape nobody can place in time")
+            print("go: render skipped, the run has no date and --start-date "
+                  "was not given")
             status.done("forecast complete, render skipped for want of a valid time")
             return 0
         print("go: rendering")
@@ -158,6 +180,46 @@ def go(args: argparse.Namespace) -> int:
     except Exception as exc:
         status.failed(f"{type(exc).__name__}: {exc}")
         raise
+
+
+def _partial(args, cfg, outdir: Path, status: StatusWriter, stopped,
+             render) -> int:
+    """Draw the hours a stopped forecast reached, then report the stop.
+
+    Re-raises the forecast's own exception when there is nothing to draw
+    (no checkpoint past the start, no valid time, or ``--no-render``), so
+    a run that produced nothing fails exactly as it did before.
+    """
+    from .clock import undated_render_reason
+    from .runner import CHECKPOINT_PREFIX
+
+    reached = sorted(outdir.glob(f"{CHECKPOINT_PREFIX}*.npz"))
+    undated = None if args.start_date else undated_render_reason(cfg)
+    if args.no_render or undated is not None or len(reached) < 2:
+        raise stopped
+    reason = f"{type(stopped).__name__}: {stopped}"
+    print(f"go: the forecast stopped ({reason}); drawing the {len(reached)} "
+          "checkpoints it wrote")
+    status.stage("render")
+    status.note(f"forecast stopped: {reason}; rendering the hours it reached")
+    leg = types.SimpleNamespace(
+        config=args.config, inputs=reached,
+        outdir=outdir / "pictures", start_date=args.start_date,
+        products=args.products or _default_products(),
+        size="1600x1000", nlat=360, nlon=720, bbox=None,
+        tapes_dir=None, keep_tapes=False, overwrite=args.overwrite)
+    code = render(leg)
+    if code != 0:
+        status.failed(f"the forecast stopped ({reason}) and the render of "
+                      "the hours it reached did not finish")
+        raise stopped
+    status.failed(f"partial: the forecast stopped ({reason}); the pictures of "
+                  f"the {len(reached)} checkpoints it wrote are in pictures/")
+    import sys
+
+    print(f"go: partial run, exit {EXIT_PARTIAL}: the forecast stopped "
+          f"({reason})", file=sys.stderr)
+    return EXIT_PARTIAL
 
 
 def _default_products() -> str:

@@ -14,7 +14,8 @@ The reading order:
     nodes, and the bracket lookup.
 *   :mod:`.trajectory` solves for the departure points in geocentric
     Cartesian coordinates and carries the two diagnostics that gate them,
-    the Lipschitz number and the fixed-point convergence.
+    the fold determinant of the trajectory map and the fixed-point
+    convergence.
 *   :mod:`.interpolate` reads any number of fields at those points through
     one shared index and weight computation, with the quasi-monotone clip as
     a compiled variant rather than a runtime flag.
@@ -56,19 +57,24 @@ from .step import SEMILAG_INTEGRATORS, grid_tables, reference_profile, semilag_s
 from .tables import SphericalGridTables
 from .tracers import DEFICIT_FIXERS, TRACER_FIXERS, area_weights as tracer_area_weights, fix_mass
 from .trajectory import (
+    DEFAULT_MINIMUM_FOLD_DETERMINANT,
+    MAXIMUM_TRAJECTORY_ITERATIONS,
     CartesianWind,
     LipschitzDiagnostics,
     TrajectoryDiagnostics,
     cartesian_wind,
+    converged_departure_points,
     convergence,
     departure_points,
     level_rate_from_mass_flux,
     lipschitz,
     local_wind,
-    refuse_beyond_lipschitz,
+    refuse_trajectory_fold,
 )
 
 __all__ = [
+    "DEFAULT_MINIMUM_FOLD_DETERMINANT",
+    "MAXIMUM_TRAJECTORY_ITERATIONS",
     "SEMILAG_INTEGRATORS",
     "SEMILAG_PIN_OVERRIDES",
     "SEMILAG_SEMI_IMPLICIT_PINS",
@@ -86,6 +92,7 @@ __all__ = [
     "advective_tendencies",
     "area_weights",
     "cartesian_wind",
+    "converged_departure_points",
     "convergence",
     "deformational_wind",
     "departure_points",
@@ -102,7 +109,7 @@ __all__ = [
     "local_wind",
     "reference_profile",
     "reference_theta_faces",
-    "refuse_beyond_lipschitz",
+    "refuse_trajectory_fold",
     "run_deformational",
     "run_deformational_transport",
     "run_solid_body",

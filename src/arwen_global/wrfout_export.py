@@ -10,7 +10,7 @@ than direct spherical evaluation at every regular-grid point.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import math
 from pathlib import Path
 
@@ -38,7 +38,9 @@ from .physics.surface_diagnostics import (
 )
 from .pins import pins_hash
 from .receipt import write_receipt
-from .runner import build_model_and_cold_state, build_transform
+from .runner import (
+    adopt_checkpoint_clock, build_model_and_cold_state, build_transform,
+)
 
 _THETA_OFFSET_K = 300.0
 _EARTH_RADIUS_RENDER_M = 6_370_000.0
@@ -47,6 +49,16 @@ _SOIL_LAYERS = 4
 EXPORT_RECEIPT_NAME = "arwen-global-export-receipt.json"
 #: wrfout global attribute stamped with the same label.
 SURFACE_DIAGNOSTICS_ATTR = "ARWEN_SURFACE_DIAGNOSTICS"
+#: The model the engine's renderer names in each map's metadata row.  A
+#: tape imports under the renderer's generic wrfout identity, so without
+#: this attribute every global map said "WRF" (the engine reads it from
+#: 2.8.1; an older engine ignores it and draws as before).
+MODEL_LABEL_ATTR = "GPUWM_MODEL_LABEL"
+#: The public name: maps and every sendable call the model WOOF Global, and
+#: the standalone package stamped the internal name on every tape, so its
+#: published maps would have named the model differently from the WOOF
+#: assembly's (which rewrote the literal).
+MODEL_LABEL = "WOOF Global"
 EXPORT_FALLBACK_SOURCE = "export-similarity-fallback"
 SURFACE_DIAGNOSTICS_SOURCES = {
     NATIVE_SURFACE_DIAGNOSTICS_SOURCE: (
@@ -66,6 +78,34 @@ SURFACE_DIAGNOSTICS_SOURCES = {
     ),
 }
 
+
+
+#: wrfout global attribute naming the water fields' convention (GI-5).
+WATER_CONVENTION_ATTR = "ARWEN_WATER_CONVENTION"
+#: WRF's QVAPOR, QCLOUD, QRAIN, QICE, QSNOW, QGRAUP and Q2 are DRY MIXING
+#: RATIOS, and every WRF-shaped reader of the tape (the renderer's dewpoint
+#: and relative humidity, the ABI reference columns) reads them so.  The
+#: model carries specific humidity, so the tape converts with the model's
+#: own boundary conversion (physics/native_batch).  Writing q under WRF's
+#: names read 2 percent dry at q = 0.02, a 0.33 K dewpoint bias (GI-5,
+#: audit 2026-10-05).
+TAPE_WATER_CONVENTION = (
+    "dry mixing ratio (kg per kg of dry air): QVAPOR..QGRAUP = q_x / (1 - q_v) "
+    "and Q2 = q2 / (1 - q2) from the model's specific humidities"
+)
+
+
+def tape_water_fields(species, q2):
+    """The tape's water species and Q2 as WRF's dry mixing ratios.
+
+    ``species`` maps every water species to the model's specific
+    humidity (kg per kg of moist air) and must carry ``"qv"``; ``q2`` is
+    the 2 m specific humidity.  Returns ``(species, q2)`` converted.
+    """
+    from .physics.native_batch import mixing_ratio_from_specific_humidity
+
+    q2 = np.asarray(q2, dtype=np.float64)
+    return mixing_ratio_from_specific_humidity(species), q2 / (1.0 - q2)
 
 
 def _require_tape_writer() -> None:
@@ -98,36 +138,19 @@ def _require_tape_writer() -> None:
     if reason is not None:
         raise missing_door_refusal("netcdf_writer", str(reason))
 def _gaussian_to_regular(grid, target_lat, target_lon):
-    """Bilinear weights from the Gaussian grid to regular lat-lon centres."""
-    lat = np.asarray(grid.latitude_deg, dtype=np.float64)
-    lon = np.asarray(grid.longitude_deg, dtype=np.float64)
-    fy = np.interp(target_lat, lat, np.arange(lat.size, dtype=np.float64))
-    y0 = np.minimum(fy.astype(np.int64), lat.size - 2)
-    wy = np.clip(fy - y0, 0.0, 1.0)
-    dlon = 360.0 / lon.size
-    fx = np.mod(target_lon - lon[0], 360.0) / dlon
-    x0 = np.mod(fx.astype(np.int64), lon.size)
-    wx = fx - np.floor(fx)
-    x1 = np.mod(x0 + 1, lon.size)
+    """Bilinear sampling from the Gaussian grid at regular lat-lon centres.
 
-    def regrid(values: np.ndarray) -> np.ndarray:
-        field = np.asarray(values, dtype=np.float64)
-        yl = y0[:, None]
-        yu = (y0 + 1)[:, None]
-        wyc = wy[:, None]
-        wxc = wx[None, :]
-        return (
-            (1.0 - wyc) * (
-                (1.0 - wxc) * field[..., yl, x0[None, :]]
-                + wxc * field[..., yl, x1[None, :]]
-            )
-            + wyc * (
-                (1.0 - wxc) * field[..., yu, x0[None, :]]
-                + wxc * field[..., yu, x1[None, :]]
-            )
-        )
+    ``target_lat`` names the tape's rows and ``target_lon`` its columns in
+    the tape's own order.  The sampling runs in the Rust render kernels
+    (`arwen_global.render_kernels`); the NumPy version it replaced is the
+    test oracle in ``tests/render_kernel_oracle.py``.  The returned callable
+    takes the field and an optional ``post`` of ``"floor_zero"`` (the water
+    species' clip at zero) or ``"exp"`` (surface pressure from its log).
+    """
+    from .render_kernels import GaussianRegridder
 
-    return regrid
+    return GaussianRegridder(
+        grid.latitude_deg, grid.longitude_deg, target_lat, target_lon)
 
 
 def _stagger_x_periodic(field: np.ndarray) -> np.ndarray:
@@ -195,6 +218,57 @@ def _surface_energy_planes(bundle, regrid) -> dict[str, np.ndarray]:
     return planes
 
 
+def parse_start_date(start_date: str | None) -> datetime | None:
+    """``--start-date`` (``YYYY-MM-DD_HH:MM:SS``, UTC) as an aware instant,
+    or None when it was not given."""
+    if start_date is None or not str(start_date).strip():
+        return None
+    try:
+        start = datetime.strptime(str(start_date).strip(), "%Y-%m-%d_%H:%M:%S")
+    except ValueError as exc:
+        raise ValueError(
+            "start-date must be YYYY-MM-DD_HH:MM:SS (the analysis valid time)"
+        ) from exc
+    return start.replace(tzinfo=timezone.utc)
+
+
+def tape_start(clock, given: datetime | None) -> datetime:
+    """The instant every tape's model time is offset from (naive UTC, the
+    tape convention).
+
+    A dated run (an analysis start, or a config that states
+    ``start_time_utc``) IS its own start: ``given`` may be left out, and a
+    ``given`` that disagrees is refused by name, because every tape's
+    Times, START_DATE and file name, and every map drawn from it, would be
+    stamped from an instant the forecast did not start at.  An undated run
+    (the idealized fixture) has no instant to take, so ``given`` is then
+    required and labels the tapes."""
+    from .clock import ClockMismatchError, CONFIG_START_TIME, mismatch_sentence
+
+    if clock is not None and clock.dated:
+        if given is not None and given != clock.start_utc:
+            name = (
+                "the config's physics start_time_utc"
+                if clock.source == CONFIG_START_TIME
+                else "the analysis valid time"
+            )
+            raise ClockMismatchError(
+                mismatch_sentence("--start-date", given, clock.start_utc, name)
+                + "; leave --start-date out to stamp the tapes from the run's "
+                "own clock"
+            )
+        return clock.start_utc.replace(tzinfo=None)
+    if given is None:
+        source = "unstated" if clock is None else clock.source
+        raise ValueError(
+            f"this run's clock is {source}: it starts from no analysis and "
+            "states no physics start_time_utc, so its checkpoints carry no "
+            "instant a tape's valid time could be taken from.  Pass "
+            "--start-date to label the tapes"
+        )
+    return given.replace(tzinfo=None)
+
+
 def export_wrfout(
     cfg,
     checkpoints,
@@ -202,7 +276,7 @@ def export_wrfout(
     *,
     nlat: int,
     nlon: int,
-    start_date: str,
+    start_date: str | None = None,
     overwrite: bool = False,
     bbox: tuple[float, float, float, float] | None = None,
     extra_planes=None,
@@ -213,16 +287,23 @@ def export_wrfout(
     regridded (a plane of the tape's shape is taken as it is) to store under
     their own names: the renderer draws any stored 2-D variable as a
     ``var:<name>`` product, which is how the surface-energy instrument's
-    bias maps reach it."""
-    try:
-        start = datetime.strptime(start_date, "%Y-%m-%d_%H:%M:%S")
-    except ValueError as exc:
-        raise ValueError(
-            "start-date must be YYYY-MM-DD_HH:MM:SS (the analysis valid time)"
-        ) from exc
+    bias maps reach it.
+
+    The tapes' valid times are the run's forecast clock plus each
+    checkpoint's model time (:func:`tape_start`): ``start_date`` may be
+    left out of a dated run and is refused when it disagrees."""
+    given = parse_start_date(start_date)
+    # The render kernels before anything else: a machine without them
+    # refuses here, with the missing-door exit and the command that stages
+    # them, rather than after the model is built.
+    from . import render_kernels
+
+    render_kernels.library()
     transform = build_transform(cfg)
     model, _cold = build_model_and_cold_state(
         cfg, transform, scratch_destination=Path(outdir))
+    clock = model.forecast_clock
+    start = tape_start(clock, given)
     backend = transform.backend
     vector = VorticityDivergenceOperator(transform)
 
@@ -232,7 +313,11 @@ def export_wrfout(
     lon_signed = np.where(lon >= 180.0, lon - 360.0, lon)
     order = np.argsort(lon_signed)
     lon_out = lon_signed[order]
-    regrid_raw = _gaussian_to_regular(transform.grid, lat, lon)
+    # Each tape column is sampled at its own unsigned longitude, in the
+    # tape's rolled order, and a bbox window samples only its own rows and
+    # columns: every value depends on its own row and column alone, so this
+    # is the whole-ring sample rolled and cut, without the whole ring.
+    lon_sample = lon[order]
 
     lat_sel = lon_sel = None
     if bbox is not None:
@@ -251,12 +336,11 @@ def export_wrfout(
             )
         lat = lat[lat_sel]
         lon_out = lon_out[lon_sel]
+        lon_sample = lon_sample[lon_sel]
+    sampler = _gaussian_to_regular(transform.grid, lat, lon_sample)
 
-    def regrid(values) -> np.ndarray:
-        out = regrid_raw(backend.to_numpy(values))[..., :, order]
-        if lat_sel is not None:
-            out = out[..., lat_sel, :][..., lon_sel]
-        return out
+    def regrid(values, post: str = "none") -> np.ndarray:
+        return sampler(backend.to_numpy(values), post)
 
     xlong, xlat = np.meshgrid(lon_out, lat)
     ny_out, nx_out = xlat.shape
@@ -283,6 +367,7 @@ def export_wrfout(
         "GRID_ID": np.int32(1),
         "PARENT_ID": np.int32(0),
         "DT": np.float32(cfg.dt_s),
+        MODEL_LABEL_ATTR: MODEL_LABEL,
     }
 
     output = Path(outdir)
@@ -297,6 +382,10 @@ def export_wrfout(
             integrator=cfg.integrator,
         )
         bundle = state_from_checkpoint(metadata, arrays, backend)
+        # A checkpoint integrated from another start than this config's
+        # clock is refused by name rather than stamped with the wrong
+        # valid times.
+        adopt_checkpoint_clock(model, bundle, f"checkpoint {checkpoint}")
         model.enforce(bundle)
         atmosphere = bundle.atmosphere
         seconds = float(metadata["time_s"])
@@ -307,7 +396,7 @@ def export_wrfout(
         valid = start + timedelta(seconds=round(seconds))
 
         theta = regrid(transform.inverse(atmosphere.theta))
-        ps = np.exp(regrid(transform.inverse(atmosphere.log_surface_pressure)))
+        ps = regrid(transform.inverse(atmosphere.log_surface_pressure), "exp")
         u_grid, v_grid = vector.wind_from_vordiv(
             atmosphere.vorticity, atmosphere.divergence
         )
@@ -316,29 +405,23 @@ def export_wrfout(
         # Vapor is synthesized from its coefficients; the condensate
         # species are grid fields already.
         species = {
-            name: np.clip(
-                regrid(
-                    transform.inverse(atmosphere.qv) if name == "qv"
-                    else getattr(atmosphere, name)
-                ),
-                0.0, None,
+            name: regrid(
+                transform.inverse(atmosphere.qv) if name == "qv"
+                else getattr(atmosphere, name),
+                "floor_zero",
             )
             for name in WATER_SPECIES
         }
 
-        p_half = a_half[:, None, None] + b_half[:, None, None] * ps[None]
-        p_full = np.sqrt(p_half[:-1] * p_half[1:])
-        temperature = theta * (p_full / REFERENCE_PRESSURE_PA) ** KAPPA
-        virtual = temperature * (
-            1.0 + 0.61 * species["qv"]
-            - sum(species[name] for name in ("qc", "qr", "qi", "qs", "qg"))
-        )
-        phi_half = np.empty((nz + 1, *ps.shape), dtype=np.float64)
-        phi_half[nz] = phi_surface
-        for k in range(nz - 1, -1, -1):
-            phi_half[k] = phi_half[k + 1] + model.gas_constant * virtual[k] * np.log(
-                p_half[k + 1] / p_half[k]
-            )
+        # The tape's column: hybrid pressure, temperature and virtual
+        # temperature, and the hydrostatic geopotential integrated up from
+        # the terrain, all in the Rust render kernels.
+        p_half, p_full = render_kernels.hybrid_pressure(a_half, b_half, ps)
+        temperature, virtual = render_kernels.virtual_temperature(
+            theta, species, p_full,
+            reference_pressure_pa=REFERENCE_PRESSURE_PA, kappa=KAPPA)
+        phi_half = render_kernels.hydrostatic(
+            virtual, p_half, phi_surface, gas_constant=model.gas_constant)
 
         def up(field: np.ndarray) -> np.ndarray:
             return np.ascontiguousarray(field[::-1]).astype(np.float32)
@@ -347,6 +430,9 @@ def export_wrfout(
         screen, screen_source = _screen_level_fields(
             cfg, bundle, backend, regrid, temperature, species, u, v, p_half, p_full
         )
+        # WRF's moisture names carry WRF's convention (GI-5); the virtual
+        # temperature and the screen fallback above use the model's q.
+        tape_species, tape_q2 = tape_water_fields(species, screen["q2"])
         rain = regrid(surface.accumulated_rain_kg_m2)
         snow = regrid(surface.accumulated_snow_kg_m2)
         graupel = regrid(surface.accumulated_graupel_kg_m2)
@@ -368,12 +454,12 @@ def export_wrfout(
             "PB": up(p_full),
             "PH": np.zeros((nz + 1, ny_out, nx_out), dtype=np.float32),
             "PHB": up(phi_half),
-            "QVAPOR": up(species["qv"]),
-            "QCLOUD": up(species["qc"]),
-            "QRAIN": up(species["qr"]),
-            "QICE": up(species["qi"]),
-            "QSNOW": up(species["qs"]),
-            "QGRAUP": up(species["qg"]),
+            "QVAPOR": up(tape_species["qv"]),
+            "QCLOUD": up(tape_species["qc"]),
+            "QRAIN": up(tape_species["qr"]),
+            "QICE": up(tape_species["qi"]),
+            "QSNOW": up(tape_species["qs"]),
+            "QGRAUP": up(tape_species["qg"]),
             "U": stagger_x(up(u)),
             "V": _stagger_y(up(v)),
             # Screen-level diagnostics: the physics suite's own 2 m / 10 m
@@ -382,7 +468,7 @@ def export_wrfout(
             # lowest level itself (audit 2026-09-01, task 1b).  The source
             # is stamped on the tape and in the export receipt.
             "T2": screen["t2"].astype(np.float32),
-            "Q2": screen["q2"].astype(np.float32),
+            "Q2": tape_q2.astype(np.float32),
             "U10": screen["u10"].astype(np.float32),
             "V10": screen["v10"].astype(np.float32),
             "PSFC": ps.astype(np.float32),
@@ -424,7 +510,10 @@ def export_wrfout(
             dx=dx_m,
             dy=dx_m,
             title="Arwen Global research model",
-            global_attrs={**global_attrs, SURFACE_DIAGNOSTICS_ATTR: screen_source},
+            global_attrs={
+                **global_attrs, SURFACE_DIAGNOSTICS_ATTR: screen_source,
+                WATER_CONVENTION_ATTR: TAPE_WATER_CONVENTION,
+            },
             soil_layers=_SOIL_LAYERS,
         )
         try:
@@ -449,6 +538,13 @@ def export_wrfout(
         "physics_mode": cfg.physics_mode,
         "vertical": {"coordinate": cfg.vertical_coordinate, **cfg.vertical.describe()},
         "screen_level_sources": SURFACE_DIAGNOSTICS_SOURCES,
+        # Where every tape's valid time came from (arwen_global.clock).
+        "start_date": start.strftime("%Y-%m-%d_%H:%M:%S"),
+        "start_date_source": (
+            clock.source if clock is not None and clock.dated
+            else "start-date argument"
+        ),
+        "water_convention": TAPE_WATER_CONVENTION,
         "tapes": tapes,
     })
     return written
@@ -512,4 +608,8 @@ def _screen_level_fields(cfg, bundle, backend, regrid, temperature, species, u, 
     return {name: out[name] for name in ("t2", "q2", "u10", "v10")}, EXPORT_FALLBACK_SOURCE
 
 
-__all__ = ["EXPORT_RECEIPT_NAME", "SURFACE_ENERGY_FIELDS", "export_wrfout"]
+__all__ = [
+    "EXPORT_RECEIPT_NAME", "SURFACE_ENERGY_FIELDS", "TAPE_WATER_CONVENTION",
+    "WATER_CONVENTION_ATTR", "export_wrfout", "parse_start_date",
+    "tape_start", "tape_water_fields",
+]

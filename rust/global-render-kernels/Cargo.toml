@@ -1,0 +1,39 @@
+# The render-tape and regional-translation kernels of WOOF Global.
+#
+# WHY THIS CRATE LIVES IN THIS REPOSITORY.  Every other door this package
+# runs on is built from the engine's `tools/rustwx` workspace, because those
+# are decoders the engine also uses and two copies of a decoder is how the
+# two drift.  These kernels have no engine counterpart: they regrid this
+# model's own Gaussian grid onto the render tape's regular grid, integrate
+# the tape's hydrostatic column, and translate a parent export onto a
+# regional target.  Nothing in the engine does any of that, so there is
+# nothing to drift from, and the crate sits beside the model it serves.
+#
+# WHAT IT REPLACES.  The NumPy regrid, the Python per-column np.interp loop
+# and the Python per-level hypsometric loops on the default render and
+# regional paths (audit finding GI-3, the Python boundary law).  The NumPy
+# implementations survive only as the test oracle in
+# tests/render_kernel_oracle.py, and tests/test_render_kernels.py holds
+# this crate to them byte for byte.
+#
+# Dependency posture: none.  Threads come from std::thread::scope.
+
+[package]
+name = "global-render-kernels"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+rust-version = "1.75"
+description = "Gaussian-to-regular regrid, hydrostatic tape columns and regional translation kernels for WOOF Global"
+
+[lib]
+name = "global_render_kernels"
+# cdylib: the ctypes seam src/arwen_global/render_kernels.py loads.
+# rlib:   the crate's own tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+
+# A member of this repository's rust/ workspace, whose release profile
+# (no FMA, one codegen unit) it builds under.

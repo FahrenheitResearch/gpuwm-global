@@ -8,11 +8,12 @@ Three things this file is the only gate on.
     different interpolation than the one the default arm runs, and no
     other test in the tree compares the two entry points.
 
-*   The additive mass fixer closes a species' mass exactly and puts the
-    correction back where the limiter took it.  The multiplicative form
-    closes the same mass by rescaling every point that holds the species,
-    which is conservative and wrong in place; the gate that separates
-    them is where the correction LANDS, not how large it is.
+*   Every conservative mass fixer closes a species' mass exactly; what
+    separates them is where the correction LANDS, not how large it is.
+    The default (the Bermejo-Conde fixer) puts it where the high-order and
+    the trilinear interpolants disagree, the additive form back where the
+    limiter took it, and ``mass_proportional`` rescales every point that
+    holds the species, which is conservative and wrong in place.
 
 *   The physics coupling arms agree when there is no physics to couple.
     That is what says the two extra arms are the same integrator with the
@@ -44,8 +45,12 @@ from arwen_global.semilag.options import (  # noqa: E402
     semilag_options_from_table,
 )
 from arwen_global.semilag.tables import SphericalGridTables  # noqa: E402
+from arwen_global.semilag.interpolate import (  # noqa: E402
+    gather_linear_batch,
+)
 from arwen_global.semilag.tracers import (  # noqa: E402
-    RETIRED_TRACER_FIXERS, TRACER_FIXERS, area_weights, fix_mass,
+    BERMEJO_CONDE_BETA, RETIRED_TRACER_FIXERS, STENCIL_FIXERS,
+    TRACER_FIXERS, area_weights, fix_mass,
 )
 from arwen_global.spectral.transform import (  # noqa: E402
     SphericalHarmonicTransform,
@@ -176,8 +181,13 @@ def _one_species(transform, tables, nlev, *, dx=0.37, dy=0.23, dk=0.11):
     return field, value, cut, dp
 
 
+def _one_stencil(tables, nlev, *, dx=0.37, dy=0.23, dk=0.11):
+    """The stencil ``_one_species`` gathered on, for the weighted fixer."""
+    return _shifted_stencil(tables, nlev, dx=dx, dy=dy, dk=dk)
+
+
 @pytest.mark.parametrize("scheme", ["bermejo_conde_additive",
-                                    "bermejo_conde"])
+                                    "bermejo_conde", "mass_proportional"])
 def test_every_conservative_fixer_closes_the_species_mass(scheme):
     transform = _transform()
     tables = _tables(transform)
@@ -187,6 +197,7 @@ def test_every_conservative_fixer_closes_the_species_mass(scheme):
     fixed, marks = fix_mass(
         {"qg": value}, {"qg": before}, dp, dp, transform,
         scheme=scheme, deficits={"qg": cut},
+        stencil=_one_stencil(tables, nlev),
     )
     target = float(np.sum(before * dp * cell))
     after = float(np.sum(fixed["qg"] * dp * cell))
@@ -195,6 +206,8 @@ def test_every_conservative_fixer_closes_the_species_mass(scheme):
     # and is the same number under every form.
     assert marks["semilag_tracer_mass_fixer_relative__qg"] > 0.0
     assert float(np.min(fixed["qg"])) >= 0.0
+    # And the receipt reads the closure back from the returned field.
+    assert marks["semilag_tracer_fixer_residual_relative__qg"] <= 1.0e-12
 
 
 def test_the_additive_fixer_restores_a_deficit_where_the_limiter_cut():
@@ -219,7 +232,7 @@ def test_the_additive_fixer_restores_a_deficit_where_the_limiter_cut():
     )
     multiplicative, marks_m = fix_mass(
         {"qg": value}, {"qg": before}, dp, dp, transform,
-        scheme="bermejo_conde",
+        scheme="mass_proportional",
     )
     # The same correction to make, by construction: its size is the
     # ADVECTION's error and no fixer form changes it.
@@ -230,8 +243,13 @@ def test_the_additive_fixer_restores_a_deficit_where_the_limiter_cut():
     assert marks_m["semilag_tracer_clip_share__qg"] == 0.0
     # And changed the field ONLY there, where the multiplicative form
     # changed every point that holds any of the species.
+    # Up to the float roundoff of the sums, which the closing stage now
+    # measures afresh from the field and spreads as a factor of order
+    # 1e-16 rather than assuming the clip stage placed the last bit.
     cutting = cut > 0.0
-    assert float(np.max(np.abs(additive["qg"] - value)[~cutting])) == 0.0
+    assert float(np.max(np.abs(additive["qg"] - value)[~cutting])) <= (
+        1.0e-12 * float(np.max(value))
+    )
     elsewhere = (~cutting) & (value > 0.0)
     assert float(np.max(np.abs(multiplicative["qg"] - value)[elsewhere])) > 0.0
 
@@ -284,19 +302,24 @@ def test_a_species_that_has_left_the_model_is_refused_by_name():
     dp = np.full_like(before, 1000.0)
     with pytest.raises(ValueError, match="no air to put it back in"):
         fix_mass({"qg": gone}, {"qg": before}, dp, dp, transform,
-                 scheme="bermejo_conde", deficits={"qg": gone})
+                 scheme="mass_proportional", deficits={"qg": gone})
 
 
-def test_the_fixer_of_record_is_the_multiplicative_one_and_none_is_reachable():
-    # The additive stage is selectable and not default: MEASURED
-    # 2026-09-06 on the T255 native arms, it carried 1 to 6 percent of the
-    # correction under the default physics coupling, which does not pay
-    # for the second device array per gathered tracer that reporting the
-    # limiter's deficit costs.
+def test_the_fixer_of_record_is_the_weighted_one_and_none_is_reachable():
+    # The default is the published Bermejo-Conde weighting (DYC-5,
+    # 2026-10-05).  The additive stage stays selectable and not default:
+    # MEASURED 2026-09-06 on the T255 native arms, it carried 1 to 6
+    # percent of the correction under the default physics coupling.  The
+    # uniform rescale that was the default until then stays as the
+    # counter-arm under its own name.
     assert SemiLagrangianOptions().tracer_fixer == "bermejo_conde"
     assert set(TRACER_FIXERS) == {
-        "bermejo_conde_additive", "bermejo_conde", "none"
+        "bermejo_conde", "mass_proportional", "bermejo_conde_additive",
+        "none",
     }
+    assert STENCIL_FIXERS == ("bermejo_conde",)
+    # The IFS implementation's exponent.
+    assert BERMEJO_CONDE_BETA == 1.0
     with pytest.raises(ValueError, match="semilag.tracer_fixer must be"):
         SemiLagrangianOptions(tracer_fixer="whatever")
     # The counter-arm reports the drift and closes nothing.
@@ -314,8 +337,8 @@ def test_the_proportional_fixer_is_retired_and_refused_by_name():
     under two different config hashes.
 
     ``proportional`` weighted the correction by the signed advected value
-    and ``bermejo_conde`` by its positive part.  Once every conservative
-    form floors the field at zero BEFORE it measures the mass -- which it
+    and ``mass_proportional`` (then named ``bermejo_conde``) by its
+    positive part.  Once every conservative form floors the field at zero BEFORE it measures the mass -- which it
     must, or the correction is short by exactly the mass the floor
     created -- the two weightings are the same array.  MEASURED
     2026-09-06 on the numpy path: bitwise identical output on a spiky
@@ -356,7 +379,7 @@ def test_the_weighting_the_retired_form_varied_is_now_one_array():
         value = gather_batch([field], stencil, monotone=monotone)[0]
         dp = np.full_like(field, 1000.0)
         fixed, _ = fix_mass({"qg": value.copy()}, {"qg": field}, dp, dp,
-                            transform, scheme="bermejo_conde")
+                            transform, scheme="mass_proportional")
         # The retired form's arithmetic, written out here rather than
         # kept reachable through the door.
         floored = np.maximum(value, 0.0)
@@ -413,7 +436,7 @@ def test_the_fixer_correction_is_priced_by_the_species_shape_not_the_scheme():
     def correction(field):
         value = gather_batch([field], stencil, monotone=True)[0]
         _, marks = fix_mass({"qg": value}, {"qg": field}, dp, dp, transform,
-                            scheme="bermejo_conde")
+                            scheme="bermejo_conde", stencil=stencil)
         return marks["semilag_tracer_mass_fixer_relative__qg"]
 
     def raw_error(field):
@@ -467,6 +490,171 @@ def test_the_six_hour_arms_and_the_forecast_day_are_two_cases():
     # the grading lane's A/B is of.
     assert "2026-09-01" in day["physics"]["native_adapter_options"][
         "start_time_utc"]
+
+
+# ---------------------------------------------------------------------------
+# DYC-5: where the default fixer puts the correction
+
+
+def _graupel_like(transform, tables, nlev=40):
+    """A one-layer species of storm-sized blobs, the shape whose
+    correction the T255 receipts read at 0.116 of the graupel in a step,
+    gathered on a shifted stencil with the limiter on.  One broad uniform
+    deck rides along, about half the species' mass: inside it the cubic
+    and the trilinear interpolants agree, so it is the far-away air a
+    fixer must leave alone and a uniform one rescales with everything
+    else."""
+    field = _blob(tables, nlev, thickness=1, width=4)
+    if nlev >= 30:
+        field[20:26, 10:22, 30:42] = 1.0e-4
+    stencil = _shifted_stencil(tables, nlev, dx=0.37, dy=0.23, dk=0.31)
+    value = gather_batch([field], stencil, monotone=True)[0]
+    dp = np.full_like(field, 1000.0)
+    return field, value, stencil, dp
+
+
+def test_the_default_fixer_places_the_correction_where_the_interpolation_erred():
+    """Named breakage (DYC-5): the default fixer rescaled every point that
+    holds a species by one factor, up to 0.116 of the graupel in a single
+    T255 step, moving condensate between storms that had nothing to do
+    with the error.  The default is now the Bermejo-Conde weighting: the
+    correction at a point is proportional to how far the cubic value sits
+    from the trilinear one on the side the correction needs, so a point
+    where the two interpolants agree is not touched, and nothing is
+    applied uniformly beyond float roundoff.
+    """
+    transform = _transform()
+    tables = _tables(transform)
+    field, value, stencil, dp = _graupel_like(transform, tables)
+    cell = area_weights(transform)
+    target = float(np.sum(field * dp * cell))
+    default = SemiLagrangianOptions().tracer_fixer
+    fixed, marks = fix_mass({"qg": value}, {"qg": field}, dp, dp, transform,
+                            scheme=default, stencil=stencil)
+    uniform, marks_u = fix_mass({"qg": value}, {"qg": field}, dp, dp,
+                                transform, scheme="mass_proportional")
+    # The same correction to make, and it is the large one.
+    relative = marks["semilag_tracer_mass_fixer_relative__qg"]
+    assert relative == marks_u["semilag_tracer_mass_fixer_relative__qg"]
+    assert relative > 0.05
+    # Both close the mass and stay nonnegative.
+    for out in (fixed["qg"], uniform["qg"]):
+        assert abs(float(np.sum(out * dp * cell)) - target) <= 1e-12 * target
+        assert float(np.min(out)) >= 0.0
+    # The uniform form rescales every point by the whole correction ...
+    assert marks_u["semilag_tracer_fixer_uniform_rescale__qg"] > 0.05
+    assert marks_u["semilag_tracer_fixer_touched_mass_fraction__qg"] > 0.99
+    # ... the default by roundoff only, and leaves most of the mass alone.
+    assert marks["semilag_tracer_fixer_uniform_rescale__qg"] < 1.0e-9
+    assert marks["semilag_tracer_fixer_local_share__qg"] > 0.999
+    # MEASURED on this field: 0.55 of the mass sits at points the default
+    # changed by more than one percent (the cores, which made the error),
+    # where the uniform form changed all of it.
+    assert marks["semilag_tracer_fixer_touched_mass_fraction__qg"] < 0.6
+    # A point holding the species where the two interpolants agree keeps
+    # its value up to the roundoff factor, where the uniform form moved it.
+    low = gather_linear_batch([field], stencil)[0]
+    agree = (value > 0.0) & (np.abs(value - low) <= 1.0e-12 * value)
+    assert int(np.count_nonzero(agree)) > 0
+    assert float(np.max(np.abs(fixed["qg"] - value)[agree]
+                        / value[agree])) < 1.0e-9
+    assert float(np.min(np.abs(uniform["qg"] - value)[agree]
+                        / value[agree])) > 0.05
+
+
+def test_the_weighted_fixer_closes_an_addition_and_an_oversized_removal():
+    """Both directions, and a removal larger than the weighted points
+    hold: the cap keeps every point nonnegative and the water filling plus
+    the reported remainder still close the mass."""
+    transform = _transform()
+    tables = _tables(transform)
+    field, value, stencil, dp = _graupel_like(transform, tables)
+    cell = area_weights(transform)
+    for scale in (0.7, 3.0):
+        advected = value * scale
+        fixed, marks = fix_mass({"qg": advected}, {"qg": field}, dp, dp,
+                                transform, scheme="bermejo_conde",
+                                stencil=stencil)
+        target = float(np.sum(field * dp * cell))
+        assert abs(float(np.sum(fixed["qg"] * dp * cell)) - target) <= (
+            1e-12 * target
+        )
+        assert float(np.min(fixed["qg"])) >= 0.0
+        assert marks["semilag_tracer_fixer_residual_relative__qg"] <= 1e-12
+
+    # An addition the room below the trilinear values can carry lands only
+    # where the cubic fell below the trilinear value, and no point is
+    # pushed past it.
+    advected = value * 0.9
+    fixed, marks = fix_mass({"qg": advected}, {"qg": field}, dp, dp,
+                            transform, scheme="bermejo_conde",
+                            stencil=stencil)
+    assert marks["semilag_tracer_fixer_uniform_rescale__qg"] < 1.0e-9
+    low = gather_linear_batch([field], stencil)[0]
+    moved = np.abs(fixed["qg"] - advected) > 1.0e-12 * np.maximum(
+        advected, 1.0e-30)
+    assert bool(np.all(low[moved] > advected[moved]))
+    assert bool(np.all(fixed["qg"] <= np.maximum(advected, low)
+                       * (1.0 + 1.0e-12)))
+
+
+def test_the_default_fixer_moves_every_point_toward_its_trilinear_value():
+    """Named breakage: the two-signed weight |q_H - q_L| ** 1.5 took a
+    surplus from points whose cubic had already fallen BELOW the
+    trilinear value and emptied them (MEASURED on the T255 bare day:
+    points holding more than a thousandth of the graupel maximum set to
+    zero in a step).  With the one-signed weight a surplus comes only off
+    points above their trilinear value and none is taken past it, so the
+    corrected field lies between the two interpolants point by point.
+    """
+    transform = _transform()
+    tables = _tables(transform)
+    field, value, stencil, dp = _graupel_like(transform, tables)
+    low = gather_linear_batch([field], stencil)[0]
+    fixed, marks = fix_mass({"qg": value}, {"qg": field}, dp, dp, transform,
+                            scheme="bermejo_conde", stencil=stencil)
+    assert marks["semilag_tracer_mass_fixer_kg_m2__qg"] < 0.0  # a surplus
+    out = fixed["qg"]
+    slack = 1.0e-12 * float(np.max(value))
+    assert bool(np.all(out >= np.minimum(value, low) - slack))
+    assert bool(np.all(out <= np.maximum(value, low) + slack))
+    # Nothing is taken from a point whose cubic is at or below trilinear.
+    below = value <= low
+    assert float(np.max(np.abs(out - value)[below])) <= slack
+
+
+def test_the_weighted_fixer_refuses_without_the_stencil():
+    """Without the departure stencil there is no low-order value, so no
+    weight; running anyway would place the correction on points the
+    interpolation did not err at, which is the defect the form fixes."""
+    transform = _transform()
+    tables = _tables(transform)
+    field, value, _stencil, dp = _graupel_like(transform, tables, nlev=8)
+    with pytest.raises(ValueError, match="cannot run without the departure"):
+        fix_mass({"qg": value}, {"qg": field}, dp, dp, transform,
+                 scheme="bermejo_conde")
+
+
+def test_the_trilinear_interpolant_is_exact_where_it_must_be():
+    """The low-order value the weight is measured against: the field
+    itself at a zero displacement, exact on a field linear in the level
+    index, and inside the field's own range."""
+    transform = _transform()
+    tables = _tables(transform)
+    nlev = 8
+    field = _spiky(tables, nlev)
+    zero = zero_stencil(tables, nlev, xp=np, dtype=tables.dtype)
+    assert np.array_equal(gather_linear_batch([field], zero)[0], field)
+    stencil = _shifted_stencil(tables, nlev, dx=0.37, dy=0.23, dk=0.4)
+    low = gather_linear_batch([field], stencil)[0]
+    assert float(np.min(low)) >= 0.0
+    assert float(np.max(low)) <= float(np.max(field))
+    ramp = np.broadcast_to(
+        np.arange(nlev, dtype=tables.dtype)[:, None, None], field.shape
+    ).copy()
+    got = gather_linear_batch([ramp], stencil)[0]
+    want = np.clip(stencil.level, 0.0, nlev - 1.0)
+    assert float(np.max(np.abs(got - want))) < 1.0e-12
 
 
 # ---------------------------------------------------------------------------
@@ -798,3 +986,47 @@ def test_the_limiter_door_names_its_shapes():
     # The identity carries the limiter, so two runs that differ only in
     # whether it is on cannot share a config hash.
     assert "quasi_monotone" in SemiLagrangianOptions().identity
+
+
+def test_the_additive_refusal_names_a_fixer_that_needs_no_stencil():
+    """The additive form's refusal used to send a caller to
+    'bermejo_conde', which refuses next without a stencil."""
+    import numpy as np
+    from arwen_global.semilag.tracers import fix_mass
+    from arwen_global.spectral.transform import SphericalHarmonicTransform
+
+    transform = SphericalHarmonicTransform.create(5, backend="numpy",
+                                                  precision="float64")
+    nlat, nlon = transform.grid.shape
+    field = np.full((2, nlat, nlon), 1.0e-6)
+    dp = np.full((2, nlat, nlon), 5.0e4)
+    with pytest.raises(ValueError, match="mass_proportional"):
+        fix_mass({"qc": field}, {"qc": field}, dp, dp, transform,
+                 scheme="bermejo_conde_additive", deficits=None)
+
+
+@pytest.mark.parametrize("scheme", ["bermejo_conde_additive",
+                                    "bermejo_conde", "mass_proportional"])
+def test_every_per_species_fixer_row_reaches_the_receipt(scheme):
+    """Each per-species row fix_mass writes is one the receipt carries.
+
+    THE BREAKAGE THIS PREVENTS.  The weighted fixer's share of the
+    correction (``semilag_tracer_fixer_local_share__<species>``) was
+    written every step and dropped by the receipt's per-species filter, so
+    a receipt showed the uniform remainder and not what the weighted stage
+    carried.
+    """
+    from arwen_global.runner import _SPECIES_FIXER_PREFIXES
+
+    transform = _transform()
+    tables = _tables(transform)
+    nlev = 8
+    before, value, cut, dp = _one_species(transform, tables, nlev)
+    _, marks = fix_mass(
+        {"qg": value}, {"qg": before}, dp, dp, transform,
+        scheme=scheme, deficits={"qg": cut},
+        stencil=_one_stencil(tables, nlev),
+    )
+    rows = [key for key in marks if key.endswith("__qg")]
+    assert "semilag_tracer_fixer_local_share__qg" in rows
+    assert [key for key in rows if not key.startswith(_SPECIES_FIXER_PREFIXES)] == []

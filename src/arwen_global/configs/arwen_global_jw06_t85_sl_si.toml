@@ -9,7 +9,8 @@
 #
 # dt = 300 s at T85: the analytic jet is 35 m/s and the wave reaches
 # about 45 m/s by day 9, so the advective Courant number of the Eulerian
-# arm is 0.30 and this arm's Lipschitz number is far below its 0.75 gate.
+# arm is 0.30 and this arm's Lipschitz number is far below the retired 0.75
+# norm gate.
 # 777600 s is nine days; 86400/300 = 288 whole steps per day.
 [arwen_global]
 schema = "gpuwm.arwen-global-run/v1"
@@ -27,7 +28,7 @@ dt_s = 300.0
 duration_s = 777600.0
 output_interval_s = 86400.0
 integrator = "sl_si"
-maximum_lipschitz = 0.75
+minimum_fold_determinant = 0.2
 
 [semilag]
 quasi_monotone = true

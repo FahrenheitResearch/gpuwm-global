@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from conftest import requires_netcdf_writer  # noqa: E402
+from conftest import requires_netcdf_writer, requires_render_kernels  # noqa: E402
 
 from arwen_global.config import load_config
 from arwen_global.constants import KAPPA
@@ -32,6 +32,8 @@ from arwen_global.runner import build_model_and_cold_state, run
 from arwen_global.wrfout_export import (
     EXPORT_FALLBACK_SOURCE,
     EXPORT_RECEIPT_NAME,
+    MODEL_LABEL,
+    MODEL_LABEL_ATTR,
     SURFACE_DIAGNOSTICS_ATTR,
     export_wrfout,
 )
@@ -151,6 +153,7 @@ def test_the_reference_suite_persists_screen_level_fields():
 
 
 @requires_netcdf_writer
+@requires_render_kernels
 def test_export_writes_screen_fields_from_the_physics_state_and_labels_the_fallback(tmp_path):
     cfg = load_config(SMOKE_CONFIG)
     receipt = run(cfg, tmp_path / "run")
@@ -179,6 +182,8 @@ def test_export_writes_screen_fields_from_the_physics_state_and_labels_the_fallb
     for tape, row in zip(tapes, rows):
         with Dataset(tape) as ds:
             assert ds.getncattr(SURFACE_DIAGNOSTICS_ATTR) == row["surface_diagnostics"]
+            # The renderer names this model, not "WRF", in the metadata row.
+            assert ds.getncattr(MODEL_LABEL_ATTR) == MODEL_LABEL == "WOOF Global"
             t2 = np.asarray(ds["T2"][0])
             lowest_theta = np.asarray(ds["T"][0][0]) + 300.0
             lowest_t = lowest_theta * (np.asarray(ds["PB"][0][0]) / 1.0e5) ** KAPPA

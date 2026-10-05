@@ -16,7 +16,9 @@ four are named here rather than hidden inside one string:
   advected as a deviation from the reference profile with the reference's
   material tendency carried on the grid, because that tendency warmed the
   model lid by 32 K a day where the trajectory is clamped, see
-  semilag.rhs),
+  semilag.rhs; v4 under DYC-1 and DYC-3, when the departure level was
+  clamped at the boundary interfaces instead of the outermost full levels
+  and the level rate took the geometric full-level spacing),
 * the checkpoint (seven trajectory arrays that no other integrator
   writes at all).
 
@@ -51,8 +53,10 @@ SEMILAG_PIN_OVERRIDES = {
     "scalar_transport": (
         "whole-theta-and-vapor-tricubic-or-quintic-horizontal-semi-lagrangian-"
         "plus-grid-point-quasi-monotone-tricubic-condensate-and-moments-with-"
-        "zero-floored-bermejo-conde-mass-fixer-optionally-clip-deficit-"
-        "additive-v3"
+        "zero-floored-bermejo-conde-mass-fixer-one-signed-trilinear-minus-"
+        "cubic-weight-capped-at-the-trilinear-value-optionally-clip-deficit-"
+        "additive-departure-level-clamped-at-the-boundary-interfaces-"
+        "geometric-full-level-rate-v5"
     ),
     "checkpoint": (
         "hash-bound-five-field-spectral-atmosphere-ten-grid-tracers-grid-"
