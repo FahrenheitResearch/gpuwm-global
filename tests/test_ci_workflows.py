@@ -222,6 +222,31 @@ def test_the_publish_job_runs_the_same_selection() -> None:
     assert _selections(workflow("publish.yml")) == [FULL_SELECTION]
 
 
+@pytest.mark.parametrize("name", ["test.yml", "publish.yml"])
+def test_every_suite_job_stages_both_rust_doors_before_its_pytest(name: str) -> None:
+    """A job that runs the suite builds and exports both libraries first.
+
+    THE BREAKAGE THIS PREVENTS: test.yml's nightly `full` job ran the full
+    tier with neither rw_global_coldstart nor global_render_kernels staged,
+    so every cold-start, tape and translation gate failed on DoorMissing
+    (run 40282971393: 49 failed, 4 errors) and the nightly was red every
+    night from at least 2026-10-19 while the push job, which stages them,
+    stayed green.
+    """
+
+    for job, body in jobs(workflow(name)).items():
+        text = directives(body)
+        at = text.find("python -m pytest")
+        if at < 0:
+            continue
+        before = text[:at]
+        assert ("cargo build --release --locked --offline "
+                "--manifest-path rust/Cargo.toml") in before, (name, job)
+        for env, stem in (("GPUWM_GLOBAL_COLDSTART_BRIDGE", "rw_global_coldstart"),
+                          ("ARWEN_GLOBAL_RENDER_KERNELS", "global_render_kernels")):
+            assert f'("{env}", "{stem}")' in before, (name, job, env)
+
+
 def test_the_local_replay_parses_the_selection_out_of_the_workflow() -> None:
     """The replay must read the job, not a copy of the job.
 

@@ -292,6 +292,27 @@ jobs:
           python -m pip install build "setuptools>=77" wheel "pytest>=8.0"
           python -m build --wheel --outdir dist
           python -m pip install "$(ls dist/*.whl)"
+      # THE BREAKAGE THIS PREVENTS: the same as the `test` job's step of the
+      # same name.  The nightly ran the full tier with neither library
+      # staged, so every cold-start, tape and translation gate failed on
+      # DoorMissing ("the Rust door rw_global_coldstart is not staged",
+      # 49 failed and 4 errors in run 40282971393, red every night since
+      # at least 2026-10-19) and the nightly said nothing about the code.
+      # publish.yml stages both before its own full tier the same way.
+      - name: build the doors this package's own rust/ workspace carries
+        run: |
+          cargo build --release --locked --offline --manifest-path rust/Cargo.toml
+          python - >> "$GITHUB_ENV" <<'PY'
+          import sys
+          from pathlib import Path
+          out = Path("rust/target/release").resolve()
+          for env, stem in (("GPUWM_GLOBAL_COLDSTART_BRIDGE", "rw_global_coldstart"),
+                            ("ARWEN_GLOBAL_RENDER_KERNELS", "global_render_kernels")):
+              name = f"{stem}.dll" if sys.platform == "win32" else f"lib{stem}.so"
+              path = out / name
+              assert path.is_file(), path
+              print(f"{env}={path}")
+          PY
       - name: the full CPU tier
         env:
           GPUWM_NO_LOCAL_GPU: "1"
