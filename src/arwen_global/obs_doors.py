@@ -159,6 +159,12 @@ def shadowed_rows() -> tuple[str, ...]:
                  if name in engine and name not in published_here)
 
 
+def _carries_every_token(engine_marker: str, marker: str) -> bool:
+    """True when every tab-separated contract in ``marker`` is in the engine's line."""
+
+    return set(marker.split("\t")) <= set(engine_marker.split("\t"))
+
+
 def front_door(name: str):
     """The front door for a binary name, from whoever publishes that door.
 
@@ -184,6 +190,17 @@ def front_door(name: str):
         from gpuwm.obs.frontdoor import FrontDoor
 
         env_var, subject, marker = _ROWS[name]
+        if name in engine and _carries_every_token(
+                engine[name].abi_marker, marker):
+            # The engine's line holds every contract this row names, so the
+            # engine's binary answers every subcommand this package calls and
+            # its exact line is the one the probe must compare.  Breakage
+            # this prevents: gpuwm 2.9.0's rw_goes appends
+            # `gpuwm-obs.goes-aod.v1`, and comparing against this row refused
+            # the engine's own binary ("--abi does not match"), so
+            # abi-score, abi-reference, abi-fast-model and the DA cycle's
+            # ABI leg lost their radiances on a correct 2.9 install.
+            return engine[name]
         return FrontDoor(
             name=name, env_var=env_var, subject=subject, abi_marker=marker)
     if name in engine:

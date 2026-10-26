@@ -89,7 +89,8 @@ def test_the_whole_table_is_the_union_and_the_publisher_decides():
     table = obs_doors.front_doors()
     published_here = obs_doors._published_here()
     for door in frontdoor.FRONT_DOORS.values():
-        if door.name in published_here:
+        if door.name in published_here and not obs_doors._carries_every_token(
+                door.abi_marker, obs_doors._ROWS.get(door.name, ("", "", ""))[2]):
             # This package publishes a newer binary under that name, so its
             # row names the newer record contract.  A probe that passed
             # against the older contract would be worse than no probe.
@@ -139,4 +140,8 @@ def test_a_door_both_tables_carry_has_the_engines_line(name):
 
     engine = {door.name: door for door in frontdoor.FRONT_DOORS.values()}
     assert name in engine
-    assert obs_doors._ROWS[name][2] == engine[name].abi_marker
+    # The line the probe compares is the engine's, on every engine in the
+    # declared range: 2.9.0's rw_goes appends gpuwm-obs.goes-aod.v1 to the
+    # 2.8 line this row carries, and the door takes the engine's line when it
+    # holds every contract named here.
+    assert obs_doors.front_door(name).abi_marker == engine[name].abi_marker
