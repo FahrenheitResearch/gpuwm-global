@@ -71,9 +71,22 @@ def _launch(module, fixture, k22_wrf_faithful=1, omeg_scale=None, qv_scale=None)
 @pytest.fixture(scope="module")
 def fixture():
     pytest.importorskip("cupy")
-    from gpuwm.verify.gf_oracle import load_gf_oracle
+    from gpuwm.verify.gf_oracle import GF_ORACLE_DIR, load_gf_oracle
 
-    return load_gf_oracle()
+    # Breakage named: gpuwm >= 2.8.6 ships these compiled WRF reference
+    # words only in a source checkout's tests/data (they put the platform
+    # wheels over PyPI's 100,000,000-byte file limit), so an installed
+    # engine has no fixture and load_gf_oracle() refuses.  Point
+    # GPUWM_GF_ORACLE_DIR at <gpuwm checkout>/tests/data/oracles/gf.
+    import os
+
+    directory = os.environ.get("GPUWM_GF_ORACLE_DIR") or GF_ORACLE_DIR
+    if not Path(directory).is_dir():
+        pytest.skip(
+            "the installed gpuwm carries no tests/data/oracles/gf (source-checkout "
+            "test data since 2.8.6); set GPUWM_GF_ORACLE_DIR to run the WRF oracle"
+        )
+    return load_gf_oracle(directory)
 
 
 @pytest.fixture(scope="module")

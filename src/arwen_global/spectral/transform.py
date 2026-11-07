@@ -260,7 +260,25 @@ class StreamedLegendreTable:
         return self.nlat
 
     def blocks(self):
-        """Yield ``(m0, m1, block)`` in the backend dtype, one chunk live."""
+        """Yield ``(m0, m1, block)`` in the backend dtype, one chunk live.
+
+        On the device backend the bands come from a pinned host cache built
+        on the first call (:meth:`_host_bands`): the recurrence and the
+        per-order Gram solve run once on the host, as the resident build
+        runs them, and every later call is one host-to-device copy per band.
+        Before the cache (2026-11-06, T533 on the 16 GB card) every
+        transform call re-ran the recurrence and the Gram solves on the
+        host: the first T533 step had not started after 12 minutes of host
+        BLAS with the card idle.  The cached bytes are the bytes the
+        uncached path cast (the same functions, the same float64 -> backend
+        dtype rounding), so the contraction reads the same operands.
+        """
+        if self.transform.backend.name == "cupy":
+            for m0, m1, host in self._host_bands():
+                device = self.xp.asarray(host)
+                yield m0, m1, device
+                del device
+            return
         grid = self.transform.grid
         backend = self.transform.backend
         for m0, m1, block in legendre_bands(self.truncation, grid.sin_lat, band=self.band):
@@ -277,6 +295,39 @@ class StreamedLegendreTable:
             del host
             yield m0, m1, device
             del device
+
+    def _host_bands(self):
+        """The bands in the backend dtype, in pinned host memory, built once
+        per transform, kind and chunk (``transform._streamed_host_cache``)."""
+        key = (self.kind, self.band, np.dtype(self.dtype).str)
+        cache = getattr(self.transform, "_streamed_host_cache", None)
+        if cache is None:
+            cache = {}
+            object.__setattr__(self.transform, "_streamed_host_cache", cache)
+        if key in cache:
+            return cache[key]
+        import cupy as cp
+
+        grid = self.transform.grid
+        dtype = np.dtype(self.dtype)
+        bands = []
+        for m0, m1, block in legendre_bands(self.truncation, grid.sin_lat, band=self.band):
+            if self.kind == "analysis":
+                host = analysis_band(block, m0, grid.quadrature_weights, self.truncation)
+            elif self.kind == "derivative":
+                host = legendre_derivative_block(grid.sin_lat, m0, block)
+            else:
+                host = block
+            del block
+            cast = np.asarray(host, dtype=dtype)
+            del host
+            memory = cp.cuda.alloc_pinned_memory(max(int(cast.nbytes), 1))
+            pinned = np.frombuffer(memory, dtype, cast.size).reshape(cast.shape)
+            pinned[...] = cast
+            del cast
+            bands.append((m0, m1, pinned))
+        cache[key] = bands
+        return bands
 
     def expanded(self):
         scratch = self.xp.empty(

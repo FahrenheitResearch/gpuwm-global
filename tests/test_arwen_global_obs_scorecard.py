@@ -433,5 +433,20 @@ def test_the_ifs_open_data_single_time_mapping_is_an_authority_row():
     # directories and `with_name` would look for one of them in the other's.
     oper = load_mapping(resolve_analysis_mapping(
         "rw-wps-ecmwf-open-data-oper-grib2.mapping.json"))
-    assert {k: v for k, v in oper["fields"].items() if k != "terrain_height"} == \
-        {k: v for k, v in mapping["fields"].items() if k != "terrain_height"}
+    # gpuwm 2.9 binds the sea-ice fraction on the composed oper row through
+    # its composition (borrowed from a companion analysis).  The single-time
+    # row has no composition to borrow through, so it keeps the field under
+    # its policy table with the reason, and the scorecard reads none of it.
+    # Every OTHER field stays identical, which is the drift this test holds.
+    composed_only = {
+        name for name, row in oper["fields"].items()
+        if row.get("provider") == "composition_bound"
+        and name not in mapping["fields"]
+    }
+    policy = {name for table in mapping.values() if isinstance(table, dict)
+              for name in table.get("policy_controlled_fields", ())}
+    assert composed_only <= policy, composed_only - policy
+    assert not composed_only & set(PRODUCT_SURFACE_FIELDS + PRODUCT_LEVEL_FIELDS)
+    skip = {"terrain_height"} | composed_only
+    assert {k: v for k, v in oper["fields"].items() if k not in skip} == \
+        {k: v for k, v in mapping["fields"].items() if k not in skip}

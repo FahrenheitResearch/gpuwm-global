@@ -593,7 +593,16 @@ def _gather_numpy(fields, stencil: Stencil, *, limiter: str,
                              cols[:, None, :])
         in_plane = rows[:, :, None] * nlon + col_index
 
+        # The stencil's centre node: every tap is summed as its difference
+        # from it and the centre is added back once (the kernel says why).
+        # Nearest node in each direction, as the kernel picks it.
+        cx = np.where(xi - np.floor(xi) >= scalar(0.5), mid + 1, mid)
+        cy = np.where(p - nodes[:, mid] >= nodes[:, mid + 1] - p, mid + 1, mid)
+        kn = np.clip(np.floor(xk + scalar(0.5)).astype(np.int64), 0, nlev - 1)
+        points = np.arange(p.shape[0])
+        centre = kn * plane + in_plane[points, cy, cx]
         for fi, field in enumerate(flat):
+            base = field[centre]
             acc = np.zeros(p.shape, dtype=dtype)
             lo = np.full(p.shape, np.inf, dtype=dtype)
             hi = np.full(p.shape, -np.inf, dtype=dtype)
@@ -602,7 +611,8 @@ def _gather_numpy(fields, stencil: Stencil, *, limiter: str,
             for c in range(4):
                 index = (k0 + c)[:, None, None] * plane + in_plane
                 vals = field[index]
-                inner = np.einsum("pa,pra,pr->p", wx, vals, wy)
+                inner = np.einsum("pa,pra,pr->p", wx,
+                                  vals - base[:, None, None], wy)
                 acc = acc + wz[:, c] * inner
                 f_edge = np.where(c_edge == c, inner, f_edge)
                 f_next = np.where(c_next == c, inner, f_next)
@@ -621,6 +631,7 @@ def _gather_numpy(fields, stencil: Stencil, *, limiter: str,
                     np.maximum(f_edge, f_face),
                 )
                 acc = np.where(outside, bounded, acc)
+            acc = acc + base
             kept = acc
             if limiter == "quasi_monotone":
                 kept = np.minimum(np.maximum(acc, lo), hi)

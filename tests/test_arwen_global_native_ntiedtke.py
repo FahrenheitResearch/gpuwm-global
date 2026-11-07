@@ -314,7 +314,9 @@ def test_a_grid_that_is_not_latitude_rings_or_reaches_a_pole_is_refused():
 
 
 def test_ntiedtke_state_resumes_from_a_checkpoint_bit_for_bit():
-    rain = 0.02
+    # Under the 0.0165 kg/m2 a call these rates remove (dt 5 s), so the
+    # runtime's rain cap (landed rain <= removed water) lands all of it.
+    rain = 0.01
 
     def convection(result, atmosphere):
         result.rthcuten[0] = 5.0e-4

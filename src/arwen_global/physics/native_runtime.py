@@ -301,6 +301,7 @@ class NativePhysicsRuntime:
                     validation_mode=self.options.radiation_validation_mode,
                     trace_gas_overrides=self.options.greenhouse_gas_overrides(),
                     column_size_bounding=True,
+                    ozone_climatology=self.options.ozone,
                 )
             atmosphere = {
                 "pressure": batch.arrays["p_full"],

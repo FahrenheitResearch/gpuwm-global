@@ -191,7 +191,57 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
              "table builds, kernel compiles and the allocator's first "
              "shapes are not a step's steady cost)",
     )
+    parser.add_argument(
+        "--surface-series", type=Path, default=None, metavar="NPZ",
+        help="follow this dated SST / sea-ice series (built by `gpuwm-global "
+             "surface-series`): the SST every step, the sea ice at each "
+             "record, the greenness daily; overrides [surface_update] series. "
+             "Without one the surface holds its cold-start values")
     _add_memory_lever_arguments(parser)
+
+
+def _with_surface_series(args, cfg):
+    path = getattr(args, "surface_series", None)
+    if path is None:
+        return cfg
+    import hashlib
+
+    path = Path(path).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"--surface-series {path} does not exist")
+    with path.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    return dataclasses.replace(cfg, surface_series=str(path),
+                               surface_series_sha256=digest)
+
+
+def _add_surface_series_arguments(parser) -> None:
+    parser.add_argument("config", type=config_argument,
+                        help="the experiment whose grid and statics the series is built for")
+    parser.add_argument("--source", required=True,
+                        help="a row of arwen_global/data/surface_series_sources.json "
+                             "(gdas-analysis: hindcast; gfs-forecast: one cycle's own SST)")
+    parser.add_argument("--cycle", required=True, metavar="YYYYMMDDHH",
+                        help="the first record's time (the forecast cycle)")
+    parser.add_argument("--hours", type=float, required=True,
+                        help="the span the records cover, at least the run's duration")
+    parser.add_argument("--interval-hours", type=float, default=24.0,
+                        help="hours between records (default 24)")
+    parser.add_argument("--out", type=Path, required=True, help="the series .npz to write")
+    parser.add_argument("--table", type=Path, default=None,
+                        help="another source table (default: the packaged one)")
+
+
+def _surface_series(args) -> int:
+    from .surface_series import build_surface_series
+
+    cfg = load_config(args.config)
+    build_surface_series(cfg, source=args.source, cycle=args.cycle, hours=args.hours,
+                         interval_hours=args.interval_hours, out=args.out,
+                         table=args.table)
+    print(f"surface-series: run it with  gpuwm-global run {args.config} "
+          f"--surface-series {args.out}")
+    return 0
 
 
 def _add_memory_lever_arguments(parser: argparse.ArgumentParser) -> None:
@@ -1430,6 +1480,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     _add_run_arguments(sub.add_parser("run", help=_RUN_HELP))
     _add_statics_arguments(sub.add_parser("statics", help=_STATICS_HELP))
+    _add_surface_series_arguments(sub.add_parser(
+        "surface-series",
+        help="build a dated SST / sea-ice series on a config's Gaussian grid "
+             "(table-driven sources; four GRIB2 messages per record by byte range)"))
     _add_assimilate_arguments(
         sub.add_parser("assimilate", help=_ASSIMILATE_HELP))
     _add_cycle_arguments(sub.add_parser("cycle", help=_CYCLE_HELP))
@@ -1678,7 +1732,7 @@ RUN_SIDECAR_NAME = "arwen-global-run.json"
 RUN_CONFIG_COPY_NAME = "arwen-global-run-config.toml"
 
 
-def write_run_sidecar(outdir, config_path) -> None:
+def write_run_sidecar(outdir, config_path, surface_series=None) -> None:
     """Copy the config into the run directory and index it.
 
     Costs one small file per run.  What it buys: `gpuwm-global render RUNDIR`
@@ -1697,7 +1751,22 @@ def write_run_sidecar(outdir, config_path) -> None:
     try:
         outdir.mkdir(parents=True, exist_ok=True)
         copy = outdir / RUN_CONFIG_COPY_NAME
-        copy.write_bytes(source.read_bytes())
+        text = source.read_bytes()
+        if surface_series:
+            # --surface-series is part of the run's identity (the series'
+            # hash joins the config hash), so the copy that travels with
+            # the run states it, or `render RUNDIR` reads a config whose
+            # identity is not the checkpoints'.
+            import re
+
+            line = f'series = "{surface_series}"'
+            decoded = text.decode("utf-8")
+            if re.search(r"^\[surface_update\]", decoded, flags=re.M):
+                decoded = re.sub(r"^series\s*=.*$", line, decoded, count=1, flags=re.M)
+            else:
+                decoded = decoded.rstrip("\n") + f"\n\n[surface_update]\n{line}\n"
+            text = decoded.encode("utf-8")
+        copy.write_bytes(text)
         (outdir / RUN_SIDECAR_NAME).write_text(json.dumps({
             "schema": "gpuwm-global-run-sidecar-v1",
             "config": str(source),
@@ -1726,11 +1795,13 @@ def read_run_sidecar(outdir):
 
 
 def _run(args: argparse.Namespace) -> int:
-    cfg, plan = _size_the_run(args, load_config(args.config), _door_name(args))
+    cfg, plan = _size_the_run(
+        args, _with_surface_series(args, load_config(args.config)), _door_name(args))
     # The config travels with the run.  Written after the sizer has accepted
     # it, so a directory that carries a config is a directory a run actually
     # started in, and never after a refusal.
-    write_run_sidecar(args.outdir, args.config)
+    write_run_sidecar(args.outdir, args.config,
+                      surface_series=getattr(cfg, "surface_series", None))
     # The machine surface, for anything watching this run rather than reading
     # its console: `go` and `render` wrote one and the FORECAST DOOR, the
     # longest-running command in the distribution, did not.  A workspace
@@ -2800,6 +2871,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run(args)
         if args.command == "statics":
             return _statics(args)
+        if args.command == "surface-series":
+            return _surface_series(args)
         if args.command == "assimilate":
             return _assimilate(args)
         if args.command == "cycle":

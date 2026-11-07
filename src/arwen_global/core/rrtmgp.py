@@ -554,6 +554,27 @@ _WRF_LW_TPROF_K = np.array([
     249.89, 246.67, 243.48, 240.25, 236.66, 233.86,
 ], np.float64)
 
+#: Under a model top below 2 hPa (WRF's 4 hPa buffer rule rounds to no
+#: layer there, the global model's 1 hPa lid) the air from the model top to
+#: the coefficient floor is carried on log-spaced layers no thicker than this
+#: in ln p, for the LW and the SW alike.  One layer spanning the 1 hPa to
+#: 0.01 hPa cap (4.6 in ln p, about 33 km) put the whole mesosphere at one
+#: temperature, and its downward longwave into the top model layer was the
+#: top level's -8 K/day theta drift (MEASURED 2026-11-06: on the
+#: 100 RFMIP sites the single layer cooled the 1.0-1.44 hPa layer 1.16 K/day
+#: of T more than the sites' own atmosphere above 1 hPa resolved on 24
+#: layers).  0.35 is the model's own top layer (ln(144.4/100) = 0.367).
+ABOVE_MODEL_MAX_DLNP = 0.35
+
+#: The US Standard Atmosphere 1976 below WRF's table end (0.10 hPa), so a
+#: cap that reaches the coefficient floor (0.01 hPa) is not held
+#: isothermal at the 0.1 hPa value through the upper mesosphere: 70, 75 and
+#: 80 km geopotential, pressures and temperatures of the 1976 standard
+#: (public domain).  Only the log-spaced cap reads these points; WRF's
+#: buffer layers under a top of 2 hPa or more keep WRF's table exactly.
+_USSA_MESOSPHERE_PPROF_HPA = np.array([0.052209, 0.023881, 0.010524], np.float64)
+_USSA_MESOSPHERE_TPROF_K = np.array([217.45, 206.65, 196.65], np.float64)
+
 #: ``(pressure, temperature)`` for WRF's LW upper-atmosphere climatology, in
 #: ascending pressure order, one array pair per array module.  Uploaded once
 #: instead of once per radiation call: the profile is a literal in this file
@@ -636,15 +657,49 @@ def _trace_vmr_device(trace, *, xp):
     return cached
 
 
-def _lw_climatology(xp):
-    key = _cache_device_key(xp)
+def _lw_climatology(xp, *, mesosphere: bool = False):
+    """WRF's table, ascending in pressure; ``mesosphere`` adds the 1976
+    standard atmosphere's points below 0.10 hPa (the log-spaced cap)."""
+    key = (_cache_device_key(xp), bool(mesosphere))
     cached = _LW_CLIMATOLOGY.get(key)
     if cached is None:
-        order = np.argsort(_WRF_LW_PPROF_HPA)
-        cached = (xp.asarray(_WRF_LW_PPROF_HPA[order], dtype=DTYPE),
-                  xp.asarray(_WRF_LW_TPROF_K[order], dtype=DTYPE))
+        pprof, tprof = _WRF_LW_PPROF_HPA, _WRF_LW_TPROF_K
+        if mesosphere:
+            pprof = np.concatenate((pprof, _USSA_MESOSPHERE_PPROF_HPA))
+            tprof = np.concatenate((tprof, _USSA_MESOSPHERE_TPROF_K))
+        order = np.argsort(pprof)
+        cached = (xp.asarray(pprof[order], dtype=DTYPE),
+                  xp.asarray(tprof[order], dtype=DTYPE))
         _LW_CLIMATOLOGY[key] = cached
     return cached
+
+
+def above_model_log_spaced(
+        p_top: float, *, pressure_floor: float = RRTMGP_TOA_PRESSURE_PA,
+) -> bool:
+    """True where the cap above the model rides log-spaced layers.
+
+    That is a top below 2 hPa (WRF's ``nint(p_top / 4 hPa)`` rounds to no
+    buffer layer) whose cap is still representable (half the top pressure at
+    or above the coefficient floor).  Every top of 2 hPa or more keeps WRF's
+    buffer layers and its single isothermal SW layer exactly.
+    """
+    p_top = float(p_top)
+    pressure_floor = float(pressure_floor)
+    if not (p_top > pressure_floor and 0.5 * p_top >= pressure_floor):
+        return False
+    return int(np.floor(p_top / WRF_LW_UPPER_DELTA_P_PA + 0.5)) == 0
+
+
+def _log_spaced_cap_interfaces(p_top, upper_nlay, pressure_floor, xp):
+    """``(1, upper_nlay)`` interfaces from just above ``p_top`` to the floor,
+    equal steps in ln p, the last exactly the floor."""
+    fraction = (xp.arange(1, upper_nlay + 1, dtype=xp.float64)
+                / float(upper_nlay))[None, :]
+    rows = float(p_top) * (float(pressure_floor) / float(p_top)) ** fraction
+    rows = rows.astype(DTYPE)
+    rows[:, -1] = DTYPE(pressure_floor)
+    return rows
 
 
 @dataclass(frozen=True)
@@ -687,6 +742,13 @@ def rrtmgp_above_model_layer_counts(
         raise ValueError("radiation top pressures must be finite and nonnegative")
     if p_top <= pressure_floor:
         return 0, 0
+    if above_model_log_spaced(p_top, pressure_floor=pressure_floor):
+        # Below a 2 hPa top: log-spaced layers to the floor, the same
+        # layers for both solvers (ABOVE_MODEL_MAX_DLNP).
+        count = int(np.ceil(
+            np.log(p_top / pressure_floor) / ABOVE_MODEL_MAX_DLNP - 1.0e-9))
+        count = max(count, 1)
+        return count, count
     # Fortran NINT is nearest integer, with a positive half rounded upward.
     lw = int(np.floor(p_top / WRF_LW_UPPER_DELTA_P_PA + 0.5))
     sw = int(0.5 * p_top >= pressure_floor)
@@ -742,7 +804,18 @@ def _above_model_rows(kind, upper_nlay, p_top, pressure_floor, *, xp):
     if cached is not None:
         return cached
     top_pressure = xp.full((1, 1), DTYPE(p_top), dtype=DTYPE)
-    if kind == "sw":
+    if above_model_log_spaced(p_top, pressure_floor=pressure_floor):
+        plev_row = _log_spaced_cap_interfaces(
+            p_top, upper_nlay, pressure_floor, xp)
+        interfaces = xp.concatenate((top_pressure, plev_row), axis=1)
+        play_row = xp.sqrt(interfaces[:, :-1] * interfaces[:, 1:])
+        pprof, tprof = _lw_climatology(xp, mesosphere=True)
+        climo_top = xp.interp(
+            top_pressure.ravel() * DTYPE(0.01), pprof, tprof).reshape(1, 1)
+        climo_row = xp.interp(
+            plev_row.ravel() * DTYPE(0.01), pprof, tprof).reshape(
+                1, upper_nlay)
+    elif kind == "sw":
         plev_row = xp.full((1, 1), DTYPE(pressure_floor), dtype=DTYPE)
         play_row = DTYPE(0.5) * top_pressure
         climo_top = climo_row = None
@@ -831,7 +904,47 @@ def _extend_above_model_profile(
     top_qv = qv[:, -1:]
     rows = (_above_model_rows(kind, upper_nlay, p_top, pressure_floor, xp=xp)
             if uniform_top else None)
-    if kind == "sw":
+    log_spaced = above_model_log_spaced(p_top, pressure_floor=pressure_floor)
+    if log_spaced:
+        # Both solvers: the log-spaced cap on the standard-atmosphere shape
+        # (WRF's table plus the 1976 mesosphere) shifted to meet the model's
+        # top interface temperature, layer temperatures from interfaces.
+        if rows is not None:
+            plev_row, play_row, climo_top, climo_upper = rows
+            upper_plev = xp.broadcast_to(plev_row, (ncol, upper_nlay))
+            upper_play = xp.broadcast_to(play_row, (ncol, upper_nlay))
+        else:
+            # Same float64 arithmetic as _log_spaced_cap_interfaces, so the
+            # cached row and this per-column ladder agree bit for bit.
+            fraction = (xp.arange(1, upper_nlay + 1, dtype=xp.float64)
+                        / float(upper_nlay))[None, :]
+            top64 = top_pressure.astype(xp.float64)
+            upper_plev = (top64 * (float(pressure_floor) / top64)
+                          ** fraction).astype(DTYPE)
+            upper_plev[:, -1] = DTYPE(pressure_floor)
+            all_upper_interfaces = xp.concatenate(
+                (top_pressure, upper_plev), axis=1)
+            upper_play = xp.sqrt(
+                all_upper_interfaces[:, :-1] * all_upper_interfaces[:, 1:])
+            pprof, tprof = _lw_climatology(xp, mesosphere=True)
+            climo_top = xp.interp(
+                top_pressure.ravel() * DTYPE(0.01), pprof, tprof).reshape(
+                    ncol, 1)
+            climo_upper = xp.interp(
+                upper_plev.ravel() * DTYPE(0.01), pprof, tprof).reshape(
+                    ncol, upper_nlay)
+        # The shifted shape runs 71 K colder at the floor than at 1 hPa, so
+        # under a cold polar top it would leave the k-distribution tables
+        # (160 K floor); the driver bounds its model temperatures to the
+        # same floor (RRTMGPRadiation.__call__ floor_cold) and the cap is
+        # bounded the same way.
+        upper_tlev = xp.maximum(
+            climo_upper + (top_temperature - climo_top), DTYPE(160.0))
+        all_upper_tlev = xp.concatenate(
+            (top_temperature, upper_tlev), axis=1)
+        upper_tlay = DTYPE(0.5) * (
+            all_upper_tlev[:, :-1] + all_upper_tlev[:, 1:])
+    elif kind == "sw":
         if rows is not None:
             plev_row, play_row, _, _ = rows
             upper_plev = xp.broadcast_to(plev_row, (ncol, 1))
@@ -3124,6 +3237,58 @@ def _raise_full_call_validation_error(*, play, plev, tlay, tlev, tsfc,
         raise ValueError("radiation pressure thickness and Exner must be positive")
 
 
+OZONE_CLIMATOLOGIES = ("cam-zonal-monthly", "rfmip-median")
+
+_CAM_OZONE_SOURCE = r"""
+extern "C" __global__ void cam_ozone(
+    const float* play, int ncol, int nlay, int col0, const float* column_lat,
+    const float* clat, int nclat, const double* plev, int nlev,
+    const double* table, double* out)
+{
+    // table: (nclat, nlev) at the call's date.  Latitude: WRF lin_interpol2
+    // (edge intervals extrapolate).  Pressure: WRF ozn_p_int (linear in p,
+    // ozmixt(1) * p / pin(1) above the top level, constant below the last).
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= ncol * nlay) return;
+    int c = i / nlay;
+    double p = (double)play[i];
+    float y = column_lat[col0 + c];
+    int k = 0;
+    while (k < nclat - 2 && y > clat[k + 1]) ++k;
+    double a = ((double)y - (double)clat[k]) / ((double)clat[k + 1] - (double)clat[k]);
+    double v[2];
+    for (int r = 0; r < 2; ++r) {
+        const double* row = table + (size_t)(k + r) * nlev;
+        if (p <= plev[0]) {
+            v[r] = row[0] * p / plev[0];
+        } else if (p > plev[nlev - 1]) {
+            v[r] = row[nlev - 1];
+        } else {
+            int j = 0;
+            while (j < nlev - 2 && p > plev[j + 1]) ++j;
+            double dpu = p - plev[j], dpl = plev[j + 1] - p;
+            v[r] = (row[j] * dpl + row[j + 1] * dpu) / (dpl + dpu);
+        }
+    }
+    out[i] = v[0] + a * (v[1] - v[0]);
+}
+"""
+
+
+@lru_cache(maxsize=None)
+def _cam_ozone_kernel_on(device: int):
+    import cupy as cp
+
+    with cp.cuda.Device(device):
+        return cp.RawKernel(_CAM_OZONE_SOURCE, "cam_ozone")
+
+
+def _cam_ozone_kernel():
+    import cupy as cp
+
+    return _cam_ozone_kernel_on(int(cp.cuda.Device().id))
+
+
 @dataclass
 class RRTMGPRadiation:
     """RTE+RRTMGP column driver for the frozen Phase-4 radiation slot.
@@ -3171,6 +3336,16 @@ class RRTMGPRadiation:
     # values.  None applies the pinned date-indexed policy; the frozen 1974
     # profile passes its declared 330 ppm choice explicitly.
     trace_gas_overrides: Mapping[str, float] | None = None
+    #: Ozone the gas optics read.  "cam-zonal-monthly" (default): the CAM
+    #: climatology WRF and MPAS-A ship (64 latitudes x 59 pressures x 12
+    #: months, ``gpuwm.ingest.wrf_ozone``), interpolated to the call's
+    #: date (WRF ``ozn_time_int``), to each column's latitude
+    #: (``lin_interpol2``) and to each layer's pressure (``ozn_p_int``,
+    #: linear in pressure, ``ozmixt(1) p / pin(1)`` above the top level).
+    #: "rfmip-median": the single global-median RFMIP profile, the same
+    #: on every column and every date, which is all this driver read
+    #: before 2026-11-06.
+    ozone_climatology: str = "cam-zonal-monthly"
     update_count: int = field(default=0, init=False)
     trace_vmr: dict[str, float] = field(default_factory=dict, init=False)
 
@@ -3224,6 +3399,21 @@ class RRTMGPRadiation:
         order = np.argsort(pressure)
         self._ozone_logp = cp.asarray(np.log(pressure[order]), dtype=DTYPE)
         self._ozone_vmr = cp.asarray(ozone[order], dtype=DTYPE)
+        self._ozone_date_table = None
+        self._ozone_columns = None
+        if self.ozone_climatology not in OZONE_CLIMATOLOGIES:
+            raise ValueError(
+                "ozone_climatology must be one of "
+                + ", ".join(repr(name) for name in OZONE_CLIMATOLOGIES))
+        if self.ozone_climatology == "cam-zonal-monthly":
+            from gpuwm.ingest.wrf_ozone import load_ozone_climatology
+
+            climo = load_ozone_climatology()
+            self._cam_ozone = climo
+            self._cam_lat = cp.asarray(climo.lat, dtype=cp.float32)
+            self._cam_plev = cp.asarray(climo.plev, dtype=cp.float64)
+            self._column_lat = cp.ascontiguousarray(
+                self.latitude_deg.reshape(-1).astype(cp.float32))
 
     @staticmethod
     def _columns(array):
@@ -3240,7 +3430,7 @@ class RRTMGPRadiation:
                 return value
         return fallback
 
-    def _gas_vmr(self, tables, play, qv, *, validate=True, out=None):
+    def _gas_vmr(self, tables, play, qv, *, validate=True, out=None, columns=None):
         """Build the (ncol, nlay, ngas + 1) volume-mixing-ratio cube.
 
         ONE kernel writes the whole cube.  It used to be five-plus CuPy
@@ -3267,7 +3457,7 @@ class RRTMGPRadiation:
             # also the reference the fused path is gated against, bitwise,
             # over both tables and every trace-gas set (test_rrtmgp).
             return self._gas_vmr_expressions(
-                cp, tables, play, qv, validate=validate, out=out)
+                cp, tables, play, qv, validate=validate, out=out, columns=columns)
 
         shape = (*play.shape, tables.ngas + 1)
         # Every slot is written by the kernel below -- the zero fill is part
@@ -3285,8 +3475,7 @@ class RRTMGPRadiation:
                 f"gas VMR qv must have shape {play.shape}, got {qv.shape}")
         # float64 out of cupy.interp even from float32 tables; the kernel
         # narrows on the store, which is the store the CuPy path did.
-        ozone = cp.interp(
-            cp.log(play).ravel(), self._ozone_logp, self._ozone_vmr)
+        ozone = self._ozone(play, columns)
         if ozone.dtype != cp.float64:
             raise TypeError(
                 "gas VMR ozone interpolation must be float64 for the fused "
@@ -3311,7 +3500,7 @@ class RRTMGPRadiation:
                 np.int32(tables.ngas + 1)))
         return vmr
 
-    def _gas_vmr_expressions(self, xp, tables, play, qv, *, validate, out):
+    def _gas_vmr_expressions(self, xp, tables, play, qv, *, validate, out, columns=None):
         """The pre-fusion VMR build, kept as the reference implementation.
 
         Reached on the NumPy stand-in, and it is what the fused kernel is
@@ -3334,9 +3523,14 @@ class RRTMGPRadiation:
             _require_finite_nonnegative(qv=qv)
         vmr[:, :, tables.gas_index["h2o"]] = (
             qv * DTYPE(0.028964 / 0.018016))
-        vmr[:, :, tables.gas_index["o3"]] = xp.interp(
-            xp.log(play).ravel(), self._ozone_logp,
-            self._ozone_vmr).reshape(play.shape)
+        if self.ozone_climatology == "cam-zonal-monthly" and columns is not None \
+                and hasattr(xp, "RawKernel"):
+            vmr[:, :, tables.gas_index["o3"]] = self._ozone(
+                play, columns).reshape(play.shape)
+        else:
+            vmr[:, :, tables.gas_index["o3"]] = xp.interp(
+                xp.log(play).ravel(), self._ozone_logp,
+                self._ozone_vmr).reshape(play.shape)
         for gas, value in self.trace_vmr.items():
             index = tables.gas_index.get(gas)
             if index is not None:
@@ -3403,7 +3597,49 @@ class RRTMGPRadiation:
               * cp.cos(hour_angle))
         return cp.clip(mu, DTYPE(-1.0), DTYPE(1.0))
 
+    def _set_ozone_date(self, valid_time) -> None:
+        """The CAM table at ``valid_time`` (59 levels x 64 latitudes),
+        uploaded once per radiation call: WRF ``ozn_time_int`` weights."""
+        if self.ozone_climatology != "cam-zonal-monthly":
+            return
+        import cupy as cp
+        from gpuwm.ingest.wrf_ozone import _ozone_time_weights
+
+        hour = (valid_time.hour + valid_time.minute / 60.0
+                + valid_time.second / 3600.0)
+        julian = (valid_time.timetuple().tm_yday - 1) + hour / 24.0
+        nm, np_, fact1, fact2 = _ozone_time_weights(julian)
+        ozmix = self._cam_ozone.ozmix
+        table = ozmix[:, :, nm] * fact1 + ozmix[:, :, np_] * fact2  # (59, 64)
+        self._ozone_date_table = cp.asarray(
+            np.ascontiguousarray(table.T), dtype=cp.float64)  # (64, 59)
+        self.ozone_date = {"julian": float(julian), "months": [int(nm) + 1, int(np_) + 1],
+                           "weights": [float(fact1), float(fact2)]}
+
+    def _ozone(self, play, columns):
+        """Per-element ozone (float64, play's ravel order) for the chunk's
+        ``columns`` slice of the driver's packed columns."""
+        import cupy as cp
+
+        if self.ozone_climatology != "cam-zonal-monthly" or columns is None:
+            return cp.interp(cp.log(play).ravel(), self._ozone_logp, self._ozone_vmr)
+        if self._ozone_date_table is None:
+            raise RuntimeError("the CAM ozone date table is not set for this call")
+        play = cp.ascontiguousarray(play)
+        ncol, nlay = int(play.shape[0]), int(play.shape[1])
+        out = cp.empty(ncol * nlay, dtype=cp.float64)
+        threads = 256
+        _cam_ozone_kernel()(
+            ((ncol * nlay + threads - 1) // threads,), (threads,), (
+                play, np.int32(ncol), np.int32(nlay), np.int32(columns.start),
+                self._column_lat, self._cam_lat, np.int32(self._cam_lat.size),
+                self._cam_plev, np.int32(self._cam_plev.size),
+                self._ozone_date_table, out))
+        return out
+
     def __call__(self, *, atmosphere, fields, state, cfg):
+        self._set_ozone_date(
+            self.start_time + timedelta(seconds=float(state.elapsed_seconds)))
         pressure = atmosphere["pressure"]
         nz, ny, nx = pressure.shape
         full_validation = self.validation_mode == "full"
@@ -3821,7 +4057,7 @@ class RRTMGPRadiation:
             if workspace is None:
                 vmr_lw = self._gas_vmr(
                     self.lw_tables, lw_profile.play, lw_profile.qv,
-                    validate=full_validation)
+                    validate=full_validation, columns=sl)
                 gas_lw = _gas_optics(
                     self.lw_tables, lw_profile.play, lw_profile.plev,
                     lw_profile.tlay, vmr_lw,
@@ -3856,7 +4092,7 @@ class RRTMGPRadiation:
                 work = workspace.phase("lw_optics", chunk_ncol)
                 vmr_lw = self._gas_vmr(
                     self.lw_tables, lw_profile.play, lw_profile.qv,
-                    validate=full_validation, out=work["vmr"])
+                    validate=full_validation, out=work["vmr"], columns=sl)
                 gas_lw = _gas_optics(
                     self.lw_tables, lw_profile.play, lw_profile.plev,
                     lw_profile.tlay, vmr_lw,
@@ -3953,7 +4189,7 @@ class RRTMGPRadiation:
             if workspace is None:
                 vmr_sw = self._gas_vmr(
                     self.sw_tables, sw_profile.play, sw_profile.qv,
-                    validate=full_validation)
+                    validate=full_validation, columns=sl)
                 gas_sw = _gas_optics(
                     self.sw_tables, sw_profile.play, sw_profile.plev,
                     sw_profile.tlay, vmr_sw,
@@ -3983,7 +4219,7 @@ class RRTMGPRadiation:
                 work = workspace.phase("sw_optics", chunk_ncol)
                 vmr_sw = self._gas_vmr(
                     self.sw_tables, sw_profile.play, sw_profile.qv,
-                    validate=full_validation, out=work["vmr"])
+                    validate=full_validation, out=work["vmr"], columns=sl)
                 gas_sw = _gas_optics(
                     self.sw_tables, sw_profile.play, sw_profile.plev,
                     sw_profile.tlay, vmr_sw,

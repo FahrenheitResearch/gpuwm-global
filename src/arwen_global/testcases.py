@@ -41,6 +41,7 @@ from .constants import (
     REFERENCE_PRESSURE_PA,
 )
 from .state import ArwenGlobalState, MoistHybridState, PhysicsState, SurfaceState
+from .lnps_reference import LNPS_REFERENCE, lnps_from_anomaly_coefficients
 
 # --------------------------------------------------------------------------
 # Jablonowski and Williamson 2006.
@@ -187,8 +188,11 @@ def baroclinic_wave_initial_state(cfg, transform, statics=None):
         theta=transform.project(
             transform.forward(backend.asarray(theta, dtype=dtype))
         ),
-        log_surface_pressure=transform.project(
-            transform.forward(backend.asarray(np.log(ps), dtype=dtype))
+        # About ln(p_ref), so the float32 analysis never rounds at 11.5
+        # (arwen_global.lnps_reference).
+        log_surface_pressure=lnps_from_anomaly_coefficients(
+            transform, transform.project(transform.forward(backend.asarray(
+                np.log(ps) - LNPS_REFERENCE, dtype=dtype)))
         ),
         qv=zeros_spectral,
         **{

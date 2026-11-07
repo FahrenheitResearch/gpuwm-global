@@ -9,6 +9,7 @@ from arwen_global.spectral.vector import VorticityDivergenceOperator
 
 from .constants import GRAVITY_M_S2, KAPPA, REFERENCE_PRESSURE_PA
 from .state import ArwenGlobalState, MoistHybridState, PhysicsState, SurfaceState
+from .lnps_reference import LNPS_REFERENCE, lnps_from_anomaly_coefficients
 
 
 def analytic_initial_state(cfg, transform, statics=None):
@@ -75,7 +76,10 @@ def analytic_initial_state(cfg, transform, statics=None):
         vorticity=vorticity,
         divergence=divergence,
         theta=transform.forward(theta),
-        log_surface_pressure=transform.forward(xp.log(ps)),
+        # About ln(p_ref), so the float32 analysis never rounds at 11.5
+        # (arwen_global.lnps_reference).
+        log_surface_pressure=lnps_from_anomaly_coefficients(
+            transform, transform.forward(xp.log(ps) - LNPS_REFERENCE)),
         qv=transform.forward(qv),
         qc=xp.asarray(qc, dtype=dtype),
         qr=zeros.astype(dtype),

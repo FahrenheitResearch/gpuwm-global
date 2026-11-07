@@ -31,6 +31,7 @@ from .surface_seeding import (
     SEEDED_ANALYSIS_FIELDS, land_ice_initial_skin_node,
     sea_ice_initial_soil_temperature, seed_surface_from_analysis,
 )
+from .lnps_reference import LNPS_REFERENCE, lnps_from_anomaly_coefficients
 
 DRY_AIR_GAS_CONSTANT = 287.0
 #: The surface groups a secondary analysis of the same valid time may
@@ -1180,7 +1181,10 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
         vorticity=vorticity,
         divergence=divergence,
         theta=transform.forward(theta),
-        log_surface_pressure=transform.forward(np.log(ps_model)),
+        # About ln(p_ref), so the float32 analysis never rounds at 11.5
+        # (arwen_global.lnps_reference).
+        log_surface_pressure=lnps_from_anomaly_coefficients(
+            transform, transform.forward(np.log(ps_model) - LNPS_REFERENCE)),
         # The model's convention is SPECIFIC humidity (GDAS SPFH, kg per kg
         # of moist air), stored as analysed; the native bridge converts to
         # the kernels' dry mixing ratio at its own boundary

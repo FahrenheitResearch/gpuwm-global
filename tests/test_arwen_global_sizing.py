@@ -207,6 +207,12 @@ def test_the_legendre_table_count_is_the_transform_s():
     truncation = 63
     nlat = GaussianGrid.shape_for(truncation)[0]
     for precision, itemsize in (("float64", 8), ("float32", 4)):
+        # One build outside the window first: the first build of a process
+        # also pays one-time module caches, which are not the tables, so
+        # the test read 5.42 MB against 4.72 run alone and passed only
+        # when another test had built a transform before it.
+        SphericalHarmonicTransform.create(truncation, backend="numpy",
+                                          precision=precision)
         tracemalloc.start()
         tracemalloc.reset_peak()
         built = SphericalHarmonicTransform.create(truncation, backend="numpy",

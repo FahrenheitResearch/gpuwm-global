@@ -50,6 +50,7 @@ from .state import ArwenGlobalState, MoistHybridState
 from .transport import GridTracerTransport
 from .vertical import HybridCoordinate
 from .water import atmospheric_water_column, total_water_column
+from .lnps_reference import lnps_anomaly_coefficients
 
 
 class SynthesisMemo:
@@ -371,6 +372,12 @@ def sum_fixer_ledgers(*ledgers):
 
 @dataclass
 class MoistHybridModel:
+    #: Drop the step's INPUT physics namespace once the first physics half
+    #: has produced its own (memory only).  Set by the forecast loop, whose
+    #: input state is dead after the step; every other caller keeps it.
+    #: A plain class attribute, not a dataclass field.
+    release_input_namespace = False
+
     transform: object
     vertical: HybridCoordinate
     surface_geopotential: object
@@ -440,6 +447,33 @@ class MoistHybridModel:
     # sponge_base_pa=0 disables.
     sponge_base_pa: float = 5000.0
     sponge_lid_relaxation_time_s: float = 900.0
+    # The kinetic energy the absorber removes is returned to the air as
+    # heat (cp dT = -dK at the level), so the absorber conserves total
+    # energy instead of being a sink at the lid.  Measured 2026-11-06 on the
+    # T255 native day (GDAS 2026-09-01 00Z): the unbooked removal was 105 /
+    # 90 / 86 / 86 J/kg a day at levels 0-3 (top first), 0.71 / 0.55 / 0.47 /
+    # 0.42 K/day of theta that the top levels never received.
+    sponge_heat_booking: bool = True
+    # Zonal-mean Rayleigh drag in the top levels: the momentum sink for the
+    # unresolved gravity-wave drag that a rigid 1 hPa lid otherwise lacks
+    # (the drag-driven descent is what holds the winter stratopause warm).
+    # Rate cos^2-ramped from zero at sponge_mean_drag_base_pa to
+    # 1/sponge_mean_drag_time_s at the lid; 0 disables.  Its kinetic-energy
+    # removal is booked as heat with the eddy absorber's.  This is MPAS-A's
+    # top treatment (config_rayleigh_damp_u, 5-day timescale; RRFS runs it
+    # on 6 levels) applied to the zonal mean, since the eddies already ride
+    # the absorber above.  ON by default (2026-11-06): with no drag the top
+    # levels relax toward radiative equilibrium -- polar caps cooling 30-45 K
+    # of theta a day at level 0, the subtropics warming 5-10, the polar-night
+    # jet at 1 hPa running 8 m/s too strong by day 5 (T255, GDAS 2026-10-15
+    # 00Z, against GDAS).  Measured with it on, same case, day 2: zonal-mean
+    # theta error growth (band RMS) 17.9 / 12.1 / 9.0 -> 14.9 / 8.3 / 5.5 K
+    # at levels 0-2 and zonal-mean u RMS error 3.6 / 2.5 / 2.1 -> 2.7 / 2.1 /
+    # 1.6 m/s.  A stronger drag (2-day lid time, 9 hPa base) over-damped
+    # the jets (u error 4.6 / 4.2 / 3.5 / 4.5 / 5.2 m/s at day 2) and is
+    # not the default.
+    sponge_mean_drag_base_pa: float = 500.0
+    sponge_mean_drag_time_s: float = 432_000.0
     initial_provenance: dict | None = None
     # The instant model time zero stands for (arwen_global.clock.ForecastClock),
     # set by runner.build_model_and_cold_state; None on a model built by hand.
@@ -838,7 +872,21 @@ class MoistHybridModel:
         xp = self.transform.backend.xp
         logps = self.transform.inverse(state.log_surface_pressure)
         ps = xp.exp(logps)
-        block = {"logps": logps, "ps": ps}
+        # The same plane about ln(p_ref), synthesized from the spectral
+        # state with the reference taken off its (0, 0) coefficient first
+        # (lnps_anomaly_coefficients says why that subtraction is exact).
+        # The semi-Lagrangian step advects THIS plane, not ``logps``: a
+        # float32 plane near 11.5 carries one unit in the last place of
+        # 9.5e-7, which is 0.095 Pa of surface pressure, and the gather's
+        # float32 Lagrange weights sum to one only to that unit, so every
+        # step wrote the same sub-ulp error into a steady state and the
+        # nine-day dry Jablonowski-Williamson steady arm drifted 1.5 hPa
+        # (CHANGELOG 0.1.3 Open).  About ln(p_ref) the plane is O(0.1)
+        # and the same weights move it a hundred times less.
+        anomaly = self.transform.inverse(
+            lnps_anomaly_coefficients(self.transform, state.log_surface_pressure)
+        )
+        block = {"logps": logps, "ps": ps, "logps_anomaly": anomaly}
         if self.pipeline.resident:
             block.update(self.vertical.pressure(ps, self.transform.backend))
         if memo is not None:
@@ -850,6 +898,9 @@ class MoistHybridModel:
             "logps": band_view(self.transform.backend.xp, sources["logps"], rows),
             "ps": band_view(self.transform.backend.xp, sources["ps"], rows),
         }
+        if "logps_anomaly" in sources:
+            block["logps_anomaly"] = band_view(
+                self.transform.backend.xp, sources["logps_anomaly"], rows)
         if "p_half" in sources:
             for name in ("p_half", "p_full", "dp", "ln_ratio"):
                 block[name] = band_view(self.transform.backend.xp, sources[name], rows)
@@ -1819,10 +1870,13 @@ class MoistHybridModel:
         return state.with_fields(fields)
 
     def initialize_mass_target(self, state: MoistHybridState) -> float:
+        # float64 from the exponential on: the same reading _fix_mass takes.
+        xp = self.transform.backend.xp
         ps = self.transform.backend.to_numpy(
-            self.transform.backend.xp.exp(
-                self.transform.inverse(state.log_surface_pressure)
-            )
+            xp.exp(xp.asarray(
+                self.transform.inverse(state.log_surface_pressure),
+                dtype=np.float64,
+            ))
         )
         self._target_mass_pa = self.transform.grid.global_mean(ps)
         return float(self._target_mass_pa)
@@ -1835,14 +1889,19 @@ class MoistHybridModel:
         xp = self.transform.backend.xp
         logps = self.transform.inverse(state.log_surface_pressure)
         # The surface-pressure plane assembles whole into a resident
-        # buffer (5.13 MB at T533) and then takes the same host global
-        # mean, which is itself already two-stage (a zonal mean per row,
-        # then one weighted sum over latitude in grid order).
+        # buffer and then takes the same host global mean, which is itself
+        # already two-stage (a zonal mean per row, then one weighted sum
+        # over latitude in grid order).  The plane is FLOAT64 from the
+        # exponential on, whatever the state precision (10.3 MB at T533):
+        # a float32 exp rounds every point by up to 6e-8 of 1000 hPa, and
+        # the global mean this fixer holds is the one number a nine-day
+        # run is graded on.
         plane = PlaneAccumulator(
-            xp, logps.shape, self.transform.backend.float_dtype,
+            xp, logps.shape, np.float64,
             name="fix_mass_surface_pressure", exchange=self.pipeline.exchange,
         )
-        plane.add_band(slice(0, logps.shape[-2]), xp.exp(logps))
+        plane.add_band(slice(0, logps.shape[-2]),
+                       xp.exp(xp.asarray(logps, dtype=np.float64)))
         current = self.transform.grid.global_mean(
             self.transform.backend.to_numpy(plane.plane)
         )
@@ -2283,8 +2342,15 @@ class MoistHybridModel:
             atmosphere = bundle.atmosphere.with_grid_tracers(
                 self._park_tracers(tracers)
             )
+        # The namespace is passed BY REFERENCE (2026-11-06, memory only):
+            # nothing downstream writes into a caller's namespace -- the native
+            # suite deep-copies it before working on it and the bridge's
+            # fingerprint check refuses any write into the caller's arrays --
+            # so this copy was a whole second namespace (1.21 GiB at T383 L40
+            # float32, measured by the allocation census) standing beside the
+            # original at every repair.
             return ArwenGlobalState(
-                atmosphere, bundle.surface.copy(), bundle.physics_state.copy()
+                atmosphere, bundle.surface.copy(), bundle.physics_state
             ), 0.0, largest_negative_tracer, {
                 "water_kg_m2": 0.0, "max_rescale": 0.0,
                 "unfillable_kg_m2": 0.0, "atmospheric_water_kg_m2": 0.0,
@@ -2354,8 +2420,15 @@ class MoistHybridModel:
             self._park_tracers(tracers)
         )
         # The surface is untouched: the filler closes inside the column.
+        # The namespace is passed BY REFERENCE (2026-11-06, memory only):
+        # nothing downstream writes into a caller's namespace -- the native
+        # suite deep-copies it before working on it and the bridge's
+        # fingerprint check refuses any write into the caller's arrays --
+        # so this copy was a whole second namespace (1.21 GiB at T383 L40
+        # float32, measured by the allocation census) standing beside the
+        # original at every repair.
         return ArwenGlobalState(
-            atmosphere, bundle.surface.copy(), bundle.physics_state.copy()
+            atmosphere, bundle.surface.copy(), bundle.physics_state
         ), negative_water, largest_negative_tracer, {
             "water_kg_m2": created,
             "max_rescale": max_fraction,
@@ -2450,8 +2523,15 @@ class MoistHybridModel:
         else:
             surface.water_kg_m2 = water
         del water
+        # The namespace is passed BY REFERENCE (2026-11-06, memory only):
+        # nothing downstream writes into a caller's namespace -- the native
+        # suite deep-copies it before working on it and the bridge's
+        # fingerprint check refuses any write into the caller's arrays --
+        # so this copy was a whole second namespace (1.21 GiB at T383 L40
+        # float32, measured by the allocation census) standing beside the
+        # original at every repair.
         return ArwenGlobalState(
-            bundle.atmosphere, surface, bundle.physics_state.copy()
+            bundle.atmosphere, surface, bundle.physics_state
         ), correction
 
     def _physics_exchange(self, bundle: ArwenGlobalState, dt_s: float):
@@ -2876,9 +2956,65 @@ class MoistHybridModel:
         decay = xp.exp(-float(dt_s) * rate)
         u_mean = xp.mean(u, axis=-1, keepdims=True)
         v_mean = xp.mean(v, axis=-1, keepdims=True)
-        u = xp.where(in_sponge, u_mean + (u - u_mean) * decay, u)
-        v = xp.where(in_sponge, v_mean + (v - v_mean) * decay, v)
+        if self.sponge_mean_drag_base_pa > 0.0:
+            in_drag = ring_p < self.sponge_mean_drag_base_pa
+            drag_ramp = xp.clip(
+                (ring_p - ring_lid)
+                / xp.maximum(self.sponge_mean_drag_base_pa - ring_lid, 1.0e-3),
+                0.0, 1.0)
+            drag = xp.exp(-float(dt_s) * xp.cos(0.5 * math.pi * drag_ramp) ** 2
+                          / self.sponge_mean_drag_time_s)
+            u_target = xp.where(in_drag, u_mean * drag, u_mean)
+            v_target = xp.where(in_drag, v_mean * drag, v_mean)
+        else:
+            u_target, v_target = u_mean, v_mean
+        u = xp.where(in_sponge, u_target + (u - u_mean) * decay,
+                     u + (u_target - u_mean))
+        v = xp.where(in_sponge, v_target + (v - v_mean) * decay,
+                     v + (v_target - v_mean))
         return u, v
+
+    def _sponge_levels(self) -> int:
+        """Leading (top-first) levels any ring of which can sit inside the
+        absorber: every level whose full pressure at the lowest surface
+        pressure the model admits is under the base.  A static superset of
+        the levels ``_top_sponge`` may touch; below it the wind is returned
+        unchanged, so a heating formed there would be exactly zero."""
+        cached = getattr(self, "_sponge_level_count", None)
+        if cached is not None:
+            return cached
+        count = 0
+        if self.sponge_base_pa > 0.0:
+            a = np.asarray(self.vertical.a_half_pa, dtype=np.float64)
+            b = np.asarray(self.vertical.b_half, dtype=np.float64)
+            # 300 hPa: below any surface pressure the research bounds admit.
+            p_half = a + b * 30_000.0
+            if p_half[0] > p_half[-1]:
+                p_half = p_half[::-1]
+            p_full = 0.5 * (p_half[:-1] + p_half[1:])
+            count = int(np.count_nonzero(p_full < self.sponge_base_pa))
+        self._sponge_level_count = count
+        return count
+
+    def _sponge_heating(self, u, v, sponged_u, sponged_v, p_full):
+        """Theta increment, ``(levels, rows, nlon)`` top first, that books
+        the absorber's kinetic-energy removal as heat: cp dT = K - K', so
+        d(theta) = (K - K') / (cp exner).  None when nothing is booked."""
+        if not self.sponge_heat_booking or self.sponge_base_pa <= 0.0:
+            return None
+        levels = self._sponge_levels()
+        if levels == 0:
+            return None
+        xp = self.transform.backend.xp
+        top = slice(0, levels)
+        removed = 0.5 * (
+            (u[top] * u[top] + v[top] * v[top])
+            - (sponged_u[top] * sponged_u[top]
+               + sponged_v[top] * sponged_v[top]))
+        exner = (p_full[top] / REFERENCE_PRESSURE_PA) ** KAPPA
+        heating = removed / (DRY_AIR_CP * exner)
+        dtype = self.transform.backend.float_dtype
+        return xp.ascontiguousarray(heating.astype(dtype, copy=False))
 
     def _sponge_only_physics_pass(self, bundle: ArwenGlobalState, dt_s: float):
         """The lid absorber with no physics suite loaded.
@@ -2914,11 +3050,17 @@ class MoistHybridModel:
         waist = self.transform.open_waist(
             (2, self.nlev), bands=self.pipeline.bands
         )
+        levels = self._sponge_levels() if self.sponge_heat_booking else 0
+        heat_waist = (self.transform.open_waist(
+            (levels,), bands=self.pipeline.bands) if levels else None)
         for rows in self.pipeline.local_slices():
             g, _stack, _names = self.grid_band(sources, rows)
             u, v = self._top_sponge(
                 g["u"], g["v"], g["p_full"], g["p_half"], float(dt_s)
             )
+            if heat_waist is not None:
+                heat_waist.fill_band(rows.start, rows.stop, self._sponge_heating(
+                    g["u"], g["v"], u, v, g["p_full"]))
             pair = xp.empty(
                 (2, *u.shape), dtype=self.transform.backend.float_dtype
             )
@@ -2932,6 +3074,12 @@ class MoistHybridModel:
         fields = list(bundle.atmosphere.fields())
         fields[0] = zeta
         fields[1] = divergence
+        if heat_waist is not None:
+            theta = fields[2].copy()
+            theta[:levels] += self.transform.contract_waist(
+                heat_waist.close()).astype(theta.dtype, copy=False)
+            fields[2] = theta
+            del heat_waist
         atmosphere = bundle.atmosphere.with_fields(fields)
         return ArwenGlobalState(
             atmosphere, bundle.surface.copy(), bundle.physics_state.copy()
@@ -3128,6 +3276,8 @@ class MoistHybridModel:
                 sponged_u, sponged_v = self._top_sponge(
                     result.u, result.v, exchange.p_full, exchange.p_half, dt,
                 )
+                sponge_heat = self._sponge_heating(
+                    result.u, result.v, sponged_u, sponged_v, exchange.p_full)
                 pair = xp.empty((2, *sponged_u.shape), dtype=dtype)
                 pair[0] = sponged_u
                 pair[1] = sponged_v
@@ -3138,6 +3288,9 @@ class MoistHybridModel:
                     (2, self.nlev, rows.stop - rows.start, nlon), dtype=dtype,
                 )
                 stack[0] = xp.asarray(result.theta, dtype=dtype)
+                if sponge_heat is not None:
+                    stack[0][: sponge_heat.shape[0]] += sponge_heat
+                del sponge_heat
                 stack[1] = xp.asarray(result.qv, dtype=dtype)
                 for start, waist in scalar_waists:
                     waist.fill_band(
@@ -3578,6 +3731,23 @@ class MoistHybridModel:
         else:
             with prof.section("physics_first"):
                 first, first_physics = self._apply_physics_half(bundle, half)
+            if (self.release_input_namespace
+                    and first.physics_state is not bundle.physics_state
+                    and bundle.physics_state.arrays):
+                # The forecast loop hands this step a state it never reads
+                # again (runner: ``state = model.step(state)``), so once the
+                # first half has produced its own namespace the input one
+                # is dead weight: a whole namespace (1.21 GiB at T383 L40
+                # float32) held through the dynamics and the second half,
+                # where the second half's working copy is the step's peak.
+                # Memory only, same bits; off for every caller that did
+                # not ask for it (the ensemble and DA keep their inputs).
+                from .state import PhysicsState
+
+                bundle.physics_state = PhysicsState(
+                    schema=bundle.physics_state.schema, arrays={},
+                    metadata=bundle.physics_state.metadata,
+                )
             if mark is not None:
                 mark("physics_first", first.atmosphere)
             with prof.section("positivity_first"):
@@ -3669,12 +3839,25 @@ class MoistHybridModel:
         # T533, no longer sits beside the second physics call).
         first_surface, first_physics_state = first.surface, first.physics_state
         del first
-        with prof.section("physics_second"):
-            second, second_physics = self._apply_physics_half(
-                ArwenGlobalState(
-                    advanced, first_surface, first_physics_state
-                ), float(dt_s) if merged else half
-            )
+        # On a resident run the second half consumes the first half's
+        # namespace (nothing reads it again: ``first`` is gone and the
+        # name below is dropped after the call), so the suite works on it
+        # in place rather than beside a deep copy (memory only, same bits).
+        consume = (self.release_input_namespace and not merged
+                   and len(self.pipeline) == 1
+                   and hasattr(self.physics, "consume_input_namespace"))
+        if consume:
+            self.physics.consume_input_namespace = True
+        try:
+            with prof.section("physics_second"):
+                second, second_physics = self._apply_physics_half(
+                    ArwenGlobalState(
+                        advanced, first_surface, first_physics_state
+                    ), float(dt_s) if merged else half
+                )
+        finally:
+            if consume:
+                self.physics.consume_input_namespace = False
         if mark is not None:
             mark("physics_second", second.atmosphere)
         del advanced, first_surface, first_physics_state

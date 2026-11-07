@@ -116,7 +116,7 @@ def write_geog_archive(root: Path) -> Path:
     landuse = np.where(lake, ISLAKE, landuse)
     _write_tiles(root / "modis_landuse_20class_30s_with_lakes", landuse[None], kv)
 
-    for name in ("soiltype_top_30s", "soiltype_bot_30s"):
+    for name in ("soilgrids/texture_top", "soilgrids/texture_bot"):
         kv = _write_index(root / name, type="categorical", category_min=1,
                           category_max=16, wordsize=1, tile_z=1, **common)
         soil = np.where(land & ~lake, 1 + (3 * i + j) % 12, 14)
@@ -145,11 +145,11 @@ def write_geog_archive(root: Path) -> Path:
                       wordsize=1, tile_z=1, **top_down)
     _write_tiles(root / "maxsnowalb_modis", np.where(land_n, 60, 0)[None], kv)
 
-    kv = _write_index(root / "soiltemp_1deg", type="continuous",
+    kv = _write_index(root / "soiltemp_era5_1deg", type="continuous",
                       signed="yes", wordsize=2, tile_z=1, scale_factor=0.01,
                       missing_value=0, **common)
     soiltemp = np.where(land, 28000 + 100 * (j % 5), 0)
-    _write_tiles(root / "soiltemp_1deg", soiltemp[None], kv)
+    _write_tiles(root / "soiltemp_era5_1deg", soiltemp[None], kv)
     return root
 
 

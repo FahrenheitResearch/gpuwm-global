@@ -265,8 +265,15 @@ def fix_mass(
     transform, *, scheme: str = "bermejo_conde",
     deficits: dict[str, Any] | None = None,
     stencil: Stencil | None = None,
+    consume: bool = False,
 ) -> tuple[dict[str, Any], dict[str, float]]:
     """Restore each species' mass after a semi-Lagrangian advection.
+
+    ``consume=True`` pops each advected species out of ``advected`` as its
+    fixed form is built, for a caller that never reads ``advected`` again:
+    the raw ten and the fixed ten were otherwise on the card together
+    (1.72 GiB at T533 L40 float32, the banded step's peak by the
+    allocation census of 2026-11-06).  Same order, same values.
 
     ``before`` are the mixing ratios the step started from and
     ``dp_before`` the thickness they were measured against; ``advected``
@@ -319,7 +326,8 @@ def fix_mass(
     cell = area_weights(transform)
     metrics: dict[str, float] = {}
     fixed: dict[str, Any] = {}
-    for name, value in advected.items():
+    for name in list(advected):
+        value = advected.pop(name) if consume else advected[name]
         # The before-state may be the tier's (a parked tracer): staged
         # one species at a time for its mass and dropped.
         source = resident(xp, before[name])

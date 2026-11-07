@@ -494,7 +494,34 @@ def test_absorber_acts_with_no_physics_suite_loaded():
     np.testing.assert_allclose(
         anomaly_after, anomaly_before * decay[0], rtol=0.0, atol=1.0e-9
     )
-    # Every other spectral field passes through untouched.
+    # Theta receives the removed kinetic energy as heat on the absorber's
+    # levels (cp dT = -dK), and nowhere else; every other spectral field
+    # passes through untouched.
+    heat = model._sponge_heating(u_syn, v_syn, u_exp, v_exp, g["p_full"])
+    levels = heat.shape[0]
+    expected = np.array(bundle.atmosphere.theta, copy=True)
+    expected[:levels] += model.transform.forward(heat)
+    np.testing.assert_allclose(
+        np.asarray(out.atmosphere.theta), expected, rtol=0.0, atol=1.0e-9)
+    removed = 0.5 * ((np.asarray(u_syn) ** 2 + np.asarray(v_syn) ** 2)
+                     - (np.asarray(u_exp) ** 2 + np.asarray(v_exp) ** 2))
+    assert float(model.transform.grid.global_mean(removed[0])) > 0.0
+    exner = (np.asarray(g["p_full"][:levels]) / 1.0e5) ** (287.04 / 1004.5)
+    np.testing.assert_allclose(
+        heat * 1004.5 * exner, removed[:levels], rtol=2.0e-3, atol=1.0e-9)
+    for index in range(3, len(bundle.atmosphere.fields())):
+        np.testing.assert_array_equal(
+            np.asarray(out.atmosphere.fields()[index]),
+            np.asarray(bundle.atmosphere.fields()[index]),
+        )
+
+
+def test_absorber_heat_booking_off_leaves_theta_alone():
+    _, model, state, g = _sponge_seam()
+    model.physics = None
+    model.sponge_heat_booking = False
+    bundle = _anomaly_bundle(model, state)
+    out, _ = model.apply_physics(bundle, 600.0)
     for index in range(2, len(bundle.atmosphere.fields())):
         np.testing.assert_array_equal(
             np.asarray(out.atmosphere.fields()[index]),

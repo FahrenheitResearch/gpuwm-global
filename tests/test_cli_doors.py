@@ -29,7 +29,8 @@ EXPECTED = {
     "inspect-regional-target", "make-parent-series", "make-regional-target",
     "microwave", "migrate-level4-checkpoint", "native-qualify", "obs",
     "physics-manifest", "pins", "render", "run", "run-plan", "score", "sources",
-    "statics", "transform-check", "translate-regional-frame",
+    "statics", "surface-series", "transform-check",
+    "translate-regional-frame",
 }
 
 

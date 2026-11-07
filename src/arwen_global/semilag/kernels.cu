@@ -317,8 +317,24 @@ __device__ __forceinline__ void sl_gather_body(
 
     const long long plane = (long long)rows_src * (long long)ni;
     const long long nsrc = (long long)nk * plane;
+    /* The stencil's own centre node, read once per field: every tap is
+       summed as its DIFFERENCE from it and the centre is added back once.
+       A tap sum written as sum w v rounds at the size of v, the same way
+       at the same point every step of a steady flow, so it walks a
+       steady state off by a sub-ulp of |v| per step (ln ps near 11.5,
+       theta near 1800 K at the lid); summed about the centre it rounds at
+       the size of the field's variation across one stencil.  The centre
+       is the stencil node NEAREST the point in each direction, so at a
+       node it is that node, every difference and every off-node weight is
+       exactly zero and the zero-displacement identity stays exact. */
+    const int cx = (xi - fi >= (T)0.5) ? mid + 1 : mid;
+    const int cy = (p - lat_ext[sst + mid] >= lat_ext[sst + mid + 1] - p)
+                       ? mid + 1 : mid;
+    const int kn = min(max((int)sl_traits<T>::floor_(xk + (T)0.5), 0), nk - 1);
+    const long long centre = (long long)kn * plane + adr[NH * cy + cx];
     for (int f = 0; f < F; ++f) {
         const T* s = src + (long long)f * nsrc;
+        const T base = s[centre];
         T acc = (T)0;
         T lo = sl_traits<T>::big();
         T hi = -sl_traits<T>::big();
@@ -332,15 +348,17 @@ __device__ __forceinline__ void sl_gather_body(
                 T v[NH];
 #pragma unroll
                 for (int q = 0; q < NH; ++q) v[q] = sp[adr[NH * m + q]];
-                T colsum = wx[0] * v[0] + wx[1] * v[1]
-                         + wx[2] * v[2] + wx[3] * v[3];
-                if (NH == 6) colsum += wx[4] * v[4] + wx[5] * v[5];
-                rowsum += wy[m] * colsum;
                 if (QM && (c == kbox || c == kbox + 1)
                         && (m == mid || m == mid + 1)) {
                     lo = min(lo, min(v[mid], v[mid + 1]));
                     hi = max(hi, max(v[mid], v[mid + 1]));
                 }
+#pragma unroll
+                for (int q = 0; q < NH; ++q) v[q] -= base;
+                T colsum = wx[0] * v[0] + wx[1] * v[1]
+                         + wx[2] * v[2] + wx[3] * v[3];
+                if (NH == 6) colsum += wx[4] * v[4] + wx[5] * v[5];
+                rowsum += wy[m] * colsum;
             }
             acc += wz[c] * rowsum;
             if (c == c_edge) f_edge = rowsum;
@@ -359,6 +377,9 @@ __device__ __forceinline__ void sl_gather_body(
             const T bhi = max(f_edge, f_face);
             acc = min(max(acc, blo), bhi);
         }
+        /* Back to the field's own values; the limiter's box was read off
+           the raw taps, so it bounds the raw result exactly. */
+        acc += base;
         T kept = acc;
         if (QM) kept = min(max(acc, lo), hi);
         out[(long long)f * n + gid] = kept;

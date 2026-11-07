@@ -428,6 +428,58 @@ class HostTier:
             return host
         return host[..., rows, :]
 
+    def _in_source(self, handle, rows: slice | None) -> np.ndarray:
+        """The host bytes a stage copies from.
+
+        On the card this is the slot's own band VIEW: a band of a levelled
+        array is strided in host memory, and it goes to the card as one
+        2-D copy straight out of the pinned slot (:meth:`_memcpy_strided_in`),
+        the mirror of :meth:`_memcpy_strided_out`.  Before (2026-11-06,
+        T533 L40 at four bands on the 16 GB card, 31 GiB staged a step)
+        every band was first gathered into a fresh PAGEABLE contiguous
+        buffer by ``np.ascontiguousarray`` on the main thread, so the step
+        ran one core at 100 % while the card sat at 23-46 % and the copy
+        that followed could not overlap.  The bytes are the slot's either
+        way, so the staged array is identical.  Off the card (and for any
+        band whose innermost axes are not row-contiguous) it is the
+        contiguous copy, as before.
+        """
+        band = self._band(handle.host, rows)
+        if (self._cupy and not SYNCHRONOUS_STAGES and band.ndim >= 2
+                and not band.flags.c_contiguous
+                and band.strides[-1] == band.dtype.itemsize
+                and band.strides[-2] == band.shape[-1] * band.dtype.itemsize
+                and self._uniform_pitch(band)):
+            return band
+        return np.ascontiguousarray(band)
+
+    @staticmethod
+    def _uniform_pitch(band: np.ndarray) -> bool:
+        """Do the axes before the last two step by one pitch, so the band
+        is ``prod(shape[:-2])`` rows of ``shape[-2] * shape[-1]`` elements?"""
+        if band.ndim < 3:
+            return True
+        for axis in range(band.ndim - 3):
+            if band.strides[axis] != band.strides[axis + 1] * band.shape[axis + 1]:
+                return False
+        return band.strides[-3] >= band.shape[-2] * band.shape[-1] * band.dtype.itemsize
+
+    def _memcpy_strided_in(self, device, source: np.ndarray) -> None:
+        """Host-to-device copy out of a strided host band, as a 2-D copy."""
+        import cupy as cp
+
+        itemsize = int(source.dtype.itemsize)
+        width = int(source.shape[-1] * source.shape[-2]) * itemsize
+        height = int(np.prod(source.shape[:-2])) if source.ndim > 2 else 1
+        spitch = int(source.strides[-3]) if source.ndim > 2 else width
+        cp.cuda.runtime.memcpy2DAsync(
+            int(device.data.ptr), width,
+            int(source.ctypes.data), spitch,
+            width, height,
+            cp.cuda.runtime.memcpyHostToDevice,
+            self._in_stream.ptr,
+        )
+
     def _order_in(self, handle) -> None:
         """The inbound stream waits for the slot's last outbound write."""
         event = self._slot_out.get(id(handle))
@@ -469,7 +521,7 @@ class HostTier:
             # A band is cut on the CPU, so the slot's bytes must be final
             # before the cut rather than merely ordered on a stream.
             self.host_ready(handle)
-        source = np.ascontiguousarray(self._band(handle.host, rows))
+        source = self._in_source(handle, rows)
         self.stage_calls += 1
         self.staged_bytes += int(source.nbytes)
         if not self._cupy:
@@ -560,7 +612,10 @@ class HostTier:
             self._order_in(handle)
         with self._in_stream:
             start = self._in_stream.record()
-            device.set(source, stream=self._in_stream)
+            if source.flags.c_contiguous:
+                device.set(source, stream=self._in_stream)
+            else:
+                self._memcpy_strided_in(device, source)
             event = self._in_stream.record()
         self._timed.append(("in", start, event))
         if handle is not None:
@@ -582,7 +637,7 @@ class HostTier:
 
         if rows is not None:
             self.host_ready(handle)
-        source = np.ascontiguousarray(self._band(handle.host, rows))
+        source = self._in_source(handle, rows)
         self.stage_calls += 1
         self.staged_bytes += int(source.nbytes)
         device = cp.empty(source.shape, dtype=source.dtype)

@@ -6,7 +6,7 @@ the tool after changing an option and commit what it writes.
 
 `gpuwm-global <command> --help` prints the same text at the terminal.
 
-**49 commands.**
+**50 commands.**
 
 - `gpuwm-global pins`
 - `gpuwm-global physics-manifest`
@@ -25,6 +25,7 @@ the tool after changing an option and commit what it writes.
 - `gpuwm-global transform-check`
 - `gpuwm-global run`
 - `gpuwm-global statics`
+- `gpuwm-global surface-series`
 - `gpuwm-global assimilate`
 - `gpuwm-global cycle`
 - `gpuwm-global da init`
@@ -189,6 +190,7 @@ the tool after changing an option and commit what it writes.
 | `--until-s` `UNTIL_S` | stop the integration at this model time in seconds from the run's start instead of the config's duration_s (a cycling segment: the next segment restarts from the checkpoint this one ends on); the config identity is unchanged and the receipt records the segment end |  |
 | `--profile-steps` `PROFILE_STEPS` | time every operator of this many steps (after --profile-warmup unprofiled ones) on the host and on the device stream, write profile.json beside the receipt and print the table; the run itself is unchanged (default 0, off) | `0` |
 | `--profile-warmup` `PROFILE_WARMUP` | steps left unprofiled before the profiled window (default 2: table builds, kernel compiles and the allocator's first shapes are not a step's steady cost) | `2` |
+| `--surface-series` `NPZ` | follow this dated SST / sea-ice series (built by `gpuwm-global surface-series`): the SST every step, the sea ice at each record, the greenness daily; overrides [surface_update] series. Without one the surface holds its cold-start values |  |
 | `--latitude-bands` `N` | how many latitude bands grid space is streamed through (config [memory].latitude_bands, default 0 = the sizer chooses): 1 is the resident run, and above one every grid-space operator of the step runs a band at a time while spectral space stays whole. The Legendre contraction keeps K = N = nlat at every band count, so the band count changes no arithmetic and enters no identity: a banded run shares a config hash, a checkpoint lineage and a receipt with the resident run and reproduces its checkpoints byte for byte. It buys capacity, not speed: a truncation the card cannot hold resident runs, and one that fits gains nothing. NOTHING HAS TO BE SET: with no memory flag and no [memory] table the sizer reads the card first and chooses this and the host tier together, and the receipt's 'sizer' block says what it chose and why |  |
 | `--host-spill` `{auto,on,off}` | whether the persistent grid state -- the ten grid tracers, the surface reservoirs and the native physics namespace -- lives in pinned host memory instead of on the card (config [memory].host_spill, default 'auto'). It reaches the card only as the copy its consumer builds anyway, so what stops existing is the original standing beside that copy for the life of the run. 'auto' parks the minimum the predicted peak needs, coldest slice first; 'on' parks all three; 'off' keeps every slice on the card. Memory only, same bits: a spilled run reproduces the resident run's checkpoints byte for byte and shares its config hash. WHAT IT BUYS, MEASURED 2026-09-06 at the ten-step probe of record with nothing set: T383 L40 (34.7 km) starts, fits and reports on a 16 GB RTX 5070 Ti, which it does not do resident at any radiation chunk, and T533 L40 (25.0 km) on a 32 GB RTX 5090, which ran out of memory at step 1 before this work. T533 on a 16 GB card, and T799 on either, are refused at the door by name |  |
 | `--cards` `P` | how many GPUs share the band schedule (config [memory].cards, default 1). Grid space is partitioned by latitude band and spectral space is replicated; in the default 'gather' exchange the waist rows cross the wire and the Legendre contraction still runs at K = N = nlat on every card, so two cards return the single-card answer bit for bit. Every rank needs --card-rank and the same --card-addresses list |  |
@@ -215,6 +217,18 @@ the tool after changing an option and commit what it writes.
 | `--overwrite` | replace an existing cache and its sidecar |  |
 | `--sector-degrees` `SECTOR_DEGREES` | longitude width of one build sector (default 30; bounds the source window read at once) | `30.0` |
 | `--geog-root` `GEOG_ROOT` | the WPS_GEOG archive to build from, overriding [statics] geog_root for this build only. Without it the config's own value is used, and without that the engine's archive search answers. A flag is here because the archive is a property of the MACHINE and the config is a property of the EXPERIMENT: pinning a machine path inside a shipped experiment is how a config stops working on the next machine |  |
+
+## `gpuwm-global surface-series`
+
+| option | what it does | default |
+|---|---|---|
+| `config` (positional) | the experiment whose grid and statics the series is built for |  |
+| `--source` `SOURCE` | a row of arwen_global/data/surface_series_sources.json (gdas-analysis: hindcast; gfs-forecast: one cycle's own SST) |  |
+| `--cycle` `YYYYMMDDHH` | the first record's time (the forecast cycle) |  |
+| `--hours` `HOURS` | the span the records cover, at least the run's duration |  |
+| `--interval-hours` `INTERVAL_HOURS` | hours between records (default 24) | `24.0` |
+| `--out` `OUT` | the series .npz to write |  |
+| `--table` `TABLE` | another source table (default: the packaged one) |  |
 
 ## `gpuwm-global assimilate`
 

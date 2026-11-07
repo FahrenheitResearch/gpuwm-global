@@ -495,7 +495,9 @@ class ArwenCudaColumnSuite:
         # a second whole namespace (1.5 GiB at T533 with 40 levels) no
         # longer sits beside the working one through the call.
         with prof.section("ledger_before"):
-            persistent = PersistentNativeState(batch, self.options)
+            persistent = PersistentNativeState(
+                batch, self.options,
+                consume=bool(getattr(self, "consume_input_namespace", False)))
             before_water = self._water_column(batch, persistent)
             before_energy = self._energy_column(batch)
         if self._runtime is None:

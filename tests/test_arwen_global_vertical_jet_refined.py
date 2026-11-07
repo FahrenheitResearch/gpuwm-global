@@ -58,7 +58,7 @@ JET_REFINED_48_AB_SHA256 = (
 #: 2026-09-07, the record stopped writing the drain and reads the core's
 #: own order 16 at 720 s, and it moved again.
 JET_REFINED_T255_CONFIG_HASH = (
-    "70514adf4ea0a68f075073d8e261363ec2364c79d09dd65d893d80891b626d0f"
+    "ba2a77de07d41ae333025c2bea12bdc7385de437acb41ced71a1be17d1c6a150"
 )
 
 

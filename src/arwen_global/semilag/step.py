@@ -50,8 +50,11 @@ the choice can be measured rather than argued.
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
+from ..lnps_reference import lnps_from_anomaly_coefficients
 from .halo import default_halo_rows
 from .interpolate import Stencil, gather_batch
 from .options import HORIZONTAL_ORDER, PHYSICS_ARRIVAL_WEIGHT
@@ -105,6 +108,44 @@ def reference_profile(model) -> ReferenceProfile:
         cached = ReferenceProfile(model)
         model._semilag_reference = cached
     return cached
+
+
+def theta_analysis_offsets(model, reference: ReferenceProfile):
+    """Per-level whole-kelvin offsets the theta ANALYSIS is taken about.
+
+    ``(grid, coefficient)``: the reference column rounded to whole kelvin,
+    shaped to subtract from a grid stack, and the same numbers times
+    sqrt(4 pi), the (0, 0) coefficient a constant plane analyses to, cast
+    once to the state's precision.  ``forward(g - c) + c sqrt(4 pi)`` is
+    ``forward(g)`` in exact arithmetic for any ``c``; in float32 it is
+    not, and that is the point.  The float32 analysis rows are cast from
+    float64 ones, so a constant plane does not analyse to its (0, 0)
+    coefficient alone: it leaks a few units in the last place of the
+    plane into every m = 0 coefficient, the SAME leak every step of a
+    steady flow (theta is 300 K at the ground and 1,800 K at a 1 hPa lid).
+    MEASURED on the dry nine-day T255 Jablonowski-Williamson steady arm:
+    float32 carries +0.15 hPa of m = 0 surface pressure at n = 31-200 at
+    the poles that float64 does not have at all.  Taken about the column
+    the leak is that of the departure from it.  The offsets depend on the
+    configuration only, so a restart takes off and puts back the same
+    bytes a continuous run does.
+    """
+    cached = getattr(reference, "_theta_analysis_offsets", None)
+    if cached is None:
+        backend = model.transform.backend
+        whole = np.round(np.asarray(reference.theta_ref_host, dtype=np.float64))
+        grid = backend.asarray(whole, dtype=backend.float_dtype)[:, None, None]
+        coefficient = backend.asarray(
+            whole * math.sqrt(4.0 * math.pi), dtype=backend.complex_dtype)
+        cached = (grid, coefficient)
+        reference._theta_analysis_offsets = cached
+    return cached
+
+
+def _restore_theta_offsets(analysed, coefficient, nlev: int):
+    """Put the analysis offsets back on the (0, 0) coefficients."""
+    analysed[:nlev, 0, 0] += coefficient
+    return analysed
 
 
 def _surface_stencil(stencil: Stencil, tables: SphericalGridTables):
@@ -329,8 +370,9 @@ def _semilag_step_resident(model, atmosphere: MoistHybridState, dt_s: float,
         bundle_u = g["u"] + lead * tendencies["l_u"] + half * n_u
         bundle_v = g["v"] + lead * tendencies["l_v"] + half * n_v
         bundle_theta = g["theta"] + lead * tendencies["l_theta"] + half * n_theta
+        # About ln(p_ref): arwen_global.lnps_reference says why.
         bundle_lnps = (
-            g["logps"] + lead * tendencies["l_lnps"] + half * n_lnps
+            g["logps_anomaly"] + lead * tendencies["l_lnps"] + half * n_lnps
         )
         del tendencies
         bundle_x, bundle_y, bundle_z = cartesian_wind(
@@ -491,19 +533,24 @@ def _semilag_step_resident(model, atmosphere: MoistHybridState, dt_s: float,
             arrival_u, arrival_v
         )
         del arrival_u, arrival_v
-        stacked = xp.concatenate([departure_theta, departure_qv], axis=0)
+        theta_grid_offset, theta_coefficient_offset = theta_analysis_offsets(
+            model, reference)
+        stacked = xp.concatenate(
+            [departure_theta - theta_grid_offset, departure_qv], axis=0)
         del departure_theta, departure_qv
         analysed = model._chunked(
             lambda block: transform.project(transform.forward(block)), stacked
         )
         del stacked
         nlev = int(model.nlev)
+        analysed = _restore_theta_offsets(
+            analysed, theta_coefficient_offset, nlev)
         trial = MoistHybridState(
             vorticity=trial_zeta,
             divergence=trial_divergence,
             theta=analysed[:nlev],
-            log_surface_pressure=transform.project(
-                transform.forward(departure_lnps)
+            log_surface_pressure=lnps_from_anomaly_coefficients(
+                transform, transform.project(transform.forward(departure_lnps))
             ),
             qv=analysed[nlev:],
             **advected,
@@ -543,7 +590,7 @@ def _semilag_step_resident(model, atmosphere: MoistHybridState, dt_s: float,
             fixed, fixer = fix_mass(
                 advected, before, g["dp"], after["dp"],
                 transform, scheme=options.tracer_fixer, deficits=deficits,
-                stencil=stencil,
+                stencil=stencil, consume=True,
             )
             # The advanced ten stay on the card from here to the second
             # physics half, which returns them to the tier's own slots
@@ -933,7 +980,7 @@ def _band_pass(model, atmosphere, sources, mass_grid, window, *, tables,
     bundle_u = g["u"] + lead * l_u + half * n_u
     bundle_v = g["v"] + lead * l_v + half * n_v
     bundle_theta = g["theta"] + lead * l_theta + half * n_theta
-    bundle_lnps = g["logps"] + lead * l_lnps + half * n_lnps
+    bundle_lnps = g["logps_anomaly"] + lead * l_lnps + half * n_lnps
     del a_u, a_v, a_lnps, l_u, l_v, l_theta, l_lnps
     bundle_x, bundle_y, bundle_z = cartesian_wind(
         bundle_u, bundle_v, tables, rows=held)
@@ -1112,6 +1159,8 @@ def _semilag_step_banded(model, atmosphere: MoistHybridState, dt_s: float,
     alpha = float(model.semi_implicit.off_centring_weight)
     tables = grid_tables(model)
     reference = reference_profile(model)
+    theta_grid_offset, theta_coefficient_offset = theta_analysis_offsets(
+        model, reference)
     previous = model.trajectory_held()
     startup = previous is None
     prof = profiler_of(model)
@@ -1259,7 +1308,8 @@ def _semilag_step_banded(model, atmosphere: MoistHybridState, dt_s: float,
                 rows.start, rows.stop, xp.stack([band.arrival_u, band.arrival_v]))
             out.stack_waist.fill_band(
                 rows.start, rows.stop,
-                xp.concatenate([band.theta, band.qv], axis=0))
+                xp.concatenate([band.theta - theta_grid_offset, band.qv],
+                               axis=0))
             out.lnps_waist.fill_band(rows.start, rows.stop, band.lnps)
             mine = slice(rows.start - offset, rows.stop - offset)
             for name, value in band.trajectory.items():
@@ -1328,11 +1378,14 @@ def _semilag_step_banded(model, atmosphere: MoistHybridState, dt_s: float,
         trial_zeta, trial_divergence = model.vector._vordiv_from_fourier(
             uv_waist.close())
         del uv_waist
-        analysed = _contract_chunked(
-            transform, stack_waist.close(), model.spectral_chunk)
+        analysed = _restore_theta_offsets(
+            _contract_chunked(
+                transform, stack_waist.close(), model.spectral_chunk),
+            theta_coefficient_offset, nlev)
         del stack_waist
-        lnps_spectral = transform.project(
-            transform.contract_waist(lnps_waist.close()))
+        lnps_spectral = lnps_from_anomaly_coefficients(
+            transform, transform.project(
+                transform.contract_waist(lnps_waist.close())))
         del lnps_waist
         if riding and exchange is not None:
             # The band's advected rows, onto every card: the grid tracers
@@ -1394,7 +1447,7 @@ def _semilag_step_banded(model, atmosphere: MoistHybridState, dt_s: float,
             fixed, fixer = fix_mass(
                 advected, atmosphere.grid_tracers(), dp_before, dp_after,
                 transform, scheme=options.tracer_fixer, deficits=deficits,
-                stencil=stencil,
+                stencil=stencil, consume=True,
             )
             del stencil
             del dp_before, dp_after

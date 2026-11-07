@@ -43,14 +43,14 @@ SHIPPED_CONFIG_HASHES = {
     # record, stopped writing the drain when the merge of 2026-09-07 made
     # both read the core's own order 16 at 720 s: ecd354f3... before that)
     str(_shipped_configs() / "arwen_global_gdas_t255_jet48_24h.toml"):
-        "39fb406e6ec5fb2bb934366284e5d81f1db2dff86e62090cd0cb32a6a5b837c7",
+        "220778899653f3ce622f239e2ffb61a003acc854dd4038779eff9a188189c5e7",
     # the config of record is bare since 2026-09-06 (it runs the shipped
     # default core, the semi-Lagrangian one at 300 s): its hash moved with
     # its content (afec3fa6... while it still wrote order 8 at 2,160 s; the
     # door's own drain since 2026-09-07), and the [memory] table still adds
     # nothing to it
     str(_shipped_configs() / "arwen_global_gdas_t255_native_24h.toml"):
-        "f7c96622dce0f5c0d89aae3a27e10725581485c4e385fd965ad2aaae989d9302",
+        "8725961055eb61477f77dc6844ea26dd9bb864145a4c8e56efcc12dbd32f62e9",
     str(_shipped_configs() / "arwen_global_gdas_t533_24h.toml"):
         "85e60b9c8dcd0f884d533b3b2f61842c5d4bf7f5c808f777b0307127555031f3",
 }

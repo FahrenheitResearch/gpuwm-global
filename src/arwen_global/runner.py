@@ -521,6 +521,9 @@ def build_model_and_cold_state(cfg: ArwenGlobalConfig, transform=None, *,
         semilag=cfg.semilag,
         sponge_base_pa=cfg.sponge_base_pa,
         sponge_lid_relaxation_time_s=cfg.sponge_lid_relaxation_time_s,
+        sponge_heat_booking=cfg.sponge_heat_booking,
+        sponge_mean_drag_base_pa=cfg.sponge_mean_drag_base_pa,
+        sponge_mean_drag_time_s=cfg.sponge_mean_drag_time_s,
         initial_provenance=initial_provenance,
         spectral_chunk=cfg.spectral_chunk,
         synthesis_memo=cfg.synthesis_memo,
@@ -1208,6 +1211,46 @@ class _CheckpointWriter:
             self._executor.shutdown(wait=True)
 
 
+def _surface_update_for(cfg, model, state):
+    """The dated surface series this run follows, or None
+    (arwen_global.surface_series)."""
+    path = getattr(cfg, "surface_series", None)
+    if not path:
+        return None
+    import numpy as np
+
+    from .surface_series import SurfaceSeriesUpdate
+
+    clock = getattr(model, "forecast_clock", None)
+    start = None if clock is None else getattr(clock, "start_utc", None)
+    if start is None:
+        raise ValueError(
+            "surface_update.series dates its records and this run has no "
+            "forecast clock (an undated idealized run cannot follow a dated SST)")
+    statics_fields = statics_provenance = None
+    if getattr(cfg.statics, "source", None) == "real":
+        from .statics import load_statics
+
+        statics_fields, statics_provenance = load_statics(cfg.statics, model.transform.grid)
+    grid = model.transform.grid
+    update = SurfaceSeriesUpdate(
+        path, start_time=start, duration_s=float(cfg.duration_s),
+        statics_fields=statics_fields, statics_provenance=statics_provenance,
+        terrain_height_m=np.zeros((int(grid.nlat), int(grid.nlon))),
+        latitude_deg=np.asarray(grid.latitude_deg, dtype=np.float64))
+    print(f"gpuwm-global: surface series {path} ({update.provenance.get('source')}, "
+          f"{len(update.valid)} records {update.valid[0].isoformat()} .. "
+          f"{update.valid[-1].isoformat()}): SST every step, sea ice per record, "
+          f"greenness daily", flush=True)
+    model.surface_update = update
+    return update
+
+
+def _surface_update_receipt(model):
+    update = getattr(model, "surface_update", None)
+    return None if update is None else update.receipt()
+
+
 def _section(profiler, name: str):
     """A profiler section, or a no-op when no profiler is attached."""
     if profiler is None:
@@ -1568,12 +1611,19 @@ def _run_tracked(
     # cold start and a first diagnostics call are not steps.
     step_wall_seconds = 0.0
     step_count = 0
+    # The loop below never reads a state after stepping it, so the model
+    # may drop its input namespace mid-step (memory only, same bits).
+    model.release_input_namespace = True
+    surface_update = _surface_update_for(cfg, model, state)
     try:
         while state.step < total_steps:
             if profiler is not None:
                 # Numbered by the step it produces, like the checkpoints.
                 profiler.begin_step(state.step + 1)
             step_started = time.perf_counter()
+            if surface_update is not None:
+                with _section(profiler, "surface_update"):
+                    surface_update.apply(state, model=model)
             state, metrics = model.step(state, cfg.dt_s)
             step_wall_seconds += time.perf_counter() - step_started
             step_count += 1
@@ -1625,6 +1675,7 @@ def _run_tracked(
             # count was streaming and who chose it, and the successful
             # receipt carried it while this one did not.
             "latitude_bands": latitude_bands_receipt(model, cfg, sized_by_door),
+        "surface_update": _surface_update_receipt(model),
             # And the other half of the same decision.  A run that died
             # recorded which band count was streaming and neither what the
             # pinned host tier was holding nor what the sizer priced, so
@@ -1749,6 +1800,7 @@ def _run_tracked(
         # recorded where a reader can see what the run did rather than
         # where a hash would refuse a restart for it.
         "latitude_bands": latitude_bands_receipt(model, cfg, sized_by_door),
+        "surface_update": _surface_update_receipt(model),
         "host_spill": _host_spill_receipt(cfg, model, wall_steps=step_count,
                                           wall_seconds=step_wall_seconds,
                                           plan=door_plan),

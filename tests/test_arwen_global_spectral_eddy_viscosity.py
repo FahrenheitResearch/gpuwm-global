@@ -46,9 +46,9 @@ T = 31
 #: native physics defaults that moved (dated greenhouse gases, the
 #: stratospheric floor's reach and then its retirement from the default).
 PINNED_HASHES = {
-    "configs/verify/arwen_global_gdas_t255_native_24h.toml": "f7c96622dce0f5c0",
-    "configs/verify/arwen_global_gdas_t255_native_imex_24h.toml": "ca2a0ed96e0c6dc4",
-    "configs/verify/arwen_global_gdas_t383_native_24h.toml": "f735b5032b287787",
+    "configs/verify/arwen_global_gdas_t255_native_24h.toml": "8725961055eb6147",
+    "configs/verify/arwen_global_gdas_t255_native_imex_24h.toml": "dac0455626f723ed",
+    "configs/verify/arwen_global_gdas_t383_native_24h.toml": "d00cc42c95d1e452",
 }
 
 

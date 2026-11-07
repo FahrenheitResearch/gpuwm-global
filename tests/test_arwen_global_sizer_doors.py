@@ -458,7 +458,10 @@ def test_the_plan_is_priced_at_its_own_radiation_chunks_fragmentation():
         assert plan.card_bytes == sizing.card_required_bytes(
             plan.live_peak_bytes, spilled=bool(plan.spill_slices),
             banded=plan.bands > 1, reduced_chunk=is_reduced,
-            bands=plan.bands, truncation=plan.truncation)
+            bands=plan.bands, truncation=plan.truncation,
+            # A plan priced at a completed run of itself (the T383
+            # 5,000-column resident row, 2026-11-06) carries no model margin.
+            margin=1.0 if plan.ceiling else None)
         receipt = plan.receipt()
         assert receipt["pool_fragmentation"] == plan.fragmentation[0]
         assert receipt["reduced_radiation_chunk"] is is_reduced
@@ -585,3 +588,42 @@ def test_every_door_hands_the_plan_to_what_writes_the_receipt(door,
         handler(args)
     assert seen.get("plan") is sentinel, (
         f"{door} sized the run and did not hand the plan on")
+
+
+def test_t533_on_the_16_gb_card_is_a_row_of_the_door_not_a_shim():
+    """T533 at four bands, every slice parked, streamed tables and the async
+    allocator is admitted by the bare door on a 16 GB card's free reading.
+
+    THE BREAKAGE THIS PREVENTS, MEASURED 2026-11-06 on an RTX 5070 Ti: that
+    plan completed a 24 h day (12.81 GiB live, nvidia-smi peak 15,756 MiB of
+    16,303) while the door refused it at 25.87 GiB of card, so the day could
+    only be run through a script that overrode the refusal.  The default
+    CuPy pool at the same plan died at step 8, so the measured card figure
+    belongs to the async allocator alone and a default-pool run is still
+    refused, with the refusal naming the flags that get through.
+    """
+
+    from arwen_global.config import load_config
+
+    path = (Path(sizing.__file__).resolve().parent / "configs"
+            / "arwen_global_gdas_t533_native_sl_si_24h.toml")
+    base = load_config(path)
+    free = 16_368_795_648  # the door's own reading of the idle 16 GB card
+    admitted = dataclasses.replace(base, streaming=True, device_allocator="async")
+    gate = sizing.run_memory_gate(admitted, probe={"free_bytes": free})
+    assert not gate["refuse"], gate["verdict"]
+    plan = gate["plan"]
+    assert plan.bands == 4
+    assert set(plan.spill_slices) == {"physics", "surface", "tracers"}
+    assert plan.card_bytes == 15_524 * 1024 * 1024 <= free
+    assert "completed run of exactly this plan" in gate["verdict"]
+
+    default_pool = dataclasses.replace(base, streaming=True)
+    gate = sizing.run_memory_gate(default_pool, probe={"free_bytes": free})
+    assert gate["refuse"]
+    assert "--device-allocator async" in gate["verdict"]
+
+    unstreamed = dataclasses.replace(base, device_allocator="async")
+    gate = sizing.run_memory_gate(unstreamed, probe={"free_bytes": free})
+    assert gate["refuse"]
+    assert "--streaming on" in gate["verdict"]

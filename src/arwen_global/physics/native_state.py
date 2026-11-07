@@ -50,11 +50,25 @@ RADIATION_ACCUMULATORS = {
 
 
 class PersistentNativeState:
-    def __init__(self, batch, options):
+    def __init__(self, batch, options, *, consume: bool = False):
         self.batch = batch
         self.xp = batch.xp
         self.options = options
-        self.state = batch.physics_state.copy()
+        if consume:
+            # The caller hands over a namespace nothing else reads again
+            # (the step's own first-half namespace, dynamics.step): work on
+            # its arrays in place instead of beside a deep copy of them.
+            # Memory only (1.21 GiB at T383 L40 float32), same bits: every
+            # write below lands where the copy's would have.
+            from ..state import _copy_json
+
+            self.state = PhysicsState(
+                schema=batch.physics_state.schema,
+                arrays=dict(batch.physics_state.arrays),
+                metadata=_copy_json(batch.physics_state.metadata),
+            )
+        else:
+            self.state = batch.physics_state.copy()
         self.state.validate()
         self.metadata = dict(self.state.metadata)
         self.arrays = self.state.arrays

@@ -34,19 +34,16 @@ One extra per CUDA major, because no pip environment marker can tell them
 apart. `gpu-cu13` pulls `cupy-cuda13x[ctk]`, `gpu-cu12` pulls
 `cupy-cuda12x[ctk]`, and the bare `gpu` alias is `gpu-cu13`, the stack the
 card figures on this page came off. Either line also resolves the engine
-`gpuwm>=2.8.0,<2.9`, its data companion `gpuwm-data` beside it, numpy, scipy
-and netCDF4. On 2026-10-05 that range resolves `gpuwm 2.8.5` and
-`gpuwm-data 2.8.5` from the public index, where
-`python tools/measure_boundary.py` reads 234 symbols across 67 modules with
-no gap among the 194 a host without a CUDA runtime can resolve (Linux CPU
-host, 2026-10-05; the same reading on 2.8.0, 2026-09-29). Without either
-extra the package installs and every CPU door runs; the forecast needs the
-card.
+`gpuwm>=2.9.13,<2.10`, its data companion `gpuwm-data` beside it, numpy, scipy
+and netCDF4. Against the published `gpuwm 2.9.13`,
+`python tools/measure_boundary.py` reads 237 symbols across 69 modules with
+no gap (Linux, 2026-11-07). Without either extra the package installs and
+every CPU door runs; the forecast needs the card.
 
-No published engine produced the forecast and assimilation figures further
-down this page. They were taken on 2026-09-06 and 2026-09-07 in the engine
-checkout this model was developed and graded in, whose own version string
-reads 2.6.4. That physics is what `arwen_global.core` carries, which is why
+The rows dated 2026-11 on this page were taken on the published engines
+(`gpuwm 2.9.12` and `2.9.13`). The older forecast and assimilation figures
+were taken on 2026-09-06 and 2026-09-07 in the engine checkout this model was
+developed and graded in, whose own version string reads 2.6.4. That physics is what `arwen_global.core` carries, which is why
 an install on the 2.8 engine integrates the same bytes those runs did, apart
 from the engine fixes this package has taken since (listed under PULL in
 [docs/CARRIED-PHYSICS-DIVERGENCE.md](docs/CARRIED-PHYSICS-DIVERGENCE.md)).
@@ -61,10 +58,10 @@ gpuwm-global fetch-doors   # the doors the engine's bundle does not carry: obser
 gpuwm-global doctor        # what is installed, staged and missing
 ```
 
-Of the eight observation doors, `rw_asos` and `rw_goes` arrive in the
-engine's own bundle on 2.8.x, so `fetch-doors` stages the other six.  From
-0.1.3 it also stages the two libraries this package builds from its own
-`rust/` workspace: `rw_global_coldstart` (the cold start's analysis regrid
+Of the eight observation doors, `rw_asos`, `rw_igra2`, `rw_ndbc`,
+`rw_amv`, `rw_gnssro`, `rw_wis2` and `rw_goes` arrive in the engine's own
+bundle on 2.9.x, so `fetch-doors` stages the other one.  It also stages the
+two libraries this package builds from its own `rust/` workspace: `rw_global_coldstart` (the cold start's analysis regrid
 and ln p remap) and `global_render_kernels` (the render tapes' regrid and
 column and the regional translation).  Neither has a NumPy fallback, so an
 install whose bundle predates them builds them from the source
@@ -74,53 +71,37 @@ variable, as `doctor` says.
 `doctor` exits 1 when a command this page or
 [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) documents cannot run, and every
 line that says no names the command it stops and the remedy. Two engine
-symbols are absent from the published 2.8.0 and 2.8.5 as from every 2.7:
+symbols are absent from every published engine through 2.9.13:
 `preflight.measured_free_vram_bytes` and `surface_bias.interpolate_to_tape`.
 Neither stops a documented command (the first stops the standalone
 card-pricing check that no subcommand is wired to, the second the
 surface-energy scorecard's regrid onto the tape), so `doctor` prints both as
 optional notes and a correct install exits 0: the three lines above, then
-`doctor`, exited 0 against `gpuwm 2.8.5` on a Linux CPU host with no card
-(MEASURED 2026-10-05). CI runs the same three lines on every push and every
+`doctor`, exited 0 against `gpuwm 2.9.13` on Linux (MEASURED 2026-11-07). CI runs the same three lines on every push and every
 publish and fails on any gap. Calling either symbol still refuses by name.
 The published 0.1.2 graded both as gaps and exited 1 on every correct
 install; that is fixed from 0.1.3.
 
-`gpuwm-global` needs `gpuwm>=2.8.0,<2.9`. The floor names a breakage: the
-carried radiation reads its trace-gas and ozone table through the engine's
-loader, the `rw_asos` door row carries the engine's v2 surface line, and the
-statics build needs the static builder's `rows` grid kind, and no engine
-before 2.8.0 has any of them. The ceiling is not decoration: the engine's own
-trees are not supersets of each other across minors, and this package
-imports 234 symbols across that boundary. `python tools/measure_boundary.py`
-regenerates the measurement rather than trusting a table, and names the
-symbols it could not check on a host without a CUDA runtime instead of
-counting them clean. The physics used in the observation-scored runs is INSIDE this
-package (`arwen_global.core`: the radiation, cumulus, surface-layer,
-boundary-layer, land-surface and microphysics schemes, their kernels, the
-CUDA loader, the float64 mirror used by kernel scorecards to compare GPU
-arithmetic (code verification, not an observation score), and the Noah tables). The engine files the carried code still reaches are pinned by path,
-size and SHA-256 in `arwen_global/data/engine-seam.json`, and
-`gpuwm-global doctor` re-hashes them and prints an `engine seam` section.
-The pins are taken at `gpuwm 2.8.5`, the engine a fresh install resolves
-(2026-10-05), where all 47 files are proven; they were read off the PyPI
-manylinux wheel and match the same files in the Windows wheel, the pure
-wheel and the public `v2.8.5` tag byte for byte. They stood at 2.8.0 until
-the 2.8.0-to-2.8.5 change had been read hunk by hunk: 25 of the 47 files
-moved, and 16 symbols this package reaches in them changed definition
-(`RunConfig`, `DomainState`, `init_at_rest`, `KainFritsch`,
-`launch_mynn_surface_layer`, `NoahmpRuntimeParameters`, `noahmp_cold_start`,
-`noahmp_lsm_step`, `RucRuntimeParameters`, `ruc_lsm_step`, `mynn_pbl_step`,
-`launch_shinhong`, `AnalyticClearSkyRadiation`, `DudhiaShortwaveRadiation`,
-`RRTMGLegacyRadiation` and `update_diagnostics`). None of them moves a
-number on a shipped experiment: the native suite calls the carried scheme
-modules with a namespace configuration and never builds `RunConfig`,
-`DomainState` or the carried physics driver, each of its non-cumulus slots
-admits one scheme, the moved schemes are ones it never selects, and the
-reference suite reaches no engine module. The CHANGELOG's 0.1.3 Fixed entry
-records the review symbol by symbol. On 2.8.0, one release inside the
-declared range, `doctor` now prints those 25 files as moved, unproven, not
-refused.
+`gpuwm-global` needs `gpuwm>=2.9.13,<2.10`. The floor is the engine this
+release's test suite and forecast proofs ran on. The ceiling is not
+decoration: the engine's own trees are not supersets of each other across
+minors, and this package imports 237 symbols across that boundary.
+`python tools/measure_boundary.py` regenerates the measurement rather than
+trusting a table, and names the symbols it could not check on a host without
+a CUDA runtime instead of counting them clean. The physics used in the
+observation-scored runs is INSIDE this package (`arwen_global.core`: the
+radiation, cumulus, surface-layer, boundary-layer, land-surface and
+microphysics schemes, their kernels, the CUDA loader, the float64 mirror used
+by kernel scorecards to compare GPU arithmetic (code verification, not an
+observation score), and the Noah tables). The engine files the carried code
+still reaches are pinned by path, size and SHA-256 in
+`arwen_global/data/engine-seam.json`, and `gpuwm-global doctor` re-hashes them
+and prints an `engine seam` section. The pins are taken at `gpuwm 2.9.13`,
+where all 48 files are proven. Between 2.8.5 and 2.9.12, 40 of the then 47
+files moved and each was re-pinned after the suite passed on 2.9.12; 2.9.13
+moved one more (`gpuwm/core/preflight.py`, one comment line), and the engine's
+CAM ozone reader (`gpuwm/ingest/wrf_ozone.py`) joined the seam with this
+release's default ozone.
 
 The two nodes of `tests/test_arwen_global_engine_seam.py` that compare
 hashes run against the pinned version and skip, naming both versions, on any
@@ -301,12 +282,11 @@ full native physics suite, 40 hybrid levels, float32. Wall clock is end to end
 from each run's own receipt. "Shared" means another process held the card, so
 the row is a capability row rather than a timing.
 
-Every row was measured on the date in its last column, in the engine checkout
-this model was developed and graded in, whose version string reads 2.6.4. No
-published engine produced them. The physics those runs integrated is carried
-inside this package as `arwen_global.core`, so an install on the 2.8 engine
-integrates the same bytes apart from the engine fixes taken since, which the
-divergence document lists.
+Every row was measured on the date in its last column. Rows dated 2026-09
+were measured in the engine checkout this model was developed and graded in,
+whose version string reads 2.6.4; rows dated 2026-11 on the published
+`gpuwm 2.9.12` and `2.9.13`, with this release's physics (CAM ozone, the top
+drag, the dated surface series).
 
 | Truncation | Gaussian grid | Equator spacing | Card | A forecast day | Device peak | Measured |
 |---|---|---|---|---|---|---|
@@ -314,9 +294,10 @@ divergence document lists.
 | T255 | 384 x 768 | 52.1 km | RTX 5070 Ti, bare from the door | 245.8 and 246.0 s | 8.70 GiB | 2026-09-07 |
 | T255 | 384 x 768 | 52.1 km | RTX 5090, shared | 186.8 and 228.9 s | 8.70 GiB | 2026-09-07 |
 | T383 | 576 x 1152 | 34.7 km | RTX 5090, shared | **5.63 min** (337.9 s) | 15.86 GiB | 2026-09-07 |
-| T383 | 576 x 1152 | 34.7 km | RTX 5070 Ti, 16 GB | runs, at two latitude bands with all three state slices parked on the host | 12.41 GiB live, 14.99 GiB of card | 2026-09-07 |
+| T383 | 576 x 1152 | 34.7 km | RTX 5070 Ti, 16 GB, alone | **11.8 min** (2.46 s a step; 12.4 min with the cold start), one band, nothing parked on the host | 12.10 GiB live, 15,624 MiB on the card | 2026-11-07 |
+| T383 | 576 x 1152 | 34.7 km | RTX 5070 Ti, 16 GB, alone, 10 days | 108.9 min for 240 h (2.24 s a step) | 12.10 GiB live, 15,212 MiB on the card | 2026-11-06 |
 | T533 | 801 x 1602 | 25 km | RTX 5090, 32 GB, alone | **15.9 min** (953 s; 2.98 s a step) | 23.23 GiB live, 28.11 held | 2026-09-07 |
-| T533 | 801 x 1602 | 25 km | RTX 5070 Ti, 16 GB | reached on the selectable Eulerian core only: 32 bands, every slice parked, 10.65 s a step | 8.86 GiB live | 2026-09-07 |
+| T533 | 801 x 1602 | 25 km | RTX 5070 Ti, 16 GB, alone | **34.0 min** (6.67 s a step) with `--streaming on --device-allocator async`: four bands, every slice parked | 12.81 GiB live, 15,756 MiB on the card | 2026-11-06 on `gpuwm 2.8.9`; admitted by the door and its first hour rerun on `2.9.13`, 2026-11-07 |
 | T799 | 1200 x 2400 | 17 km | either card | **refused at the door**, before a byte is allocated, with the figure that refuses it | priced 30.31 GiB live | 2026-09-07 |
 
 At the same truncation on the same tree, the selectable Eulerian core
@@ -346,7 +327,7 @@ band counts 2 to 32, and 892 of 892 waist comparisons bit-exact on each card
 
 ## The doors
 
-One console script, 49 commands. `gpuwm-global <command> --help` prints every
+One console script, 50 commands. `gpuwm-global <command> --help` prints every
 option; [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) is the same surface on
 one page, generated from the parser.
 
@@ -355,6 +336,7 @@ one page, generated from the parser.
 | `go` | statics, forecast, tapes and pictures in one command |
 | `run` | run a configured experiment: the forecast, its gates and its receipt |
 | `statics` | build and cache the surface static fields for a truncation |
+| `surface-series` | build a dated SST, sea-ice and greenness series on a config's grid, from GDAS analyses or one GFS cycle's own forecast, for `run --surface-series` |
 | `export` | render-ready global lat-lon `wrfout` tapes from checkpoints (`export-wrfout` is an accepted alias of the same door) |
 | `render` | draw the products from a finished run through the Rust renderer |
 | `configs` | list the experiments that ship inside the package |

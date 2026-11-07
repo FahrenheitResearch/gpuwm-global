@@ -191,10 +191,10 @@ def test_the_config_hash_separates_the_two_kernels_and_the_wrf_state_keeps_the_o
     from dataclasses import replace
 
     assert replace(wrf, semi_implicit_scheme="external").config_hash == (
-        "fbf9f036d970136b1f969a3b2a6d0acde47466c853ed126e95a2e237d9d26747"
+        "367431fd86f9b0d7d1338d9fbcaf97ff62cada4cb4e249c2ccc658789cde1836"
     )
     assert replace(on, semi_implicit_scheme="external").config_hash == (
-        "2b673a3acd720ece626a1a1a586d92b17a1ceec78cd402d043ab911f36664368"
+        "f69592f716b18b300ee40f59a1dabe43145120db537eeb98e3787d840c266149"
     )
 
 

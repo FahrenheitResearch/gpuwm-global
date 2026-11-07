@@ -62,7 +62,7 @@ QUICKSTART = _shipped_configs() / "arwen_global_t255_quickstart.toml"
 #: place of a fixed 369.55 ppm CO2, and the stratospheric floor's 5 hPa
 #: reach.  Moved again the same day (c2b410ea... before) when the native
 #: suite's stratospheric floor left the default.
-IMEX_RECORD_CONFIG_HASH = "ca2a0ed96e0c6dc4d19a119e81fcdc325ee82e8e3e3fffa8a6d3e9026a0a2ddb"
+IMEX_RECORD_CONFIG_HASH = "dac0455626f723edec5e1a591aa9d6a3f6ef223ff73bbec946961170ddc9cf3a"
 
 MINIMAL = """
 [arwen_global]

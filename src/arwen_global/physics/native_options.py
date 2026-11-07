@@ -27,6 +27,13 @@ class NativePhysicsOptions:
     radiation_interval_s: float = 1800.0
     radiation_column_chunk: int = 12_500
     radiation_validation_mode: str = "fused"
+    # The ozone the radiation reads (core.rrtmgp.OZONE_CLIMATOLOGIES):
+    # "cam-zonal-monthly" (default, 2026-11-06), the CAM climatology WRF
+    # and MPAS-A ship, by date, latitude and pressure; "rfmip-median", the
+    # one global-median profile on every column and date this suite read
+    # before.  Joins the identity only when "rfmip-median" is NOT chosen,
+    # i.e. the new default moves the hash (it changes the arithmetic).
+    ozone: str = "cam-zonal-monthly"
     surface_layer: str = "sfclay"
     sfclay_option: int = 1
     # Land thermal-roughness closure of the surface layer (sfclay.cu
@@ -282,6 +289,9 @@ class NativePhysicsOptions:
             del payload["gf_resolved_convergence_closure"]
         if self.sfclay_iz0tlnd == 0:
             del payload["sfclay_iz0tlnd"]
+        if self.ozone == "rfmip-median":
+            # The arithmetic every checkpoint before the option carried.
+            del payload["ozone"]
         # A config that follows its analysis states no clock; the analysis
         # (initial.analysis_grib, in the identity) is what dates the run.
         if self.start_time_utc is None:
@@ -385,6 +395,8 @@ class NativePhysicsOptions:
             raise ValueError("gf_updraft_only_when_downdraft_dry must be true or false")
         if not isinstance(self.gf_resolved_convergence_closure, bool):
             raise ValueError("gf_resolved_convergence_closure must be true or false")
+        if self.ozone not in {"cam-zonal-monthly", "rfmip-median"}:
+            raise ValueError("ozone must be 'cam-zonal-monthly' or 'rfmip-median'")
         if self.radiation_validation_mode not in {"fused", "full"}:
             raise ValueError("radiation_validation_mode must be 'fused' or 'full'")
         if self.sfclay_option not in {1, 91}:

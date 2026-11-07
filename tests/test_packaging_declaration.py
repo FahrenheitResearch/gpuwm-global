@@ -133,7 +133,7 @@ def test_engine_dependency_is_bounded_at_both_ends(declaration):
     deps = declaration["project"]["dependencies"]
     engine = [row for row in deps if row.split(">")[0].strip() == "gpuwm"]
     assert len(engine) == 1, deps
-    assert ">=2.8.0" in engine[0] and "<2.9" in engine[0], engine[0]
+    assert ">=2.9.13" in engine[0] and "<2.10" in engine[0], engine[0]
 
 
 def test_the_companion_data_distribution_is_declared(declaration):
@@ -155,7 +155,7 @@ def test_the_companion_data_distribution_is_declared(declaration):
                  if re.split(r"[<>=!~\[]", row, maxsplit=1)[0].strip()
                  == "gpuwm-data"]
     assert len(companion) == 1, deps
-    assert ">=2.8.0" in companion[0] and "<2.9" in companion[0], companion[0]
+    assert ">=2.9.13" in companion[0] and "<2.10" in companion[0], companion[0]
 
     source = (SRC / "core" / "rrtmgp.py").read_text(encoding="utf-8")
     module_scope = [line for line in source.splitlines()

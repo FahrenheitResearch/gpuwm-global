@@ -345,9 +345,9 @@ def test_a_default_config_keeps_its_hash(tmp_path):
         ("arwen_global_t255_quickstart.toml",
          "ce5629409342af640456f621304ae4d09b91f1dbc0171198d45b8757fba8c3fb"),
         ("arwen_global_gdas_t533_native_24h.toml",
-         "f6eccb32f359d22e26a31bf90d944b93b729f1fc1f5d3722b077885b65878454"),
+         "1f85e23806a5410e76a9f414f227343236b394856cb80200d0b80aa92f79fd60"),
         ("arwen_global_gdas_t255_native_sl_si_24h.toml",
-         "2fe9a5683d3c5038a56c560f3a82b99b88aa804ac1f50b296374f34b7ff32c2d"),
+         "c7a000d28c206ace5f88312d92320f4c30e72f7f0eb6d6108587022d935b4bbf"),
     ):
         assert load_config(root / name).config_hash == digest, name
     identity = _load(tmp_path).config_identity

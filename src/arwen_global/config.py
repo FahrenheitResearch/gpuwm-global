@@ -131,6 +131,26 @@ SEMILAG_DIFFUSION_EFOLD_S = 720.0
 #: only when the closure is selected, so every hyperdiffusion config hash
 #: is unchanged.
 DEFAULT_DIFFUSION_CLOSURE = "hyperdiffusion"
+#: [sponge] zonal-mean top drag defaults (MoistHybridModel docstring):
+#: cos^2 ramp from 5 hPa to a 5-day rate at the lid.  base 0 turns it off.
+DEFAULT_SPONGE_MEAN_DRAG_BASE_PA = 500.0
+
+
+def default_sponge_mean_drag_base_pa(physics_mode: str) -> float:
+    """The top drag's default base for a physics mode: on for the native
+    forecast suite, off for the idealized cases (physics "none" and
+    "reference": Jablonowski-Williamson, Held-Suarez, Williamson).
+
+    THE BREAKAGE THIS PREVENTS, MEASURED 2026-11-07: with the drag on, the
+    dry 9-day JW steady state at T255 float32 drifted 0.378 hPa where the
+    same tree with the drag off drifts 0.280 (RTX 5070 Ti and RTX 5090).
+    Those cases are unforced by definition; a zonal-mean momentum sink at
+    the lid is a forcing, and it pulls the analytic steady state off.  The
+    drag is the forecast suite's top momentum sink, measured there.
+    """
+
+    return DEFAULT_SPONGE_MEAN_DRAG_BASE_PA if physics_mode == "arwen-native" else 0.0
+DEFAULT_SPONGE_MEAN_DRAG_TIME_S = 432_000.0
 DIFFUSION_CLOSURES = ("hyperdiffusion", "spectral_eddy_viscosity")
 #: The semi-Lagrangian core's [semi_implicit] off_centring_weight when the
 #: key is omitted: the 0.55 every shipped sl_si config carries and every
@@ -337,6 +357,12 @@ class ArwenGlobalConfig:
     # the 140 K research bound without it).  base_pa=0 disables.
     sponge_base_pa: float
     sponge_lid_relaxation_time_s: float
+    # The absorber books the kinetic energy it removes as heat (dynamics
+    # MoistHybridModel.sponge_heat_booking); on unless [sponge] heat_booking
+    # = false, and dropped from the identity when on.
+    sponge_heat_booking: bool
+    sponge_mean_drag_base_pa: float
+    sponge_mean_drag_time_s: float
     diffusion_enabled: bool
     diffusion_order: int
     diffusion_efold_s: float
@@ -406,6 +432,15 @@ class ArwenGlobalConfig:
     # checkpoint lineage), which is exactly the bit-identity the ledger
     # proves about itself.
     insitu: InsituOptions = InsituOptions()
+    # [surface_update] series: a dated SST / sea-ice series on this grid
+    # (arwen_global.surface_series, ``gpuwm-global surface-series``).  Set,
+    # the SST follows it every step, the sea ice at each record and the
+    # greenness daily; unset, the surface holds its cold-start values as
+    # before.  Joins the identity only when set (by the series' content
+    # hash, not its path), so every config hash written without it stays
+    # byte-identical.
+    surface_series: str | None = None
+    surface_series_sha256: str | None = None
     # [initial] analysis_fill_grib / analysis_fill_mapping: a second
     # analysis of the SAME valid time that supplies the surface groups the
     # primary product lacks (analysis_initial.FILL_GROUPS: soil, snow, sea
@@ -605,6 +640,9 @@ class ArwenGlobalConfig:
             )
         del payload["vertical_coordinate"]
         del payload["insitu"]
+        del payload["surface_series"]
+        if payload["surface_series_sha256"] is None:
+            del payload["surface_series_sha256"]
         statics_identity = self.statics.identity
         if statics_identity is None:
             del payload["statics"]
@@ -637,6 +675,19 @@ class ArwenGlobalConfig:
             del payload["gate_positivity_fixer_max_step_relative"]
         if payload["physics_split"] == "strang":
             del payload["physics_split"]
+        # The absorber's heat booking (on) leaves the identity as it was;
+        # only a config that turns it off carries it.
+        if payload["sponge_heat_booking"]:
+            del payload["sponge_heat_booking"]
+        # The zonal-mean top drag at its default (on since 2026-11-06, the
+        # same convention as the heat booking): only a config that moves it,
+        # or turns it off with base 0, carries it.
+        if (payload["sponge_mean_drag_base_pa"]
+                == default_sponge_mean_drag_base_pa(self.physics_mode)
+                and payload["sponge_mean_drag_time_s"]
+                == DEFAULT_SPONGE_MEAN_DRAG_TIME_S):
+            del payload["sponge_mean_drag_base_pa"]
+            del payload["sponge_mean_drag_time_s"]
         # The two memory levers MEASURED bit-neutral leave the identity at
         # EVERY value, so a run that moves them shares a config hash, a
         # checkpoint lineage and a receipt with the run that does not:
@@ -774,6 +825,7 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         "arwen_global", "grid", "time", "vertical", "initial", "physics",
         "reference_physics", "sponge", "diffusion", "semi_implicit",
         "repair", "gates", "insitu", "statics", "semilag", "memory",
+        "surface_update",
     }
     unknown_tables = sorted(set(raw) - allowed_tables)
     if unknown_tables:
@@ -1113,7 +1165,22 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         raise ValueError("[reference_physics] is read only when physics.mode='reference'")
 
     sponge = _table(raw, "sponge")
-    _unknown(sponge, {"base_pa", "lid_relaxation_time_s"}, "sponge")
+    _unknown(sponge, {"base_pa", "lid_relaxation_time_s", "heat_booking",
+                      "mean_drag_base_pa", "mean_drag_time_s"}, "sponge")
+    sponge_mean_drag_base = _finite(
+        sponge.get("mean_drag_base_pa",
+                   default_sponge_mean_drag_base_pa(physics_mode)),
+        "sponge.mean_drag_base_pa")
+    sponge_mean_drag_tau = _finite(
+        sponge.get("mean_drag_time_s", DEFAULT_SPONGE_MEAN_DRAG_TIME_S),
+        "sponge.mean_drag_time_s")
+    if sponge_mean_drag_base < 0.0 or sponge_mean_drag_tau <= 0.0:
+        raise ValueError(
+            "sponge.mean_drag_base_pa must be nonnegative and "
+            "sponge.mean_drag_time_s positive: a nonpositive time makes the "
+            "drag factor amplify the zonal-mean wind")
+    sponge_heat_booking = _boolean(
+        sponge.get("heat_booking", True), "sponge.heat_booking")
     sponge_base = _finite(sponge.get("base_pa", 5000.0), "sponge.base_pa")
     sponge_lid_tau = _finite(
         sponge.get("lid_relaxation_time_s", 900.0),
@@ -1328,6 +1395,24 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         raise ValueError("all gates must be positive")
 
     insitu = insitu_options_from_table(_table(raw, "insitu"))
+    surface_table = _table(raw, "surface_update")
+    _unknown(surface_table, {"series"}, "surface_update")
+    surface_series = surface_table.get("series")
+    surface_series_sha256 = None
+    if surface_series is not None:
+        surface_series = str(Path(str(surface_series)).expanduser())
+        series_path = Path(surface_series)
+        if not series_path.is_absolute():
+            series_path = source.parent / series_path
+            surface_series = str(series_path)
+        if not series_path.is_file():
+            raise FileNotFoundError(
+                f"surface_update.series {series_path} does not exist; build it with "
+                "`gpuwm-global surface-series <config> --source gdas-analysis ...`")
+        import hashlib
+
+        with series_path.open("rb") as stream:
+            surface_series_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
     statics = _statics_options(_table(raw, "statics"), initial_mode)
 
     memory = _table(raw, "memory")
@@ -1463,6 +1548,9 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         reference_physics=reference_options,
         sponge_base_pa=sponge_base,
         sponge_lid_relaxation_time_s=sponge_lid_tau,
+        sponge_heat_booking=sponge_heat_booking,
+        sponge_mean_drag_base_pa=sponge_mean_drag_base,
+        sponge_mean_drag_time_s=sponge_mean_drag_tau,
         diffusion_enabled=diff_enabled,
         diffusion_order=diff_order, diffusion_efold_s=diff_efold,
         diffusion_preserve_degree=diff_preserve,
@@ -1489,6 +1577,8 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         analysis_fill_grib=analysis_fill_grib,
         analysis_fill_mapping=analysis_fill_mapping,
         insitu=insitu,
+        surface_series=surface_series,
+        surface_series_sha256=surface_series_sha256,
         statics=statics,
         minimum_fold_determinant=minimum_fold_determinant,
         semilag=semilag,

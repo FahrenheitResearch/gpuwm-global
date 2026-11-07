@@ -17,6 +17,19 @@ import os
 from pathlib import Path
 import sys
 
+# BLAS threads under pytest-xdist, set before anything imports numpy.
+# Breakage named: every xdist worker otherwise opens one OpenBLAS thread per
+# core, so -n 8 on a 24-core node runs 192 spinning BLAS threads; on a loaded
+# 24-core host at load 60-90 (2026-11-06) the T767 transform/streaming builds
+# and the IMEX gates sat for more than 53 min and the whole tier hit its timeout.
+# Serial with 8 threads the same 52 tests took 156 s.  A caller's own setting
+# always wins.
+if os.environ.get("PYTEST_XDIST_WORKER"):
+    _workers = max(1, int(os.environ.get("PYTEST_XDIST_WORKER_COUNT") or 1))
+    _threads = str(max(1, (os.cpu_count() or 1) // _workers))
+    for _name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ.setdefault(_name, _threads)
+
 import pytest
 
 #: This repository.  Used for `tools/` and for the packaging declaration, and

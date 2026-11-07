@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.1.4
+
+Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`; proven against
+`gpuwm 2.9.13`.  `tools/measure_boundary.py` reads 237 symbols across 69
+modules with no gap, and all 48 engine seam files are pinned at 2.9.13.
+The companion bundle carries ten Rust doors, unchanged from 0.1.3.
+
+### Fixed
+
+- Surface pressure holds in float32.  The dry 9-day Jablonowski-Williamson
+  steady state at T255 drifted 1.506 hPa in 0.1.3 and now drifts 0.280 hPa
+  (float64: 0.251).  The semi-Lagrangian step advects ln ps as an anomaly
+  about a reference value, the gather sums its taps about the nearest
+  stencil node, the theta analysis is taken about the reference column, and
+  the mass fixer's surface-pressure plane and target are float64.  Nothing
+  else moved to float64.  In a real 10-day T383 forecast the global-mean
+  surface pressure holds to 0.001 hPa.
+- The top model level no longer cools under the physics.  From GDAS
+  2026-10-15 00Z the global-mean potential temperature of the top level
+  (1.0-1.44 hPa) moved -6.07 K a day against the analysis over five days
+  in 0.1.3 at T255 (-9.06 on day 1); it now moves +0.43 K a day at T255
+  and +0.40 at T383, and over a 10-day T383 forecast the top level warms
+  0.06 K a day.  The causes, each measured on a per-process budget of the
+  top levels (`tools/arwen_global_top_budget.py`):
+  - the air above the 1 hPa lid is radiated on log-spaced cap layers with
+    a standard-atmosphere mesosphere, not one isothermal layer;
+  - the radiation reads the CAM zonal-monthly ozone climatology WRF and
+    MPAS-A ship, by date, latitude and pressure, instead of one global
+    median profile (`ozone = "rfmip-median"` keeps the old profile);
+  - the kinetic energy the top absorber removes is booked as heat;
+  - a zonal-mean Rayleigh drag in the top levels is on by default in
+    native-physics forecasts (5-day rate at the lid, cos^2 ramp to 5 hPa,
+    as MPAS-A damps its top); `[sponge] mean_drag_base_pa = 0` turns it
+    off.  The idealized cases (Jablonowski-Williamson, Held-Suarez) stay
+    unforced, so their config hashes do not change.
+- SST, sea ice and greenness are no longer frozen at their cold-start
+  values.  `gpuwm-global surface-series` builds a dated series on the
+  model grid from GDAS analyses (`gdas-analysis`) or from one GFS cycle's
+  own forecast (`gfs-forecast`), decoded and regridded by the Rust doors
+  the cold start uses; `run --surface-series` (or `[surface_update]
+  series`) applies it: SST every step, sea ice at each record, greenness
+  once a day.  Sources are rows of `surface_series_sources.json`.
+- `--streaming on` no longer rebuilds the Legendre tables on the host on
+  every transform call: they come from a pinned host cache built once
+  (T533 sat more than 12 minutes before its first step).
+- The host tier stages a band straight out of its pinned slot with one
+  2-D async copy instead of a single-thread pageable gather on the main
+  thread: 18.9 to 6.67 s a step at T533 on a 16 GB card, the T255
+  checkpoint 134 of 134 arrays bit-identical.
+- The CPU test tier finishes under pytest-xdist: BLAS and OpenMP threads
+  are capped at cores per worker.
+
+### Changed
+
+- Runs on the gpuwm 2.9 engine.  2.9 compiles CuPy kernels in fast
+  numerics by default; the fused-transport bitwise checks are now strict
+  numerics checks (`GPUWM_NUMERICS=strict`).
+- The CAM ozone default moves the config identity of every native-physics
+  experiment, so their config hashes change in this release.
+
+### 16 GB cards
+
+- T383 (35 km) runs resident on a 16 GB card: one band, nothing parked on
+  the host.  A 10-day forecast took 108.9 min (2.24 s a step), 12.10 GiB
+  live, 15,212 MiB on the card (RTX 5070 Ti).  0.1.3 needed two bands with
+  every slice parked and ran at 3.35 s a step.
+- T533 (25 km) runs on a 16 GB card at four bands with every slice parked,
+  `--streaming on --device-allocator async`: 34 min a forecast day,
+  12.81 GiB live.  The door admits that plan from a measured row and
+  refuses the default allocator, which runs out of memory at that plan,
+  naming the two flags.
+
 ## 0.1.3
 
 ### Added
@@ -892,7 +964,7 @@ was previously reachable only from inside the engine's own checkout.
 
 ### New
 
-- `gpuwm-global`, one console script with 49 commands: the forecast door, the
+- `gpuwm-global`, one console script with 50 commands: the forecast door, the
   statics builder, the assimilation door and its five ensemble legs, the render
   tape export, the regional parent bridge, the radiance operators and every
   inspection and validation leg. The engine's `gpuwm global` reached eleven of

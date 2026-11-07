@@ -227,6 +227,11 @@ SEAM: tuple[tuple[str, str], ...] = (
      "through.  It differs from the graded tree by one added token "
      "(CARRIER_SOURCE_CAM_OZONE) and the two lists it appears in; every "
      "name the carried code binds is identical"),
+    ("gpuwm/ingest/wrf_ozone.py",
+     "load_ozone_climatology and _ozone_time_weights: the CAM zonal-monthly "
+     "ozone climatology WRF and MPAS-A ship, read by date, latitude and "
+     "pressure by the carried radiation (core/rrtmgp.py, the default ozone "
+     "from 0.1.4)"),
     ("gpuwm/ingest/soil.py",
      "NOAH_LAYER_THICKNESS_M, the four Noah layer depths every land-surface "
      "step is handed.  The file differs from the graded tree by 165 lines "

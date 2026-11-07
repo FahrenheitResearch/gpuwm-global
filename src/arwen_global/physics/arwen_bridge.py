@@ -99,23 +99,25 @@ class NativeArwenPhysicsBridge:
             "options": self.registration.identity_of(self.adapter_options),
         }
 
-    def _caller_fingerprints(self, exchange: PhysicsExchange) -> dict[str, object]:
+    def _caller_fingerprints(self, exchange: PhysicsExchange, *,
+                             namespace: bool = True) -> dict[str, object]:
         xp = _array_module(exchange.theta)
         rows: dict[str, object] = {}
         for name, value in exchange.prognostics().items():
             rows[f"prognostic.{name}"] = _fingerprint(xp, value)
         for name, value in exchange.surface.arrays().items():
             rows[f"surface.{name}"] = _fingerprint(xp, value)
-        for name, value in exchange.physics_state.arrays.items():
+        for name, value in (exchange.physics_state.arrays.items() if namespace else ()):
             rows[f"physics_state.{name}"] = _fingerprint(
                 _array_module(value), value
             )
         return rows
 
     def _refuse_caller_mutation(
-        self, exchange: PhysicsExchange, before: dict[str, object]
+        self, exchange: PhysicsExchange, before: dict[str, object], *,
+        namespace: bool = True,
     ) -> None:
-        after = self._caller_fingerprints(exchange)
+        after = self._caller_fingerprints(exchange, namespace=namespace)
         changed = sorted(
             name for name in before
             if name not in after or after[name] != before[name]
@@ -159,10 +161,21 @@ class NativeArwenPhysicsBridge:
                     f"surface field {name}"
                 )
 
+    #: Set by the model for a call whose input namespace is consumed
+    #: (dynamics.step's second half on a resident run): the adapter works
+    #: on it in place and the caller-mutation check skips that namespace
+    #: (the prognostics and the surface are still checked).
+    consume_input_namespace = False
+
     def step(self, exchange: PhysicsExchange) -> PhysicsResult:
         exchange.validate()
-        before = self._caller_fingerprints(exchange)
-        result = self.adapter.step(exchange)
+        consume = bool(self.consume_input_namespace)
+        before = self._caller_fingerprints(exchange, namespace=not consume)
+        self.adapter.consume_input_namespace = consume
+        try:
+            result = self.adapter.step(exchange)
+        finally:
+            self.adapter.consume_input_namespace = False
         if not isinstance(result, PhysicsResult):
             raise TypeError(
                 f"native adapter {self.adapter_name!r} must return PhysicsResult"
@@ -174,7 +187,7 @@ class NativeArwenPhysicsBridge:
                     f"native adapter result {name} shape {value.shape} != {expected}"
                 )
         result.physics_state.validate()
-        self._refuse_caller_mutation(exchange, before)
+        self._refuse_caller_mutation(exchange, before, namespace=not consume)
         self._refuse_bad_values(result)
         return result
 

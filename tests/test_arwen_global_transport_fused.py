@@ -29,8 +29,38 @@ def cupy():
     return cp
 
 
+def _strict() -> bool:
+    """Whether this process compiles with strict numerics.
+
+    gpuwm >= 2.9 compiles every CuPy kernel in FAST numerics unless
+    ``GPUWM_NUMERICS=strict`` (owner ruling 2026-10-16): its compile hook
+    (gpuwm/numerics.py) drops the fused kernels' ``-fmad=false``, so NVRTC
+    contracts multiply-adds and the fused sweeps move last bits against
+    the numpy specification (measured on gpuwm 2.9.12, RTX 5090: 182 of
+    65,340 mass words and 24 of 13,068 density words of one periodic
+    sweep, each matching the contracted product exactly).  The bitwise
+    claim is a strict-numerics claim and is graded bitwise there; in fast
+    mode the same expressions are graded to a few float32 ulps.
+    """
+    from gpuwm import numerics
+
+    return numerics.is_strict()
+
+
+#: Fast numerics: one contraction per rounding point over a handful of
+#: sweep sub-steps; 1e-5 of the field scale is about 80 float32 ulps.
+_FAST_RTOL = 1.0e-5
+
+
 def _equal(cp, a, b) -> bool:
-    return bool(cp.array_equal(cp.asarray(a), cp.asarray(b)))
+    a, b = cp.asarray(a), cp.asarray(b)
+    if _strict():
+        return bool(cp.array_equal(a, b))
+    # Norm-wise: a contracted multiply-add moves a word by a few ulps of
+    # the OPERANDS it was formed from (the face fluxes), not of the result,
+    # so a near-zero cell beside a spike is graded against the field scale.
+    scale = float(cp.max(cp.abs(b))) if b.size else 0.0
+    return bool(cp.allclose(a, b, rtol=_FAST_RTOL, atol=_FAST_RTOL * scale))
 
 
 @pytest.mark.parametrize("family", ["random", "spikes", "uniform_polar"])
@@ -66,7 +96,12 @@ def test_advance_fused_returns_the_specification_bits(cupy, family, seed):
         assert _equal(cp, met_f["pseudo_density"], met_p["pseudo_density"])
         for name in tracers:
             assert _equal(cp, out_f[name], out_p[name]), (family, seed, step, name)
-        assert met_f["floor_clip_kg_m2"] == met_p["floor_clip_kg_m2"]
+        if _strict():
+            assert met_f["floor_clip_kg_m2"] == met_p["floor_clip_kg_m2"]
+        else:
+            assert abs(met_f["floor_clip_kg_m2"] - met_p["floor_clip_kg_m2"]) <= (
+                _FAST_RTOL * max(abs(met_p["floor_clip_kg_m2"]), 1.0e-30) + 1.0e-12
+            )
         if family == "uniform_polar":
             assert met_f["substeps_x"] >= 2
             # Uniform to roundoff: the polar band's 24 sub-steps leave the

@@ -83,7 +83,7 @@ PRESSURE_BLEND_HASHES = {
     # is the smoke config's hash with it on), so the WRF-faithful default
     # keeps this pin.
     str(_shipped_configs() / "arwen_global_level5_native_smoke.toml"):
-        "fbf9f036d970136b1f969a3b2a6d0acde47466c853ed126e95a2e237d9d26747",
+        "367431fd86f9b0d7d1338d9fbcaf97ff62cada4cb4e249c2ccc658789cde1836",
 }
 
 
