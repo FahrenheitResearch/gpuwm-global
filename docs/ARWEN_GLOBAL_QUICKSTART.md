@@ -138,6 +138,12 @@ own valid time (the cycle you fetched). The same instant dates the physics:
 the sun the radiation runs on is the analysis's sun. `--start-date` is
 optional and is refused when it disagrees with the analysis.
 
+Beside the state, each tape carries what a reader of WRF history files
+derives its own fields from: `F`, `E`, the two map factors, the land-use
+planes and `W`. `docs/ARWEN_GLOBAL.md` ('What a tape carries for a
+post-processor') says what each one is, and which part of the vertical
+velocity `W` leaves out.
+
 ## 5. Render
 
 ```bash

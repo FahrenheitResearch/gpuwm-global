@@ -6,6 +6,7 @@ import dataclasses
 import functools
 import glob
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -90,6 +91,12 @@ _ABI_FAST_MODEL_HELP = (
     "depths, or run the Rust operator (rw_goes forward) on a columns stream")
 _EXPORT_WRFOUT_HELP = (
     "write render-ready global lat-lon wrfout tapes from checkpoints")
+_EXPORT_MAPPED_PARENT_HELP = (
+    "write regional parent frames from checkpoints: one model-level NetCDF "
+    "file per valid time on a regular lat-lon grid, with the mapping, "
+    "composition and provenance documents the regional engine's "
+    "`gpuwm prep --source mapped` reads, so this forecast can be the initial "
+    "and lateral boundary data of a regional run")
 _STATICS_HELP = (
     "build the static surface fields (land use, soil, vegetation, LAI, "
     "albedo, snow albedo, deep soil temperature) for a config's Gaussian "
@@ -1247,6 +1254,50 @@ def _add_export_wrfout_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_export_mapped_parent_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "config", type=config_argument,
+        help="the experiment TOML the checkpoints were run under (the copy "
+             "the run left beside them), or a shipped experiment's bare name")
+    parser.add_argument(
+        "checkpoints", nargs="+", type=Path,
+        help="checkpoints to export, one frame each, in time order; a "
+             "lateral boundary series needs them uniformly spaced",
+    )
+    parser.add_argument(
+        "--outdir", type=Path, required=True,
+        help="where the frames, the three documents and the receipt are written")
+    parser.add_argument(
+        "--nlat", type=int, default=360,
+        help="latitude points of the regular grid the window is cut from "
+             "(default 360); give the run's own Gaussian row count (576 at "
+             "T383) so the frames are not coarser than the model",
+    )
+    parser.add_argument(
+        "--nlon", type=int, default=720,
+        help="longitude points of the regular grid the window is cut from "
+             "(default 720); give the run's own Gaussian column count (1152 "
+             "at T383)",
+    )
+    parser.add_argument(
+        "--bbox", type=float, nargs=4, default=None,
+        metavar=("LAT_MIN", "LAT_MAX", "LON_MIN", "LON_MAX"),
+        help="write only this lat/lon window (degrees, lon in -180..180, "
+             "west edge first: a window across the date line is refused); "
+             "it must cover the regional domain with a margin",
+    )
+    parser.add_argument(
+        "--start-date", default=None,
+        help="analysis valid time as YYYY-MM-DD_HH:MM:SS; needed only for an "
+             "idealized run with no date, and refused when it disagrees with "
+             "a dated run's own clock",
+    )
+    parser.add_argument(
+        "--overwrite", action="store_true",
+        help="replace this series' frames where they already exist; a folder "
+             "holding other parent frames is refused either way")
+
+
 def _add_abi_score_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "config", type=config_argument,
@@ -1514,6 +1565,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_export_wrfout_arguments(
         sub.add_parser("export", aliases=["export-wrfout"],
                        help=_EXPORT_WRFOUT_HELP))
+    _add_export_mapped_parent_arguments(
+        sub.add_parser("export-mapped-parent", help=_EXPORT_MAPPED_PARENT_HELP))
     _add_microwave_arguments(sub.add_parser("microwave", help=_MICROWAVE_HELP))
     _add_abi_score_arguments(sub.add_parser("abi-score", help=_ABI_SCORE_HELP))
     _add_abi_reference_arguments(sub.add_parser("abi-reference", help=_ABI_REFERENCE_HELP))
@@ -2624,6 +2677,31 @@ def _export_wrfout(args: argparse.Namespace) -> int:
     return 0
 
 
+def _export_mapped_parent(args: argparse.Namespace) -> int:
+    from .mapped_parent_export import RECEIPT_NAME, export_mapped_parent
+
+    cfg = load_config(args.config)
+    receipt = export_mapped_parent(
+        cfg,
+        args.checkpoints,
+        args.outdir,
+        nlat=args.nlat,
+        nlon=args.nlon,
+        bbox=tuple(args.bbox) if args.bbox else None,
+        start_date=args.start_date,
+        overwrite=args.overwrite,
+    )
+    print(json.dumps({
+        "frames": [row["frame"] for row in receipt["frames"]],
+        "valid": [row["valid"] for row in receipt["frames"]],
+        "boundary_interval_seconds": receipt["boundary_interval_seconds"],
+        "documents": {role: row["path"] for role, row in receipt["documents"].items()},
+        "receipt": str(Path(os.path.abspath(args.outdir)) / RECEIPT_NAME),
+        "regional_prep_command": receipt["regional_prep_command"],
+    }, indent=2, sort_keys=True))
+    return 0
+
+
 #: Every outcome this model's doors express as a refusal rather than as a
 #: crash: a config the loader will not accept, a checkpoint that is not
 #: one, an output that already exists, a dependency that is not
@@ -2905,6 +2983,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command in ("export", "export-wrfout"):
             return _export_wrfout(args)
+        if args.command == "export-mapped-parent":
+            return _export_mapped_parent(args)
         if args.command == "go":
             from .go_door import go
 

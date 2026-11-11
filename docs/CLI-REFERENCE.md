@@ -6,7 +6,7 @@ the tool after changing an option and commit what it writes.
 
 `gpuwm-global <command> --help` prints the same text at the terminal.
 
-**50 commands.**
+**51 commands.**
 
 - `gpuwm-global pins`
 - `gpuwm-global physics-manifest`
@@ -40,6 +40,7 @@ the tool after changing an option and commit what it writes.
 - `gpuwm-global export-parent`
 - `gpuwm-global inspect-export`
 - `gpuwm-global export`
+- `gpuwm-global export-mapped-parent`
 - `gpuwm-global microwave`
 - `gpuwm-global abi-score`
 - `gpuwm-global abi-reference`
@@ -517,6 +518,19 @@ the tool after changing an option and commit what it writes.
 | `--start-date` `START_DATE` | analysis valid time as YYYY-MM-DD_HH:MM:SS. Optional: a run that starts from an analysis (or states start_time_utc) stamps its tapes from its own forecast clock, and a value that disagrees with that clock is refused; required only for an idealized run with no date |  |
 | `--overwrite` | replace tapes that already exist |  |
 | `--bbox` `('LAT_MIN', 'LAT_MAX', 'LON_MIN', 'LON_MAX')` | crop the tape to a lat/lon window (degrees, lon in -180..180) |  |
+
+## `gpuwm-global export-mapped-parent`
+
+| option | what it does | default |
+|---|---|---|
+| `config` (positional) | the experiment TOML the checkpoints were run under (the copy the run left beside them), or a shipped experiment's bare name |  |
+| `checkpoints` (positional) | checkpoints to export, one frame each, in time order; a lateral boundary series needs them uniformly spaced |  |
+| `--outdir` `OUTDIR` | where the frames, the three documents and the receipt are written |  |
+| `--nlat` `NLAT` | latitude points of the regular grid the window is cut from (default 360); give the run's own Gaussian row count (576 at T383) so the frames are not coarser than the model | `360` |
+| `--nlon` `NLON` | longitude points of the regular grid the window is cut from (default 720); give the run's own Gaussian column count (1152 at T383) | `720` |
+| `--bbox` `('LAT_MIN', 'LAT_MAX', 'LON_MIN', 'LON_MAX')` | write only this lat/lon window (degrees, lon in -180..180, west edge first: a window across the date line is refused); it must cover the regional domain with a margin |  |
+| `--start-date` `START_DATE` | analysis valid time as YYYY-MM-DD_HH:MM:SS; needed only for an idealized run with no date, and refused when it disagrees with a dated run's own clock |  |
+| `--overwrite` | replace this series' frames where they already exist; a folder holding other parent frames is refused either way |  |
 
 ## `gpuwm-global microwave`
 

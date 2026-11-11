@@ -918,6 +918,111 @@ Nothing about that step is global-specific, and nothing about it is a
 second renderer. The layout is the shipped one,
 `<out>/<run folder>/<domain>/<product>/<valid-day>/`.
 
+### What a tape carries for a post-processor
+
+A reader of WRF history files asks for eight variables by name when it
+derives fields of its own, and every tape carries them beside the state:
+
+| variable | dimensions | units | content |
+|---|---|---|---|
+| `F` | surface | s-1 | Coriolis parameter, 2 Omega sin(latitude), at the rotation rate the model integrates with, 7.292e-5 rad/s (WRF's own constant is 7.2921e-5) |
+| `E` | surface | s-1 | the cosine term, 2 Omega cos(latitude) |
+| `MAPFAC_MX` | surface | none | the tape's `DX` over the distance between neighbouring columns: 1 / cos(latitude) |
+| `MAPFAC_MY` | surface | none | the tape's `DY` over the distance between neighbouring rows: 1 when `--nlon` is twice `--nlat`, as it is by default |
+| `LU_INDEX` | surface | none | land-use category of the nearest model column |
+| `IVGTYP` | surface | none | the same category as an integer |
+| `XLAND` | surface | none | 1 where the nearest model column runs as land or ice, 2 where it runs as open water |
+| `W` | interface | m s-1 | the air's vertical velocity relative to the ground, less one part that is zero at the ground; see below |
+
+"none" is an empty `units` attribute, as WRF writes it.
+
+`DX` and `DY` are both the spacing of the tape's columns at the equator, so
+a derivative along a row is `MAPFAC_MX / DX` times the difference between
+neighbours and a derivative along a column is `MAPFAC_MY / DY` times it. A
+reader that leaves the map factors out differentiates the grid as if a
+degree of longitude were as long at 80 degrees as at the equator.
+
+The three land-use planes are picked from the nearest model column (the
+nearest Gaussian latitude, then the nearest longitude) and are never a
+blend of two. The categories index the land-use table the run's surface
+state names, and the tape carries that table's identity in WRF's global
+attributes `MMINLU`, `ISWATER`, `ISICE` and `ISURBAN` whenever the
+checkpoint names it, with `ISLAKE` beside them. `ISLAKE` is -1, the value
+WRF writes for a land-use field with no separate lake class. The model
+folds the lake class into water, so a lake carries the water category and
+no point of a tape carries the land-use set's own lake number (21 in the
+MODIS set); a reader that masks lakes with `LU_INDEX == ISLAKE` finds none,
+which is what the planes hold. `XLAND` is the model's own land/water rule
+on the same column, so it is 2 exactly where `LU_INDEX` is the water
+category, and a column at least half covered by sea ice is 1 and carries
+the ice category, as in WRF. `LANDMASK` is a different field, the
+bilinearly sampled land fraction at one half: on one 576 x 1152 tape of a
+T383 forecast, 83392 points under sea ice are 1 in `XLAND` and water in
+`LANDMASK`, and 1451 more along coasts and ice edges differ because one
+field is picked and the other blended.
+
+`W` is the air's vertical velocity relative to the ground, positive up, on
+every layer interface from the ground to the model top. On a coordinate
+surface that follows the terrain that velocity has three parts, and the
+tape carries two of them:
+
+- The flux through the surface: the mass flux across the hybrid interface
+  divided by density and gravity. It is zero at the model top and at the
+  ground. This part alone is the `W` of the regional parent frames
+  (`docs/ARWEN_GLOBAL_REGIONAL_PARENT.md`), which are written as they were.
+- The wind's climb along the surface: the wind on the interface (the mean
+  of the two layers it separates) times the slope of the interface's
+  hydrostatic height, the height the tape carries as `PHB`. At the ground
+  this is the lowest layer's wind times the terrain slope, and it is all of
+  `W` there.
+- The rise or fall of the surface itself at a fixed place. This part is
+  left out, because one checkpoint does not determine it. It is zero at
+  the ground.
+
+`tests/test_arwen_global_tape_derivation_fields.py` holds the first two to
+a known answer: air turning as a solid body over a prescribed mountain
+crosses no coordinate surface, and its `W` at the ground is the wind times
+the slope.
+
+One tape was measured: 576 x 1152 points, 12 h into a T383 forecast from an
+analysis valid 2026-11-11 00 UTC, rows within 75 degrees of the equator.
+
+- The climb is 0.016 m/s RMS at the ground and 0.019 to 0.030 m/s from
+  there to 260 hPa. The tape's `W` is 0.033 m/s RMS between the ground and
+  120 hPa; the flux alone differs from it by 0.022 m/s and correlates with
+  it at 0.82. Where the terrain slope is above 0.005, `W` at the ground is
+  0.054 m/s RMS and 0.54 m/s at most.
+- The model's terrain is a truncated spectral series and is not level over
+  the sea (46 m RMS over the tape's open-water points), so `W` at the
+  ground is 0.005 m/s RMS there, not zero. Over the other points it is
+  0.025 m/s.
+- Against an estimate that uses neither the model nor its transform (the
+  flux from a tape of the same checkpoint written before the climb was
+  added, plus the wind times the slope of `PHB` differenced on the tape's
+  own grid) the tape's `W` differs by 0.0012 m/s RMS between the ground and
+  120 hPa, 3.7 % of it, with a correlation of 0.9993. At the ground the
+  difference is 0.0012 m/s on 0.016, correlation 0.9975.
+- The part left out, taken as the change in interface height between tapes
+  3 h apart, is 0.0001 m/s RMS near the ground and 0.0014 m/s at 235 hPa:
+  under 4 % of `W` up to 100 hPa. It is about 8 % at 30 hPa and 30 % at
+  10 hPa, and at 1 hPa it is 0.007 m/s against a `W` of 0.008. Above about
+  10 hPa this `W` is not the velocity relative to the ground. A change
+  faster than 3 h is not in these figures.
+
+The tape says what its `W` is three times: the variable's `description`
+attribute carries it in place of WRF's "z-wind component", the global
+attribute `ARWEN_VERTICAL_VELOCITY` carries the definition, and the export
+receipt repeats it under `vertical_velocity`. The engine's own renderer
+reads `W` as the wind relative to the ground: on a tape that carries `W`,
+`gpuwm render` of engine 2.9.13 offers nine named products it reports as
+missing a field on a 0.1.4 tape, among them vertical velocity at 1 and 3 km
+above ground, 500 hPa omega and three lightning threats. None of the nine
+has been drawn and checked on a global tape.
+
+The export receipt lists the eight under `derivation_fields` and each
+tape's table under `landuse_table`. A tape written by 0.1.4 or earlier
+carries none of the eight, and its receipt has neither entry.
+
 ## Checkpoints and restart
 
 A checkpoint binds the resolved config hash, the model pins, the step and

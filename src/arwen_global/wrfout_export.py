@@ -29,6 +29,7 @@ from .constants import (
     REFERENCE_PRESSURE_PA,
     WATER_SPECIES,
 )
+from .mapped_parent_export import diagnose_interface_w
 from .physics.native_runtime import NATIVE_SURFACE_DIAGNOSTICS_SOURCE
 from .physics.surface_diagnostics import (
     SIMILARITY_SOURCE,
@@ -41,6 +42,7 @@ from .receipt import write_receipt
 from .runner import (
     adopt_checkpoint_clock, build_model_and_cold_state, build_transform,
 )
+from .statics import SURFACE_STATICS_METADATA_KEY, water_columns
 
 _THETA_OFFSET_K = 300.0
 _EARTH_RADIUS_RENDER_M = 6_370_000.0
@@ -151,6 +153,267 @@ def _gaussian_to_regular(grid, target_lat, target_lon):
 
     return GaussianRegridder(
         grid.latitude_deg, grid.longitude_deg, target_lat, target_lon)
+
+
+#: wrfout global attribute saying what the tape's W is.
+VERTICAL_VELOCITY_ATTR = "ARWEN_VERTICAL_VELOCITY"
+#: The tape's ``W`` description.  It is not the regional parent frames':
+#: a frame's W is the flux through the coordinate surfaces alone, which is
+#: what the regional engine was fed and measured with, and the tape adds
+#: the wind's climb along the surfaces to it
+#: (:func:`diagnose_ground_relative_w`).
+TAPE_W_DESCRIPTION = (
+    "vertical velocity of the air relative to the ground at layer "
+    "interfaces: the flux through the hybrid coordinate surfaces plus the "
+    "wind's climb along them (the rise or fall of the surfaces themselves "
+    "at a fixed place is left out; it is zero at the ground)"
+)
+#: What the tape's ``W`` is, in full: the tape's global attribute
+#: (:data:`VERTICAL_VELOCITY_ATTR`) and the export receipt carry these words.
+TAPE_VERTICAL_VELOCITY_POLICY = (
+    "W is the air's vertical velocity relative to the ground at layer "
+    "interfaces, as two of the three parts of Dz/Dt on a hybrid coordinate "
+    "surface. The first is the flux through the surface, "
+    "-(eta-dot dp/d-eta) / (rho g), from the state's own hybrid-layer mass "
+    "continuity: the regional parent frames' W, zero at the model top and "
+    "at the surface. The second is the wind's climb along the surface, "
+    "V . grad z at constant eta, with z the hydrostatic interface height "
+    "(the tape's PH + PHB over g) and V the mean wind of the two layers "
+    "the interface separates. At the ground W is the lowest layer's wind "
+    "times the terrain slope, and zero over level ground. The third part, "
+    "the rate at which the surface itself rises or sinks at a fixed place, "
+    "is left out: one checkpoint does not determine it, and it is zero at "
+    "the ground"
+)
+#: What a wrfout post-processor reads beside the state to derive its own
+#: fields: tape name, the unit string on the tape, content.  WRF writes all
+#: eight in every history file and its readers ask for them by name
+#: (absolute vorticity needs F and the two map factors, a land or lake mask
+#: needs the land-use planes, anything in the vertical needs W), so a tape
+#: without them is read as an unstretched, unrotating, all-land grid or
+#: refused.  The unit strings are the engine writer's for these names; the
+#: page's table and the tape are both held to this one.
+DERIVATION_FIELDS = (
+    ("F", "s-1", "Coriolis parameter, 2 Omega sin(latitude), at the rotation "
+                 "rate the model integrates with"),
+    ("E", "s-1", "the cosine Coriolis term, 2 Omega cos(latitude)"),
+    ("MAPFAC_MX", "", "map factor in x: the tape's DX over the distance "
+                      "between neighbouring columns, 1 / cos(latitude)"),
+    ("MAPFAC_MY", "", "map factor in y: the tape's DY over the distance "
+                      "between neighbouring rows, 1 on a grid with as many "
+                      "degrees per row as per column"),
+    ("LU_INDEX", "", "land-use category of the nearest model column"),
+    ("IVGTYP", "", "the same category as an integer, WRF's vegetation type"),
+    ("XLAND", "", "1 where the nearest model column runs as land or ice, "
+                  "2 where it runs as open water"),
+    ("W", "m s-1", TAPE_W_DESCRIPTION),
+)
+#: The land-use table the categories index, as WRF's global attributes: WRF
+#: attribute name, member of the surface state's category convention
+#: (``statics.CategoryConvention``).  Written when the checkpoint names its
+#: convention; a state that does not is written without them, because a
+#: table this door guessed would be read as the one the model ran with.
+#: ``ISLAKE`` is the one attribute that is not a member of the convention:
+#: see :data:`TAPE_ISLAKE`.
+LANDUSE_TABLE_ATTRS = (
+    ("MMINLU", "landuse_dataset"), ("ISWATER", "water_category"),
+    ("ISLAKE", None), ("ISICE", "ice_category"),
+    ("ISURBAN", "urban_category"),
+)
+#: The tape's ``ISLAKE``.  The convention names the lake class of the
+#: land-use set (21 in MODIS with lakes), but no column of the state
+#: carries it: the statics build folds the lake class into water, so a
+#: lake column runs, and is written, as the water category.  WRF writes -1
+#: for a land-use field with no separate lake class, and a reader that
+#: masks lakes with ``LU_INDEX == ISLAKE`` then finds none, which is what
+#: the planes hold.  The convention's own number here would promise a
+#: class that is on no tape.
+TAPE_ISLAKE = -1
+#: Variable attributes this door states itself.  The engine's writer fills a
+#: variable's description from WRF's Registry, where W is "z-wind
+#: component" and nothing says which parts of it a tape carries.
+TAPE_VARIABLE_ATTRS = {"W": {"description": TAPE_W_DESCRIPTION}}
+#: The engine's writer class as imported.  ``WrfoutWriter`` is the name the
+#: export calls, and a test may rebind it to a stand-in that writes no file.
+_ENGINE_TAPE_WRITER = WrfoutWriter
+
+
+def _state_variable_attributes(writer) -> None:
+    """Put :data:`TAPE_VARIABLE_ATTRS` on the tape's variables.
+
+    A variable's attributes can be written only while the header is open,
+    which on the engine's default container ends at the first data byte.
+    The export therefore declares every variable when it opens the tape
+    (the writer's ``field_schema``) and calls this before the first frame.
+    A tape whose variable is not there to label, or refuses the label, is
+    not written: W under WRF's own description would be read as the whole
+    wind relative to the ground, the part this door leaves out included,
+    with no error anywhere.  A stand-in writer that is not the engine's has
+    no file to label.
+    """
+    if not isinstance(writer, _ENGINE_TAPE_WRITER):
+        return
+    for name, attrs in TAPE_VARIABLE_ATTRS.items():
+        try:
+            variable = writer.ds.variables[name]
+        except (AttributeError, KeyError) as exc:
+            raise RuntimeError(
+                f"the render tape's {name} cannot be given this door's own "
+                f"description ({attrs.get('description', '')!r}) because the "
+                "installed engine's wrfout writer did not declare it before "
+                "the first frame, and its own description for that name is "
+                "another quantity; the tape is not written rather than "
+                "written mislabelled"
+            ) from exc
+        for key, value in attrs.items():
+            variable.setncattr(key, value)
+
+
+def diagnose_ground_relative_w(model, transform, atmosphere):
+    """The air's vertical velocity relative to the ground (m/s) on the
+    model's interfaces, top to surface, on the Gaussian grid.
+
+    w = Dz/Dt, and on a coordinate surface z = z(place, eta, time), so
+
+        w = eta-dot dz/d-eta  +  V . grad z (at constant eta)  +  dz/dt (at
+            constant eta).
+
+    The first term is the regional parent frames' W
+    (:func:`arwen_global.mapped_parent_export.diagnose_interface_w`, taken
+    from there unchanged): the flux through the surface over rho g.  The
+    second is the wind's climb along the surface, and it is what this
+    function adds: the interface heights are the hydrostatic ones the tape
+    writes as PHB (the surface geopotential plus R Tv ln(p below / p above)
+    for every layer underneath), their gradient is taken spectrally, and
+    the wind on an interface is the mean of the two layers it separates
+    (the one layer it bounds at the top and at the ground).  At the ground
+    z is the model's terrain, so W there is the lowest layer's wind times
+    the terrain slope, the kinematic boundary condition, and the flux
+    through the ground stays zero.
+
+    The third term is NOT here.  It is the rate at which the coordinate
+    surface itself rises or sinks at a fixed place, and one checkpoint does
+    not determine it.  It is zero at the ground whatever the flow.
+    """
+    xp = transform.backend.xp
+    through = diagnose_interface_w(model, transform, atmosphere)
+    native = model.grid_state(
+        atmosphere, only=("u", "v", "virtual_temperature", "ln_ratio"))
+    thickness = model.gas_constant * native["virtual_temperature"] * native["ln_ratio"]
+    phi_half = xp.empty_like(through)
+    phi_half[-1] = model.surface_geopotential
+    phi_half[:-1] = model.surface_geopotential + xp.flip(
+        xp.cumsum(xp.flip(thickness, axis=0), axis=0), axis=0)
+    east, north = transform.gradient(transform.forward(phi_half))
+    del phi_half, thickness
+
+    def on_interfaces(wind):
+        out = xp.empty_like(through)
+        out[0] = wind[0]
+        out[-1] = wind[-1]
+        out[1:-1] = 0.5 * (wind[:-1] + wind[1:])
+        return out
+
+    climb = on_interfaces(native["u"]) * east + on_interfaces(native["v"]) * north
+    return through + climb / GRAVITY_M_S2
+
+
+def _nearest_column(grid, target_lat, target_lon):
+    """The nearest model column of every tape point, for a field that must
+    not be blended (a category, a flag).
+
+    ``target_lat`` and ``target_lon`` are the tape's rows and columns as
+    :func:`_gaussian_to_regular` takes them.  The row is the Gaussian
+    latitude nearest in latitude (the last row beyond either end), the
+    column the nearest longitude around the ring; a point exactly midway
+    takes the southern row and the eastern column.  This is a choice of
+    index and no arithmetic on the field, so it is not a render kernel.
+    The returned callable picks from a host array whose last two axes are
+    the Gaussian grid's.
+    """
+    lat = np.asarray(grid.latitude_deg, dtype=np.float64)      # south to north
+    lon = np.asarray(grid.longitude_deg, dtype=np.float64)
+    rows = np.searchsorted(
+        0.5 * (lat[:-1] + lat[1:]), np.asarray(target_lat, dtype=np.float64))
+    spacing = 360.0 / lon.size
+    columns = np.mod(np.floor(np.mod(
+        np.asarray(target_lon, dtype=np.float64) - lon[0], 360.0) / spacing + 0.5
+    ).astype(np.int64), lon.size)
+
+    def pick(values) -> np.ndarray:
+        return np.asarray(values)[..., rows[:, None], columns[None, :]]
+
+    return pick
+
+
+def grid_metric_planes(xlat, *, rotation_rate_s: float,
+                       row_spacing_deg: float,
+                       column_spacing_deg: float) -> dict[str, np.ndarray]:
+    """F, E and the two map factors of a regular lat-lon tape, float32.
+
+    F and E are 2 Omega sin(latitude) and 2 Omega cos(latitude) at
+    ``rotation_rate_s``, the rate the model integrates with, so the tape's
+    absolute vorticity is the model's.  A map factor is the grid distance
+    the tape declares over the distance on the sphere, WRF's definition.
+    The tape declares DX = DY = the spacing of its columns at the equator,
+    so MAPFAC_MX is 1 / cos(latitude) and MAPFAC_MY is the column spacing
+    over the row spacing in degrees: exactly 1 on the usual grid of twice
+    as many columns as rows, which is what WRF's own global lat-lon grid
+    carries.
+    """
+    lat = np.deg2rad(np.asarray(xlat, dtype=np.float64))
+    twice_omega = 2.0 * float(rotation_rate_s)
+    return {
+        "F": (twice_omega * np.sin(lat)).astype(np.float32),
+        "E": (twice_omega * np.cos(lat)).astype(np.float32),
+        "MAPFAC_MX": (1.0 / np.cos(lat)).astype(np.float32),
+        "MAPFAC_MY": np.full(
+            lat.shape, float(column_spacing_deg) / float(row_spacing_deg),
+            dtype=np.float32),
+    }
+
+
+def land_use_planes(surface, nearest) -> dict[str, np.ndarray]:
+    """LU_INDEX, IVGTYP and XLAND from the surface state's own columns.
+
+    ``nearest`` picks the nearest model column of every tape point from a
+    Gaussian-grid array (device or host).  The category is the one the land
+    surface ran with, never a blend of two.  XLAND is the model's own
+    land/water rule (:func:`arwen_global.statics.water_columns`) on that
+    same column: 2 where the column runs as open water, 1 where it runs as
+    land or, at half a cover of sea ice or more, as ice, as WRF sets it.
+    The water category sits on exactly the columns that rule names (the
+    native runtime refuses a state where it does not), so LU_INDEX and
+    XLAND agree at every tape point.  LANDMASK is the bilinear land
+    fraction at one half and may differ from both along a coast and under
+    sea ice.
+    """
+    category = np.rint(nearest(surface.landuse_category))
+    water = water_columns(
+        nearest(surface.land_fraction),
+        sea_ice_fraction=nearest(surface.sea_ice_fraction))
+    return {
+        "LU_INDEX": category.astype(np.float32),
+        "IVGTYP": category.astype(np.int32),   # integer in WRF's Registry
+        "XLAND": np.where(water, 2.0, 1.0).astype(np.float32),
+    }
+
+
+def landuse_table(bundle) -> dict[str, object] | None:
+    """The land-use table the state's categories index, as WRF's global
+    attributes (:data:`LANDUSE_TABLE_ATTRS`), or None for a state whose
+    physics metadata does not name one."""
+    row = bundle.physics_state.metadata.get(SURFACE_STATICS_METADATA_KEY)
+    if not isinstance(row, dict):
+        return None
+    if any(member is not None and member not in row
+           for _attr, member in LANDUSE_TABLE_ATTRS):
+        return None
+    return {
+        attr: (TAPE_ISLAKE if member is None
+               else str(row[member]) if attr == "MMINLU" else int(row[member]))
+        for attr, member in LANDUSE_TABLE_ATTRS
+    }
 
 
 def _stagger_x_periodic(field: np.ndarray) -> np.ndarray:
@@ -342,8 +605,18 @@ def export_wrfout(
     def regrid(values, post: str = "none") -> np.ndarray:
         return sampler(backend.to_numpy(values), post)
 
+    nearest_pick = _nearest_column(transform.grid, lat, lon_sample)
+
+    def nearest(values) -> np.ndarray:
+        return nearest_pick(backend.to_numpy(values))
+
     xlong, xlat = np.meshgrid(lon_out, lat)
     ny_out, nx_out = xlat.shape
+    # The same in every tape of this export: they are the grid's, not the
+    # state's.
+    metric = grid_metric_planes(
+        xlat, rotation_rate_s=model.rotation_rate_s,
+        row_spacing_deg=180.0 / nlat, column_spacing_deg=360.0 / nlon)
     stagger_x = _stagger_x_periodic if bbox is None else _stagger_x_clamped
     dx_m = (360.0 / nlon) * math.pi / 180.0 * _EARTH_RADIUS_RENDER_M
     a_half = np.asarray(cfg.a_half_pa, dtype=np.float64)
@@ -439,6 +712,8 @@ def export_wrfout(
         convective = _convective_rain(bundle, regrid, (ny_out, nx_out))
         land = regrid(surface.land_fraction)
         energy = _surface_energy_planes(bundle, regrid)
+        land_use = land_use_planes(surface, nearest)
+        table = landuse_table(bundle)
         extras = {}
         if extra_planes is not None:
             for name, value in (extra_planes(checkpoint, bundle, regrid) or {}).items():
@@ -477,6 +752,13 @@ def export_wrfout(
             "LANDMASK": (land >= 0.5).astype(np.float32),
             "SINALPHA": np.zeros((ny_out, nx_out), dtype=np.float32),
             "COSALPHA": np.ones((ny_out, nx_out), dtype=np.float32),
+            # What a post-processor derives its own fields from
+            # (DERIVATION_FIELDS).  W is the regional parent frames' W plus
+            # the wind's climb along the coordinate surfaces, and its
+            # description on the tape says so (TAPE_VARIABLE_ATTRS).
+            **metric,
+            **land_use,
+            "W": up(regrid(diagnose_ground_relative_w(model, transform, atmosphere))),
             # WRF's split: RAINC is the cumulus scheme's accumulator, RAINNC
             # the microphysics accumulators.
             "RAINC": convective.astype(np.float32),
@@ -513,10 +795,20 @@ def export_wrfout(
             global_attrs={
                 **global_attrs, SURFACE_DIAGNOSTICS_ATTR: screen_source,
                 WATER_CONVENTION_ATTR: TAPE_WATER_CONVENTION,
+                VERTICAL_VELOCITY_ATTR: TAPE_VERTICAL_VELOCITY_POLICY,
+                **{
+                    name: (value if isinstance(value, str) else np.int32(value))
+                    for name, value in (table or {}).items()
+                },
             },
             soil_layers=_SOIL_LAYERS,
+            # Every variable is declared as the tape is opened, so the
+            # attributes this door states itself go on before the first
+            # frame closes the header (_state_variable_attributes).
+            field_schema=frame,
         )
         try:
+            _state_variable_attributes(writer)
             writer.write_frame(valid.strftime("%Y-%m-%d_%H:%M:%S"), frame)
             writer.close()
         except BaseException:
@@ -530,6 +822,7 @@ def export_wrfout(
             "surface_diagnostics": screen_source,
             "surface_energy_fields": sorted(energy),
             "extra_planes": sorted(extras),
+            "landuse_table": table,
         })
     write_receipt(output / EXPORT_RECEIPT_NAME, {
         "name": cfg.name,
@@ -545,6 +838,10 @@ def export_wrfout(
             else "start-date argument"
         ),
         "water_convention": TAPE_WATER_CONVENTION,
+        # What every tape carries beside the state for a post-processor,
+        # and what its W is.
+        "derivation_fields": [name for name, _units, _text in DERIVATION_FIELDS],
+        "vertical_velocity": TAPE_VERTICAL_VELOCITY_POLICY,
         "tapes": tapes,
     })
     return written
@@ -609,7 +906,11 @@ def _screen_level_fields(cfg, bundle, backend, regrid, temperature, species, u, 
 
 
 __all__ = [
-    "EXPORT_RECEIPT_NAME", "SURFACE_ENERGY_FIELDS", "TAPE_WATER_CONVENTION",
-    "WATER_CONVENTION_ATTR", "export_wrfout", "parse_start_date",
-    "tape_start", "tape_water_fields",
+    "DERIVATION_FIELDS", "EXPORT_RECEIPT_NAME", "LANDUSE_TABLE_ATTRS",
+    "SURFACE_ENERGY_FIELDS", "TAPE_ISLAKE", "TAPE_VARIABLE_ATTRS",
+    "TAPE_VERTICAL_VELOCITY_POLICY", "TAPE_WATER_CONVENTION",
+    "TAPE_W_DESCRIPTION", "VERTICAL_VELOCITY_ATTR", "WATER_CONVENTION_ATTR",
+    "diagnose_ground_relative_w", "export_wrfout", "grid_metric_planes",
+    "land_use_planes", "landuse_table", "parse_start_date", "tape_start",
+    "tape_water_fields",
 ]

@@ -1,5 +1,96 @@
 # Changelog
 
+## 0.1.5
+
+Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.1.4 did;
+proven against `gpuwm 2.9.13`.  `tools/measure_boundary.py` reads 237
+symbols across 69 modules with no gap, and all 48 engine seam files are
+pinned at 2.9.13.  The companion bundle carries ten Rust doors, unchanged
+from 0.1.4.  No model source changed: the source files that differ from
+0.1.4 are the two exporters and the command line, so a forecast, its
+checkpoints and its config hashes are 0.1.4's.
+
+### Added
+
+- `gpuwm-global export-mapped-parent` writes a forecast as the regional
+  engine's mapped NetCDF source: one model-level frame per checkpoint on a
+  regular lat-lon window, with the mapping, composition and provenance
+  documents and a receipt that carries the `gpuwm prep --source mapped`
+  command for them.  The regional engine then builds its initial state and
+  its lateral boundary file from the global forecast with no change on its
+  side.  The frames carry earth winds at mass points from the model's own
+  wind synthesis, interface vertical velocity, the six water species as dry
+  mixing ratios, and the skin, soil, snow and ice state; number
+  concentrations, deep soil temperature and static geography are not
+  carried.  The whole series is checked from the checkpoint headers before
+  the first frame is written (time order, frames that already exist, parent
+  frames in the folder that belong to another export), and every path in
+  the receipt is absolute.  `W` is the air's velocity through the model's
+  coordinate surfaces, zero at the top and at the ground, and is labelled
+  so.
+  `docs/ARWEN_GLOBAL_REGIONAL_PARENT.md` has the file contract, the two
+  regional settings that keep the global forecast the only source of the
+  run's state (`lake_state_source = "forcing"`, `sf_ocean_physics = 0`),
+  and one measured run: a T383 forecast feeding a 3 km regional run for
+  48 h on one 16 GB card, with the boundary row within 0.2 K RMS of the
+  parent at every update while the interior departs from it.  The page
+  also says what that run did not get right: the regional engine puts
+  about a third of the parent's cloud and precipitation on the boundary
+  row with frames 3 h apart, precipitation within about 50 points of the
+  outflow edge is not a forecast, and the regional run's deep soil
+  temperature came from its geography tree's climatology, 2.4 K warmer on
+  average than the global model's own.
+- `tools/arwen_global_regional_parent_check.py` measures whether a regional
+  run is fed by its parent: a regional history file against a parent frame
+  by distance from the lateral edge, and a fed run against a control whose
+  boundary was held still.  No device.
+- `gpuwm-global export` writes eight more variables on every render tape,
+  the ones a reader of WRF history files asks for by name when it derives
+  its own fields: `F` and `E` (the Coriolis terms at the rotation rate the
+  model integrates with), `MAPFAC_MX` and `MAPFAC_MY` (the map factors of
+  the lat-lon grid, 1 / cos(latitude) and the ratio of the column spacing
+  to the row spacing), `LU_INDEX`, `IVGTYP` and `XLAND` (the land-use
+  category and the land/water flag of the nearest model column, never
+  blended), and `W`.  Without the map factors a reader differentiates a
+  lat-lon tape as if it were unstretched, and without the land-use planes
+  it reads every column as land.
+  `W` is the air's vertical velocity relative to the ground in two of its
+  three parts: the flux through the model's coordinate surfaces, which
+  alone is the regional parent frames' `W`, plus the wind's climb along
+  those surfaces, so at the ground it is the lowest layer's wind times the
+  terrain slope.  The rise or fall of the surfaces themselves at a fixed
+  place is left out, because one checkpoint does not determine it; it is
+  zero at the ground.  On one 576 x 1152 tape of a T383 forecast the climb
+  is 0.016 to 0.030 m/s RMS from the ground to 260 hPa, where the flux
+  alone correlates with the tape's `W` at 0.82; the tape's `W` agrees with
+  an estimate differenced from the tape's own heights and winds to
+  0.0012 m/s RMS (correlation 0.9993); and the part left out is under 4 %
+  of `W` up to 100 hPa and as large as `W` near 1 hPa.  The variable's
+  `description` says what it carries in place of WRF's "z-wind component",
+  the tape's `ARWEN_VERTICAL_VELOCITY` attribute carries the definition,
+  and a tape that would be published without that description is not
+  written.  The tape also names the land-use table the categories index
+  (`MMINLU`, `ISWATER`, `ISICE`, `ISURBAN`) when the checkpoint names it,
+  with `ISLAKE = -1`, WRF's value for a field with no separate lake class,
+  because the model folds lakes into the water category.  The export
+  receipt lists the eight under `derivation_fields`.  Every variable a
+  0.1.4 tape carried is unchanged bit for bit.  `docs/ARWEN_GLOBAL.md` has
+  the table and the measurements.
+
+### Known limits
+
+- The regional feed has one measured case, and it was not verified against
+  observations.  Frames of the whole globe have been written only at test
+  size, and a window across the date line is refused.
+- `W` on a render tape is not the whole velocity relative to the ground
+  above about 10 hPa, where the part it leaves out is as large as what it
+  carries.  That part needs the state's tendency, which a checkpoint does
+  not hold.
+- The render catalogue the run plan reads was not measured again.  It is
+  the 2026-09-10 measurement of a tape without `W`, and the nine products
+  `gpuwm render` offers on a tape that carries `W` have not been drawn and
+  checked on a global tape.
+
 ## 0.1.4
 
 Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`; proven against
@@ -964,7 +1055,7 @@ was previously reachable only from inside the engine's own checkout.
 
 ### New
 
-- `gpuwm-global`, one console script with 50 commands: the forecast door, the
+- `gpuwm-global`, one console script with 51 commands: the forecast door, the
   statics builder, the assimilation door and its five ensemble legs, the render
   tape export, the regional parent bridge, the radiance operators and every
   inspection and validation leg. The engine's `gpuwm global` reached eleven of

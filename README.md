@@ -327,7 +327,7 @@ band counts 2 to 32, and 892 of 892 waist comparisons bit-exact on each card
 
 ## The doors
 
-One console script, 50 commands. `gpuwm-global <command> --help` prints every
+One console script, 51 commands. `gpuwm-global <command> --help` prints every
 option; [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) is the same surface on
 one page, generated from the parser.
 
@@ -349,6 +349,7 @@ one page, generated from the parser.
 | `obs fetch`, `obs subscribe`, `obs hours`, `obs summary`, `obs streams`, `obs anchors` | the observation tables: fetch them, subscribe to the live feed, see which hours are covered, what each stream carries and where it is anchored |
 | `microwave` | the ATMS leg: fetch, decode, thin and score microwave radiances |
 | `abi-score`, `abi-reference`, `abi-fast-model` | the GOES ABI infrared operator, its CRTM reference leg and its trained fast model |
+| `export-mapped-parent` | regional parent frames from checkpoints: model-level NetCDF on a regular lat-lon grid with the mapping and composition documents `gpuwm prep --source mapped` reads, so the forecast is the initial and lateral boundary data of a regional run |
 | `export-parent`, `make-regional-target`, `translate-regional-frame`, `make-parent-series` (and their `inspect-` twins) | the one-way bridge that hands a limited-area model its lateral boundaries |
 | `pins`, `physics-manifest`, `transform-check` | the arithmetic identity, the admitted physics adapters, the transform controls |
 | `inspect`, `check-receipt`, `check-migration`, `check-native-evidence`, `check-native-candidate` | validate a checkpoint, a receipt, a migration, a device-qualification record |
@@ -464,6 +465,7 @@ on a different day through a different export and a different render call
 | [ARWEN_GLOBAL_FULL.md](docs/ARWEN_GLOBAL_FULL.md) | the model: dynamics, hybrid coordinate, physics, receipts, and the non-claims |
 | [ARWEN_GLOBAL_DA.md](docs/ARWEN_GLOBAL_DA.md) | the assimilation door, its gates and its grade |
 | [ARWEN_GLOBAL_LEVEL5.md](docs/ARWEN_GLOBAL_LEVEL5.md) | the native CUDA physics suite and its device-admission battery |
+| [ARWEN_GLOBAL_REGIONAL_PARENT.md](docs/ARWEN_GLOBAL_REGIONAL_PARENT.md) | the global forecast as initial and lateral boundary data of a regional run: the command, the file contract, what is and is not carried |
 | [LEVEL3_GLOBAL_SPECTRAL_DYCORE.md](docs/LEVEL3_GLOBAL_SPECTRAL_DYCORE.md) | the spectral dynamical core |
 | [arwen-global-effective-resolution.md](docs/arwen-global-effective-resolution.md) | what the model resolves, as against what its grid spacing says |
 | [arwen-global-ensemble-da.md](docs/arwen-global-ensemble-da.md) | the ensemble filter, its localisation and its inflation |

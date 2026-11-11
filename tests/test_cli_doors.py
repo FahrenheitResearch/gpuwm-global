@@ -23,7 +23,7 @@ EXPECTED = {
     "abi-fast-model", "abi-reference", "abi-score", "assimilate",
     "check-migration", "check-native-candidate", "check-native-evidence",
     "check-receipt", "configs", "cycle", "da", "doctor", "export",
-    "export-parent", "export-wrfout", "fetch-analysis", "fetch-doors", "go",
+    "export-mapped-parent", "export-parent", "export-wrfout", "fetch-analysis", "fetch-doors", "go",
     "inspect",
     "inspect-export", "inspect-parent-series", "inspect-regional-frame",
     "inspect-regional-target", "make-parent-series", "make-regional-target",
