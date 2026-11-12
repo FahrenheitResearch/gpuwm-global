@@ -192,14 +192,17 @@ class ArwenCudaColumnSuite:
             ntiedtke_tiedtke_closure=bool(self.options.ntiedtke_tiedtke_closure),
         )
 
-    def _water_column(self, batch, persistent: PersistentNativeState | None = None):
+    def _water_column(self, batch, persistent: PersistentNativeState | None = None,
+                      *, atmosphere=None):
         xp = batch.xp
         # The batch holds kernel-side dry mixing ratios; the ledger prices
         # the atmosphere in the model's specific-humidity metric so before
         # and after compare like with like AND like what the dycore's own
         # water ledger sees on the returned fields (native_batch docstring;
-        # audit 2026-09-01 NB-3).
-        atmosphere = batch.atmospheric_water_kg_m2()
+        # audit 2026-09-01 NB-3).  ``atmosphere`` is that reading when the
+        # caller already took it on this batch as it stands.
+        if atmosphere is None:
+            atmosphere = batch.atmospheric_water_kg_m2()
         total = atmosphere + batch.surface.water_kg_m2
         total += (
             batch.surface.soil_water_fraction
@@ -498,7 +501,12 @@ class ArwenCudaColumnSuite:
             persistent = PersistentNativeState(
                 batch, self.options,
                 consume=bool(getattr(self, "consume_input_namespace", False)))
-            before_water = self._water_column(batch, persistent)
+            # The atmosphere's column water is read once here and handed to
+            # the runtime, whose PBL booking reads the same unchanged state
+            # (NativePhysicsRuntime.run).
+            atmosphere_water = batch.atmospheric_water_kg_m2()
+            before_water = self._water_column(
+                batch, persistent, atmosphere=atmosphere_water)
             before_energy = self._energy_column(batch)
         if self._runtime is None:
             self._runtime = NativePhysicsRuntime(
@@ -506,6 +514,8 @@ class ArwenCudaColumnSuite:
             )
         self._runtime.observer = self.observer
         self._runtime.profiler = self.profiler
+        self._runtime.offer_atmospheric_water(batch, atmosphere_water)
+        del atmosphere_water
         persistent, schedule = self._runtime.run(
             batch, self._native_cfg(exchange.dt_s), persistent=persistent
         )
@@ -521,26 +531,37 @@ class ArwenCudaColumnSuite:
                 batch.arrays["latitude_deg"].astype(xp.float64)))
         after_water = self._water_column(batch, persistent)
         water_residual = after_water - before_water
-        maximum_water_residual = float(
-            np.max(np.abs(self._host(xp, water_residual)))
-        )
+        # The closure's three readings (the largest residual, the overdraft
+        # test, the largest energy change) are reduced where the planes
+        # live and cross to the host in ONE read, where they were three
+        # synchronisations and two whole planes copied back.  A maximum of
+        # absolute values and an any() are exact wherever they run, so the
+        # numbers are the same; the overdraft is still refused before the
+        # call returns, with the same message.  The clip below runs before
+        # the refusal now, on a batch the refusal then discards.
+        residual_peak = xp.max(xp.abs(water_residual))
         # Close only the measured local accounting residual.  This is explicit
         # and finite; it is not a silent atmospheric clip or an infinite store.
         batch.surface.water_kg_m2 -= xp.asarray(
             water_residual, dtype=batch.surface.water_kg_m2.dtype
         )
-        if bool(xp.any(batch.surface.water_kg_m2 < -1.0e-7)):
-            raise FloatingPointError(
-                "native physics water closure exceeds the explicit surface reservoir"
-            )
+        overdraft = xp.any(batch.surface.water_kg_m2 < -1.0e-7)
         batch.surface.water_kg_m2 = xp.maximum(
             batch.surface.water_kg_m2, 0.0
         )
         after_energy = self._energy_column(batch)
         energy_change = after_energy - before_energy
-        maximum_energy_change = float(
-            np.max(np.abs(self._host(xp, energy_change)))
-        )
+        readings = self._host(xp, xp.stack([
+            xp.asarray(residual_peak, dtype=xp.float64),
+            xp.asarray(overdraft, dtype=xp.float64),
+            xp.asarray(xp.max(xp.abs(energy_change)), dtype=xp.float64),
+        ]))
+        if bool(readings[1] != 0.0):
+            raise FloatingPointError(
+                "native physics water closure exceeds the explicit surface reservoir"
+            )
+        maximum_water_residual = float(readings[0])
+        maximum_energy_change = float(readings[2])
         del before_water, after_water, water_residual, before_energy
         del after_energy, energy_change
         closure.__exit__(None, None, None)

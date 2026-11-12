@@ -2574,6 +2574,15 @@ class RunMemoryPlan:
     #: above (:func:`completed_plan_ceiling`), or ``None`` when the model's
     #: own figure stood.  A figure a run measured carries no model margin.
     ceiling: str | None = None
+    #: The POOL part of ``card_bytes``: what the run holds its CuPy pool to
+    #: (``DevicePeakTracker.hold_pool_to``), so the pool cannot grow past
+    #: the figure the door admitted the run at.  ``None`` when there was no
+    #: card to price against or nothing fits.  For a plan priced at a
+    #: completed run of exactly itself it is the limit that run was held
+    #: to (``pool_limit_bytes``) or, for a run measured with no limit, what
+    #: its pool held; otherwise it is ``card_bytes`` less the out-of-pool
+    #: tax, the live figure times its class's ratio with the model's margin.
+    pool_limit_bytes: int | None = None
 
     @property
     def fits(self) -> bool:
@@ -2602,6 +2611,8 @@ class RunMemoryPlan:
             "spill_chosen_by": self.spill_chosen_by,
             "predicted_live_peak_bytes": int(self.live_peak_bytes),
             "predicted_card_bytes": int(self.card_bytes),
+            "pool_limit_bytes": (None if self.pool_limit_bytes is None
+                                 else int(self.pool_limit_bytes)),
             "spilled_bytes": int(self.spilled_bytes),
             "budget_bytes": self.budget_bytes,
             "free_bytes": self.free_bytes,
@@ -2716,7 +2727,7 @@ def plan_run_memory(cfg, free_bytes: int | None, estimate=None,
     reduced = _reduced_chunk(estimate.radiation_column_chunk)
 
     def priced(bands: int, slices: tuple[str, ...]
-               ) -> tuple[int, int, int, str | None]:
+               ) -> tuple[int, int, int, str | None, int]:
         spilled = sum(int(sizes.get(name, 0)) for name in slices)
         live = banded_device_peak_bytes(estimate, bands, spilled_bytes=spilled)
         # A COMPLETED RUN OF A LIGHTER PLAN BOUNDS THIS ONE FROM ABOVE
@@ -2742,18 +2753,26 @@ def plan_run_memory(cfg, free_bytes: int | None, estimate=None,
             reduced_chunk=reduced, bands=bands,
             truncation=int(estimate.truncation),
             margin=1.0 if capped else None)
+        # THE POOL PART OF THE PRICE is what the run then holds its pool
+        # to, so the price is a figure the run keeps rather than one it
+        # may grow past: a default pool takes a new block from the card
+        # whenever no cached block serves a request, and on a card with
+        # room it grows into the room.
+        pool = max(0, card - OUT_OF_POOL_BYTES) if card else 0
         measured = measured_card_row(estimate, bands, slices)
         if measured is not None:
             card = int(measured["card_bytes_measured"])
+            pool = int(measured.get("pool_limit_bytes")
+                       or measured["held_bytes"])
         return live, card, spilled, (
-                str(ceiling["label"]) if capped else None)
+                str(ceiling["label"]) if capped else None), pool
 
     # No card to decide against: one band, no tier, and the plan says so
     # rather than reporting a choice it did not make.
     if estimate.backend != "cupy" or not free_bytes:
         bands = declared_bands or 1
         slices = tuple(SPILL_SLICES) if mode == "on" else ()
-        live, card, spilled, ceiling = priced(bands, slices)
+        live, card, spilled, ceiling, _pool = priced(bands, slices)
         return RunMemoryPlan(
             bands=bands, spill_slices=slices, live_peak_bytes=live,
             card_bytes=card, spilled_bytes=spilled, budget_bytes=None,
@@ -2819,7 +2838,7 @@ def plan_run_memory(cfg, free_bytes: int | None, estimate=None,
     # shared card actually needs.
     for bands in ladder:
         for slices in candidates():
-            live, card, spilled, ceiling = priced(bands, slices)
+            live, card, spilled, ceiling, pool = priced(bands, slices)
             # The margin is already inside ``card``: it multiplies the
             # LIVE figure the model predicts, not the measured terms that
             # turn it into card bytes (:func:`card_required_bytes`).
@@ -2831,6 +2850,19 @@ def plan_run_memory(cfg, free_bytes: int | None, estimate=None,
             bounded = ("" if ceiling is None else
                        f" (the live figure is the {live / GIB:.2f} GiB a "
                        f"completed run of this shape held: {ceiling})")
+            # WHAT THE CHEAPER PLAN WOULD HAVE NEEDED, AND WHAT THIS ONE
+            # COSTS, when the sizer had to leave one band with nothing
+            # parked: a reader on a card with a desktop on it is told why
+            # the run is slower than the page's one-band row, and by how
+            # much, from the run of exactly this plan when there is one.
+            cost = ""
+            if (bands, slices) != (ladder[0], ()) and not declared_bands \
+                    and mode == "auto":
+                _l, first_card, _s, _c, _p = priced(ladder[0], ())
+                cost = (f"; {ladder[0]} band{'' if ladder[0] == 1 else 's'} "
+                        f"with nothing parked prices at {first_card / GIB:.2f} "
+                        "GiB")
+            cost += _plan_cost_text(measured_card_row(estimate, bands, slices))
             return RunMemoryPlan(
                 bands=bands, spill_slices=slices, live_peak_bytes=live,
                 card_bytes=card, spilled_bytes=spilled,
@@ -2842,10 +2874,12 @@ def plan_run_memory(cfg, free_bytes: int | None, estimate=None,
                 reduced_chunk=reduced,
                 truncation=int(estimate.truncation),
                 ceiling=ceiling,
+                pool_limit_bytes=int(pool) if pool > 0 else None,
                 reason=(
                     f"{bands} latitude band{'' if bands == 1 else 's'} with "
                     f"{parked}, priced at {card / GIB:.2f} GiB of card "
                     f"against {int(free_bytes) / GIB:.2f} GiB free{bounded}"
+                    + cost
                     + ("" if inside else
                        f"; it does NOT leave the quarter-free share "
                        f"({budget / GIB:.2f} GiB), so a second process "
@@ -2854,7 +2888,7 @@ def plan_run_memory(cfg, free_bytes: int | None, estimate=None,
 
     widest_bands = ladder[-1]
     slices = candidates()[-1]
-    live, card, spilled, ceiling = priced(widest_bands, slices)
+    live, card, spilled, ceiling, _pool = priced(widest_bands, slices)
     return RunMemoryPlan(
         bands=None, spill_slices=slices, live_peak_bytes=live,
         card_bytes=card, spilled_bytes=spilled, budget_bytes=budget,
@@ -3162,17 +3196,185 @@ COMPLETED_PLAN_PEAKS = (
         "precision": "float32", "core": "semilag",
         "radiation_column_chunk": 5_000,
         "bands": 1, "spill_slices": (),
-        "peak_used_bytes": 12_576_243_712, "held_bytes": 15_228_574_208,
-        "measured_on": "2026-11-06", "device": "NVIDIA GeForce RTX 5070 Ti",
-        "run": "eight steps at 300 s (two radiation calls) of the T383 GDAS "
-               "2026-10-15 00Z semi-Lagrangian config at the 5,000-column "
-               "chunk, resident, with the dated surface series, on the tree "
-               "whose repairs pass the physics namespace by reference and "
-               "whose second physics half consumes the first half's "
-               "namespace: status pass, "
-               "11.71 GiB live, 14.18 GiB held at the live peak.  The same "
-               "shape read 16.18 GiB live on the 0.1.3 tree (12,500 chunk, "
-               "allocation census, RTX 4090)",
+        # HELD TO A LIMIT, so the card figure is the plan's and not the
+        # card's: the run's pool starts held to ``pool_limit_bytes`` (the
+        # live peak this tree measured over 3 h at this plan) and the limit
+        # yields in 32 MiB steps when an allocation finds no room under it
+        # (device_memory.DevicePeakTracker.hold_pool_to), here to
+        # ``pool_limit_end_bytes``.  Without the limit the tree before it
+        # held 14.89 GiB of pool and 15,624 MiB of card over the same day,
+        # because the pool grows into whatever the card has free.
+        # THE LEVEL A HELD POOL ENDS AT WANDERS from run to run: every lift
+        # after the first steps is the semi-Lagrangian gather's 810 MiB
+        # stack finding no whole free block while 9.33 GiB is live, so the
+        # level is set by how the pool's blocks were cut, not by the
+        # forecast.  Two held days of this plan on the same tree ended at
+        # 13.15 and 13.86 GiB of limit (13,880 and 14,608 MiB of card), and
+        # nine held 3 h runs at 13,642 to 14,384 MiB.  The row is the
+        # heavier day, the largest card figure any held run of the plan
+        # took, so the door prices the plan at what it has been seen to need.
+        "peak_used_bytes": 12_827_594_752, "held_bytes": 14_850_295_296,
+        "pool_limit_bytes": 12_348_030_976,
+        "pool_limit_end_bytes": 14_883_849_728,
+        "card_bytes_measured": 14_608 * 1024 * 1024,
+        "step_s": 2.220,
+        "measured_on": "2026-11-12", "device": "NVIDIA GeForce RTX 5070 Ti",
+        "run": "the 24 h T383 GDAS 2026-11-11 00Z semi-Lagrangian day at "
+               "one band with nothing parked, the card to itself, the pool "
+               "held from 11.50 GiB and lifted 9 times to 13.86 GiB, the "
+               "last time at step 135: 288 steps, 2.220 s a step, status "
+               "pass, 11.95 GiB live, 13.83 held, 14,608 MiB on the card "
+               "(nvidia-smi every 250 ms), every array of all eight "
+               "checkpoints byte-identical to the unheld day of the tree "
+               "before, which ran 2.235 s a step on the same card the same "
+               "day.  A second held day read 13,880 MiB (lifted to 13.15 "
+               "GiB, the last time at step 17) and 2.250 s a step, and "
+               "nine held 3 h runs 13,642 to 14,384 MiB and 2.279 to "
+               "2.298 s a step.  The tree before read 12.10 GiB live, 14.89 "
+               "held and 15,624 MiB over the day, and 11.71 GiB live and "
+               "14.18 held over eight steps (2026-11-06)",
+    },
+    # THE 16 GB DESKTOP PLANS OF THE 34.7 km DAY, MEASURED 2026-11-11 on the
+    # RTX 5070 Ti, the card otherwise empty, nvidia-smi sampled every 250 ms.
+    # The one-band day held 14.89 GiB of pool and 15,624 MiB of card on that
+    # card before its pool was held (the row above is the held run), and a
+    # card that carries a desktop's 1 to 3 GB cannot give it that; the door
+    # priced these two plans at 18.31 GiB of card
+    # (the T533 two-band ratio, x1.4994, on the one-band row's live peak)
+    # and refused them at every free figure, so a T383 run on such a card
+    # was refused outright.  Every run of these plans reproduced the
+    # one-band day's checkpoint byte for byte (133 of 133 arrays, at step 36
+    # and at step 288 of the 24 h days).
+    # card_bytes_measured is the largest per-process nvidia-smi reading over
+    # the runs of the plan that had room to spare: what the run took from
+    # the card, its context included.  A run whose pool reached the card's
+    # free memory measured the card and not the plan (the pool grows into
+    # the room it has), so it completes the plan's evidence without setting
+    # its figure.  step_s is the plan's own; one_band_step_s is the one-band
+    # day's on the same card (its receipt, 2,229 ms a step over 288 steps;
+    # for the two-band row, the held one-band day's 2,220 ms), which is
+    # what the plan costs against when the door prints it.
+    {
+        "label": "T383 L40 on the semi-Lagrangian core, two bands, every slice parked, 5,000-column chunk, the 16 GB card",
+        "truncation": 383, "nlat": 576, "nlon": 1152, "nlev": 40,
+        "precision": "float32", "core": "semilag",
+        "radiation_column_chunk": 5_000,
+        "bands": 2, "spill_slices": ("physics", "surface", "tracers"),
+        # Held to a limit as the one-band row is (pool_limit_bytes, lifted
+        # to pool_limit_end_bytes), on the tree whose radiation and
+        # cumulus peaks were cut; the day, the heavier of the plan's two
+        # held runs.
+        "peak_used_bytes": 9_651_671_552, "held_bytes": 11_165_340_160,
+        "pool_limit_bytes": 9_932_111_872,
+        "pool_limit_end_bytes": 11_198_894_592,
+        "card_bytes_measured": 11_090 * 1024 * 1024,
+        "step_s": 2.852,
+        "one_band_step_s": 2.220,
+        "measured_on": "2026-11-12", "device": "NVIDIA GeForce RTX 5070 Ti",
+        "run": "the 24 h T383 GDAS 2026-11-11 00Z semi-Lagrangian day "
+               "at two bands with physics, surface and tracers parked (2.27 "
+               "GiB in pinned host memory), the card to itself, the pool "
+               "held from 9.25 GiB and lifted 8 times to 10.43, the last "
+               "time at step 56: 288 steps, 2.852 s a step against 2.220 for "
+               "one band held the same way on the same card the same day, "
+               "status pass, 8.99 GiB live, 10.40 held, 11,090 MiB on the "
+               "card, all eight checkpoints byte-identical to the one-band "
+               "day (1,064 of 1,064 arrays).  A 3 h run of the plan read "
+               "10,946 MiB; a day held under 11.73 GiB took 11.10 of it and "
+               "11,840 MiB, so a looser limit is a larger run.  Two more "
+               "days of the plan, chosen by the door with no flag while "
+               "another process held enough of the card to leave 11.59 and "
+               "11.05 GiB free (a 12 GB card stood in for): 10,880 and "
+               "10,972 MiB, 2.858 and 2.871 s a step, every array of all "
+               "nine checkpoints byte-identical to the one-band day.  The "
+               "tree before, unheld: a 24 h day 2.863 s a step, 9.52 GiB live, 11.73 held, 12,486 MiB with another "
+               "process on the card, and 12,058 MiB (24 h) and 12,214 (3 h) "
+               "on the card alone",
+    },
+    {
+        "label": "T383 L40 on the semi-Lagrangian core, four bands, every slice parked, 5,000-column chunk, the 16 GB card",
+        "truncation": 383, "nlat": 576, "nlon": 1152, "nlev": 40,
+        "precision": "float32", "core": "semilag",
+        "radiation_column_chunk": 5_000,
+        "bands": 4, "spill_slices": ("physics", "surface", "tracers"),
+        "peak_used_bytes": 7_830_136_320, "held_bytes": 10_609_800_704,
+        "card_bytes_measured": 10_582 * 1024 * 1024,
+        "step_s": 2.933,
+        "one_band_step_s": 2.229,
+        "measured_on": "2026-11-11", "device": "NVIDIA GeForce RTX 5070 Ti",
+        "run": "the same 24 h day at four bands with every slice parked: 288 "
+               "steps, 2.933 s a step, status pass, 7.29 GiB live, 9.88 held, "
+               "10,582 MiB on the card; a 3 h run of the same plan held 9.68 "
+               "and read 10,374.  Byte-identical to the one-band day at step "
+               "288.  On the tree whose radiation and cumulus peaks were cut "
+               "the door chose this plan with no flag at 10.52 GiB free "
+               "(another process holding the rest, a 12 GB card stood in "
+               "for) and the pool held to this row's 9.88 GiB: 10,322 MiB, "
+               "2.961 s a step, no raise, every array of all nine "
+               "checkpoints byte-identical to the one-band day",
+    },
+    {
+        "label": "T383 L40 on the semi-Lagrangian core, eight bands, every slice parked, 5,000-column chunk, the 16 GB card",
+        "truncation": 383, "nlat": 576, "nlon": 1152, "nlev": 40,
+        "precision": "float32", "core": "semilag",
+        "radiation_column_chunk": 5_000,
+        "bands": 8, "spill_slices": ("physics", "surface", "tracers"),
+        "peak_used_bytes": 7_178_348_032, "held_bytes": 10_496_627_712,
+        "card_bytes_measured": 10_476 * 1024 * 1024,
+        "step_s": 3.271,
+        "one_band_step_s": 2.229,
+        "measured_on": "2026-11-11", "device": "NVIDIA GeForce RTX 5070 Ti",
+        "run": "3 h (36 steps) of the same day at eight bands with every "
+               "slice parked: status pass, 3.271 s a step, 6.69 GiB live, "
+               "9.78 held, 10,476 MiB on the card, byte-identical to the "
+               "one-band day at step 36.  It is here so the four-band row "
+               "does not bound it: priced from that row's live peak at its "
+               "class's x1.1626 the door read 9.22 GiB of card for a plan "
+               "that took 10.23",
+    },
+    {
+        "label": "T383 L40 on the semi-Lagrangian core, two bands, every slice parked, async allocator, 5,000-column chunk, the 16 GB card",
+        "truncation": 383, "nlat": 576, "nlon": 1152, "nlev": 40,
+        "precision": "float32", "core": "semilag",
+        "radiation_column_chunk": 5_000,
+        "bands": 2, "spill_slices": ("physics", "surface", "tracers"),
+        "device_allocator": "async",
+        "peak_used_bytes": 10_224_795_136, "held_bytes": 11_542_724_608,
+        "card_bytes_measured": 11_370 * 1024 * 1024,
+        "step_s": 2.964,
+        "one_band_step_s": 2.229,
+        "measured_on": "2026-11-11", "device": "NVIDIA GeForce RTX 5070 Ti",
+        "run": "3 h (36 steps) of the same day at two bands with every slice "
+               "parked under the driver's async pool: status pass, 2.964 s a "
+               "step, 9.52 GiB live, 10.75 held, 11,370 MiB on the card, "
+               "byte-identical to the one-band day at step 36",
+    },
+    {
+        "label": "T383 L40 on the semi-Lagrangian core, four bands, every slice parked, async allocator, 5,000-column chunk, the 16 GB card",
+        "truncation": 383, "nlat": 576, "nlon": 1152, "nlev": 40,
+        "precision": "float32", "core": "semilag",
+        "radiation_column_chunk": 5_000,
+        "bands": 4, "spill_slices": ("physics", "surface", "tracers"),
+        "device_allocator": "async",
+        # The 24 h day, the heavier of the plan's two days: the driver's
+        # pool takes no limit (CUPY_GPU_MEMORY_LIMIT does not hold it), so
+        # the figure is its allocation pattern's, and over a day it grew
+        # past the 3 h run's 9,196 MiB.
+        "peak_used_bytes": 7_830_136_320, "held_bytes": 9_865_003_008,
+        "card_bytes_measured": 9_772 * 1024 * 1024,
+        "step_s": 3.087,
+        "one_band_step_s": 2.229,
+        "measured_on": "2026-11-12", "device": "NVIDIA GeForce RTX 5070 Ti",
+        "run": "the 24 h T383 GDAS 2026-11-11 00Z semi-Lagrangian day at "
+               "four bands with every slice parked under the driver's async "
+               "pool, the card to itself: 288 steps, 3.087 s a step, status "
+               "pass, 7.29 GiB live, 9.19 held, 9,772 MiB on the card, step "
+               "288 byte-identical to the one-band day (133 of 133 arrays).  "
+               "The same day on the tree whose radiation and cumulus peaks "
+               "were cut read 9,676 MiB and 3.098 s a step, all nine "
+               "checkpoints byte-identical to the one-band day; a 3 h run "
+               "read 9,196 MiB and 3.062 s.  The smallest card figure "
+               "measured over a day at this shape",
     },
     {
         "label": "T533 L40 on the semi-Lagrangian core, thirty-two bands, every slice parked, the ten-step probe of the merged tree",
@@ -3553,12 +3755,20 @@ def run_memory_gate(cfg, *, probe=None) -> dict:
         # plan priced at a completed run of exactly itself is not priced
         # by the model at all, so that refusal's reason does not apply.
         unfitted = None
+        # The ratio quoted beside a card figure a run measured is THAT
+        # run's, not the class ratio the plan was never priced at: the
+        # two-band T383 plan printed x1.4994 borrowed from T533 beside the
+        # 11.93 GiB its own run took (held/live x1.2041).
+        frag = float(measured["held_bytes"]) / float(measured["peak_used_bytes"])
+        frag_evidence = "held over live of the completed run of exactly this plan"
         plan_text += (f"; priced at the {measured['card_bytes_measured'] / GIB:.2f} "
                       f"GiB of card a completed run of exactly this plan "
                       f"took ({measured['label']}, {measured['device']}, "
                       f"{measured['measured_on']})")
     elif not plan.fits:
-        plan_text += _measured_plan_hint(estimate, free)
+        plan_text += _measured_plan_hint(estimate, free, cfg)
+    if plan.fits:
+        plan_text += pool_limit_text(plan, estimate, measured)
     return {
         "verdict": (
             f"memory: {predicted}; "
@@ -3579,32 +3789,136 @@ def run_memory_gate(cfg, *, probe=None) -> dict:
     }
 
 
-def _measured_plan_hint(estimate, free_bytes: int) -> str:
-    """When a refused shape HAS completed on a card with this much free
-    at another streaming/allocator choice, say which, so the refusal names
-    the way through rather than only the wall."""
+def pool_limit_text(plan, estimate, measured=None, environ=None) -> str:
+    """``; the pool is held to X GiB ...``: what the run will hold its pool
+    to, for the door's line, or whose limit stands instead.
 
-    for row in COMPLETED_PLAN_PEAKS:
-        if (row.get("card_bytes_measured")
-                and int(row["truncation"]) == int(estimate.truncation)
-                and int(row["nlev"]) == int(estimate.nlev)
-                and str(row["precision"]) == str(estimate.precision)
-                and int(row["card_bytes_measured"]) <= int(free_bytes)):
-            flags = []
-            if row.get("streaming") and not estimate.streaming:
-                flags.append("--streaming on")
-            alloc = str(row.get("device_allocator", "default"))
-            if alloc != str(getattr(estimate, "device_allocator", "default")):
-                flags.append(f"--device-allocator {alloc}")
-            if int(row["radiation_column_chunk"]) != int(
-                    estimate.radiation_column_chunk):
-                flags.append(f"radiation_column_chunk = "
-                             f"{int(row['radiation_column_chunk'])}")
-            if flags:
-                return (f"; this shape completed on a card with this much "
-                        f"free at {', '.join(flags)} ({row['label']}, "
-                        f"{row['device']}, {row['measured_on']})")
-    return ""
+    Empty for a plan with no pool figure and for an allocator that takes
+    no limit (the driver's async pool and the slab have their own)."""
+
+    from .device_memory import POOL_LIMIT_ENV, environment_pool_limit
+
+    limit = getattr(plan, "pool_limit_bytes", None)
+    if not limit:
+        return ""
+    if str(getattr(estimate, "device_allocator", "default")) != "default":
+        return ""
+    asked = environment_pool_limit(environ)
+    if asked is not None:
+        return (f"; {POOL_LIMIT_ENV}={asked} is set, so the pool keeps that "
+                f"limit and the run sets none of its own (the plan's pool "
+                f"figure is {int(limit) / GIB:.2f} GiB)")
+    if measured is not None and measured.get("pool_limit_bytes"):
+        why = "the limit the completed run of exactly this plan started from"
+        end = measured.get("pool_limit_end_bytes")
+        if end and int(end) > int(measured["pool_limit_bytes"]):
+            why += f" and raised to {int(end) / GIB:.2f} GiB"
+    elif measured is not None:
+        why = "what the pool of the completed run of exactly this plan held"
+    else:
+        why = "the pool part of that figure"
+    return (f"; the pool is held to {int(limit) / GIB:.2f} GiB ({why}) and "
+            f"the limit is raised if the run needs more")
+
+
+def _plan_cost_text(row) -> str:
+    """``; that run took S s a step ...``: what a measured plan costs
+    against the one-band run of its shape on the same card, or ``""``
+    when the row does not carry both figures."""
+
+    if not row or not row.get("step_s") or not row.get("one_band_step_s"):
+        return ""
+    step, one = float(row["step_s"]), float(row["one_band_step_s"])
+    return (f"; that run took {step:.2f} s a step against {one:.2f} s for one "
+            f"band with nothing parked on the same card, "
+            f"{100.0 * (step / one - 1.0):.0f} percent slower")
+
+
+def _measured_plan_flags(estimate, row, declared_bands: int = 0,
+                         host_spill: str = "auto") -> list[str]:
+    """The run flags that turn this run into the plan ``row`` measured.
+
+    A band count and a host tier are named only when the config pinned
+    them, because unpinned the sizer walks to that plan by itself."""
+
+    flags = []
+    if declared_bands and int(row["bands"]) != int(declared_bands):
+        flags.append(f"--latitude-bands {int(row['bands'])}")
+    slices = set(row["spill_slices"])
+    if slices and host_spill == "off":
+        flags.append("--host-spill on" if slices == set(SPILL_SLICES)
+                     else "--host-spill auto")
+    if not slices and host_spill == "on":
+        flags.append("--host-spill auto")
+    if row.get("streaming") and not estimate.streaming:
+        flags.append("--streaming on")
+    alloc = str(row.get("device_allocator", "default"))
+    if alloc != str(getattr(estimate, "device_allocator", "default")):
+        flags.append(f"--device-allocator {alloc}")
+    if int(row["radiation_column_chunk"]) != int(
+            estimate.radiation_column_chunk):
+        flags.append(f"radiation_column_chunk = "
+                     f"{int(row['radiation_column_chunk'])}")
+    return flags
+
+
+def _measured_plan_hint(estimate, free_bytes: int, cfg=None) -> str:
+    """When a refused shape HAS completed on a card with this much free
+    at another band count, host tier, streaming or allocator choice, say
+    which, so the refusal names the way through rather than only the wall.
+
+    Of the measured plans that fit, the fastest is named (the one with the
+    shortest measured step, then the fewest bands).  When none fits, the
+    smallest plan measured at this shape is named with what it took, so a
+    reader on a card with a desktop on it knows how much has to be freed.
+    MEASURED 2026-11-11: T383 L40 at the 5,000-column chunk was refused at
+    every free figure below 14.4 GiB with no plan named, on the card that
+    then ran it at two bands with every slice parked in 12,214 MiB.
+    """
+
+    declared = int(getattr(cfg, "latitude_bands", 0) or 0) if cfg is not None else 0
+    mode = (str(getattr(cfg, "host_spill", "auto") or "auto")
+            if cfg is not None else "auto")
+    rows = [row for row in COMPLETED_PLAN_PEAKS
+            if row.get("card_bytes_measured")
+            and int(row["truncation"]) == int(estimate.truncation)
+            and int(row["nlev"]) == int(estimate.nlev)
+            and str(row["precision"]) == str(estimate.precision)
+            and str(row.get("core", "semilag")) == _estimate_core(estimate)]
+    if not rows:
+        return ""
+
+    def describe(row) -> str:
+        parked = ("every slice parked"
+                  if set(row["spill_slices"]) == set(SPILL_SLICES)
+                  else (", ".join(row["spill_slices"]) + " parked"
+                        if row["spill_slices"] else "nothing parked"))
+        bands = int(row["bands"])
+        return f"{bands} latitude band{'' if bands == 1 else 's'} with {parked}"
+
+    fitting = [row for row in rows
+               if int(row["card_bytes_measured"]) <= int(free_bytes)
+               and _measured_plan_flags(estimate, row, declared, mode)]
+    if fitting:
+        row = min(fitting, key=lambda r: (float(r.get("step_s") or 1e9),
+                                          int(r["bands"])))
+        flags = _measured_plan_flags(estimate, row, declared, mode)
+        return (f"; this shape completed on a card with this much free at "
+                f"{', '.join(flags)}: {describe(row)}, "
+                f"{int(row['card_bytes_measured']) / GIB:.2f} GiB of card "
+                f"({row['label']}, {row['device']}, {row['measured_on']})"
+                + _plan_cost_text(row))
+    smallest = min(rows, key=lambda r: int(r["card_bytes_measured"]))
+    if int(smallest["card_bytes_measured"]) <= int(free_bytes):
+        return ""
+    flags = _measured_plan_flags(estimate, smallest, declared, mode)
+    return (f"; the smallest plan measured at this shape, {describe(smallest)}"
+            + (f" ({', '.join(flags)})" if flags else "")
+            + f", took {int(smallest['card_bytes_measured']) / GIB:.2f} GiB "
+            f"of card ({smallest['label']}, {smallest['device']}, "
+            f"{smallest['measured_on']}), so this card needs "
+            f"{(int(smallest['card_bytes_measured']) - int(free_bytes)) / GIB:.2f} "
+            "GiB more free")
 
 
 def pool_bytes_held_unused() -> int:
@@ -3644,7 +3958,8 @@ def pool_bytes_held_unused() -> int:
 
 
 def refusal_sentence(estimate: GlobalMemoryEstimate, free_bytes: int,
-                     *, config_path, plan: "RunMemoryPlan | None" = None) -> str:
+                     *, config_path, plan: "RunMemoryPlan | None" = None,
+                     cfg=None) -> str:
     """What an undersized card is told, with the failing term named.
 
     The comparison is CARD bytes against free VRAM, and the sentence says
@@ -3688,10 +4003,10 @@ def refusal_sentence(estimate: GlobalMemoryEstimate, free_bytes: int,
             f"exchange, a stacked synthesis or the ledger's first sample -- "
             f"with a failure receipt carrying the peak up to the death")
     tried = "" if plan is None else f"  The sizer tried: {plan.reason}."
-    hint = _measured_plan_hint(estimate, free_bytes)
+    hint = _measured_plan_hint(estimate, free_bytes, cfg)
     if hint:
         # "; this shape completed ..." -> its own sentence after the tried one
-        tried += "  This s" + hint[len("; this s"):] + "."
+        tried += "  " + hint[2].upper() + hint[3:] + "."
     return (
         f"this card cannot hold this configuration: T{estimate.truncation} "
         f"at {estimate.nlon}x{estimate.nlat}x{estimate.nlev} in "

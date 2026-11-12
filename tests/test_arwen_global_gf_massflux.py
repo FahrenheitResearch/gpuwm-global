@@ -251,3 +251,21 @@ def test_the_native_runtime_hands_the_seam_both_switches():
     source = Path(native_runtime.__file__).read_text(encoding="utf-8")
     assert 'extra["resolved_convergence_closure"] = (' in source
     assert "self.options.gf_resolved_convergence_closure" in source
+
+
+def test_a_pass_packs_a_few_tiles_and_never_more_than_the_column_chunk():
+    # Memory only: the kernel is launched a tile at a time whatever a pass
+    # holds, so the pass is a few tiles and the option still bounds it.
+    tile = 17_920                      # 70 SMs x 4 blocks x 64 threads
+    assert gf.gf_pack_columns(131_072, tile) == gf.GF_PACK_TILES * tile
+    assert gf.gf_pack_columns(4_096, tile) == 4_096
+    assert gf.gf_pack_columns(131_072, 1) == gf.GF_PACK_TILES
+    assert gf.gf_pack_columns(1, tile) == 1
+    # A card whose tile is a quarter of the chunk or more packs the chunk,
+    # as before.
+    assert gf.gf_pack_columns(131_072, 32_768) == 131_072
+    ncol = 576 * 1152
+    chunks = gf.gf_column_chunks(ncol, gf.gf_pack_columns(131_072, tile))
+    assert chunks[0][0] == 0 and chunks[-1][1] == ncol
+    assert all(a[1] == b[0] for a, b in zip(chunks, chunks[1:]))
+    assert max(hi - lo for lo, hi in chunks) == gf.GF_PACK_TILES * tile

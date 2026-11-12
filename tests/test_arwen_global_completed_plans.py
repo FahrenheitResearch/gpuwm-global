@@ -28,15 +28,25 @@ T383_EULERIAN_DAY = str(_shipped_configs() / "arwen_global_gdas_t383_native_imex
 ALL = ("physics", "surface", "tracers")
 
 
-def _plan(config, free_gib):
+def _at_chunk(config, chunk):
+    """A shipped config at another radiation chunk.  The shipped T383 day
+    carries 5,000 columns since 2026-11-12; the rows below that were
+    measured at its former 12,500 are held at that chunk here."""
+
     cfg = load_config(config)
+    options = dict(cfg.native_adapter_options, radiation_column_chunk=int(chunk))
+    return dataclasses.replace(cfg, native_adapter_options=options)
+
+
+def _plan(config, free_gib):
+    cfg = load_config(config) if isinstance(config, str) else config
     estimate = sizing.estimate_global_memory(cfg)
     estimate = dataclasses.replace(estimate, backend="cupy")
     return sizing.plan_run_memory(cfg, int(free_gib * GIB), estimate)
 
 
 def test_the_34_7_km_day_is_admitted_on_the_16_gb_card_at_the_plan_that_completed():
-    plan = _plan(T383_DAY, 15.28)
+    plan = _plan(_at_chunk(T383_DAY, 12_500), 15.28)
     assert plan.fits
     assert plan.bands == 2 and plan.spill_slices == ALL
     assert plan.live_peak_bytes == 13_322_662_912
@@ -126,7 +136,7 @@ def test_the_sixteen_band_t383_plan_is_priced_at_its_own_rows_not_a_larger_shape
     # (x1.2201), while the door priced it at 18.30 GiB of card by charging
     # the T533 sixteen-band row's x1.4149 on the two-band day's 12.41 GiB
     # live, and refused rank 1 of a two-card T383 run for it.
-    cfg = dataclasses.replace(load_config(T383_DAY), latitude_bands=16)
+    cfg = dataclasses.replace(_at_chunk(T383_DAY, 12_500), latitude_bands=16)
     estimate = dataclasses.replace(sizing.estimate_global_memory(cfg), backend="cupy")
     ratio, phrase = sizing.pool_fragmentation_for(True, True, False, bands=16, truncation=383)
     assert abs(ratio - 12_746_315_776 / 10_446_974_464) < 1e-9
@@ -141,3 +151,149 @@ def test_the_sixteen_band_t383_plan_is_priced_at_its_own_rows_not_a_larger_shape
     assert plan.live_peak_bytes == 10_446_974_464
     assert plan.card_bytes <= int(15.28 * GIB)
     assert plan.card_bytes < int(13.0 * GIB)
+
+
+# --- the 34.7 km day on a 16 GB card that carries a desktop ---------------
+#
+# MEASURED 2026-11-11 on the RTX 5070 Ti, 24 h days of this shape at the
+# 5,000-column chunk: one band with nothing parked took 15,624 MiB of card,
+# two bands with every slice parked 12,486 and four bands 10,582, every
+# plan byte-identical to the one-band day.  Before those rows the door
+# priced both banded plans at 18.31 GiB of card and refused every T383 plan
+# below 14.36 GiB free, so a card with a desktop on it could not run T383.
+# MEASURED 2026-11-12 with the pool held to a limit: one band 13,880 and
+# 14,608 MiB over two days, priced at the heavier, and two bands 10,946
+# over 3 h and 11,090 over the day, priced at the day.
+
+MIB = 2 ** 20
+
+
+def _t383_16gb():
+    """The shipped 34.7 km day, which carries the 5,000-column radiation
+    chunk every 16 GB plan above was measured at."""
+
+    cfg = load_config(T383_DAY)
+    assert cfg.native_adapter_options["radiation_column_chunk"] == 5_000
+    return cfg
+
+
+def _plan_16gb(free_gib, **changes):
+    cfg = dataclasses.replace(_t383_16gb(), **changes)
+    estimate = dataclasses.replace(sizing.estimate_global_memory(cfg), backend="cupy")
+    assert estimate.radiation_column_chunk == 5_000
+    return cfg, estimate, sizing.plan_run_memory(cfg, int(free_gib * GIB), estimate)
+
+
+@pytest.mark.parametrize("free_gib, bands, slices, card_mib", [
+    (15.6, 1, (), None),          # the card to itself: the fastest plan
+    (14.3, 1, (), None),          # 1.3 GiB taken: one band held to its
+                                  # pool limit still fits
+    (14.0, 2, ALL, 11_090),       # a desktop's 1.6 GiB taken
+    (13.0, 2, ALL, 11_090),       # 2.6 GiB taken
+    (12.0, 2, ALL, 11_090),
+    (11.0, 2, ALL, 11_090),       # 4.6 GiB taken
+    (10.5, 4, ALL, 10_582),
+    (10.4, 4, ALL, 10_582),
+])
+def test_a_card_with_less_free_takes_the_measured_low_memory_plan(free_gib, bands, slices, card_mib):
+    _cfg, _estimate, plan = _plan_16gb(free_gib)
+    assert plan.fits and plan.bands == bands and plan.spill_slices == slices
+    assert plan.bands_chosen_by == "sizer"
+    assert plan.card_bytes <= int(free_gib * GIB)
+    if card_mib is not None:
+        # Priced at what the run of exactly this plan took, not at a ratio
+        # borrowed from T533.
+        assert plan.card_bytes == card_mib * MIB
+        assert "1 band with nothing parked prices at" in plan.reason
+        assert "percent slower" in plan.reason
+
+
+def test_the_two_band_plan_says_what_it_costs():
+    _cfg, _estimate, plan = _plan_16gb(13.0)
+    assert "2.85 s a step against 2.22 s for one band" in plan.reason
+    assert "28 percent slower" in plan.reason
+
+
+def test_more_free_never_buys_a_heavier_plan():
+    previous = None
+    for tenth in range(95, 161):
+        _cfg, _estimate, plan = _plan_16gb(tenth / 10)
+        if not plan.fits:
+            assert previous is None, f"refused at {tenth / 10} GiB after a fit below it"
+            continue
+        key = (plan.bands, len(plan.spill_slices))
+        if previous is not None:
+            assert key <= previous, (tenth / 10, key, previous)
+        previous = key
+    assert previous == (1, 0)
+
+
+def test_below_the_smallest_default_plan_the_refusal_names_the_async_plan():
+    cfg = _t383_16gb()
+    gate = sizing.run_memory_gate(cfg, probe={"free_bytes": int(9.6 * GIB)})
+    assert gate["refuse"] is True
+    sentence = sizing.refusal_sentence(gate["estimate"], gate["free_bytes"],
+                                       config_path=T383_DAY, plan=gate["plan"], cfg=cfg)
+    assert "--device-allocator async" in sentence
+    assert "4 latitude bands with every slice parked" in sentence
+    # Priced at its 24 h day (9,772 MiB), not at its 3 h run (9,196).
+    assert "9.54 GiB of card" in sentence
+
+
+def test_below_every_measured_plan_the_refusal_says_how_much_more_is_needed():
+    cfg = _t383_16gb()
+    gate = sizing.run_memory_gate(cfg, probe={"free_bytes": int(8.0 * GIB)})
+    assert gate["refuse"] is True
+    sentence = sizing.refusal_sentence(gate["estimate"], gate["free_bytes"],
+                                       config_path=T383_DAY, plan=gate["plan"], cfg=cfg)
+    assert "The smallest plan measured at this shape" in sentence
+    assert "--device-allocator async" in sentence
+    assert "1.54 GiB more free" in sentence
+
+
+@pytest.mark.parametrize("changes, flag", [
+    ({"host_spill": "off"}, "--host-spill on"),
+    ({"latitude_bands": 1}, "--latitude-bands 2"),
+])
+def test_a_pinned_resident_plan_that_does_not_fit_is_refused_with_the_plan_that_does(changes, flag):
+    cfg = dataclasses.replace(_t383_16gb(), **changes)
+    gate = sizing.run_memory_gate(cfg, probe={"free_bytes": int(13.0 * GIB)})
+    assert gate["refuse"] is True
+    assert flag in gate["verdict"]
+    sentence = sizing.refusal_sentence(gate["estimate"], gate["free_bytes"],
+                                       config_path=T383_DAY, plan=gate["plan"], cfg=cfg)
+    assert flag in sentence and "2 latitude bands with every slice parked" in sentence
+    assert "28 percent slower" in sentence
+
+
+def test_the_async_allocator_is_priced_at_its_own_runs():
+    _cfg, _estimate, plan = _plan_16gb(9.6, device_allocator="async")
+    assert plan.fits and plan.bands == 4 and plan.spill_slices == ALL
+    assert plan.card_bytes == 9_772 * MIB
+    _cfg, _estimate, plan = _plan_16gb(13.0, device_allocator="async")
+    assert plan.fits and plan.bands == 2 and plan.card_bytes == 11_370 * MIB
+
+
+def test_the_day_at_the_former_chunk_is_pointed_at_the_measured_chunk():
+    # A larger radiation chunk is a larger run: the 5,000-column plans
+    # bound nothing at 12,500 (the shipped day's chunk before 2026-11-12),
+    # and a card the 12,500-column day does not fit is told the one line
+    # that fits it.
+    cfg = _at_chunk(T383_DAY, 12_500)
+    shipped = _plan(cfg, 13.0)
+    assert shipped.card_bytes not in (11_090 * MIB, 10_582 * MIB, 10_476 * MIB)
+    gate = sizing.run_memory_gate(cfg, probe={"free_bytes": int(12.5 * GIB)})
+    assert gate["refuse"] is True
+    assert "radiation_column_chunk = 5000" in gate["verdict"]
+    assert "2 latitude bands with every slice parked" in gate["verdict"]
+
+
+def test_the_shipped_day_on_an_empty_16_gb_card_runs_one_band_with_no_flag():
+    # The 16 GB card reads 15,880 MiB free with nothing else on it
+    # (tests/test_arwen_global_host_spill.py).  At its former 12,500-column
+    # chunk the shipped day was sent to a banded plan there; at 5,000 it
+    # takes the full-speed plan.
+    plan = _plan(T383_DAY, 15_880 / 1024)
+    assert plan.fits and plan.bands == 1 and plan.spill_slices == ()
+    before = _plan(_at_chunk(T383_DAY, 12_500), 15_880 / 1024)
+    assert before.bands != 1 or before.spill_slices != ()

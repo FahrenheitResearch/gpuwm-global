@@ -293,9 +293,17 @@ drag, the dated surface series).
 | T255 | 384 x 768 | 52.1 km | RTX 5070 Ti, 16 GB, alone | **4.28 min** (256.7 s) | 8.70 GiB | 2026-09-06 |
 | T255 | 384 x 768 | 52.1 km | RTX 5070 Ti, bare from the door | 245.8 and 246.0 s | 8.70 GiB | 2026-09-07 |
 | T255 | 384 x 768 | 52.1 km | RTX 5090, shared | 186.8 and 228.9 s | 8.70 GiB | 2026-09-07 |
+| T255 | 384 x 768 | 52.1 km | RTX 5070 Ti, 16 GB, alone | **4.04 min** (242.4 s; 0.747 s a step), the shipped day with no flag, from the GDAS 2026-09-01 00Z analysis; 0.1.6 on the same card the same day 4.83 min (0.914 s a step), byte-identical | 6.70 GiB live, 9,028 MiB on the card (0.1.6: 8.63 GiB, 11,582 MiB) | 2026-11-12 |
 | T383 | 576 x 1152 | 34.7 km | RTX 5090, shared | **5.63 min** (337.9 s) | 15.86 GiB | 2026-09-07 |
 | T383 | 576 x 1152 | 34.7 km | RTX 5070 Ti, 16 GB, alone | **11.8 min** (2.46 s a step; 12.4 min with the cold start), one band, nothing parked on the host | 12.10 GiB live, 15,624 MiB on the card | 2026-11-07 |
 | T383 | 576 x 1152 | 34.7 km | RTX 5070 Ti, 16 GB, alone, 10 days | 108.9 min for 240 h (2.24 s a step) | 12.10 GiB live, 15,212 MiB on the card | 2026-11-06 |
+| T383 | 576 x 1152 | 34.7 km | RTX 5070 Ti, 16 GB, alone | **10.7 and 10.8 min** (2.220 and 2.250 s a step over two days), one band, nothing parked, the pool held from 11.50 GiB and raised to 13.86 and 13.15 | 11.95 GiB live, 14,608 and 13,880 MiB on the card | 2026-11-12 |
+| T383 | 576 x 1152 | 34.7 km | RTX 5070 Ti, 16 GB, alone | **13.7 min** (2.852 s a step), two bands, every slice parked, the pool held from 9.25 GiB and raised to 10.43 | 8.99 GiB live, 11,090 MiB on the card | 2026-11-12 |
+| T383 | 576 x 1152 | 34.7 km | RTX 5070 Ti, 16 GB, 2,270 MiB held by another process | **13.7 min** (2.863 s a step; 14.8 min with the cold start), chosen by the door at 13.02 GiB free with no flag: two bands, every slice parked | 9.52 GiB live, 12,486 MiB on the card | 2026-11-12 |
+| T383 | 576 x 1152 | 34.7 km | RTX 5070 Ti, 16 GB, 4,318 MiB held by another process | **14.1 min** (2.941 s a step; 15.1 min with the cold start), chosen by the door at 11.02 GiB free with no flag: four bands, every slice parked (on the door's figures of 2026-11-11; it now takes two bands there) | 7.29 GiB live, 11,342 MiB on the card (the pool grows into the room it has) | 2026-11-12 |
+| T383 | 576 x 1152 | 34.7 km | RTX 5070 Ti, 16 GB, alone | **14.1 min** (2.933 s a step; 15.1 min with the cold start), `--latitude-bands 4 --host-spill on`, the pool held under 10.0 GiB | 7.29 GiB live, 10,582 MiB on the card | 2026-11-11 |
+| T383 | 576 x 1152 | 34.7 km | RTX 5070 Ti, 16 GB, alone | **14.9 min** (3.098 s a step), `--latitude-bands 4 --host-spill on --device-allocator async` | 7.23 GiB live, 9,676 MiB on the card | 2026-11-12 |
+| T383 | 576 x 1152 | 34.7 km | RTX 5070 Ti, 16 GB, alone | **9.6 min** (578.5 s; 1.805 s a step), the shipped day with no flag, from the GDAS 2026-09-01 00Z analysis: one band, nothing parked, chosen by the door at 15.24 GiB free, the pool held from 11.50 GiB and raised to 13.66; 0.1.6 on the same card the same day 15.3 min (2.981 s a step) at two bands with every slice parked, byte-identical | 11.94 GiB live, 14,392 MiB on the card (0.1.6: 12.00 GiB, 15,142 MiB) | 2026-11-12 |
 | T533 | 801 x 1602 | 25 km | RTX 5090, 32 GB, alone | **15.9 min** (953 s; 2.98 s a step) | 23.23 GiB live, 28.11 held | 2026-09-07 |
 | T533 | 801 x 1602 | 25 km | RTX 5070 Ti, 16 GB, alone | **34.0 min** (6.67 s a step) with `--streaming on --device-allocator async`: four bands, every slice parked | 12.81 GiB live, 15,756 MiB on the card | 2026-11-06 on `gpuwm 2.8.9`; admitted by the door and its first hour rerun on `2.9.13`, 2026-11-07 |
 | T799 | 1200 x 2400 | 17 km | either card | **refused at the door**, before a byte is allocated, with the figure that refuses it | priced 30.31 GiB live | 2026-09-07 |
@@ -314,11 +322,49 @@ time, the tightest by 0.047 GiB (MEASURED 2026-09-06). Where a completed run of
 a lighter plan bounds a heavier one, the door prices at that measurement
 instead of at its model, and the receipt names the run that bounded it.
 
+**A 16 GB card with a desktop on it.** A run holds its CuPy pool to a limit,
+so the pool no longer grows into whatever the card has free: T383 at one band
+took 15,624 MiB of a 16 GB card over a day before the limit and 13,880 and
+14,608 MiB over two days held to it (the pool held from 11.50 GiB and raised
+to 13.15 and 13.86 GiB: where it ends is set by how its blocks were cut, not
+by the forecast), byte-identical, 2.250 and 2.220 s a step against 2.235 for
+the tree before. The door prices it at the heavier day and asks 14.27 GiB free
+for it at the 5,000-column radiation chunk, where it asked 14.93. With less free it
+takes two latitude bands with every slice parked in pinned host memory from
+10.83 GiB free, or four from 10.33, priced at what those plans' own runs took,
+and its line says what the plan costs against one band and what the pool is
+held to. The banded rows above are those plans: 28 and 32 percent slower than
+one band on the same card, 2.27 GiB in pinned host memory, and about 2 GiB
+more host RAM at the peak (7.4 GiB against 5.3). Below 10.2 GiB free the door
+refuses and names `--device-allocator async`, whose four-band day took 9,772
+and 9,676 MiB of the card over two 24 h days at 3.087 and 3.098 s a step,
+byte-identical to the one-band day; the door prices it at the heavier
+(MEASURED 2026-11-12). A `CUPY_GPU_MEMORY_LIMIT` set in the environment
+stands instead of the run's own limit. The shipped T383 semi-Lagrangian day
+carries the 5,000-column radiation chunk these rows were measured at; at the
+12,500 it carried before, the step peaked 0.99 GiB higher live and took 2.42
+to 2.45 s against 2.28 to 2.29 over 3 h, byte-identical (MEASURED
+2026-11-12), and a config that still says 12,500 is pointed at
+`radiation_column_chunk = 5000` by the door's refusal.
+
+**A 12 GB card.** No 12 GB card was measured; the 16 GB card stood in for
+one, with another process holding all but what a 12 GB card leaves free.
+From the door with no flag, 24 h T383 days from the GDAS 2026-11-11 00Z
+analysis: at 11.59 and 11.05 GiB free it chose two bands with every slice
+parked, 10,880 and 10,972 MiB of the card at 2.858 and 2.871 s a step (13.7
+and 13.8 min a forecast day); at 10.52 GiB free it chose four, 10,322 MiB at
+2.961 s (14.2 min). Every array of all nine checkpoints of each day is
+byte-identical to the one-band day (MEASURED 2026-11-12, RTX 5070 Ti). The
+minutes are that card's: a 12 GB card's own step was not measured.
+
 **Banding does not move a bit.** The physics suite runs a latitude band at a
 time, and the ten-step T255 gate of record is byte-identical between one band
 and eight: 309 of 309 checkpoint arrays, on both cards (MEASURED 2026-09-07).
 The host tier is the same: 442 of 442 checkpoint arrays byte-identical with the
-tier off against on (MEASURED 2026-09-07). The banded transforms are exact too:
+tier off against on (MEASURED 2026-09-07). Over a T383 day it holds as well:
+two and four bands with every slice parked reproduce the one-band day's 133
+checkpoint arrays byte for byte at step 288 (MEASURED 2026-11-11 and
+2026-11-12, RTX 5070 Ti). The banded transforms are exact too:
 93 of 93 FFT cases bit-exact at 0 ULP across T255, T383 and T533 crossed with
 band counts 2 to 32, and 892 of 892 waist comparisons bit-exact on each card
 (MEASURED 2026-09-06).

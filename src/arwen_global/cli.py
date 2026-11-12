@@ -426,7 +426,11 @@ def _add_memory_lever_arguments(parser: argparse.ArgumentParser) -> None:
              "(config [memory].device_allocator, default 'default'): "
              "'default' is the CuPy pool the process already carries, which "
              "held the least over what the run had live and cost the least "
-             "wall on both shapes measured on an RTX 5070 Ti 2026-09-06; "
+             "wall on both shapes measured on an RTX 5070 Ti 2026-09-06, "
+             "and which the run holds to the pool figure of the plan the "
+             "door priced, raising that limit when an allocation does not "
+             "fit under it (a CUPY_GPU_MEMORY_LIMIT set in the environment "
+             "stands instead, and the run then sets none of its own); "
              "'slab' takes one contiguous arena before the first model byte "
              "and extends it, cutting it with an exact-fit coalescing free "
              "list, so what the card holds is the arena and no pool's binned "
@@ -1744,7 +1748,7 @@ def _size_the_run(args: argparse.Namespace, cfg, door: str):
     if gate["refuse"]:
         raise GlobalMemoryRefusal(refusal_sentence(
             gate["estimate"], gate["free_bytes"], config_path=args.config,
-            plan=gate.get("plan")))
+            plan=gate.get("plan"), cfg=cfg))
     # The plan the gate priced is the plan the run takes.  The gate read
     # the card BEFORE anything was allocated; the builder would read it
     # after the Legendre tables are on it and choose differently, and a

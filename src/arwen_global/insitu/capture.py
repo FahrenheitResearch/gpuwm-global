@@ -35,6 +35,28 @@ call's close fills the other cards' rows of each buffer and folds their
 maxima over the run's row exchange before it reduces, and the vector is
 the one-card vector.  A whole-grid mark (``band=None``, a hand-driven suite)
 records as it always did, immediately.
+
+ON THE CARD A MARK IS ONE PASS PER FIELD.  The chain below (difference,
+float64 zonal mean, level mean, absolute value, maximum, copy) is about
+3.5 volume passes and ten launches per field per mark, 14.6 ms of a T255
+physics call (measured 2026-11-12 on an RTX 5070 Ti).  Under CuPy, for a
+contiguous ``(nlev, rows, nlon)`` field, one kernel per field reads the
+current and held field once, forms the difference exactly as
+``current - previous`` does (one rounding in the field's dtype), writes
+each (level, row) zonal mean of it in float64 and its maximum absolute
+value, and copies the current field into the held one in the same pass;
+the level mean and the maximum over the (level, row) partials stay
+CuPy's own calls on those small arrays.  A maximum is exact in any
+order, so the max-abs readings are the chain's bits.  The zonal sums are
+accumulated in another order than CuPy's reduction (compensated per
+thread, then a compensated tree), so a mean can differ from the chain's
+in its last bits: the ledger vectors are diagnostics, and the fused mark
+is tested against the chain to a relative 1e-12
+(tests/test_arwen_global_insitu_fused_capture.py).  No prognostic is
+written and none is read for anything but the difference, so the
+forecast is the same bits either way.  A field that is not a contiguous
+three-dimensional float32 or float64 array, and every NumPy mark, takes
+the chain.
 """
 from __future__ import annotations
 
@@ -42,12 +64,111 @@ import time
 
 import numpy as np
 
+from ..spectral.backend import device_cache_key
+
 CAPTURE_FIELDS = ("theta", "qv", "u", "v")
 CAPTURE_STATS = ("mean_change", "max_abs_change")
 CAPTURE_NAMES = tuple(
     f"{field}_{stat}" for field in CAPTURE_FIELDS for stat in CAPTURE_STATS
 )
 START_MARK = "start"
+
+#: Threads per (level, row) line of the fused mark; a power of two.
+_MARK_THREADS = 128
+
+_MARK_SOURCE = r"""
+extern "C" __global__ void arwen_capture_mark_TYPE(
+    const TYPE* __restrict__ current, TYPE* __restrict__ held,
+    double* __restrict__ zonal, TYPE* __restrict__ maxabs,
+    const long long nlon, const long long lines)
+{
+    const long long line = (long long)blockIdx.x;
+    if (line >= lines) return;
+    const TYPE* c = current + line * nlon;
+    TYPE* h = held + line * nlon;
+    __shared__ double s_sum[THREADS];
+    __shared__ double s_err[THREADS];
+    __shared__ TYPE s_max[THREADS];
+    double sum = 0.0, err = 0.0;
+    TYPE peak = (TYPE)0;
+    for (long long i = threadIdx.x; i < nlon; i += THREADS) {
+        const TYPE now = c[i];
+        // The chain's ``current - previous``: one rounding in TYPE.
+        const TYPE delta = now - h[i];
+        h[i] = now;
+        const double d = (double)delta;
+        // Neumaier's compensated sum: the result sits within a rounding
+        // or two of the exact sum whatever the order.
+        const double t = sum + d;
+        if (fabs(sum) >= fabs(d)) err += (sum - t) + d;
+        else err += (d - t) + sum;
+        sum = t;
+        const TYPE a = fabs(delta);
+        // A NaN is sticky, as CuPy's max propagates it.
+        if (!(peak != peak) && (a != a || a > peak)) peak = a;
+    }
+    s_sum[threadIdx.x] = sum;
+    s_err[threadIdx.x] = err;
+    s_max[threadIdx.x] = peak;
+    __syncthreads();
+    for (int width = THREADS / 2; width > 0; width >>= 1) {
+        if (threadIdx.x < width) {
+            const double a = s_sum[threadIdx.x];
+            const double b = s_sum[threadIdx.x + width];
+            const double t = a + b;
+            double e = s_err[threadIdx.x] + s_err[threadIdx.x + width];
+            if (fabs(a) >= fabs(b)) e += (a - t) + b;
+            else e += (b - t) + a;
+            s_sum[threadIdx.x] = t;
+            s_err[threadIdx.x] = e;
+            const TYPE p = s_max[threadIdx.x];
+            const TYPE q = s_max[threadIdx.x + width];
+            s_max[threadIdx.x] = (p != p) ? p : ((q != q || q > p) ? q : p);
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        zonal[line] = (s_sum[0] + s_err[0]) / (double)nlon;
+        maxabs[line] = s_max[0];
+    }
+}
+"""
+
+#: Compiled fused marks, one per (module, device, dtype); see
+#: spectral.backend.device_cache_key.
+_MARK_KERNELS: dict[tuple, object] = {}
+
+
+def _mark_kernel(xp, dtype):
+    name = "double" if np.dtype(dtype) == np.float64 else "float"
+    key = (*device_cache_key(xp), name)
+    kernel = _MARK_KERNELS.get(key)
+    if kernel is None:
+        source = _MARK_SOURCE.replace("TYPE", name).replace(
+            "THREADS", str(_MARK_THREADS))
+        kernel = xp.RawKernel(
+            source, f"arwen_capture_mark_{name}", options=("-fmad=false",))
+        _MARK_KERNELS[key] = kernel
+    return kernel
+
+
+def _fusable(xp, fields, previous) -> bool:
+    """The fused mark runs under CuPy on contiguous three-dimensional
+    float32 or float64 fields whose held copies match them in shape and
+    dtype; anything else takes the chain."""
+    if not hasattr(xp, "RawKernel"):
+        return False
+    for key in CAPTURE_FIELDS:
+        current, held = fields[key], previous[key]
+        if (getattr(current, "ndim", 0) != 3
+                or current.dtype not in (xp.float32, xp.float64)
+                or held.dtype != current.dtype
+                or tuple(held.shape) != tuple(current.shape)
+                or not current.flags.c_contiguous
+                or not held.flags.c_contiguous
+                or current.size == 0):
+            return False
+    return True
 
 
 class ComponentCapture:
@@ -152,6 +273,39 @@ class ComponentCapture:
                 self._pending[name] = entry
                 self._pending_order.append(name)
             buffers, maxima = entry[1], entry[2]
+        if _fusable(xp, fields, self._previous):
+            self._mark_fused(xp, fields, first, last, buffers, maxima)
+        else:
+            self._mark_chain(xp, fields, first, last, buffers, maxima)
+        if band is None:
+            self.records.append((self._call, name, self._vector(xp, buffers, maxima)))
+        else:
+            entry[0] += last - first
+        self.wall_s += time.perf_counter() - started
+
+    def _mark_fused(self, xp, fields, first, last, buffers, maxima) -> None:
+        """One kernel per field: the difference's (level, row) zonal means
+        and maxima, and the held copy brought up to the current field, in
+        one pass (module docstring)."""
+        for key in CAPTURE_FIELDS:
+            current = fields[key]
+            held = self._previous[key]
+            nlev, rows, nlon = (int(v) for v in current.shape)
+            lines = nlev * rows
+            zonal = xp.empty((nlev, rows), dtype=xp.float64)
+            peaks = xp.empty(lines, dtype=current.dtype)
+            _mark_kernel(xp, current.dtype)(
+                (lines,), (_MARK_THREADS,),
+                (current, held, zonal, peaks, np.int64(nlon), np.int64(lines)),
+            )
+            buffers[key][first:last] = xp.mean(zonal, axis=0)
+            band_max = xp.max(peaks)
+            prior = maxima.get(key)
+            maxima[key] = band_max if prior is None else xp.maximum(prior, band_max)
+
+    def _mark_chain(self, xp, fields, first, last, buffers, maxima) -> None:
+        """The specification: CuPy's or NumPy's own reductions, field by
+        field, and a fresh copy of each field held for the next mark."""
         for key in CAPTURE_FIELDS:
             current = fields[key]
             delta = current - self._previous[key]
@@ -163,11 +317,6 @@ class ComponentCapture:
             held = maxima.get(key)
             maxima[key] = band_max if held is None else xp.maximum(held, band_max)
             self._previous[key] = current.copy()
-        if band is None:
-            self.records.append((self._call, name, self._vector(xp, buffers, maxima)))
-        else:
-            entry[0] += last - first
-        self.wall_s += time.perf_counter() - started
 
     def close_call(self, xp) -> None:
         """The banded call's marks have all arrived: reduce every

@@ -117,6 +117,20 @@ def _column_water_kernel(xp):
     return kernel
 
 
+def _flipped_quotient(xp, source, dry):
+    """``ascontiguousarray(float32(source)[::-1]) / dry`` in one pass.
+
+    The level flip and the humidity conversion of one inbound water
+    species were two volume passes (a flipped contiguous copy, then the
+    quotient); one elementwise divide that reads the source flipped and
+    writes a contiguous result is the same float32 divide per element.
+    """
+    value = xp.asarray(resident(xp, source), dtype=xp.float32)
+    out = xp.empty(value.shape, dtype=xp.float32)
+    xp.divide(value[::-1], dry, out=out)
+    return out
+
+
 def mixing_ratio_from_specific_humidity(species):
     """q -> r = q / (1 - q_v) for every per-kg water field in ``species``.
 
@@ -219,9 +233,10 @@ class NativeColumnBatch:
         for index, name in enumerate(WATER_SPECIES):
             if index + 1 < len(order):
                 prefetch(getattr(exchange, order[index + 1]))
-            value = qv if name == "qv" else volume(getattr(exchange, name))
-            arrays[name] = xp.ascontiguousarray(value / dry)
-            del value
+            if name == "qv":
+                arrays[name] = xp.ascontiguousarray(qv / dry)
+                continue
+            arrays[name] = _flipped_quotient(xp, getattr(exchange, name), dry)
         del qv, dry
         for index, name in enumerate(NUMBER_MOMENTS):
             step = len(WATER_SPECIES) + index + 1
@@ -350,10 +365,17 @@ class NativeColumnBatch:
         out = {}
         for name in ("u", "v", "theta"):
             out[name] = self.to_global(take(name))
+        # The quotient and the level flip in one pass (one elementwise
+        # divide reading both operands flipped and writing a contiguous
+        # result): the same float32 divide per element as dividing and
+        # then flipping, without the intermediate volume.
+        moist_flipped = moist[::-1]
         for name in WATER_SPECIES:
-            out[name] = self.to_global(
-                xp.asarray(take(name), dtype=xp.float32) / moist
-            )
+            value = xp.asarray(take(name), dtype=xp.float32)
+            result = xp.empty(value.shape, dtype=xp.float32)
+            xp.divide(value[::-1], moist_flipped, out=result)
+            out[name] = result
+            del value
         for name in NUMBER_MOMENTS:
             out[name] = self.to_global(take(name))
         return out

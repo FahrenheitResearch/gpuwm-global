@@ -229,6 +229,24 @@ def gf_column_chunks(ncol: int, chunk: int) -> list[tuple[int, int]]:
     return [(lo, min(lo + chunk, ncol)) for lo in range(0, ncol, chunk)]
 
 
+#: Tiles packed per pass.  ``column_chunk`` BOUNDS a pass and this sizes it:
+#: the kernel is launched a tile at a time whatever the pass holds, so a
+#: pass wider than a few tiles buys no launch and holds its input and
+#: output blocks (15 and 16 lanes of every level) for columns that are
+#: waiting.  MEASURED 2026-11-12 at T383 L40 on an RTX 5070 Ti (tile
+#: 17,920 columns, allocation census): at the 131,072-column bound the two
+#: blocks were 0.61 GiB at the step's live peak, which this scheme set;
+#: packed GF_PACK_TILES tiles at a time they are 0.33.  Column-independent,
+#: so it moves memory and nothing else.
+GF_PACK_TILES = 4
+
+
+def gf_pack_columns(column_chunk: int, tile: int) -> int:
+    """Columns packed per pass: :data:`GF_PACK_TILES` tiles, and never
+    more than ``column_chunk``."""
+    return int(max(1, min(int(column_chunk), GF_PACK_TILES * int(tile))))
+
+
 def gf_tile_columns(fn, ncol: int) -> int:
     """Columns to keep in flight: enough to fill the card, and no more.
 
@@ -429,8 +447,9 @@ class GrellFreitas:
         # slices below are contiguous views, so the kernel indexes them
         # exactly as before, and a column's result does not depend on which
         # chunk or tile carried it.
-        chunks = gf_column_chunks(ncol, self.column_chunk)
-        tile = gf_tile_columns(fn, max(hi - lo for lo, hi in chunks))
+        tile = gf_tile_columns(fn, min(int(ncol), int(self.column_chunk)))
+        chunks = gf_column_chunks(
+            ncol, gf_pack_columns(self.column_chunk, tile))
         ws = cp.empty(gf_workspace_floats(nz, tile), dtype=DTYPE)
         out_names = ("rthcuten", "rqvcuten", "rqccuten", "rqicuten")
         out = {name: cp.empty((nz, ncol), dtype=DTYPE) for name in out_names}

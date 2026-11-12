@@ -601,6 +601,16 @@ than copied equations, in this fixed order:
 RTE+RRTMGP -> MM5 SFCLAY -> Noah LSM -> YSU PBL -> Grell-Freitas cumulus -> Morrison two-moment
 ```
 
+Radiation fires on its own clock (`radiation_interval_s`: 3000 s in the
+T255 configs, 2100 s at T383) and walks the grid in
+`radiation_column_chunk` columns. The chunk is a memory setting and does
+not set the solver's speed: the two RTE solvers launch over spans of about
+SMs x 1024 / 32 columns whatever the chunk is, and the shortwave runs the
+sunlit columns only. Both give the bytes the whole-chunk, every-column
+driver gave (`tests/test_rrtmgp_column_spans_cuda.py`). On the RTX 5070 Ti
+a call is 0.96 s at T255 (chunk 12,500) and 2.17 s at T383 (chunk 5,000),
+against 2.26 and 4.30 s before (the changelog has the runs).
+
 Grell-Freitas is default on; `cumulus = "none"` removes it. The adapter
 owns the top-to-surface reversal and the contiguous FP32 packing at the
 boundary, and that conversion is part of its arithmetic identity. A native
@@ -1128,6 +1138,23 @@ and the cuBLAS and cuFFT workspaces. Ten measurements spanning a
 sixteenfold grid move by a third of a gigabyte, so it is charged flat at
 the largest of them, 0.7437 GiB, rather than scaled through points that do
 not trend.
+
+**The pool is held to the plan's figure.** A CuPy pool keeps every block it
+has been given and asks the card for another whenever no cached block serves
+a request, so on a card with room it grows into the room: the T383 day at one
+band held 14.89 GiB of pool around 12.10 GiB live and took 15,624 MiB of a
+16 GB card. The run now sets the pool's limit before its first device byte
+(`DevicePeakTracker.hold_pool_to`) to the pool figure of the plan the door
+chose, and an allocation that finds no room under it raises the limit by what
+it needs and 32 MiB; the receipt's `device_memory.pool_limit` row counts the
+raises. A `CUPY_GPU_MEMORY_LIMIT` set in the environment stands instead, and
+the `async` and `slab` allocators are left alone. Where a held pool ends is
+set by how its blocks were cut rather than by the forecast: at T383 every
+raise after the first steps is the semi-Lagrangian gather's 810 MiB stack
+finding no whole free block while 9.33 GiB is live, and two held days of the
+same plan ended at 13,880 and 14,608 MiB of card (MEASURED 2026-11-12, RTX
+5070 Ti), so the door prices a held plan at the heaviest of its runs.
+`tests/test_arwen_global_pool_limit.py` holds the rules on the CPU.
 
 Charging neither is what the door used to do, and the concrete breakage is
 on record: at T533 L40 on a 32 GiB RTX 5090 it printed 24.45 GiB against

@@ -62,11 +62,18 @@ surface_water_kg_m2 = 500.0
 # grid-spacing-dependent branches and Grell-Freitas its scale-aware closure at
 # this grid's equatorial spacing; cumulus = "gf" is the adapter default
 # (shallow arm on), so it is not repeated in the options mapping.
-# radiation_column_chunk is the tree's own sizing for this truncation.
+# radiation_column_chunk is 5,000 columns at this truncation, as at T533.
+# MEASURED 2026-11-12 on an RTX 5070 Ti, 3 h of the T383 day from the GDAS
+# 2026-11-11 00Z analysis: the 12,500 this config carried before peaked
+# 0.99 GiB higher live (12.49 GiB against 11.51) and took 2.42 to 2.45 s a
+# step against 2.28 to 2.29, and every checkpoint array was byte-identical
+# at both chunks.
+# The chunk is in the config hash, so a checkpoint written under 12,500
+# restarts under a config that says 12500.
 [physics]
 mode = "arwen-native"
 native_adapter_name = "arwen-cuda-column-suite-v1"
-native_adapter_options = { acknowledgement = "device-pending-arwen-native-physics-v1", start_time_utc = "2026-09-01T00:00:00Z", radiation = "rrtmgp", radiation_interval_s = 2100.0, radiation_column_chunk = 12500, radiation_validation_mode = "fused", surface_layer = "sfclay", sfclay_option = 1, land_surface = "noah", land_surface_interval_s = 300.0, pbl = "ysu", ysu_topdown_pblmix = 1, microphysics = "morrison", morr_rimed_ice = 1, dx_m = 34700.0 }
+native_adapter_options = { acknowledgement = "device-pending-arwen-native-physics-v1", start_time_utc = "2026-09-01T00:00:00Z", radiation = "rrtmgp", radiation_interval_s = 2100.0, radiation_column_chunk = 5000, radiation_validation_mode = "fused", surface_layer = "sfclay", sfclay_option = 1, land_surface = "noah", land_surface_interval_s = 300.0, pbl = "ysu", ysu_topdown_pblmix = 1, microphysics = "morrison", morr_rimed_ice = 1, dx_m = 34700.0 }
 
 # The semi-Lagrangian core's own drain (config.SEMILAG_DIFFUSION_ORDER,
 # MEASURED 2026-09-07 on the dry T255 ladder): order 16 at 12 min at the

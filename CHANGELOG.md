@@ -1,5 +1,246 @@
 # Changelog
 
+## 0.1.7
+
+Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.1.6 did;
+proven against `gpuwm 2.9.13`.  `tools/measure_boundary.py` reads 240
+symbols across 71 modules with no gap, and all 48 engine seam files are
+pinned at 2.9.13.  The companion bundle carries ten Rust doors, unchanged
+from 0.1.6.  No forecast bit moves: the radiation driver and the physics
+suite's bookkeeping do the same arithmetic on fewer launches, fewer
+columns and fewer transfers, and the sizer, the device-memory hook, the
+pool the run and cycle commands hold, the radiation's cloud finalize and
+the cumulus scheme's packing change memory only.  Every config hash is
+0.1.6's except the two T383 semi-Lagrangian configs', whose radiation
+chunk moved.
+
+### Measured together
+
+- The shipped configs with no edit, 24 h from their GDAS 2026-09-01 00Z
+  analysis, on one RTX 5070 Ti 16 GB with nothing else on it, this tree
+  and 0.1.6 back to back on 2026-11-12 (wall from the receipt, card from
+  nvidia-smi every 250 ms against the run's own process):
+  - `arwen_global_gdas_t383_native_sl_si_24h`: the door chose one band
+    with nothing parked at 15.24 GiB free; 1.805 s a step, 578.5 s, 14,392
+    MiB of card, 11.94 GiB live, the pool held from 11.50 GiB and raised
+    7 times to 13.66.  0.1.6's door ran its 12,500-column copy at two
+    bands with every slice parked (2.27 GiB in host memory): 2.981 s a
+    step, 918.7 s, 15,142 MiB, 12.00 GiB live.
+  - `arwen_global_gdas_t255_native_sl_si_24h`: one band both; 0.747 s a
+    step, 242.4 s, 9,028 MiB, 6.70 GiB live (the pool never raised),
+    against 0.914 s, 289.9 s, 11,582 MiB and 8.63 GiB.
+  Every array of the nine T255 checkpoints is byte-identical to 0.1.6's,
+  archive hash included (1,107 arrays).  The T383 days differ in their
+  chunk and so in their config hash, and in nothing else: 575 of 575
+  arrays over five checkpoints are byte-identical.  A 3 h T383 run is
+  byte-identical, archive hash included, to 0.1.6 run at the 5,000-column
+  chunk (133 of 133 at step 36).  Stopped at step 18 and restarted, both
+  truncations end at step 36 identical to the straight run, archive hash
+  included.  Four one-band T383 runs of this tree took 13,706 to 14,518
+  MiB of the card, under the 14,608 MiB the door prices the plan at.
+- A 0.1.6 checkpoint continued by this tree, same card, same day: the T255
+  day's step 36 ends at step 72 identical to this tree's straight day,
+  archive hash included.  The T383 day's step 72 is refused under the
+  shipped config ("checkpoint config identity does not match this run",
+  the chunk moved); under a copy that says `radiation_column_chunk =
+  12500` the door took two bands with every slice parked and the run
+  ended at step 144 with 133 of 133 arrays byte-identical to this tree's
+  own day.
+
+### Changed
+
+- A radiation call is faster at the same bits.  The two RTE solvers launch
+  over column spans of about SMs x 1024 / 32 columns (2,240 on a 70-SM
+  card), so their g-point tile lands on 32 and they take the folding path
+  whatever `radiation_column_chunk` is; the chunk had set the tile, and at
+  12,500 and 5,000 columns it put both solvers on the partial-writing path.
+  The shortwave loop runs the sunlit columns only; a dark column's
+  shortwave was solved with the sun at the zenith and then zeroed, and
+  keeps the zero it was given.  Measured on the RTX 5070 Ti with the
+  profiler's device time, two calls a run, each run against the 0.1.6
+  source on the same card in the same sitting:
+  - T255, `radiation_column_chunk = 12500`, GDAS 2026-11-11 00Z, 21 steps:
+    2.260 and 2.265 s a call before, 0.965 and 0.962 s after (the spans
+    alone 1.327, the sunlit columns alone 1.661 and 1.701).  A step that
+    fires radiation went from 2.96 to 1.67 s; an ordinary step did not
+    move (700 against 695 ms, median of 18).
+  - T383, `radiation_column_chunk = 5000` (the chunk the shipped T383
+    semi-Lagrangian configs now carry), GDAS 2026-11-10 18Z, 15 steps:
+    4.274 and 4.332 s a call before, 2.169 and 2.169 s after; a
+    radiation step 5.89 to 3.75 s.  The run's own card
+    reading peaked at 14,996 MiB against 15,054 before, under the same
+    CuPy pool cap.
+  Every one of the 134 arrays of the step-21 (T255) and step-15 (T383)
+  checkpoints is byte-equal to the 0.1.6 run's, for both changes together
+  and each alone, and a run restarted at step 11 (T255) or step 8 (T383)
+  ends byte-equal to the straight run.  `GPUWM_RTE_COLUMN_SPAN` (columns)
+  and `GPUWM_RRTMGP_DARK_COLUMNS=solve` are measurement overrides that put
+  either part back, so the two can be interleaved in one session.
+  `tests/test_rrtmgp_column_spans.py` holds the spans and the sunlit chunks
+  to known answers on the CPU, and `tests/test_rrtmgp_column_spans_cuda.py`
+  holds both solvers to byte equality against one launch on the card,
+  over one column, either side of a span, the shipped chunks and forced
+  odd widths.
+- The native physics suite spends less of each call outside its schemes.
+  The in-situ ledger's component capture marks each field with one kernel
+  pass (the difference, the float64 zonal means, the max-abs and the held
+  copy in one read) where it ran about ten launches and three and a half
+  volume passes per field per mark; a call takes five column-water
+  integrals where it took eight, because three were readings of a state
+  another booking had just read; the layer thicknesses are built once per
+  call, not five times; the closure's three readings cross to the host in
+  one transfer; and the batch flips and converts each water species in
+  one pass each way.  MEASURED on the RTX 5070 Ti, 2026-11-12, the shipped
+  T255 native semi-Lagrangian config from its GDAS 2026-09-01 00Z
+  analysis, 13 steps with ten profiled after two warm-up steps
+  (`--profile-steps 10`), this change alone against 0.1.6 interleaved
+  twice in one sitting: the median step 678.2 and 672.0 ms of device time
+  before, 631.6 and 631.0 after; the first physics call 171.0 and 170.4 ms
+  against 150.0 and 149.3, the second 160.9 and 160.5 against 138.8 and
+  138.7; 12.98 MB in 40.1 transfers a step to the host against 5.90 MB in
+  38.1.  The step-13 checkpoints are byte-identical, archive hash included.
+  `tests/test_arwen_global_native_shared_readings.py` runs two suite calls
+  of the moist smoke configuration and compares every array and
+  diagnostic, `array_equal`, against the same calls with every reading
+  taken fresh as 0.1.6 took it.  The ledger's capture means are float64
+  sums in another order, so they can move in their last bits; the
+  max-abs readings cannot.  `tests/test_arwen_global_insitu_fused_capture.py`
+  (on a card) holds the fused mark to the chain it replaced, max-abs equal
+  and means within a relative 1e-12, at the T21 and T255 shapes,
+  whole-grid and in bands.
+
+### 16 GB cards
+
+- T383 (35 km) runs on a 16 GB card that also carries a desktop.  The door
+  priced two and four bands with every slice parked at 18.31 GiB of card,
+  borrowing the T533 two-band pool ratio, and refused every T383 plan below
+  14.4 GiB free.  It now prices those plans at what their own runs took,
+  so with less free than the one-band run needs (14.27 GiB at the
+  5,000-column radiation chunk, below) it chooses two bands from 10.83 GiB
+  free, four from 10.33 and eight from 10.23, with no flag set.  MEASURED
+  on an RTX 5070 Ti, 24 h forecasts from the GDAS 2026-11-11 00Z analysis,
+  before the pool was held (below):
+  two bands 12,486 MiB of card and 13.7 min a forecast day (2.863 s a
+  step), four bands 10,582 MiB and 14.1 min (2.933 s), against 15,624 MiB
+  and 10.7 min (2.229 s) for one band with nothing parked.  Both
+  reproduce the one-band day's checkpoint byte for byte, 133 of 133
+  arrays at step 288.  The banded plans hold 2.27 GiB in pinned host
+  memory and peak about 2 GiB higher in host RAM (7.4 GiB against 5.3).
+- The door's line says what the plan it chose costs: what one band with
+  nothing parked would need, and the measured step against the one-band
+  step.  A refusal names the measured plan that fits the card, with its
+  flags when the config pinned the band count or the host tier
+  (`--latitude-bands 2`, `--host-spill on`), the allocator
+  (`--device-allocator async`: four bands, 9,772 MiB, a 24 h day) or the
+  radiation chunk (`radiation_column_chunk = 5000`, for a T383 day at
+  12,500); below every measured plan it says how much more has to
+  be free.
+- MEASURED from the door with no memory flag, 24 h T383 days at the
+  5,000-column chunk with another process holding part of the card, on
+  the door's figures before the pool was held: 2,270 MiB held, the door
+  read 13.02 GiB free and took two bands (12,486 MiB, 2.863 s a step);
+  4,318 MiB held, it read 11.02 GiB free and took four bands (11,342 MiB,
+  the pool growing into the room it had, 2.941 s a step).  Every
+  conservation gate of both receipts passed, and step 288 of both is
+  byte-identical to the one-band day.  At the prices below the door takes
+  two bands at 11.02 GiB free.
+
+### The full-speed T383 plan takes less of the card
+
+- A run holds its CuPy pool to a limit from before its first device byte,
+  so the pool no longer grows into whatever the card has free.  The limit
+  is the pool figure of the plan the door chose: for a plan a completed
+  run of exactly itself measured under a limit, the limit that run
+  started from; otherwise the door's card figure less the out-of-pool
+  term.  When an allocation finds no room under the limit the run raises
+  it by what the allocation needs and 32 MiB, and the receipt's
+  `device_memory.pool_limit` row counts the raises.  A
+  `CUPY_GPU_MEMORY_LIMIT` set in the environment stands instead, and the
+  run sets no limit of its own; so does a run under the `async` or `slab`
+  allocator.  The door's line says what the pool is held to.
+- MEASURED on an RTX 5070 Ti, the 24 h T383 day from the GDAS 2026-11-11
+  00Z analysis at one band with nothing parked and the 5,000-column
+  radiation chunk, held from 11.50 GiB: two days took 13,880 and 14,608
+  MiB of card (the limit raised to 13.15 and 13.86 GiB, the last time at
+  steps 17 and 135) against 15,624 MiB for the day of the tree before
+  (15,056 with `CUPY_GPU_MEMORY_LIMIT` at 14.3 GiB).  Where a held pool ends is set by how its blocks were cut:
+  every raise after the first steps is the semi-Lagrangian gather's 810
+  MiB stack finding no whole free block while 9.33 GiB is live, and
+  nine held 3 h runs ended at 13,642 to 14,384 MiB.  The door prices
+  the plan at the heavier day, 14,608 MiB, so it asks 14.27 GiB free
+  for it against 14.93.  Every array of all eight checkpoints of both
+  days is byte-identical to the day before the change (1,064 of 1,064
+  each).  The held days took 2.220 and 2.250 s a step against 2.235 for
+  the tree before the same day on the same card (the 2.250 day ran with
+  as little as 1.6 GiB of host RAM free); the 3 h runs 2.279 to 2.298
+  held against 2.287 to 2.296 for the tree before, unheld.  Four more
+  days, the tree before and this one alternated on the same card within
+  the hour from the door with no flag (the tree before under
+  `CUPY_GPU_MEMORY_LIMIT` at 14.3 GiB to keep it inside its share of the
+  card; its unheld day of record ran 2.2287 s a step):
+  this tree 14,272 and 14,204 MiB at 2.2195 and 2.2186 s a step, the tree
+  before 14,960 and 14,898 MiB at 2.2349 and 2.2290 s, all nine
+  checkpoints of every day byte-identical to the one-band day of record.
+- The radiation's cloud finalize writes over the gas cubes it read and
+  drops the longwave Planck sources at their last reader, and the cumulus
+  scheme packs four tiles of columns a pass where it packed its whole
+  131,072-column chunk.  Memory only: the live peak of a T383 step at the
+  5,000-column chunk is 11.51 GiB over 3 h against 12.10 (the 24 h day:
+  11.95 against 12.10), byte-identical.
+  `tests/test_arwen_global_radiation_inplace_cuda.py` (on a card) holds
+  the finalize to the bit.
+- Two bands with every slice parked, re-measured held to a limit from
+  9.25 GiB: the 24 h day 11,090 MiB of card (raised 8 times to 10.43 GiB)
+  and 2.852 s a step, 3 h 10,946 MiB, against 12,058 to 12,486 MiB for
+  the tree before; all eight checkpoints of the day byte-identical to
+  the one-band day.  The door prices the plan at the day, so it takes two
+  bands from 10.83 GiB free, and four from 10.33.
+- The shipped T383 semi-Lagrangian configs
+  (`arwen_global_gdas_t383_native_sl_si_24h` and `..._sl_si_wall`) carry
+  the 5,000-column radiation chunk where they carried 12,500, as the T533
+  configs already did, so the shipped day takes the full-speed plan on an
+  empty 16 GB card with no edit; at 12,500 the door sent it to a banded
+  plan there.  MEASURED on an RTX 5070 Ti, held runs of 3 h of the T383
+  day from the GDAS 2026-11-11 00Z analysis, before the column spans
+  above took the chunk out of the solvers' speed: 2,500 columns 11.51 GiB live
+  and 2.277 s a step; 5,000 columns 11.51 GiB and 2.280 to 2.292 s (three
+  runs); 7,500 columns 11.68 GiB and 2.331 s; 12,500 columns 12.49 GiB,
+  2.421 to 2.448 s (three runs) and 14,532 to 14,952 MiB of card against
+  13,642 to 13,870 for the two 5,000-column runs beside them.  Every
+  checkpoint array was byte-identical at every chunk (133 of 133 at step
+  36).  The chunk is in the config hash, so the two configs' hashes move:
+  a checkpoint written under 12,500 restarts under a config that says
+  `radiation_column_chunk = 12500`.  The other T383 configs keep 12,500:
+  the Eulerian ones (the chunk was measured on the semi-Lagrangian core
+  only) and `arwen_global_gdas_t383_native_24h`, which runs the
+  semi-Lagrangian core by default and which the door, as in 0.1.6, sends
+  to two bands with every slice parked on an empty 16 GB card.
+- `tests/test_arwen_global_pool_limit.py` holds the limit's rules on the
+  CPU: whose limit stands, that the run's own limit yields instead of
+  ending a forecast, that a card really out of memory is not papered
+  over, and that the door prices the one-band T383 plan at the held run.
+
+### A 12 GB card
+
+- MEASURED on an RTX 5070 Ti standing in for a 12 GB card (another
+  process holding all but what such a card leaves free), 24 h T383 days
+  from the GDAS 2026-11-11 00Z analysis from the door with no flag: at
+  11.59 and 11.05 GiB free it chose two bands with every slice parked,
+  10,880 and 10,972 MiB of card at 2.858 and 2.871 s a step; at 10.52
+  GiB free it chose four, 10,322 MiB at 2.961 s.  Every array of all nine
+  checkpoints of each day is byte-identical to the one-band day.  The
+  step is that card's; a 12 GB card's own step was not measured.
+- The four-band plan under `--device-allocator async` is priced at its
+  24 h day, 9,772 MiB of card at 3.087 s a step; a 3 h run of it read
+  9,196, and the driver's pool, which takes no limit, grew past that over
+  the day.  The same day on this tree read 9,676 MiB at 3.098 s, all nine
+  checkpoints byte-identical to the one-band day.  The refusal below every
+  default-pool plan names it at 9.54 GiB of card.
+- Under `--device-allocator async` the receipt's `device_memory.pool_limit`
+  row says the pool carries no limit: the driver's pool reads 2**64 - 1
+  from `get_limit()` when nothing limited it, and that reading is no
+  limit.
+
 ## 0.1.6
 
 Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.1.5 did;

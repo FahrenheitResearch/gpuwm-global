@@ -238,6 +238,44 @@ def select_device_allocator(
     ).install()
 
 
+#: The environment variable CuPy reads its default pool's limit from.  A
+#: user who has set it has chosen the pool's ceiling (``0`` is CuPy's own
+#: spelling of "no limit"), and the run then sets none of its own.
+POOL_LIMIT_ENV = "CUPY_GPU_MEMORY_LIMIT"
+
+#: How far the run raises its own pool limit when an allocation does not fit
+#: under it.  The limit is the door's figure for the plan, and a figure can
+#: read under the run (the model's held-out error is several percent; a
+#: shape nobody has run under a limit has no measurement at all), so the
+#: limit yields rather than end a forecast the card had room for: it is
+#: raised by this much past what the allocation needs, the allocation is
+#: retried, and the receipt counts the lift.  Small, because the lifted
+#: level is where the pool stays: MEASURED 2026-11-12 at T383 L40 on an RTX
+#: 5070 Ti, 3 h from a limit at the run's live peak (11.50 GiB), the pool
+#: was lifted 8 times in 32 MiB steps to 13.15 GiB and the step took the
+#: unlimited run's time (2.289 s against 2.287 to 2.296).
+POOL_LIMIT_LIFT_BYTES = 32 * 2**20
+
+#: CuPy rounds every pool request up to this many bytes.
+_POOL_ROUND_BYTES = 512
+
+#: A ``get_limit()`` reading at or above this is no limit: the driver's
+#: async pool answers 2**64 - 1 when nothing limited it (hold_pool_to).
+_NO_LIMIT_READING = 2**63
+
+
+def environment_pool_limit(environ=None) -> str | None:
+    """What the user set ``CUPY_GPU_MEMORY_LIMIT`` to, or ``None``.
+
+    Stripped; an empty value is CuPy's "not set" and is ``None`` here."""
+
+    import os
+
+    value = (os.environ if environ is None else environ).get(POOL_LIMIT_ENV)
+    value = None if value is None else str(value).strip()
+    return value or None
+
+
 class DevicePeakTracker:
     """Allocator hook: running maximum of ``pool.used_bytes()`` after each
     successful allocation through ``pool.malloc``.
@@ -257,9 +295,149 @@ class DevicePeakTracker:
         self.hook_seconds = 0.0
         self._previous_allocator = None
         self._installed = False
+        # The run's own limit on this pool (hold_pool_to): what it was set
+        # to, who set it, and how often it had to yield.
+        self._limit_row: dict[str, object] = {
+            "set_by": "nobody",
+            "limit_bytes": None,
+            "reason": "no limit was asked of this pool",
+        }
+        self._own_limit_bytes = 0
+        self._limit_found = None
+
+    def hold_pool_to(self, limit_bytes, *, reason: str = "",
+                     environ=None) -> dict[str, object]:
+        """Hold the pool to ``limit_bytes``: the run's own ceiling on what
+        its pool may take from the card.
+
+        WHY.  A CuPy pool keeps every block it has ever been given, and it
+        asks the card for a new one whenever no cached block serves a
+        request, so on a card with room it grows into the room.  Under a
+        limit CuPy hands its cached blocks back and asks again before it
+        gives up, which is the whole mechanism: the run holds what its
+        allocation pattern needs and not what the card happened to have.
+
+        THE USER'S LIMIT STANDS.  With ``CUPY_GPU_MEMORY_LIMIT`` set in the
+        environment (``0`` included: that is CuPy's "no limit") or a limit
+        already on the pool, nothing is changed and the row says whose
+        limit it is.
+
+        THE RUN'S OWN LIMIT YIELDS.  It is a figure priced before the run,
+        so an allocation that does not fit under it raises it
+        (:data:`POOL_LIMIT_LIFT_BYTES`) and is retried; the receipt counts
+        the lifts.  A pool with no ``set_limit`` (the driver's async pool,
+        the slab) is left alone.
+        """
+
+        row: dict[str, object] = {"asked_bytes": None if limit_bytes is None
+                                  else int(limit_bytes)}
+        asked = environment_pool_limit(environ)
+        get_limit = getattr(self._pool, "get_limit", None)
+        set_limit = getattr(self._pool, "set_limit", None)
+        found = None
+        if get_limit is not None:
+            try:
+                found = int(get_limit())
+            except Exception:  # noqa: BLE001 - a pool that will not say has no limit to respect
+                found = None
+        if found is not None and found >= _NO_LIMIT_READING:
+            # MEASURED 2026-11-12 on an RTX 5070 Ti (T383, four bands,
+            # --device-allocator async): the driver's pool answers
+            # get_limit() with 2**64 - 1 when nothing limited it, and the
+            # receipt then said "the pool already carried a limit when the
+            # run found it" of a pool nobody had limited.  That reading is
+            # no limit, as 0 is on the default pool.
+            found = None
+        if asked is not None:
+            row.update(set_by="user", limit_bytes=found, reason=(
+                f"{POOL_LIMIT_ENV}={asked} is set in the environment, so the "
+                "pool's limit is the user's and the run set none of its own"))
+        elif found:
+            row.update(set_by="caller", limit_bytes=found, reason=(
+                "the pool already carried a limit when the run found it, so "
+                "the run set none of its own"))
+        elif limit_bytes is None or int(limit_bytes) <= 0:
+            row.update(set_by="nobody", limit_bytes=None, reason=(
+                reason or "the plan carries no pool figure to hold the pool to"))
+        elif set_limit is None or get_limit is None:
+            row.update(set_by="nobody", limit_bytes=None, reason=(
+                f"{type(self._pool).__name__} takes no limit, so the pool is "
+                "not held"))
+        else:
+            # A pool that already holds more than the figure (a launcher's
+            # reservation on a shared card, grown before the model started)
+            # is held to what it holds: the bytes are the run's own, and a
+            # limit under them would make CuPy hand the reservation back.
+            try:
+                already = int(self._pool.total_bytes())
+            except Exception:  # noqa: BLE001 - a pool that will not say holds nothing to respect
+                already = 0
+            limit_bytes = max(int(limit_bytes), already)
+            try:
+                set_limit(size=int(limit_bytes))
+                held = int(get_limit()) == int(limit_bytes)
+            except Exception:  # noqa: BLE001 - a pool that refuses a limit is left as found
+                held = False
+            if held:
+                self._own_limit_bytes = int(limit_bytes)
+                self._limit_found = 0 if found is None else int(found)
+                row.update(set_by="sizer", limit_bytes=int(limit_bytes),
+                           lifts=0, lifted_bytes=0, reason=(
+                    reason or "the pool figure the door priced this plan at"))
+                if already and int(limit_bytes) == already:
+                    row["reason"] = (
+                        "the pool already held more than the plan's pool "
+                        "figure when the run found it, so it is held to "
+                        "what it holds")
+            else:
+                row.update(set_by="nobody", limit_bytes=None, reason=(
+                    f"{type(self._pool).__name__} did not take the limit, so "
+                    "the pool is not held"))
+        self._limit_row = row
+        return dict(row)
+
+    def _lift_pool_limit(self, size, error) -> bool:
+        """Raise the run's own limit past an allocation that did not fit
+        under it; ``False`` when the limit was not the reason."""
+
+        if not self._own_limit_bytes:
+            return False
+        if type(error).__name__ != "OutOfMemoryError":
+            return False
+        try:
+            limit = int(self._pool.get_limit())
+            total = int(self._pool.total_bytes())
+        except Exception:  # noqa: BLE001 - the allocation's own error stands
+            return False
+        if limit != self._own_limit_bytes:
+            # Somebody else moved the limit since the run set it: it is no
+            # longer the run's to raise.
+            return False
+        need = -(-int(size) // _POOL_ROUND_BYTES) * _POOL_ROUND_BYTES
+        if total + need <= limit:
+            # The request fits under the limit and still failed: the CARD is
+            # out of memory, and raising a limit does not make more of it.
+            return False
+        raised = max(limit, total + need) + int(POOL_LIMIT_LIFT_BYTES)
+        self._pool.set_limit(size=raised)
+        self._own_limit_bytes = raised
+        row = self._limit_row
+        row["lifts"] = int(row.get("lifts", 0)) + 1
+        row["lifted_bytes"] = raised - int(row["limit_bytes"])
+        # WHEN the limit last yielded, in allocations since the hook went
+        # in: a limit that stops yielding early in a run found its level,
+        # and one still yielding at the end did not.
+        row["last_lift_at_allocation"] = int(self.allocations)
+        return True
 
     def __call__(self, size):
-        memory = self._malloc(size)
+        while True:
+            try:
+                memory = self._malloc(size)
+                break
+            except Exception as error:  # noqa: BLE001 - re-raised unless the run's own limit was the reason
+                if not self._lift_pool_limit(size, error):
+                    raise
         started = time.perf_counter()
         used = self._pool.used_bytes()
         # The held total is folded beside the live total at every
@@ -310,6 +488,29 @@ class DevicePeakTracker:
         cp.cuda.set_allocator(self._previous_allocator)
         self._malloc = self._pool.malloc
         self._installed = False
+        self.release_pool_limit()
+
+    def release_pool_limit(self) -> None:
+        """Put the pool's limit back as the run found it, so the process's
+        pool is left as it was found."""
+
+        if not self._own_limit_bytes:
+            return
+        try:
+            if int(self._pool.get_limit()) == self._own_limit_bytes:
+                self._pool.set_limit(size=int(self._limit_found or 0))
+        except Exception:  # noqa: BLE001 - a pool that is gone has no limit to restore
+            pass
+        self._own_limit_bytes = 0
+
+    def pool_limit_receipt(self) -> dict[str, object]:
+        """The receipt's ``device_memory.pool_limit`` row."""
+
+        row = dict(self._limit_row)
+        if row.get("set_by") == "sizer":
+            row["limit_bytes_at_end"] = (
+                int(row["limit_bytes"]) + int(row.get("lifted_bytes", 0)))
+        return row
 
     def receipt(self) -> dict[str, object]:
         return {
@@ -338,6 +539,9 @@ class DevicePeakTracker:
             ),
             "allocations": int(self.allocations),
             "hook_seconds": float(self.hook_seconds),
+            # The run's own ceiling on the pool, whose it was, and how
+            # often it had to yield (hold_pool_to).
+            "pool_limit": self.pool_limit_receipt(),
         }
 
 
@@ -443,8 +647,24 @@ def device_peak_sentence(row: dict[str, object]) -> str:
         f"memory: {row['peak_used_bytes'] / GIB:.2f} GiB device peak "
         f"measured at the allocator{allocator_text} "
         f"({row['allocations']} allocations{gap_text}, "
-        f"hook {row['hook_seconds']:.2f} s){predicted_text}"
+        f"hook {row['hook_seconds']:.2f} s){pool_limit_phrase(row)}"
+        f"{predicted_text}"
     )
+
+
+def pool_limit_phrase(row: dict[str, object]) -> str:
+    """``; pool held to X GiB``: the limit the run kept its pool under and
+    whether it had to raise it, or ``""`` when the run set none."""
+    limit = row.get("pool_limit") or {}
+    if limit.get("set_by") != "sizer" or not limit.get("limit_bytes"):
+        return ""
+    text = f"; pool held to {int(limit['limit_bytes']) / GIB:.2f} GiB"
+    lifts = int(limit.get("lifts", 0) or 0)
+    if lifts:
+        text += (f", raised {lifts} time{'' if lifts == 1 else 's'} to "
+                 f"{int(limit['limit_bytes_at_end']) / GIB:.2f} GiB because "
+                 "the run needed more")
+    return text
 
 
 __all__ = [
@@ -452,12 +672,16 @@ __all__ = [
     "DevicePeakTracker",
     "MECHANISM",
     "OUT_OF_POOL_RESERVE_BYTES",
+    "POOL_LIMIT_ENV",
+    "POOL_LIMIT_LIFT_BYTES",
+    "environment_pool_limit",
     "PoolAllocatorChoice",
     "installed_pool",
     "select_device_allocator",
     "slab_arena_bytes",
     "device_memory_receipt",
     "device_peak_sentence",
+    "pool_limit_phrase",
     "disable_fft_plan_cache",
     "start_device_peak_tracking",
 ]

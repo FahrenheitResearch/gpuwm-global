@@ -1274,6 +1274,30 @@ def _finish_profile(profiler, output: Path, progress) -> None:
         print(profiler.table())
 
 
+def hold_pool_to_plan(tracker, door_plan, allocator=None
+                      ) -> dict[str, object] | None:
+    """Hold the run's pool to the pool figure of the plan the door priced.
+
+    A run no door priced (a library caller, a test) carries no figure and
+    its pool is left as found; so is a numpy run, which has no tracker,
+    and a run under the driver's async pool or the slab, each of which
+    bounds itself its own way and is priced at its own runs.
+    """
+    if tracker is None:
+        return None
+    if door_plan is None:
+        return tracker.hold_pool_to(
+            None, reason="no door priced this run, so its pool is not held")
+    named = "default"
+    if allocator is not None:
+        named = str(allocator.receipt().get("allocator", "default"))
+    if named != "default":
+        return tracker.hold_pool_to(
+            None, reason=f"the {named} allocator takes no limit from the "
+                         "run, so its pool is not held")
+    return tracker.hold_pool_to(getattr(door_plan, "pool_limit_bytes", None))
+
+
 def _sizing_model_peak_bytes(cfg: ArwenGlobalConfig) -> int | None:
     """The pre-run prediction, for the receipt's device_memory row and the
     slab's first reservation.
@@ -1357,6 +1381,10 @@ def run(
     # comes out in the finally below, so the receipt's device peak is the
     # whole run's and the process's allocator is left as it was found.
     tracker = start_device_peak_tracking(cfg.backend)
+    # The pool is held to the figure the door priced this plan at, before
+    # the first device byte, so it cannot grow past what the run was
+    # admitted at (DevicePeakTracker.hold_pool_to; released with the hook).
+    hold_pool_to_plan(tracker, door_plan, allocator)
     # The cuFFT plan cache is off for the run (memory only; see
     # device_memory.disable_fft_plan_cache) and restored with the
     # allocator afterwards.

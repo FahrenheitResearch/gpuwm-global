@@ -82,6 +82,7 @@ from .runner import (
     _release_cached_device_blocks,
     _host_spill_receipt,
     _sizing_model_peak_bytes,
+    hold_pool_to_plan,
     latitude_bands_receipt,
     _update_trackers,
     adopt_checkpoint_clock,
@@ -315,6 +316,9 @@ def cycle(
         predicted_peak_bytes=_sizing_model_peak_bytes(cfg),
     )
     tracker = start_device_peak_tracking(cfg.backend)
+    # As the forecast door: the pool is held to the plan's pool figure, and
+    # an analysis that needs more than a forecast step raises the limit.
+    hold_pool_to_plan(tracker, door_plan, allocator)
     restore_plan_cache = disable_fft_plan_cache(cfg.backend)
     try:
         return _cycle_tracked(

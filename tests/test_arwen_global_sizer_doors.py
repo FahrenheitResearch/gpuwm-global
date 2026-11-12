@@ -454,7 +454,15 @@ def test_the_plan_is_priced_at_its_own_radiation_chunks_fragmentation():
             bands=plan.bands, truncation=plan.truncation)
         # The price, the receipt and the gate's verdict all read the same
         # ratio: a sentence whose two halves do not multiply out is a
-        # sentence a reader cannot check.
+        # sentence a reader cannot check.  A plan a completed run of
+        # exactly itself measured on a card (the T383 5,000-column
+        # resident run held to its pool limit, 2026-11-12) is priced at
+        # that run's card figure, which no class ratio speaks for.
+        measured = sizing.measured_card_row(
+            estimate, plan.bands, plan.spill_slices)
+        if measured is not None:
+            assert plan.card_bytes == int(measured["card_bytes_measured"])
+            continue
         assert plan.card_bytes == sizing.card_required_bytes(
             plan.live_peak_bytes, spilled=bool(plan.spill_slices),
             banded=plan.bands > 1, reduced_chunk=is_reduced,

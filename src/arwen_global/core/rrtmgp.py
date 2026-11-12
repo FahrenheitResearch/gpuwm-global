@@ -3629,10 +3629,18 @@ class RRTMGPRadiation:
         ncol, nlay = int(play.shape[0]), int(play.shape[1])
         out = cp.empty(ncol * nlay, dtype=cp.float64)
         threads = 256
+        if isinstance(columns, slice):
+            first, column_lat = columns.start, self._column_lat
+        else:
+            # An index list (the sunlit columns of the shortwave loop): the
+            # kernel reads latitude ``first + c`` for packed column c, so
+            # it is handed the listed columns' latitudes from zero.
+            first = 0
+            column_lat = cp.ascontiguousarray(self._column_lat[columns])
         _cam_ozone_kernel()(
             ((ncol * nlay + threads - 1) // threads,), (threads,), (
-                play, np.int32(ncol), np.int32(nlay), np.int32(columns.start),
-                self._column_lat, self._cam_lat, np.int32(self._cam_lat.size),
+                play, np.int32(ncol), np.int32(nlay), np.int32(first),
+                column_lat, self._cam_lat, np.int32(self._cam_lat.size),
                 self._cam_plev, np.int32(self._cam_plev.size),
                 self._ozone_date_table, out))
         return out
@@ -4069,8 +4077,21 @@ class RRTMGPRadiation:
                 mask_lw = mcica_cloud_masks(
                     lw_profile.play, lw_cldfra, self.lw_tables.ngpt,
                     MCICA_PERMUTESEED_LW, validate=full_validation)
+                # MEMORY ONLY, and the chunk's largest arrays are the
+                # reason.  The finalize kernel is one thread per element
+                # and reads tau_gas[idx] before it writes tau[idx], so the
+                # gas cube is its own output and no second (ncol, nlay,
+                # ngpt) cube is taken for the sum.  Every cube of this
+                # chunk is then dropped at its last reader: the Planck
+                # sources were held by name into the next chunk and past
+                # the loop, across the whole shortwave pass.  MEASURED
+                # 2026-11-12 at T383 L40, 5,000-column chunk, RTX 5070 Ti
+                # (allocation census at the step's live peak): the last
+                # chunk's lay and lev sources, 0.37 GiB, were live under
+                # the shortwave peak.
                 optics_lw = _finalize_cloud_optics(
-                    self.lw_tables, gas_lw, cld_lw, cloud_mask=mask_lw)
+                    self.lw_tables, gas_lw, cld_lw, cloud_mask=mask_lw,
+                    out=(gas_lw.tau,))
                 del mask_lw
                 # (workspace-less path: finalize kept, nothing to carry)
                 sources = _planck_sources(
@@ -4083,7 +4104,7 @@ class RRTMGPRadiation:
                 flux = lw_rte(
                     optics_lw.tau, sources.lay_source, sources.lev_source,
                     sources.sfc_source, emiss, top_at_1=False)
-                del optics_lw
+                del optics_lw, sources
             else:
                 # SCRATCH_SLOT_LIFETIME_AUDIT analogue: every optics slot is
                 # a kernel output or full fill before its first read in this
@@ -4171,9 +4192,18 @@ class RRTMGPRadiation:
                                       dtype=np.float64))))
         sw_up = cp.empty_like(lw_up)
         sw_dn = cp.empty_like(lw_up)
-        for start in range(0, ncol, self.column_chunk):
-            sl = slice(start, min(start + self.column_chunk, ncol))
-            chunk_ncol = sl.stop - sl.start
+        # A dark column's shortwave is zeroed after the solve (the daylight
+        # mask below), so the loop runs the sunlit columns only and the dark
+        # ones keep the zero they would have been given; see
+        # _shortwave_column_chunks.
+        sw_chunks, lit_only = _shortwave_column_chunks(
+            daylight.reshape(-1), self.column_chunk, xp=cp)
+        if lit_only:
+            sw_up.fill(DTYPE(0.0))
+            sw_dn.fill(DTYPE(0.0))
+        for sl in sw_chunks:
+            chunk_ncol = (sl.stop - sl.start if isinstance(sl, slice)
+                          else int(sl.size))
             sw_chunk = _prepare_above_model_chunk(
                 tables=self.sw_tables, play=play, plev=plev, tlay=tlay,
                 tlev=tlev, qv=qv, paths=paths, cldfra=cldfra, columns=sl,
@@ -4201,12 +4231,19 @@ class RRTMGPRadiation:
                 mask_sw = mcica_cloud_masks(
                     sw_profile.play, sw_cldfra, self.sw_tables.ngpt,
                     MCICA_PERMUTESEED_SW, validate=full_validation)
+                # MEMORY ONLY, as in the longwave loop: the gas tau and
+                # ssa cubes are the finalize kernel's own outputs (it
+                # reads tau_gas[idx] and ssa_gas[idx] into locals before
+                # it writes tau[idx], ssa[idx] and asym[idx], one thread
+                # per element), so the chunk takes one new cube, the
+                # asymmetry, where it took three.
                 optics_sw = _finalize_cloud_optics(
-                    self.sw_tables, gas_sw, cld_sw, cloud_mask=mask_sw)
+                    self.sw_tables, gas_sw, cld_sw, cloud_mask=mask_sw,
+                    out=(gas_sw.tau, gas_sw.ssa, None))
                 del mask_sw
                 # (workspace-less path: finalize kept)
                 albedo = cp.ascontiguousarray(cp.broadcast_to(
-                    albedo_surface[sl, None],
+                    albedo_surface[sl][:, None],
                     (chunk_ncol, self.sw_tables.ngpt)))
                 inc = cp.ascontiguousarray(cp.broadcast_to(
                     solar[None, :],
@@ -4239,11 +4276,11 @@ class RRTMGPRadiation:
                 # No finalize; see the LW branch.
                 work = workspace.phase("sw_rte", chunk_ncol)
                 albedo = work["albedo_gpt"]
-                albedo[...] = albedo_surface[sl, None]
+                albedo[...] = albedo_surface[sl][:, None]
                 inc = work["inc_gpt"]
                 inc[...] = solar[None, :]
                 mu_chunk = work["mu0"]
-                mu_chunk[...] = mu[sl, None]
+                mu_chunk[...] = mu[sl][:, None]
                 flux = _sw_rte(
                     gas_sw.tau, gas_sw.ssa, None, mu_chunk,
                     albedo, albedo, inc, top_at_1=False,
@@ -4252,7 +4289,7 @@ class RRTMGPRadiation:
                     fused_cloud=FusedCloudOptics(
                         tables=self.sw_tables, cloud=cld_sw, mask=mask_sw))
                 del mask_sw
-            mask = daylight.reshape(-1)[sl, None]
+            mask = daylight.reshape(-1)[sl][:, None]
             sw_up[sl] = cp.where(
                 mask, _model_flux_interfaces(flux.flux_up, nz, xp=cp),
                 DTYPE(0.0))
@@ -4291,6 +4328,50 @@ def _device_profile(value, shape, name):
     if out.shape != shape:
         raise ValueError(f"{name} must have shape {shape}, got {out.shape}")
     return out
+
+
+#: The measurement override that puts the dark columns back through the
+#: shortwave solver ("solve"), so the two settings can be interleaved in one
+#: session.  The default skips them; both give the same bytes.
+DARK_COLUMNS_ENV = "GPUWM_RRTMGP_DARK_COLUMNS"
+
+
+def _shortwave_column_chunks(daylight, column_chunk: int, *, xp):
+    """The shortwave loop's column chunks and whether they are sunlit only.
+
+    THE WORK THIS REMOVES.  The shortwave loop solved every column, day or
+    night: a dark column was handed mu = 1, solved, and its fluxes replaced
+    by zero through the daylight mask.  On a Gaussian grid half of every
+    latitude circle is dark, so half of every call's shortwave optics and
+    solver was thrown away.  Measured at T255 on the RTX 5070 Ti (chunk
+    12,500): 2.269 s a call solving every column, 1.663 s with the dark ones
+    skipped, and the step-21 checkpoint's SHA-256 the same.
+
+    WHY THE BITS DO NOT MOVE.  A shortwave column reads only its own column
+    of every input (the McICA masks are seeded from the column's own
+    pressures, the ozone from its own latitude), so solving it among other
+    columns gives it the same bytes; a dark column's fluxes were the
+    constant +0.0 the mask wrote, which is what the caller fills them with.
+
+    Returns ``(chunks, lit_only)``: ``column_chunk``-wide index arrays over
+    the sunlit columns in ascending order and True, or, when every column
+    is sunlit or the override asks for it, the plain slices the loop always
+    had and False.  A call with no sunlit column returns no chunk.  One host
+    read of the sunlit count per call.
+    """
+    flat = daylight.reshape(-1)
+    ncol = int(flat.size)
+    if os.environ.get(DARK_COLUMNS_ENV, "").strip().lower() == "solve":
+        return _column_slices(ncol, column_chunk), False
+    lit = xp.flatnonzero(flat)
+    nlit = int(lit.size)
+    if nlit == ncol:
+        return _column_slices(ncol, column_chunk), False
+    column_chunk = int(column_chunk)
+    if column_chunk < 1:
+        raise ValueError("column_chunk must be positive")
+    return tuple(lit[start:start + column_chunk]
+                 for start in range(0, nlit, column_chunk)), True
 
 
 def _column_slices(ncol: int, column_chunk: int) -> tuple[slice, ...]:
@@ -4359,6 +4440,10 @@ class _ZeroColumns:
         self._xp = xp
 
     def __getitem__(self, columns):
+        if not isinstance(columns, slice):
+            # An index list (the sunlit columns of the shortwave loop).
+            return self._xp.zeros((int(columns.size), self.shape[1]),
+                                  dtype=self._dtype)
         start, stop, step = columns.indices(self.shape[0])
         if step != 1:
             raise ValueError("column slices are contiguous")
@@ -5018,10 +5103,55 @@ def _rte_gpt_tile(kernel, ncol: int, ngpt: int, *,
     return max(1, min(tile, int(ngpt)))
 
 
+#: The g-point tile a solver launch is sized for.  The folding path starts
+#: paying at 32 (both solvers, measured; see _lw_rte), and 32 is also the
+#: widest power of two that divides the SW band's 224 g-points.
+_RTE_SPAN_TILE = 32
+
+
+def _rte_column_spans(ncol: int, column_span=None) -> tuple:
+    """The column ranges one solver call is launched over, in order.
+
+    THE SLOW REGIME THIS REMOVES.  `_rte_gpt_tile` holds a fixed number of
+    threads in flight and divides it by the columns it is handed, so the
+    tile, and with it the solver's path, was set by the radiation chunk: 4
+    g-points a pass at 12,500 columns and 8 at 5,000, both on the
+    partial-writing path, and 32 (the folding path) only from about 2,240
+    columns down on a 70-SM card.  Measured at T255 on the RTX 5070 Ti:
+    the LW solver 650 / 413 / 192 ms a call at chunk 12,500 / 5,000 / 2,048
+    and the SW solver 910 / 720 / 443, with every checkpoint array of the
+    three runs byte-equal.  Shrinking the chunk bought that at the price of
+    the per-chunk preparation (83 / 183 / 429 ms), so the solver now takes
+    its own spans and the chunk is a memory knob again.
+
+    WHY THE BITS DO NOT MOVE.  A column is one block (folding) or one set of
+    threads (partial-writing) and reads and writes only its own rows, and
+    both paths fold the g-points into the running flux in strict ascending
+    order (rrtmgp_rte.cu), so a column's fluxes do not depend on which
+    other columns share its launch, nor on the tile.  The device test
+    `test_rrtmgp_column_spans_cuda.py` holds both solvers to byte equality
+    against one launch.
+
+    The spans are equal to within one column, each about SMs x 1024 / 32
+    wide so the tile lands on 32.  ``column_span`` (or the measurement
+    override ``GPUWM_RTE_COLUMN_SPAN``) sets the width instead; a width at
+    or above ``ncol`` is the one launch set the solvers always had.
+    """
+    ncol = int(ncol)
+    if column_span is None:
+        forced = os.environ.get("GPUWM_RTE_COLUMN_SPAN", "").strip()
+        column_span = (int(forced) if forced
+                       else (_rte_sm_count() * 1024) // _RTE_SPAN_TILE)
+    column_span = max(1, int(column_span))
+    count = max(1, -(-ncol // column_span))
+    edges = [ncol * i // count for i in range(count + 1)]
+    return tuple((edges[i], edges[i + 1]) for i in range(count))
+
+
 def _lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
             incident_flux=None, *, top_at_1: bool, out,
             incident_out, fused_cloud=None,
-            planck=None) -> FluxResult:
+            planck=None, column_span=None) -> FluxResult:
     import cupy as cp
     from arwen_global.core.kernels import get_kernel
 
@@ -5072,6 +5202,28 @@ def _lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
     pk = _planck_solver_args(planck, tau, ncol, nlay, ngpt)
     stage = _rte_kernel("rrtmgp_lw_noscat", nlay)
     fold = _rte_kernel("rrtmgp_lw_flux_reduce", nlay)
+    # Column spans (see _rte_column_spans): the fused-cloud and in-solver
+    # Planck operands are per-column too and are not sliced here, so those
+    # calls keep the one launch set they always had.
+    spans = (_rte_column_spans(ncol, column_span)
+             if fused_cloud is None and planck is None else ((0, ncol),))
+    for c0, c1 in spans:
+        whole = (c0, c1) == (0, ncol)
+        cut = (lambda a: a) if whole else (lambda a: a[c0:c1])
+        _lw_rte_launches(
+            stage, fold, cut(tau), cut(lay_source), cut(lev_source),
+            cut(sfc_source), cut(sfc_emis), cut(incident), cut(up),
+            cut(down), c1 - c0, nlay, ngpt, top_at_1, fz, pk)
+    return FluxResult(up, down)
+
+
+def _lw_rte_launches(stage, fold, tau, lay_source, lev_source, sfc_source,
+                     sfc_emis, incident, up, down, ncol, nlay, ngpt,
+                     top_at_1, fz, pk) -> None:
+    """The LW solver's launches over ``ncol`` contiguous columns, every
+    operand already narrowed to them (views; nothing is copied)."""
+    import cupy as cp
+
     nlev = nlay + 1
     tile = _rte_gpt_tile(stage, ncol, ngpt, fold=True)
     # The folding path gives each COLUMN its own block, so the block is
@@ -5107,7 +5259,6 @@ def _lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
             fold((fold_blocks,), (_RTE_BLOCK,), (
                 part_up, part_dn, up, down, np.int32(ncol), np.int32(nlev),
                 np.int32(gpt0), np.int32(min(tile, ngpt - gpt0))))
-    return FluxResult(up, down)
 
 
 def sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
@@ -5119,7 +5270,8 @@ def sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
 
 
 def _sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
-            *, top_at_1: bool, out, fused_cloud=None) -> FluxResult:
+            *, top_at_1: bool, out, fused_cloud=None,
+            column_span=None) -> FluxResult:
     import cupy as cp
     from arwen_global.core.kernels import get_kernel
 
@@ -5160,6 +5312,26 @@ def _sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
     fz = _fused_cloud_args(fused_cloud, tau, ncol, nlay, ngpt)
     stage = _rte_kernel("rrtmgp_sw_2stream", nlay)
     fold = _rte_kernel("rrtmgp_sw_flux_reduce", nlay)
+    # Column spans as in _lw_rte; the fused-cloud operands are not sliced.
+    spans = (_rte_column_spans(ncol, column_span)
+             if fused_cloud is None else ((0, ncol),))
+    for c0, c1 in spans:
+        whole = (c0, c1) == (0, ncol)
+        cut = (lambda a: a) if whole else (lambda a: a[c0:c1])
+        _sw_rte_launches(
+            stage, fold, cut(tau), cut(ssa), cut(g), cut(mu0),
+            cut(alb_dir), cut(alb_dif), cut(inc), cut(up), cut(down),
+            cut(direct), c1 - c0, nlay, ngpt, top_at_1, fz)
+    return FluxResult(up, down, direct)
+
+
+def _sw_rte_launches(stage, fold, tau, ssa, g, mu0, alb_dir, alb_dif, inc,
+                     up, down, direct, ncol, nlay, ngpt, top_at_1,
+                     fz) -> None:
+    """The SW solver's launches over ``ncol`` contiguous columns, every
+    operand already narrowed to them (views; nothing is copied)."""
+    import cupy as cp
+
     nlev = nlay + 1
     tile = _rte_gpt_tile(stage, ncol, ngpt, fold=True)
     # Same block fold as the LW solver, and rejected once for the same
@@ -5193,7 +5365,6 @@ def _sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
                 part_up, part_dn, part_dir, up, down, direct,
                 np.int32(ncol), np.int32(nlev),
                 np.int32(gpt0), np.int32(min(tile, ngpt - gpt0))))
-    return FluxResult(up, down, direct)
 
 
 def planck_sources(tables: GasTables, play, plev, tlay, tlev, tsfc,

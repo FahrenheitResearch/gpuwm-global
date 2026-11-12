@@ -163,6 +163,13 @@ class NativePhysicsRuntime:
         # or None when the radiation was not due.  The suite hands them
         # back as result planes so the record is assembled over the globe.
         self.last_radiation_bounding_columns = None
+        # Per-call readings shared between the steps of ONE run() (see
+        # _dz, _water_before/_water_after): set and cleared by run(), keyed
+        # on the batch they were read from, and never held between calls.
+        self._in_call = False
+        self._call_dz = None
+        self._held_water = None
+        self._offered_water = None
 
     @property
     def _band(self) -> "_BandCache":
@@ -270,8 +277,45 @@ class NativePhysicsRuntime:
     def _bucket(time_s: float, interval_s: float) -> int:
         return int(math.floor((float(time_s) + 1.0e-9) / float(interval_s)))
 
+    def _dz(self, batch):
+        """The layer thicknesses of ``batch``, formed once per call.
+
+        They are a function of the batch's virtual temperature and
+        half-level pressures, which no step of a call writes (the exchange
+        hands both in and every scheme reads them), and every kernel that
+        receives them reads them as const (sfclay.cu ``dz8w``, noah,
+        ysu.cu ``dz``, gf, morrison.cu ``dz``).  Built five times a call
+        before, the same bits each time (a log volume per pass, 0.30 ms
+        at T255 on an RTX 5070 Ti, measured 2026-11-12); now held for the
+        call by :meth:`run` and released when it returns.
+        """
+        held = self._call_dz
+        if held is not None and held[0] is batch:
+            return held[1]
+        dz = self._layer_thickness(batch)
+        if self._in_call:
+            self._call_dz = (batch, dz)
+        return dz
+
+    def _water_before(self, batch, *, reuse: bool = True):
+        """Column water before a booking: the reading the previous booking
+        took after itself (or the suite's ledger took before the call),
+        when nothing that writes the water species ran in between, else a
+        fresh one.  The held reading is consumed either way."""
+        held, self._held_water = self._held_water, None
+        if reuse and held is not None and held[0] is batch:
+            return held[1]
+        return batch.atmospheric_water_kg_m2()
+
+    def _water_after(self, batch, *, hand_on: bool = True):
+        """Column water after a booking, held for the next booking's
+        before (see :meth:`run` for which hand-ons are made)."""
+        after = batch.atmospheric_water_kg_m2()
+        self._held_water = (batch, after) if (hand_on and self._in_call) else None
+        return after
+
     @staticmethod
-    def _dz(batch):
+    def _layer_thickness(batch):
         xp = batch.xp
         tv = batch.arrays["virtual_temperature"]
         p_half = batch.arrays["p_half"]
@@ -1369,7 +1413,7 @@ class NativePhysicsRuntime:
                 self.options.ysu_free_atmosphere_mixing_length),
         )
         step = batch.xp.float32(batch.dt_s)
-        column_before = batch.atmospheric_water_kg_m2()
+        column_before = self._water_before(batch)
         for target, source in (
             ("u", "du"), ("v", "dv"), ("theta", "dtheta"),
             ("qv", "dqv"), ("qc", "dqc"), ("qi", "dqi"),
@@ -1390,7 +1434,7 @@ class NativePhysicsRuntime:
         # mixing-ratio units: the two differ by O(q) and only the measured
         # one is what the dycore's ledger will see (audit 2026-09-01 NB-3).
         self._credit_reservoir(
-            batch, column_before - batch.atmospheric_water_kg_m2()
+            batch, column_before - self._water_after(batch)
         )
         for target, source in (
             ("pblh", "hpbl"), ("u10", "u10"), ("v10", "v10"),
@@ -1704,7 +1748,12 @@ class NativePhysicsRuntime:
                     "receive convective rain with no heating or drying"
                 )
         step = xp.float32(batch.dt_s)
-        column_before = batch.atmospheric_water_kg_m2()
+        # The PBL step's after-reading is this before-reading only under
+        # Grell-Freitas, whose seam is handed copies of the entry
+        # temperature and vapor and does not read (or write) qc and qi;
+        # the other schemes are handed the batch's own water arrays, so
+        # their before is read fresh.
+        column_before = self._water_before(batch, reuse=entry is not None)
         for name, target in CUMULUS_RATE_FIELDS:
             rate = getattr(result, name, None)
             if rate is None:
@@ -1720,7 +1769,7 @@ class NativePhysicsRuntime:
         # What the scheme's applied rates took out of the column, in the
         # model's metric: the reservoir is credited with it, and it is also
         # the most rain the land surface can receive from this call (below).
-        removed = column_before - batch.atmospheric_water_kg_m2()
+        removed = column_before - self._water_after(batch)
         self._credit_reservoir(batch, removed)
         momentum = {
             name: getattr(result, name, None) for name, _ in CUMULUS_MOMENTUM_FIELDS
@@ -1816,7 +1865,7 @@ class NativePhysicsRuntime:
         shape = batch.shape
         dz = self._dz(batch)
         rho = xp.empty(shape, dtype=xp.float32)
-        column_before = batch.atmospheric_water_kg_m2()
+        column_before = self._water_before(batch)
         module.launch_morrison(
             batch.arrays["theta"], batch.arrays["qv"], batch.arrays["qc"],
             batch.arrays["qr"], batch.arrays["qi"], batch.arrays["qs"],
@@ -1847,8 +1896,10 @@ class NativePhysicsRuntime:
         snow = xp.minimum(xp.maximum(f["snowncv"], 0.0), total)
         graupel = xp.minimum(xp.maximum(f["graupelncv"], 0.0), total - snow)
         liquid = total - snow - graupel
+        # The suite clips the water species after the call
+        # (native_suite._validate_result), so this reading is not handed on.
         self._credit_reservoir(
-            batch, column_before - batch.atmospheric_water_kg_m2()
+            batch, column_before - self._water_after(batch, hand_on=False)
         )
         batch.surface.accumulated_rain_kg_m2 += liquid
         batch.surface.accumulated_snow_kg_m2 += snow
@@ -1863,10 +1914,45 @@ class NativePhysicsRuntime:
             batch.arrays["theta"] * batch.arrays["exner"]
         )
 
+    def offer_atmospheric_water(self, batch, reading) -> None:
+        """Hand the next :meth:`run` on ``batch`` the caller's
+        ``batch.atmospheric_water_kg_m2()`` of the batch as it will be
+        handed in (the suite's ledger reads it before the call).  Taken by
+        that run only, and only for that batch."""
+        self._offered_water = (batch, reading)
+
     def run(self, batch, cfg, persistent=None):
         """Run the suite on ``batch``; ``persistent`` is the namespace to
         work on (freshly built from the batch when not supplied, which is
-        exactly what a supplied one must be)."""
+        exactly what a supplied one must be).
+
+        A reading offered with :meth:`offer_atmospheric_water` for this
+        batch is the PBL booking's before-reading: nothing before the PBL
+        step writes a water species (radiation writes theta, the surface
+        layer, land and lake steps write the surface and the namespace, and
+        every kernel among them reads the species as const).  Within the call the PBL
+        booking's after-reading is the cumulus booking's before under
+        Grell-Freitas, and the cumulus booking's after is the
+        microphysics' before (only the wind and the rain books are written
+        between them): three of the eight column-water integrals of a call
+        were readings of a state already read, and are now taken once.
+        The layer thicknesses are formed once per call (:meth:`_dz`).
+        Same operands, same functions, same bits.
+        """
+        offered, self._offered_water = self._offered_water, None
+        self._in_call = True
+        self._call_dz = None
+        self._held_water = (
+            offered if offered is not None and offered[0] is batch else None)
+        del offered
+        try:
+            return self._run(batch, cfg, persistent)
+        finally:
+            self._in_call = False
+            self._call_dz = None
+            self._held_water = None
+
+    def _run(self, batch, cfg, persistent):
         batch.validate()
         prof = profiler_of(self)
         # Every per-grid cache below reads the state built from THIS
