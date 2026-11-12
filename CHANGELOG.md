@@ -1,5 +1,79 @@
 # Changelog
 
+## 0.1.6
+
+Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.1.5 did;
+proven against `gpuwm 2.9.13`.  `tools/measure_boundary.py` reads 240
+symbols across 71 modules with no gap, and all 48 engine seam files are
+pinned at 2.9.13.  The companion bundle carries ten Rust doors, unchanged
+from 0.1.5.  The model changed only where an analysis is read: the cold
+start reads the unit of its levels from the mapping (every shipped mapping
+declares Pa, which it leaves as it is) and an ERA5 frame is completed
+before it; the GDAS path keeps its rules.
+
+### Added
+
+- The global model cold-starts from ERA5.  `gpuwm-global fetch-analysis
+  --source era5 --cycle YYYY-MM-DDTHH` fetches one whole-globe ERA5 hour
+  (any hour from 1940 to about six days ago) from Google's public ARCO
+  store with no key, through the engine's own ARCO retrieval, plus ERA5's
+  snow density beside it, and prints the `[initial]` table that starts any
+  analysis configuration from it, through this package's own NetCDF
+  mapping (`era5-arco-global`, in `data/package-mappings/`, which the re-cut
+  does not own).  No ERA5 experiment ships.  The decode is
+  the engine's; `arwen_global.era5_analysis` completes what ERA5 lacks
+  against GDAS by stated rules the receipt records under `era5_completion`:
+  soil masked over water; sea ice 0 on land, and on a coast point ERA5's sea
+  fields leave out the mean of the sea values beside it; ERA5's SST, not its
+  tile-mean skin, as the water temperature of an ice-free water point;
+  sea-ice thickness 3 m (WRF's default; ERA5 has none), on a frozen lake
+  too; snow depth from ERA5's snow density; snow averaged over land points
+  only, so the pack starts bare as ERA5 has it; ERA5's snow not capped.
+  The GDAS archive the engine reads begins at 2021-03-22 12Z; this is the
+  input for anything earlier.  `docs/ARWEN_GLOBAL_ERA5.md` has the field
+  table, hour 0 checked against ERA5 read a second way, and four measured
+  starts: T255 for 24 h under the reference physics and under the native
+  suite, T383 for 24 h under the native suite, and T255 for five days from
+  a January hour.
+- `tools/arwen_global_era5_check.py` is the check the page cites: `read`
+  reads one ERA5 hour straight from the ARCO store with zarr-python,
+  `state` writes the hour-0 state of an ERA5 configuration from a CPU cold
+  start, `hour0` compares the two with code that imports neither this
+  package nor the engine, and `tapes` compares render tapes with ERA5 of
+  their valid times by the start tape's surface classes.
+
+### Fixed
+
+- The cold start reads the analysis's pressure levels in the unit its
+  mapping declares (`coordinates.vertical.units`, Pa or hPa) and refuses
+  any other unit, or a ladder whose deepest level reads above 500 hPa.  It
+  took them as Pa unread, so an hPa source would have put every model level
+  below a "1000 Pa" bottom level with no refusal.  Every shipped mapping
+  until now declared Pa, so no earlier run is changed.
+- A NetCDF mapping's soil layers reach Noah at their depths, from the
+  mapping's row in `data/soil-level-depths.json`; they used to be refused
+  for want of a GRIB level type.
+
+### Known limits
+
+- ERA5 carries no sea-ice thickness: every sea-ice point starts at 3 m,
+  WRF's default, which is too thick for first-year Antarctic ice, and a
+  frozen lake ERA5 carries in its sea-ice cover gets the same 3 m.
+- ERA5's snow is not capped.  Land the statics call tundra where ERA5 has
+  glacier starts with metres of snow water; its skin ran 4.9 K cold at
+  24 h in May and 2.8 to 6.7 K warm over five January days, rising every
+  day from 48 h to 120 h, and nothing longer than five days was run, so
+  whether it levels off is not known.  Open water at the ice edge keeps
+  ERA5's skin: on the January start 15 columns began more than 5 K from
+  ERA5's SST.
+- The T383 start from ERA5 tripped the in-situ wire
+  `spectral_top_decile_growth` six times between hours 5 and 9, recorded
+  and not refused, and its receipt passes; the T255 ERA5 starts and the
+  GDAS T383 starts on record tripped none.
+- Measured: two dates, T255 and T383, up to five days.  Nothing was
+  compared with a GDAS start of the same valid time, because the GDAS route
+  begins at 2021-03-22 12Z.  The statics are present-day whatever the date.
+
 ## 0.1.5
 
 Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.1.4 did;

@@ -92,6 +92,15 @@ _NOAH_SNOW_ARRAYS = (
 #: is the one that answers and this one is never opened.
 PACKAGE_AUTHORITIES_DIR = Path(__file__).resolve().parent / "data" / "authorities"
 
+#: Mappings this package WRITES, as opposed to the engine rows it carries
+#: above.  The ERA5 global analysis (`era5_analysis`) is decoded through a
+#: NetCDF mapping no engine tree has, and its decode is completed here, so
+#: it cannot be a byte copy of an engine row and the re-cut, which rewrites
+#: ``data/authorities`` from the engine tree, must not own it.  It answers
+#: after the engine's table like the carried copies do, and with them: a
+#: spec matching a file in both package directories is refused as ambiguous.
+PACKAGE_OWN_MAPPINGS_DIR = Path(__file__).resolve().parent / "data" / "package-mappings"
+
 
 class MappingResolution(NamedTuple):
     """One resolved mapping file, and which table answered for it."""
@@ -251,7 +260,8 @@ def resolve_analysis_mapping_row(spec: str) -> MappingResolution:
         # sentence (`gpuwm-global doctor`); it must not turn into "this
         # mapping does not exist".
         engine_matches = []
-    package_matches = _authority_matches(PACKAGE_AUTHORITIES_DIR, spec)
+    package_matches = (_authority_matches(PACKAGE_AUTHORITIES_DIR, spec)
+                       + _authority_matches(PACKAGE_OWN_MAPPINGS_DIR, spec))
 
     for matches, where in ((engine_matches, "the engine's authority table"),
                            (package_matches, "this package's carried copies")):
@@ -900,6 +910,39 @@ def soil_layer_bounds_m(mapping_path, field_name="soil_temperature"):
     selectors = document["fields"][field_name]["selectors"]
     bounds = []
     table = None
+
+    def depth_row():
+        from importlib.resources import files
+
+        rows = json.loads(
+            files("arwen_global").joinpath("data", SOIL_LEVEL_DEPTHS_FILE)
+            .read_text(encoding="utf-8")
+        )["interfaces_m"]
+        if document["name"] not in rows:
+            raise ValueError(
+                f"{Path(mapping_path).name} names {field_name} layers that "
+                "state no depth (a soil level index, or a NetCDF variable) "
+                f"and {SOIL_LEVEL_DEPTHS_FILE} carries no "
+                f"depths for {document['name']!r}; add its row so the "
+                "layers reach Noah at their depths instead of by position"
+            )
+        return rows[document["name"]]
+
+    if document.get("format") == "netcdf":
+        # A NetCDF selector is a variable name and states no depth; the
+        # stack's layers are the selectors in order, and their interface
+        # depths are the depth table's row for this mapping (the ERA5
+        # bridge's ST000007 ... ST100289 are 0-7, 7-28, 28-100, 100-289 cm).
+        table = depth_row()
+        if len(table) != len(selectors) + 1:
+            raise ValueError(
+                f"{Path(mapping_path).name} stacks {len(selectors)} "
+                f"{field_name} layers and {SOIL_LEVEL_DEPTHS_FILE} gives "
+                f"{len(table)} interfaces for {document['name']!r}; the "
+                "layers could not be placed at their depths"
+            )
+        return tuple((float(table[k]), float(table[k + 1]))
+                     for k in range(len(selectors)))
     for index, selector in enumerate(selectors):
         kind = selector.get("level_type")
         second = selector.get("second_level_type", kind)
@@ -914,20 +957,7 @@ def soil_layer_bounds_m(mapping_path, field_name="soil_temperature"):
             bounds.append((float(top), float(bottom)))
         elif kind == _GRIB_SOIL_LEVEL_INDEX:
             if table is None:
-                from importlib.resources import files
-
-                rows = json.loads(
-                    files("arwen_global").joinpath("data", SOIL_LEVEL_DEPTHS_FILE)
-                    .read_text(encoding="utf-8")
-                )["interfaces_m"]
-                if document["name"] not in rows:
-                    raise ValueError(
-                        f"{Path(mapping_path).name} names {field_name} by soil "
-                        f"level index and {SOIL_LEVEL_DEPTHS_FILE} carries no "
-                        f"depths for {document['name']!r}; add its row so the "
-                        "layers reach Noah at their depths instead of by position"
-                    )
-                table = rows[document["name"]]
+                table = depth_row()
             bounds.append((float(table[int(top)]), float(table[int(bottom)])))
         else:
             raise ValueError(
@@ -980,6 +1010,47 @@ def remap_soil_layers(stack, source_bounds, target_bounds):
     record["remapped"] = True
     record["weights"] = [[float(v) for v in row] for row in weights]
     return np.ascontiguousarray(out), record
+
+
+#: What a decoded isobaric frame's levels are multiplied by to read in Pa,
+#: by the unit its mapping declares under ``coordinates.vertical.units``.
+VERTICAL_PRESSURE_SCALE_TO_PA = {"Pa": 1.0, "hPa": 100.0}
+#: The deepest analysis level, in Pa, below which a frame is refused: every
+#: global analysis this model reads reaches 1000 hPa, and a ladder that
+#: stops above 500 hPa is a unit error, not an analysis.
+DEEPEST_ANALYSIS_LEVEL_FLOOR_PA = 50000.0
+
+
+def analysis_levels_pa(levels, mapping_path):
+    """The frame's isobaric levels in Pa, by the unit its mapping declares.
+
+    The engine's decoder returns the levels in the unit the source file
+    states: Pa from a GDAS GRIB2 message, hPa from the ERA5 NetCDF.  The cold
+    start used to take them as Pa unread, and an hPa ladder (1 ... 1000) then
+    put every model level below a "1000 Pa" bottom level: a wrong initial
+    state with no refusal.  So the mapping's declared unit decides, any other
+    unit is refused, and a ladder whose deepest level still reads above
+    500 hPa is refused as a unit error.  Returns ``(levels_pa, unit)``.
+    """
+    import json
+
+    document = json.loads(Path(mapping_path).read_text(encoding="utf-8"))
+    units = (document.get("coordinates", {}).get("vertical", {}) or {}).get("units")
+    if units not in VERTICAL_PRESSURE_SCALE_TO_PA:
+        raise ValueError(
+            f"{Path(mapping_path).name} declares its pressure levels in "
+            f"{units!r}; the cold start reads "
+            f"{' or '.join(sorted(VERTICAL_PRESSURE_SCALE_TO_PA))} and will "
+            "not guess a scale"
+        )
+    levels_pa = np.asarray(levels, dtype=np.float64) * VERTICAL_PRESSURE_SCALE_TO_PA[units]
+    if levels_pa[-1] < DEEPEST_ANALYSIS_LEVEL_FLOOR_PA:
+        raise ValueError(
+            f"the analysis's deepest level reads as {levels_pa[-1]:g} Pa with "
+            f"the {units} {Path(mapping_path).name} declares; a global "
+            "analysis reaches 1000 hPa, so the levels are not in that unit"
+        )
+    return levels_pa, units
 
 
 def surface_virtual_temperature(temperature_src, humidity_src, ln_source, ps_src):
@@ -1037,6 +1108,7 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
     else:
         statics_path = None
     decode_receipts: list[dict] = []
+    era5_completion = None
     if frame is None:
         from .mapped_source_compat import decode_through_engine
 
@@ -1059,6 +1131,14 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
                 f"decoded {len(frames)}"
             )
         frame = frames[0]
+        # ERA5 decodes through the engine like any mapping and then lacks
+        # what GDAS carries (soil masked over water, ice with no holes, ice
+        # thickness, snow depth): era5_analysis completes it by stated rules
+        # and the receipt carries them.
+        from .era5_analysis import complete_era5_frame, is_era5_mapping
+
+        if is_era5_mapping(mapping_path):
+            frame, era5_completion = complete_era5_frame(frame, grib)
     fill_mapping_path = None
     if getattr(cfg, "analysis_fill_grib", None):
         # A second product of the same hour supplies the surface groups
@@ -1100,6 +1180,7 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
     levels = np.asarray(frame.vertical_values, dtype=np.float64)
     if levels.ndim != 1 or levels.size < 5 or np.any(np.diff(levels) <= 0.0):
         raise ValueError("analysis pressure levels must be ascending top-to-bottom")
+    levels, vertical_units = analysis_levels_pa(levels, mapping_path)
 
     grid = transform.grid
     regrid = _global_regridder(frame.latitude, frame.longitude, grid)
@@ -1260,7 +1341,10 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
     else:
         seeding_land_fraction = land_fraction
     seeded = seed_surface_from_analysis(
-        frame, regrid, target_land_fraction=seeding_land_fraction
+        frame, regrid, target_land_fraction=seeding_land_fraction,
+        # ERA5 has no snow on its sea-ice points (era5_analysis.Era5Frame
+        # says so); every other frame is read as GDAS is.
+        snow_on_sea_ice=getattr(frame, "snow_on_sea_ice", True),
     )
     # The frozen columns' heat conduction column (physics/frozen_surface)
     # lives in the four soil-temperature layers.  A sea-ice column starts
@@ -1410,6 +1494,7 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
         "valid_time": None if getattr(frame, "valid_time", None) is None
         else str(frame.valid_time),
         "analysis_levels": int(levels.size),
+        "analysis_vertical_units": vertical_units,
         "analysis_top": _json_safe(analysis_top),
         "surface_pressure_adjustment_pa": {
             "max": float(np.max(ps_model - ps_src)),
@@ -1442,6 +1527,7 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
         "soil_water_floor": _json_safe(soil_water_floor),
         "open_water_skin": _json_safe(open_water_skin_record),
         "soil_layers": _json_safe(soil_layers),
+        "era5_completion": _json_safe(era5_completion),
     }
     return (
         ArwenGlobalState(
@@ -1460,6 +1546,7 @@ __all__ = [
     "FILL_GROUPS",
     "CompositeFrame",
     "analysis_initial_state",
+    "analysis_levels_pa",
     "analysis_to_model_levels",
     "noah_soil_layer_bounds_m",
     "remap_soil_layers",
@@ -1468,6 +1555,7 @@ __all__ = [
     "floor_soil_water",
     "MappingResolution",
     "PACKAGE_AUTHORITIES_DIR",
+    "PACKAGE_OWN_MAPPINGS_DIR",
     "resolve_analysis_mapping",
     "resolve_analysis_mapping_row",
     "surface_virtual_temperature",

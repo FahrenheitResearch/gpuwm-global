@@ -23,6 +23,12 @@ and the `--print-next-step` text is the engine's `gdas_fetch_epilogue` when
 the engine has one.  What this module never does is print the engine's
 regional full stop as though it were this model's answer.
 
+``--source era5`` is the second input.  The GDAS archive the engine's route
+reads begins at 2021-03-22 12Z and holds the four synoptic hours only; ERA5
+covers every hour from 1940 to about six days ago, from Google's public ARCO
+store with no key.  The fetch and what the cold start adds to ERA5 are
+`arwen_global.era5_analysis`.
+
 WHY THE NEXT STEP NAMES A SHIPPED EXPERIMENT BY NAME.  A repository-relative
 config path is typed by someone who has the repository; a reader who ran `pip
 install` has the experiments as package data, and a bare name resolves to
@@ -135,16 +141,32 @@ def gdas_fetch_epilogue(*, out, cycle: dt.datetime,
 
 # ------------------------------------------------------------------- the door
 
+#: Where each source lands when --out is not given.  An ERA5 hour gets a
+#: directory of its own, because the engine's ARCO retrieval refuses to
+#: write a second hour over a verified first one.
+DEFAULT_OUT = {"gdas": Path("data/gdas-analysis"),
+               "era5": Path("data/era5-analysis")}
+
+
 def add_fetch_analysis_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--out", type=Path, default=Path("data/gdas-analysis"),
-        help="directory the analysis object and its manifest land in")
+        "--source", default="gdas", choices=("gdas", "era5"),
+        help="gdas: the NCEP GDAS 0.25-degree analysis (00/06/12/18Z, the "
+             "archive the engine reads reaches back to 2021-03-22 12Z); era5: "
+             "ECMWF ERA5 from Google's public ARCO store, any hour from 1940 "
+             "to about six days ago, no key")
+    parser.add_argument(
+        "--out", type=Path, default=None,
+        help="directory the analysis object and its manifest land in "
+             "(default data/gdas-analysis, or data/era5-analysis/YYYYMMDDHH "
+             "with --source era5)")
     parser.add_argument(
         "--cycle", default=None, metavar="YYYY-MM-DDTHH",
-        help="the GDAS cycle to fetch; without it, the newest published one")
+        help="the analysis time to fetch; without it, the newest published "
+             "GDAS cycle (required with --source era5)")
     parser.add_argument(
         "--engine", default="auto", choices=("auto", "rust", "python"),
-        help="which transport the engine's fetch route uses")
+        help="which transport the engine's GDAS fetch route uses")
     parser.add_argument(
         "--quiet", action="store_true",
         help="do not print the transport's own progress lines")
@@ -166,14 +188,39 @@ def _parse_cycle(value: str | None) -> dt.datetime | None:
 
 
 def fetch_analysis_main(args: argparse.Namespace) -> int:
-    """Fetch one whole-globe GDAS analysis and say what comes next."""
-
-    from .da_streams import fetch_analysis
+    """Fetch one whole-globe analysis and say what comes next."""
 
     cycle = _parse_cycle(getattr(args, "cycle", None))
     progress = (lambda *_a, **_k: None) if getattr(args, "quiet", False) else print
+    source = getattr(args, "source", "gdas") or "gdas"
+    out = getattr(args, "out", None)
+    if source == "era5":
+        from .era5_analysis import era5_fetch_epilogue, fetch_era5_analysis
+
+        if cycle is None:
+            raise SystemExit(
+                "fetch-analysis --source era5 needs --cycle YYYY-MM-DDTHH: "
+                "ERA5 is a reanalysis of any past hour, so there is no "
+                "'newest' to default to")
+        out = Path(out) if out is not None else (
+            DEFAULT_OUT["era5"] / f"{cycle:%Y%m%d%H}")
+        record = fetch_era5_analysis(out, cycle, progress=progress)
+        print(f"fetch-analysis: {record['analysis']}")
+        print(f"fetch-analysis: {record['snow_density']}")
+        print(f"fetch-analysis: ERA5 valid {record['cycle']:%Y-%m-%dT%H}Z, "
+              "mapping era5-arco-global")
+        if record.get("provisional_times"):
+            print("fetch-analysis: this hour is ERA5T (preliminary); ECMWF "
+                  "may still revise it")
+        for line in era5_fetch_epilogue(analysis=record["analysis"]):
+            print(line)
+        return 0
+
+    from .da_streams import fetch_analysis
+
     record = fetch_analysis(
-        Path(args.out), source="gdas", cycle=cycle,
+        Path(out) if out is not None else DEFAULT_OUT["gdas"],
+        source="gdas", cycle=cycle,
         engine=getattr(args, "engine", "auto"), progress=progress)
     print(f"fetch-analysis: {record.path}")
     print(f"fetch-analysis: {record.bytes:,} bytes, sha256 {record.sha256}")
@@ -182,7 +229,8 @@ def fetch_analysis_main(args: argparse.Namespace) -> int:
         print(f"fetch-analysis: manifest {record.manifest}")
     fetched = dt.datetime.fromisoformat(record.cycle_utc.replace("Z", "+00:00"))
     for line in gdas_fetch_epilogue(
-            out=Path(args.out), cycle=fetched.replace(tzinfo=None),
+            out=Path(out) if out is not None else DEFAULT_OUT["gdas"],
+            cycle=fetched.replace(tzinfo=None),
             whole_globe_analysis=True):
         print(line)
     return 0

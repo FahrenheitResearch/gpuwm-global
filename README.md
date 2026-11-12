@@ -36,8 +36,8 @@ apart. `gpu-cu13` pulls `cupy-cuda13x[ctk]`, `gpu-cu12` pulls
 card figures on this page came off. Either line also resolves the engine
 `gpuwm>=2.9.13,<2.10`, its data companion `gpuwm-data` beside it, numpy, scipy
 and netCDF4. Against the published `gpuwm 2.9.13`,
-`python tools/measure_boundary.py` reads 237 symbols across 69 modules with
-no gap (Linux, 2026-11-07). Without either extra the package installs and
+`python tools/measure_boundary.py` reads 240 symbols across 71 modules with
+no gap (Linux, 2026-11-11). Without either extra the package installs and
 every CPU door runs; the forecast needs the card.
 
 The rows dated 2026-11 on this page were taken on the published engines
@@ -85,7 +85,7 @@ install; that is fixed from 0.1.3.
 `gpuwm-global` needs `gpuwm>=2.9.13,<2.10`. The floor is the engine this
 release's test suite and forecast proofs ran on. The ceiling is not
 decoration: the engine's own trees are not supersets of each other across
-minors, and this package imports 237 symbols across that boundary.
+minors, and this package imports 240 symbols across that boundary.
 `python tools/measure_boundary.py` regenerates the measurement rather than
 trusting a table, and names the symbols it could not check on a host without
 a CUDA runtime instead of counting them clean. The physics used in the
@@ -341,7 +341,7 @@ one page, generated from the parser.
 | `render` | draw the products from a finished run through the Rust renderer |
 | `configs` | list the experiments that ship inside the package |
 | `doctor`, `fetch-doors` | what is installed, staged and missing; and stage what is missing |
-| `fetch-analysis` | fetch the one whole-globe GDAS object a cold start needs, and print the run it feeds |
+| `fetch-analysis` | fetch the one whole-globe GDAS object a cold start needs, or with `--source era5` one ERA5 hour from 1940 on ([ERA5 start](docs/ARWEN_GLOBAL_ERA5.md)), and print the run it feeds |
 | `score` | score a finished run against ASOS stations and radiosondes through `rw_asos` and `rw_igra2`, with the GFS and IFS analyses as secondary references, one row per lead, at any truncation |
 | `assimilate` | assimilate point observations into one checkpoint |
 | `cycle` | forecast and assimilate in one process, an analysis every interval |

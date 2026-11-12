@@ -145,7 +145,8 @@ def snow_cover_flag(snow_water_kg_m2) -> np.ndarray:
     ).astype(np.float64)
 
 
-def seed_surface_from_analysis(frame, regrid, *, target_land_fraction) -> SeededSurface:
+def seed_surface_from_analysis(frame, regrid, *, target_land_fraction,
+                               snow_on_sea_ice: bool = True) -> SeededSurface:
     """Seed sea ice and snow from an analysis ``frame`` onto the Gaussian
     grid through ``regrid`` (analysis_initial's periodic bilinear
     regridder).  ``target_land_fraction`` is the run's land fraction on
@@ -154,6 +155,15 @@ def seed_surface_from_analysis(frame, regrid, *, target_land_fraction) -> Seeded
     integrates it.  Refuses by name on a missing field, a masked land or
     ice point, a value outside its physical range, or a snow plane whose
     density says its unit is not the declared one.
+
+    ``snow_on_sea_ice`` says whether the analysis carries snow on its
+    sea-ice points.  GDAS does, and its snow is averaged over land and
+    sea-ice points.  ERA5 does not (its snow is 0 there and 10 m of water
+    on the glacier beside it): read the GDAS way, the zeros dilute the
+    coastal land's snow and the glacier's lands on the pack, 2,336 sea-ice
+    columns with up to 8,178 kg m-2 on the 2019-05-20 00Z start.  With
+    ``False`` snow is averaged over land points only and every frozen water
+    column starts bare.
     """
     missing = [name for name in SEEDED_ANALYSIS_FIELDS if name not in frame.fields]
     if missing:
@@ -274,7 +284,7 @@ def seed_surface_from_analysis(frame, regrid, *, target_land_fraction) -> Seeded
     ice_target = np.clip(regrid(ice), 0.0, 1.0)
     frozen_target = frozen_water_columns(ice_target)
     thickness_target = _masked_regrid(regrid, thickness, ice > 0.0)
-    snow_mask = land_points | ice_src
+    snow_mask = (land_points | ice_src) if snow_on_sea_ice else land_points
     swe_target = np.maximum(_masked_regrid(regrid, swe, snow_mask), 0.0)
     depth_target = np.maximum(_masked_regrid(regrid, depth, snow_mask), 0.0)
     target_land = np.asarray(target_land_fraction, dtype=np.float64)
@@ -284,6 +294,21 @@ def seed_surface_from_analysis(frame, regrid, *, target_land_fraction) -> Seeded
     zeroed = float(np.sum(swe_target[open_water]))
     swe_target = np.where(open_water, 0.0, swe_target)
     depth_target = np.where(open_water, 0.0, depth_target)
+    bare_pack = None
+    if not snow_on_sea_ice:
+        # The analysis has no snow on its ice: what the land beside a
+        # frozen water column carries is not the pack's.
+        bare = (target_land <= 0.5) & frozen_target
+        bare_pack = {
+            "rule": "the analysis carries no snow on sea ice: snow is "
+                    "averaged over its land points only, and a frozen water "
+                    "column starts bare",
+            "frozen_water_columns": int(np.count_nonzero(bare)),
+            "columns_cleared_of_land_snow": int(np.count_nonzero(bare & (swe_target > 0.0))),
+            "cleared_kg_m2_max": float(swe_target[bare].max()) if bare.any() else 0.0,
+        }
+        swe_target = np.where(bare, 0.0, swe_target)
+        depth_target = np.where(bare, 0.0, depth_target)
     thickness_target = np.where(frozen_target, thickness_target, thickness_target)
     cover = snow_cover_flag(swe_target)
     for name, values in (
@@ -351,6 +376,14 @@ def seed_surface_from_analysis(frame, regrid, *, target_land_fraction) -> Seeded
             "land_fraction": "static water fraction (real statics) or the analysis land mask (synthetic)",
         },
     }
+    if bare_pack is not None:
+        # Only an analysis without snow on its ice says so; a GDAS receipt
+        # is the bytes it was.
+        provenance["snow_on_sea_ice"] = bare_pack
+        for name in ("snow_water_kg_m2", "snow_depth_m"):
+            provenance["seeded_from_analysis"][name]["regrid"] = (
+                "bilinear over land points, zero on open water and on "
+                "frozen water")
     return SeededSurface(
         sea_ice_fraction=ice_target,
         sea_ice_thickness_m=thickness_target,

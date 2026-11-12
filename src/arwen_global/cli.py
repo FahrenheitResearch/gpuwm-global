@@ -1483,8 +1483,8 @@ def build_parser() -> argparse.ArgumentParser:
              "the pins this release carries"))
     add_fetch_analysis_arguments(sub.add_parser(
         "fetch-analysis",
-        help="fetch one whole-globe GDAS analysis, the object a global cold "
-             "start needs, and print the run command it feeds"))
+        help="fetch one whole-globe GDAS analysis or ERA5 hour, the object a "
+             "global cold start needs, and print the run command it feeds"))
     # `score` is the verification of record as one command: a run against
     # ASOS and radiosondes through the two observation doors above, with
     # the GFS and IFS analyses as secondary references.  Before it the

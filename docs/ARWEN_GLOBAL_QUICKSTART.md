@@ -49,9 +49,10 @@ Either lands `data/gdas-analysis/gdas.t18z.pgrb2.0p25.f000` with a
 `SHA256SUMS`, a series TSV and a `fetch-manifest.json` recording which
 endpoint served each object. Where the bytes come from is table data
 (`gpuwm/authorities/rw-wps-fetch-routes.v1.json`), not a code path: GDAS
-declares an ordered ladder of NOMADS and the unbounded AWS Open Data archive
-`noaa-gfs-bdp-pds`, and the router HEAD-probes the archive per object and
-lets it serve whenever it already has the bytes. `--transport s3` pins it.
+declares an ordered ladder of NOMADS and the AWS Open Data archive
+`noaa-gfs-bdp-pds` (which the route reads back to 2021-03-22 12Z, as
+below), and the router HEAD-probes the archive per object and lets it
+serve whenever it already has the bytes. `--transport s3` pins it.
 
 **Two flags here are not the door's defaults, and both matter:**
 
@@ -176,7 +177,11 @@ refused by name when the two disagree; delete the key to follow the analysis.
 
 GDAS publishes on the 00/06/12/18 UTC grid and lags its cycle by about seven
 hours. An older cycle still fetches: anything past the operational window
-goes straight to the archive rung, which is unbounded.
+goes straight to the AWS archive rung. That rung reaches back to
+2021-03-22 12Z, the first cycle in the archive's `atmos/` layout; for an
+earlier cycle the readiness probe answers "waiting" rather than refusing.
+A start before that date, or at an hour between the four, comes from ERA5:
+[ARWEN_GLOBAL_ERA5.md](ARWEN_GLOBAL_ERA5.md).
 
 ## Rehearsing the chain without a card
 

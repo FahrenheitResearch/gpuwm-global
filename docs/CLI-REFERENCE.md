@@ -84,9 +84,10 @@ the tool after changing an option and commit what it writes.
 
 | option | what it does | default |
 |---|---|---|
-| `--out` `OUT` | directory the analysis object and its manifest land in | `data/gdas-analysis` |
-| `--cycle` `YYYY-MM-DDTHH` | the GDAS cycle to fetch; without it, the newest published one |  |
-| `--engine` `{auto,rust,python}` | which transport the engine's fetch route uses | `auto` |
+| `--source` `{gdas,era5}` | gdas: the NCEP GDAS 0.25-degree analysis (00/06/12/18Z, the archive the engine reads reaches back to 2021-03-22 12Z); era5: ECMWF ERA5 from Google's public ARCO store, any hour from 1940 to about six days ago, no key | `gdas` |
+| `--out` `OUT` | directory the analysis object and its manifest land in (default data/gdas-analysis, or data/era5-analysis/YYYYMMDDHH with --source era5) |  |
+| `--cycle` `YYYY-MM-DDTHH` | the analysis time to fetch; without it, the newest published GDAS cycle (required with --source era5) |  |
+| `--engine` `{auto,rust,python}` | which transport the engine's GDAS fetch route uses | `auto` |
 | `--quiet` | do not print the transport's own progress lines |  |
 
 ## `gpuwm-global score`
