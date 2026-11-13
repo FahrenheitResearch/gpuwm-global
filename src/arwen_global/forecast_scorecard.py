@@ -73,6 +73,10 @@ from pathlib import Path
 
 import numpy as np
 
+#: The door's name in a refusal on another world (the receipt reader,
+#: :func:`arwen_global.upper_air_scorecard.read_receipt`, refuses).
+SCORE_DOOR = "score (the forecast scorecard)"
+
 __all__ = [
     "ISA_STAMP_TOLERANCE_M",
     "REFERENCE_FAMILIES",
@@ -166,7 +170,7 @@ def run_checkpoints(run_dir: Path) -> tuple[dict, list[dict]]:
     from .checkpoint import read_checkpoint_header
     from .upper_air_scorecard import read_receipt, receipt_start_utc
 
-    receipt = read_receipt(Path(run_dir))
+    receipt = read_receipt(Path(run_dir), door=SCORE_DOOR)
     start = _utc(receipt_start_utc(receipt))
     rows = []
     for path in sorted(Path(run_dir).glob("arwen_global_step*.npz")):

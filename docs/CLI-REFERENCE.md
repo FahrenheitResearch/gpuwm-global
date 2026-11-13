@@ -6,7 +6,7 @@ the tool after changing an option and commit what it writes.
 
 `gpuwm-global <command> --help` prints the same text at the terminal.
 
-**51 commands.**
+**60 commands.**
 
 - `gpuwm-global pins`
 - `gpuwm-global physics-manifest`
@@ -26,6 +26,9 @@ the tool after changing an option and commit what it writes.
 - `gpuwm-global run`
 - `gpuwm-global statics`
 - `gpuwm-global surface-series`
+- `gpuwm-global climatology fetch`
+- `gpuwm-global climatology build`
+- `gpuwm-global climatology qflux`
 - `gpuwm-global assimilate`
 - `gpuwm-global cycle`
 - `gpuwm-global da init`
@@ -59,6 +62,12 @@ the tool after changing an option and commit what it writes.
 - `gpuwm-global go`
 - `gpuwm-global render`
 - `gpuwm-global configs`
+- `gpuwm-global world list`
+- `gpuwm-global world new`
+- `gpuwm-global world describe`
+- `gpuwm-global world twin`
+- `gpuwm-global world perturb`
+- `gpuwm-global world diff`
 
 ---
 
@@ -225,6 +234,7 @@ the tool after changing an option and commit what it writes.
 | `--overwrite` | replace an existing cache and its sidecar |  |
 | `--sector-degrees` `SECTOR_DEGREES` | longitude width of one build sector (default 30; bounds the source window read at once) | `30.0` |
 | `--geog-root` `GEOG_ROOT` | the WPS_GEOG archive to build from, overriding [statics] geog_root for this build only. Without it the config's own value is used, and without that the engine's archive search answers. A flag is here because the archive is a property of the MACHINE and the config is a property of the EXPERIMENT: pinning a machine path inside a shipped experiment is how a config stops working on the next machine |  |
+| `--orographic` | build the sub-grid orography statistics (VAR, CON, OA1-4, OL1-4 from WPS_GEOG orogwd_10m) the orographic drag orographic_drag = "kim-gwdo" reads, instead of the land-surface statics; the land-surface cache for this grid must exist already (its land mask zeroes the water columns). Written beside it as <stem>-orogwd_10m.npz; --out names another file, as for the land-surface cache |  |
 
 ## `gpuwm-global surface-series`
 
@@ -233,10 +243,38 @@ the tool after changing an option and commit what it writes.
 | `config` (positional) | the experiment whose grid and statics the series is built for |  |
 | `--source` `SOURCE` | a row of arwen_global/data/surface_series_sources.json (gdas-analysis: hindcast; gfs-forecast: one cycle's own SST) |  |
 | `--cycle` `YYYYMMDDHH` | the first record's time (the forecast cycle) |  |
-| `--hours` `HOURS` | the span the records cover, at least the run's duration |  |
+| `--hours` `HOURS` | the span the records cover, at least the run's duration (required unless --anomaly-reference) |  |
 | `--interval-hours` `INTERVAL_HOURS` | hours between records (default 24) | `24.0` |
+| `--anomaly-reference` | build the [ocean] anomaly reference instead: --cycle is the run's start and the records are the 28 six-hourly analyses of the 7 days before it, read with the analysis sea ice as land in the open-water rule (for anomaly_reference_series) |  |
 | `--out` `OUT` | the series .npz to write |  |
 | `--table` `TABLE` | another source table (default: the packaged one) |  |
+
+## `gpuwm-global climatology`
+
+### `gpuwm-global climatology fetch`
+
+| option | what it does | default |
+|---|---|---|
+| `--with-mld` | add the WOA18 monthly mixed-layer depth (row woa18-a5b7-mld, about 85 MB, looked for first in the regional engine's ocean cache) to the default OISST 1991-2020 SST and sea-ice row (about 77 MB) |  |
+| `--cache` `DIR` | where the source files are staged and the built file goes by default (default: $GPUWM_GLOBAL_CLIMATOLOGY, else arwen-global-climatology beside the case data) |  |
+| `--table` `TABLE` | another source table (default: the packaged arwen_global/data/surface_climatology_sources.json) |  |
+| `--from` `DIR` | copy the files from this folder instead of the network; they are verified the same way |  |
+
+### `gpuwm-global climatology build`
+
+| option | what it does | default |
+|---|---|---|
+| `config` (positional) | the experiment whose grid and real statics the climatology is built for |  |
+| `--with-mld` | add the WOA18 monthly mixed-layer depth (row woa18-a5b7-mld, about 85 MB, looked for first in the regional engine's ocean cache) to the default OISST 1991-2020 SST and sea-ice row (about 77 MB) |  |
+| `--cache` `DIR` | where the source files are staged and the built file goes by default (default: $GPUWM_GLOBAL_CLIMATOLOGY, else arwen-global-climatology beside the case data) |  |
+| `--table` `TABLE` | another source table (default: the packaged arwen_global/data/surface_climatology_sources.json) |  |
+| `--out` `NPZ` | the climatology file to write (default: in the cache, named by truncation, grid and geography selection) |  |
+
+### `gpuwm-global climatology qflux`
+
+| option | what it does | default |
+|---|---|---|
+| `qflux_args` (positional) | CHECKPOINT [CHECKPOINT ...] --out NPZ [--smoothing-truncation N], read by arwen_global.ocean_qflux.main |  |
 
 ## `gpuwm-global assimilate`
 
@@ -725,9 +763,64 @@ the tool after changing an option and commit what it writes.
 | `--tapes-dir` `TAPES_DIR` | where the intermediate tapes are written (default: a directory under --outdir that is removed when the pictures are drawn) |  |
 | `--keep-tapes` | keep the exported tapes and their receipt |  |
 | `--overwrite` | replace tapes and pictures that already exist |  |
+| `--own-coast` | draw the coast of the tapes' own land mask instead of Earth's map (automatic when the config's [world] changes the coast) |  |
+| `--map-folder` `DIR` | draw land, coast and borders from this map folder (the natural_earth_10m, natural_earth_110m and us_counties_5m layout the renderer reads) instead of Earth's |  |
+| `--title-suffix` `TEXT` | append TEXT to every panel title (default for a world that is not Earth: its label, and the tape's science or illustration class when the tape carries one) |  |
 
 ## `gpuwm-global configs`
 
 | option | what it does | default |
 |---|---|---|
 | `--paths` | print full paths instead of names |  |
+
+## `gpuwm-global world`
+
+### `gpuwm-global world list`
+
+### `gpuwm-global world new`
+
+| option | what it does | default |
+|---|---|---|
+| `preset` (positional) | a shipped world's name (world list) |  |
+| `--from` `BASE` | the Earth config to start from (a path or a shipped experiment's name) |  |
+| `--out` `OUT` | the config to write |  |
+| `--label` `LABEL` | the world's label (default: the preset's name) |  |
+| `--overwrite` | _(the parser declares no help text for this option)_ |  |
+
+### `gpuwm-global world describe`
+
+| option | what it does | default |
+|---|---|---|
+| `config` (positional) | _(the parser declares no help text for this option)_ |  |
+
+### `gpuwm-global world twin`
+
+| option | what it does | default |
+|---|---|---|
+| `config` (positional) | the world config (a path, or a shipped experiment's name) |  |
+| `--outdir` `OUTDIR` | where the control config and the run folders go (default: beside the world config; a shipped experiment's go to the working directory) |  |
+| `--seed` `SEED` | the perturbed control's seed (default 1) | `1` |
+| `--overwrite` | _(the parser declares no help text for this option)_ |  |
+
+### `gpuwm-global world perturb`
+
+| option | what it does | default |
+|---|---|---|
+| `config` (positional) | the control's config (the checkpoint's own) |  |
+| `checkpoint` (positional) | the control's step-0 checkpoint |  |
+| `output` (positional) | the perturbed checkpoint to write |  |
+| `--seed` `SEED` | _(the parser declares no help text for this option)_ |  |
+| `--amplitude` `AMPLITUDE` | relative size of the move (default 2**-24, float32's unit roundoff) | `5.960464477539063e-08` |
+| `--overwrite` | _(the parser declares no help text for this option)_ |  |
+
+### `gpuwm-global world diff`
+
+| option | what it does | default |
+|---|---|---|
+| `world` (positional) | the world's tapes (or checkpoints) |  |
+| `control` (positional) | the control's tapes (or checkpoints) |  |
+| `perturbed` (positional) | the perturbed control's tapes (or checkpoints) |  |
+| `--out` `OUT` | _(the parser declares no help text for this option)_ |  |
+| `--offset` `{auto,on,off}` | remove the uniform pressure and height offset over unchanged ground: auto (default) when the terrain moved | `auto` |
+| `--label` `LABEL` | the world's label (default: from the world run's config copy) |  |
+| `--overwrite` | _(the parser declares no help text for this option)_ |  |

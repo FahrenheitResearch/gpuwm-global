@@ -2973,6 +2973,91 @@ def auto_latitude_bands(cfg, free_bytes: int | None = None) -> int:
     return ladder[-1] if ladder else 1
 
 
+#: A free-byte figure no card has: prices a plan without asking it to fit.
+_PRICE_ONLY_FREE_BYTES = 1 << 62
+
+
+def _with_memory(cfg, **changes):
+    """``cfg`` with its memory levers changed (a dataclass or a namespace)."""
+    import dataclasses
+
+    if dataclasses.is_dataclass(cfg):
+        return dataclasses.replace(cfg, **changes)
+    import copy
+
+    clone = copy.copy(cfg)
+    for key, value in changes.items():
+        setattr(clone, key, value)
+    return clone
+
+
+def lighter_plans(cfg, bands: int, spill_slices=(), estimate=None
+                  ) -> list[tuple[int, bool, int]]:
+    """The plans priced BELOW the one at ``bands`` / ``spill_slices``, in
+    the door's cost order: ``[(bands, spill_on, card_bytes), ...]``.
+
+    Every plan is a band count from :data:`LATITUDE_BAND_LADDER` with the
+    host tier off or on, priced by :func:`plan_run_memory` itself, so the
+    figure a fallback weighs is the figure the door would have printed for
+    that plan.  A plan is lighter when its card figure is lower: more bands
+    is not by itself lighter (at T383 L40 two bands with nothing parked
+    prices ABOVE one band, because the transient the bands divide is not
+    what fills the card there).  Band count and tier are outside the config
+    identity (``config.config_identity``) and change no arithmetic, so
+    every plan here continues the same forecast to the bit.
+    """
+
+    if estimate is None:
+        estimate = estimate_global_memory(cfg)
+    widest = _widest_band_count(estimate.nlat)
+    cards = max(1, int(getattr(estimate, "cards", 1) or 1))
+    ladder = [b for b in LATITUDE_BAND_LADDER if cards <= b <= widest] or [
+        max(1, min(cards, widest))]
+    dead = plan_run_memory(
+        _with_memory(cfg, latitude_bands=max(1, int(bands)),
+                     host_spill="on" if spill_slices else "off"),
+        _PRICE_ONLY_FREE_BYTES, estimate)
+    found = []
+    for count in ladder:
+        for spill in (False, True):
+            if count == int(bands) and spill == bool(spill_slices):
+                continue
+            plan = plan_run_memory(
+                _with_memory(cfg, latitude_bands=count,
+                             host_spill="on" if spill else "off"),
+                _PRICE_ONLY_FREE_BYTES, estimate)
+            if plan.bands is not None and plan.card_bytes < dead.card_bytes:
+                found.append((count, spill, int(plan.card_bytes)))
+    return found
+
+
+def fallback_plan(cfg, free_bytes: int | None, bands: int, spill_slices=(),
+                  estimate=None, why: str = "") -> RunMemoryPlan | None:
+    """The first plan of :func:`lighter_plans` that fits ``free_bytes``,
+    priced against it, or ``None`` when none does (or the card could not
+    be read).  ``why`` opens the plan's reason."""
+
+    import dataclasses
+
+    if not free_bytes:
+        return None
+    if estimate is None:
+        estimate = estimate_global_memory(cfg)
+    for count, spill, card in lighter_plans(cfg, bands, spill_slices, estimate):
+        if card > int(free_bytes):
+            continue
+        plan = plan_run_memory(
+            _with_memory(cfg, latitude_bands=count,
+                         host_spill="on" if spill else "off"),
+            int(free_bytes), estimate)
+        if plan.bands is None:
+            continue
+        return dataclasses.replace(
+            plan, bands_chosen_by="fallback", spill_chosen_by="fallback",
+            reason=(why + "; " if why else "") + plan.reason)
+    return None
+
+
 def widest_band_count(nlat: int) -> int:
     """The largest band count the grid allows (bands.widest_band_count)."""
     from .bands import widest_band_count as _widest
@@ -3699,7 +3784,21 @@ def prediction_sentence(estimate: GlobalMemoryEstimate) -> str:
             f"predicted ({calibration})")
 
 
-def run_memory_gate(cfg, *, probe=None) -> dict:
+def shared_card_margin(neighbours) -> int:
+    """The bytes the door leaves to the card's other tenants: the shared
+    card margin when other processes hold memory on it or it drives a
+    display, else nothing (``device_memory.SHARED_CARD_MARGIN_BYTES``)."""
+
+    from .device_memory import SHARED_CARD_MARGIN_BYTES
+
+    if not neighbours:
+        return 0
+    if neighbours.get("processes") or neighbours.get("display_active"):
+        return int(SHARED_CARD_MARGIN_BYTES)
+    return 0
+
+
+def run_memory_gate(cfg, *, probe=None, neighbours=None) -> dict:
     """Price ``cfg`` against THIS card, before the transform is built.
 
     Returns ``{"verdict", "refuse", "free_bytes", "estimate", "plan"}``.
@@ -3727,6 +3826,18 @@ def run_memory_gate(cfg, *, probe=None) -> dict:
     stand up a CUDA primary context -- measured 0.486 GiB on the RTX 5090
     -- which this process then holds for the entire forecast, as a
     consumer no term of the estimate it had just computed names.
+
+    THE CARD'S OTHER TENANTS ARE NAMED AND LEFT A MARGIN.  The free figure
+    already excludes what other processes hold at this instant, but not
+    what they take after it: MEASURED 2026-11-12 on an RTX 5070 Ti, five
+    222 MiB contexts that opened after the door had read 15.24 GiB free
+    killed one T383 segment in eleven at the one-band plan it had chosen.
+    So when ``nvidia-smi`` shows other processes on the card, or the card
+    drives a display, the plan is chosen against the free figure less
+    :func:`shared_card_margin` and the verdict lists them; a plan that
+    fits only without the margin is still admitted (the margin never turns
+    into a refusal).  ``neighbours`` is read here only for the real card
+    (``probe`` None); a caller handing in a probe hands in its neighbours.
     """
 
     from gpuwm.core.preflight import device_memory_probe_reason
@@ -3754,6 +3865,10 @@ def run_memory_gate(cfg, *, probe=None) -> dict:
                 "free_bytes": None, "estimate": estimate,
                 "plan": plan_run_memory(cfg, None, estimate)}
         probe = device_memory_probe_subprocess()
+        if probe is not None and neighbours is None:
+            from .device_memory import card_neighbours
+
+            neighbours = card_neighbours()
     if probe is None:
         return {"verdict": (
             f"memory: {predicted}; not weighed ({device_memory_probe_reason()})"),
@@ -3774,11 +3889,30 @@ def run_memory_gate(cfg, *, probe=None) -> dict:
     # weighed the resident peak would refuse T533 L40 on a 32 GiB card --
     # the run the band count exists to admit -- and print a number the run
     # was never going to reach.
-    plan = plan_run_memory(cfg, free, estimate)
+    margin = shared_card_margin(neighbours)
+    margin_text = ""
+    if margin:
+        from .device_memory import neighbours_phrase
+
+        # At least one byte: a zero free figure is the no-card branch.
+        plan = plan_run_memory(cfg, max(1, free - margin), estimate)
+        margin_text = (f"; {neighbours_phrase(neighbours)}, so "
+                       f"{_format_bytes(margin).strip()} of what it has free "
+                       "is left to them")
+        whole = None if plan.fits else plan_run_memory(cfg, free, estimate)
+        if whole is not None and whole.fits:
+            plan, margin = whole, 0
+            margin_text += (", which no plan leaves, so the plan is chosen "
+                            "against the whole free figure")
+        else:
+            margin_text += " and the plan is chosen against the rest"
+    else:
+        plan = plan_run_memory(cfg, free, estimate)
     if plan.bands in (None, 1) and not plan.spill_slices:
         plan_text = ""
     else:
         plan_text = "; " + plan.reason
+    plan_text = margin_text + plan_text
     # The ratio the verdict quotes is the PLAN's, not the module's default:
     # a banded run with the tier is charged its own class, and printing
     # the resident class's figure beside a banded plan's card total is a
@@ -3821,6 +3955,9 @@ def run_memory_gate(cfg, *, probe=None) -> dict:
         "plan": plan,
         "free_bytes": free,
         "estimate": estimate,
+        # What else held the card when it was read, and what was left to it.
+        "neighbours": neighbours,
+        "shared_card_margin_bytes": margin,
     }
 
 

@@ -31,7 +31,7 @@ name = "gpuwm-global"
 # The model source this package carries is cut from revision
 # f6f1adaa3bda7a347c142544d4007cf14847db47, dated 2026-09-12.  SOURCE.md says
 # what that means and how a re-cut is done.
-version = "0.1.9"
+version = "0.2.0"
 description = "Arwen Global: a GPU-native hydrostatic global spectral weather model with ensemble data assimilation"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -70,7 +70,7 @@ license-files = ["LICENSE", "NOTICE", "licenses/*"]
 # supersets of each other across minors.  `gpuwm/core/preflight.py` is 8,834
 # lines on the tree this package was carved from and 9,727 on the 2.7 line;
 # `gpuwm/core/rrtmgp.py` differs by 1,316 lines; `gpuwm/verify/npref.py` by
-# 491.  A package that imports 240 symbols across that boundary and states
+# 491.  A package that imports 242 symbols across that boundary and states
 # no ceiling is a package that will one day resolve an engine whose symbols
 # moved and fail at the first import of a forecast, after the install
 # reported success.  (The count rose from 78 on 2026-09-09, when the physics

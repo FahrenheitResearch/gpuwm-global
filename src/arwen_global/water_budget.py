@@ -42,9 +42,13 @@ column water it moved against the explicit surface reservoir, measured in
 the model's own metric (``physics/native_runtime.py``: YSU's surface flux
 debits it, Grell-Freitas and Morrison fallout credit it) and the land step
 moves reservoir water into Noah's stores and the runoff outflow account
-without changing their sum.  So with the reservoir system
+without changing their sum.  On ocean, lake and sea-ice columns the
+movement is booked to the open-water exchange account instead of the
+reservoir when the state carries one (``water.OCEAN_EXCHANGE_NAMES``).  So
+with the reservoir system
 
     S = surface reservoir + soil water + canopy + snow + booked outflow
+        + open-water exchange account
 
 priced exactly as ``water.total_water_column`` and the in-situ ledger price
 it, the physics net exchange over an interval is
@@ -52,7 +56,7 @@ it, the physics net exchange over an interval is
     N = E - P = F - dS
 
 where ``F`` is the global water fixer's uniform per-step correction to the
-surface reservoir summed over the interval (``insitu.ndjson`` metric
+surface reservoir (to the exchange account on open water) summed over the interval (``insitu.ndjson`` metric
 ``global_water_fixer_kg_m2``; zero, and stated, when no ledger is given).
 The instrument reports ``E = N + P`` with ``P`` from the accumulators and
 states the one approximation that carries: the accumulators are the
@@ -103,6 +107,7 @@ from .water import (
     NATIVE_CANOPY_STORE_NAMES,
     NATIVE_SNOW_STORE_NAMES,
     SOIL_LAYER_THICKNESS_M,
+    OCEAN_EXCHANGE_NAMES,
     WATER_OUTFLOW_NAMES,
 )
 
@@ -770,6 +775,12 @@ class CheckpointReader:
             notes.append(f"step {step}: no outflow account (counted zero)")
         else:
             reservoir = reservoir + np.asarray(physics[name], dtype=np.float64)
+        # The open-water exchange account, signed; a state from a run that
+        # booked open water to the finite reservoir has none, and the
+        # reservoir term already carries that water.
+        name = next((n for n in OCEAN_EXCHANGE_NAMES if n in physics), None)
+        if name is not None:
+            reservoir = reservoir + np.asarray(physics[name], dtype=np.float64)
         convective_name = CHECKPOINT_CONVECTIVE.removeprefix("physics__")
         if convective_name in physics:
             convective = np.asarray(physics[convective_name], dtype=np.float64)
@@ -826,6 +837,7 @@ def read_receipt(run_dir: Path) -> dict:
 LEDGER_RESERVOIR_TERMS = (
     "water_surface_kg_m2", "water_soil_kg_m2", "water_native_kg_m2", "water_outflow_kg_m2",
 )
+LEDGER_EXCHANGE_TERM = "water_ocean_exchange_kg_m2"
 
 
 def read_ledger(path: str | Path) -> dict[str, np.ndarray]:
@@ -852,7 +864,11 @@ def read_ledger(path: str | Path) -> dict[str, np.ndarray]:
             for s in WATER_SPECIES:
                 species[s].append(float(terms[f"water_{s}_kg_m2"]))
             atmosphere.append(float(terms["water_atmosphere_kg_m2"]))
-            reservoir.append(float(sum(terms[t] for t in LEDGER_RESERVOIR_TERMS)))
+            # The exchange row is absent from a ledger written before it
+            # existed, whose reservoir row carried that water.
+            reservoir.append(float(
+                sum(terms[t] for t in LEDGER_RESERVOIR_TERMS)
+                + terms.get(LEDGER_EXCHANGE_TERM, 0.0)))
             total.append(float(terms["water_total_kg_m2"]))
             fixer.append(float(row.get("metrics", {}).get("global_water_fixer_kg_m2", 0.0)))
     if not steps:
@@ -1007,7 +1023,7 @@ def measure_run(
         "synthesis": "numpy float64 from the checkpoint's complex64 coefficients",
         "reservoir": (
             "surface + soil (max(smois,0) x thickness x 1000 x land_fraction) + "
-            "max(canopy,0) + max(snow,0) + outflow"
+            "max(canopy,0) + max(snow,0) + outflow + open-water exchange account"
         ),
         "convective": CHECKPOINT_CONVECTIVE,
         "grid_scale": " + ".join(CHECKPOINT_GRID_SCALE_BUCKETS),

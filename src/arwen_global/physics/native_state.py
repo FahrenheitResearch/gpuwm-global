@@ -24,6 +24,10 @@ CUMULUS_EXIT_QV = "cumulus_exit_qv"
 CUMULUS_EXIT_ARRAYS = (CUMULUS_EXIT_THETA, CUMULUS_EXIT_QV)
 CUMULUS_EXIT_TIME_KEY = "cumulus_exit_time_s"
 
+#: Noah's snow age (WRF SNOTIME, seconds since the column's last
+#: snowfall), carried between land calls and checkpointed.
+NOAH_SNOW_AGE = "noah_snotime"
+
 
 #: Persistent time integrals of the held radiation planes (J/m2; the
 #: cover integral is in seconds), keyed by the held plane each one
@@ -238,6 +242,17 @@ class PersistentNativeState:
         for name, fill in (
             ("noah_canwat", 0.0), ("noah_snow", 0.0),
             ("noah_snowc", 0.0), ("noah_snowh", 0.0),
+            # The snowpack's age since its last snowfall, seconds (WRF
+            # SNOTIME): Noah's ALCALC advances it by the land step on a
+            # snow-covered column, zeroes it when snow falls, and decays
+            # the snow albedo with it (noah.cu:155-170).  Carried here so
+            # the pack ages across calls; a temporary built afresh on
+            # every call left it one land interval old forever, at its
+            # fresh-snow albedo.  Zero is fresh snow: the age the analysed
+            # pack starts from, and what the checkpoint reader fills for
+            # an archive written before the age was carried (and says so,
+            # checkpoint.LATER_CARRIED_PHYSICS_ARRAYS).
+            (NOAH_SNOW_AGE, 0.0),
             ("noah_lh", 0.0), ("noah_grdflx", 0.0),
             # The land surface's own hfx/qfx/qsfc from its last integration:
             # on calls where Noah is not due, land columns hand YSU these
@@ -253,6 +268,12 @@ class PersistentNativeState:
             # rest of the namespace so restart continuation stays bit-exact.
             ("water_outflow_kg_m2", 0.0),
         ):
+            # With snow_ageing off the age is rebuilt as zeros on every
+            # land call and nothing reads the plane, so none is made: the
+            # namespace is the one 0.1.8 carried, array for array.
+            if name == NOAH_SNOW_AGE and not getattr(
+                    self.options, "snow_ageing", False):
+                continue
             self._array(name, s, fill)
         self.metadata.setdefault("last_radiation_bucket", -1)
         self.metadata.setdefault("radiation_calls", 0)
@@ -321,4 +342,4 @@ class PersistentNativeState:
         )
 
 
-__all__ = ["PersistentNativeState", "RADIATION_ACCUMULATORS"]
+__all__ = ["NOAH_SNOW_AGE", "PersistentNativeState", "RADIATION_ACCUMULATORS"]

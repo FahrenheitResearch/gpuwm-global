@@ -653,6 +653,12 @@ def read_checkpoint_series(
     for path in sorted(Path(p) for p in paths):
         with np.load(path, allow_pickle=False) as archive:
             metadata = json.loads(str(archive["__metadata__"].item()))
+            # Local solar time here is UTC + longitude / 15 on a 24-hour
+            # day; a run on a world with another day length is refused by
+            # name (its checkpoints carry the world record), never fitted.
+            from .world.clock import metadata_day_length_h, refuse_local_time
+
+            refuse_local_time("diurnal_phase", metadata_day_length_h(metadata), str(path))
             times.append(float(metadata["time_s"]))
             names = set(archive.files)
             if CHECKPOINT_CONVECTIVE_ACCUMULATOR not in names:

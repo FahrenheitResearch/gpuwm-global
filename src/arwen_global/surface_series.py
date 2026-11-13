@@ -212,9 +212,18 @@ def series_grid(cfg) -> SeriesGrid:
 
 def build_surface_series(cfg, *, source: str, cycle, hours: float,
                          interval_hours: float, out, table=None, workdir=None,
-                         progress=print) -> dict:
+                         progress=print, source_water: str = "land") -> dict:
     """Fetch, decode and regrid one record every ``interval_hours`` from
-    ``cycle`` through ``cycle + hours`` onto ``cfg``'s Gaussian grid."""
+    ``cycle`` through ``cycle + hours`` onto ``cfg``'s Gaussian grid.
+
+    ``source_water = "land-and-ice"`` reads an analysis point as water in
+    the open-water rule's stencil only where it is neither land nor ice
+    (sea-ice fraction below one half): the masked rule an ocean rule's
+    starting anomaly is built with (arwen_global.ocean_rules), so the skin
+    of an ice point never enters an open-water value.  The default, land
+    only, is the cold start's own rule and the series' bytes as before."""
+    if source_water not in ("land", "land-and-ice"):
+        raise ValueError("source_water must be 'land' or 'land-and-ice'")
     from . import analysis_initial
     from .statics import load_statics
 
@@ -257,8 +266,11 @@ def build_surface_series(cfg, *, source: str, cycle, hours: float,
         if vt != valids[k]:
             raise ValueError(f"record {k} decodes valid {vt.isoformat()}, "
                              f"expected {valids[k].isoformat()}")
+        land_src = fields["land_fraction"]
+        if source_water == "land-and-ice":
+            land_src = np.where(fields["sea_ice_fraction"] >= 0.5, 1.0, land_src)
         skin, _ = analysis_initial.open_water_skin_temperature(
-            fields["skin_temperature"], fields["land_fraction"], regrid, water,
+            fields["skin_temperature"], land_src, regrid, water,
             latitude_deg=grid.latitude_deg, longitude_deg=grid.longitude_deg)
         sst[k] = skin
         ice[k] = np.clip(regrid(fields["sea_ice_fraction"]), 0.0, 1.0)
@@ -279,6 +291,8 @@ def build_surface_series(cfg, *, source: str, cycle, hours: float,
         "regrid": "analysis_initial.open_water_skin_temperature on the statics water mask, "
                   "Rust cold-start regrid; sea ice bilinear, clipped",
     }
+    if source_water != "land":
+        provenance["source_water"] = source_water
     out.parent.mkdir(parents=True, exist_ok=True)
     np.savez(out, sst_k=sst, sea_ice_fraction=ice, sea_ice_thickness_m=thickness,
              valid_utc=np.array([r["valid_utc"] for r in records]),
@@ -296,12 +310,14 @@ def build_surface_series(cfg, *, source: str, cycle, hours: float,
 # the step
 # ---------------------------------------------------------------------------
 
-class SurfaceSeriesUpdate:
-    """Apply a dated surface series to a run's surface state every step."""
+class SeriesProvider:
+    """A dated series as a record provider of the boundary service
+    (arwen_global.surface_boundary): SST linear in time between records,
+    sea ice replaced at each record, refused past the last record."""
 
-    def __init__(self, path, *, start_time, duration_s: float,
-                 statics_fields=None, statics_provenance=None,
-                 terrain_height_m=None, latitude_deg=None):
+    kind = "series"
+
+    def __init__(self, path, *, start_time, duration_s: float):
         self.path = Path(path)
         with np.load(self.path, allow_pickle=False) as data:
             self.sst = np.ascontiguousarray(data["sst_k"], dtype=np.float32)
@@ -323,50 +339,8 @@ class SurfaceSeriesUpdate:
                 "its last record would be invented")
         if np.any(np.diff(self.times_s) <= 0.0):
             raise ValueError("surface series record times must increase")
-        self.statics_fields = statics_fields
-        self.statics_provenance = statics_provenance
-        self.terrain = terrain_height_m
-        self.latitude_deg = latitude_deg
-        self.greenness = statics_fields is not None
-        self._ice_record = None
         self._device = {}
-        self._green_day = None
-        self._ocean = None
-        self.counts = {"sst_steps": 0, "ice_records": 0, "ice_to_water": 0,
-                       "water_to_ice": 0, "greenness_updates": 0}
-        self.seconds = 0.0
-        self.last = {}
-
-    @staticmethod
-    def _xp(array):
-        """The device module when the run is on a card (a parked plane is
-        staged to the card to be worked on), numpy otherwise."""
-        from .spill import spilled
-
-        try:
-            import cupy as cp
-        except ImportError:  # pragma: no cover
-            return np
-        return cp if spilled(array) else cp.get_array_module(array)
-
-    @staticmethod
-    def _get(xp, surface, name):
-        from .spill import resident
-
-        return resident(xp, getattr(surface, name))
-
-    @staticmethod
-    def _put(surface, name, value) -> None:
-        """Write a whole plane back: in place on the card, or the parked
-        slot replaced through the tier (spill.SpilledArray.store), as the
-        water fixer replaces its reservoir."""
-        from .spill import spilled
-
-        target = getattr(surface, name)
-        if spilled(target):
-            target.store(value)
-        else:
-            target[...] = value
+        self._w = 0.0
 
     def _record_on(self, xp, k):
         key = (xp.__name__, k)
@@ -376,138 +350,36 @@ class SurfaceSeriesUpdate:
             self._device[key] = xp.asarray(self.sst[k])
         return self._device[key]
 
-    def _open_ocean(self, surface, xp):
-        from .statics import lake_columns, water_columns
-
-        if self._ocean is None:
-            land = self._get(xp, surface, "land_fraction")
-            ice = self._get(xp, surface, "sea_ice_fraction")
-            water = water_columns(land, xp, sea_ice_fraction=ice)
-            lake = lake_columns(land, self._get(xp, surface, "lake_fraction"), xp,
-                                sea_ice_fraction=ice)
-            self._ocean = xp.ascontiguousarray(water & ~lake)
-        return self._ocean
-
-    def apply(self, state, *, model=None) -> None:
-        started = time.perf_counter()
-        surface = state.surface
-        xp = self._xp(surface.temperature_k)
-        t = float(state.time_s)
+    def record_index(self, t: float) -> int:
         k = int(np.searchsorted(self.times_s, t, side="right") - 1)
-        k = min(max(k, 0), len(self.times_s) - 2)
-        if self._ice_record != k:
-            # Record zero at a cold start is the analysis the state was
-            # seeded from; replacing it with itself is the identity.
-            self._apply_ice(state, model, k, xp)
-            self._ice_record = k
-        if self.greenness:
-            day = int(t // 86400.0)
-            if self._green_day != day:
-                self._apply_greenness(surface, xp, self.start + timedelta(seconds=t))
-                self._green_day = day
+        return min(max(k, 0), len(self.times_s) - 2)
+
+    def sst_at(self, t: float, xp, dtype):
+        k = self.record_index(t)
         w = (t - self.times_s[k]) / (self.times_s[k + 1] - self.times_s[k])
         w = float(min(max(w, 0.0), 1.0))
+        self._w = w
         a, b = self._record_on(xp, k), self._record_on(xp, k + 1)
-        skin = self._get(xp, surface, "temperature_k")
-        sst = (a * np.float32(1.0 - w) + b * np.float32(w)).astype(skin.dtype, copy=False)
-        ocean = self._open_ocean(surface, xp)
-        self._put(surface, "temperature_k", xp.where(ocean, sst, skin))
-        self.counts["sst_steps"] += 1
-        self.last = {"time_s": t, "record": k, "weight": round(w, 6)}
-        self.seconds += time.perf_counter() - started
+        return (a * np.float32(1.0 - w) + b * np.float32(w)).astype(dtype, copy=False), None
 
-    def _apply_greenness(self, surface, xp, when) -> None:
-        from gpuwm.static.build import monthly_interp_to_date
+    def ice_record(self, k: int, xp, surface, get):
+        dtype = get(xp, surface, "sea_ice_fraction").dtype
+        columns = get(xp, surface, "land_fraction") <= 0.5
+        return (xp.asarray(self.ice[k].astype(dtype)),
+                xp.asarray(self.thickness[k].astype(dtype)), columns)
 
-        f = self.statics_fields
-        valid = when.replace(tzinfo=None)
-        planes = {
-            "vegetation_fraction": np.clip(monthly_interp_to_date(
-                np.asarray(f["GREENFRAC"], dtype=np.float64), valid), 0.0, 1.0),
-            "leaf_area_index": np.clip(monthly_interp_to_date(
-                np.asarray(f["LAI12M"], dtype=np.float64), valid), 0.0, None),
-            "background_albedo": np.clip(monthly_interp_to_date(
-                np.asarray(f["ALBEDO12M"], dtype=np.float64), valid) / 100.0, 0.0, 1.0),
-        }
-        land = self._get(xp, surface, "land_fraction") > 0.5
-        for name, plane in planes.items():
-            current = self._get(xp, surface, name)
-            self._put(surface, name, xp.where(
-                land, xp.asarray(plane.astype(current.dtype)), current))
-        self.counts["greenness_updates"] += 1
+    def record_sst_host(self, k: int):
+        return self.sst[k].astype(np.float64)
 
-    def _apply_ice(self, state, model, k, xp) -> None:
-        from .statics import SEA_ICE_THRESHOLD
+    def record_valid(self, k: int):
+        return self.valid[k]
 
-        surface = state.surface
-        ice_now = self._get(xp, surface, "sea_ice_fraction")
-        dtype = ice_now.dtype
-        new_ice = xp.asarray(self.ice[k].astype(dtype))
-        new_thick = xp.asarray(self.thickness[k].astype(dtype))
-        water = self._get(xp, surface, "land_fraction") <= 0.5
-        threshold = np.float32(SEA_ICE_THRESHOLD)
-        old_frozen = xp.asarray(ice_now, dtype=xp.float32) >= threshold
-        new_frozen = xp.asarray(new_ice, dtype=xp.float32) >= threshold
-        freeze = water & new_frozen & ~old_frozen
-        melt = water & old_frozen & ~new_frozen
-        n_freeze = int(xp.count_nonzero(freeze))
-        n_melt = int(xp.count_nonzero(melt))
-        if (n_freeze or n_melt) and self.statics_fields is not None:
-            self._convert(surface, xp, k, new_ice, freeze, melt)
-        elif n_freeze or n_melt:
-            # Without the statics there is no rulebook to re-class with;
-            # the crossing columns keep their class and their old ice.
-            new_ice = xp.where(freeze | melt, ice_now, new_ice)
-            n_freeze = n_melt = 0
-        self._put(surface, "sea_ice_fraction", xp.where(water, new_ice, ice_now))
-        self._put(surface, "sea_ice_thickness_m", xp.where(
-            water, new_thick, self._get(xp, surface, "sea_ice_thickness_m")))
-        self.counts["ice_records"] += 1
-        self.counts["water_to_ice"] += n_freeze
-        self.counts["ice_to_water"] += n_melt
-        if n_freeze or n_melt:
-            self._ocean = None
-            invalidate_runtime_masks(model)
-
-    def _convert(self, surface, xp, k, new_ice, freeze, melt) -> None:
-        from .statics import resolve_surface_statics
-        from .surface_seeding import sea_ice_initial_soil_temperature
-
-        def host(a):
-            return a.get() if hasattr(a, "get") else np.asarray(a)
-
-        skin = host(self._get(xp, surface, "temperature_k")).astype(np.float64)
-        soil = host(self._get(xp, surface, "soil_temperature_k")).astype(np.float64)
-        sst = self.sst[k].astype(np.float64)
-        ice = host(new_ice).astype(np.float32)
-        melt_h, freeze_h = host(melt), host(freeze)
-        skin = np.where(melt_h, sst,
-                        np.where(freeze_h, np.minimum(skin, SEA_WATER_FREEZING_K), skin))
-        resolved, _ = resolve_surface_statics(
-            self.statics_fields, self.statics_provenance,
-            valid_time=self.valid[k].replace(tzinfo=None),
-            latitude_deg=self.latitude_deg, terrain_height_m=self.terrain,
-            soil_temperature_k=soil, skin_temperature_k=skin,
-            sea_ice_fraction=ice, snow_water_kg_m2=np.zeros_like(ice))
-        mask = xp.asarray(freeze_h | melt_h)
-        for name in ("landuse_category", "soil_category_top", "soil_category_bottom",
-                     "albedo", "emissivity", "roughness_m", "snow_albedo"):
-            current = self._get(xp, surface, name)
-            self._put(surface, name, xp.where(
-                mask, xp.asarray(resolved[name].astype(current.dtype)), current))
-        new_soil = sea_ice_initial_soil_temperature(
-            soil, skin, ice.astype(np.float64), self.thickness[k].astype(np.float64),
-            np.zeros_like(skin))
-        new_soil = np.where(melt_h[None], sst[None], new_soil)
-        current = self._get(xp, surface, "soil_temperature_k")
-        self._put(surface, "soil_temperature_k", xp.where(
-            mask[None], xp.asarray(new_soil.astype(current.dtype)), current))
-        current = self._get(xp, surface, "temperature_k")
-        self._put(surface, "temperature_k", xp.where(
-            mask, xp.asarray(skin.astype(current.dtype)), current))
+    def last_info(self, t: float) -> dict:
+        return {"time_s": t, "record": self.record_index(t), "weight": round(self._w, 6)}
 
     def receipt(self) -> dict:
         return {
+            "provider": "series",
             "series": str(self.path), "source": self.provenance.get("source"),
             "source_kind": self.provenance.get("source_kind"),
             "cycle_utc": self.provenance.get("cycle_utc"),
@@ -516,18 +388,59 @@ class SurfaceSeriesUpdate:
                    "(water, not frozen, not an inland lake)",
             "sea_ice": "replaced at each record; crossing columns re-classed by the "
                        "cold-start rulebook",
-            "greenness": ("vegetation, LAI and background albedo on land re-resolved daily "
-                          "from the statics monthly climatology" if self.greenness
-                          else "off (synthetic statics)"),
-            **self.counts, "host_seconds": round(self.seconds, 3), "last": self.last,
         }
+
+
+class SurfaceSeriesUpdate:
+    """A dated series on the boundary service with the daily greenness
+    march beside it: what a run with ``[surface_update] series`` runs."""
+
+    def __init__(self, path, *, start_time, duration_s: float,
+                 statics_fields=None, statics_provenance=None,
+                 terrain_height_m=None, latitude_deg=None):
+        from .land_climatology import GreennessMarch
+        from .surface_boundary import SurfaceBoundary
+
+        self.series = SeriesProvider(path, start_time=start_time, duration_s=duration_s)
+        self.path = self.series.path
+        self.valid = self.series.valid
+        self.provenance = self.series.provenance
+        self.boundary = SurfaceBoundary(
+            self.series, statics_fields=statics_fields,
+            statics_provenance=statics_provenance, terrain_height_m=terrain_height_m,
+            latitude_deg=latitude_deg)
+        self.greenness = (GreennessMarch(statics_fields, start_time=start_time)
+                          if statics_fields is not None else None)
+
+    def apply(self, state, *, model=None) -> None:
+        self.boundary.apply(state, model=model)
+        if self.greenness is not None:
+            self.greenness.apply(state)
+
+    def receipt(self) -> dict:
+        out = self.boundary.receipt()
+        out["greenness"] = (self.greenness.receipt() if self.greenness is not None
+                            else "off (synthetic statics)")
+        return out
 
 
 def invalidate_runtime_masks(model) -> int:
     """Drop the native runtime's per-band frozen, partial-pack and lake
-    masks and its statics check, which it otherwise keeps for the run."""
+    masks and its statics check, which it otherwise keeps for the run.
+
+    The model's physics is the bridge (physics.arwen_bridge.
+    NativeArwenPhysicsBridge) and the runtime lives on its ``adapter``, the
+    column suite.  Until 2026-11-12 this looked for the runtime on the
+    bridge itself, found none, and dropped nothing: a column that changed
+    class at an ice record kept the frozen-surface step it started with,
+    and a melted column's skin and top soil layer kept cooling as ice
+    (measured on a T255 anomaly-mode run from GDAS 2026-11-10 18Z: 273 K
+    at the melt to 201 K four days later, 211 open-ocean columns more than
+    1e-3 K off the rule at day 5)."""
     physics = getattr(model, "physics", None) if model is not None else None
     runtime = getattr(physics, "_runtime", None)
+    if runtime is None:
+        runtime = getattr(getattr(physics, "adapter", None), "_runtime", None)
     bands = getattr(runtime, "_bands", None) or {}
     for cache in bands.values():
         cache.frozen = cache.frozen_count = None
@@ -537,5 +450,5 @@ def invalidate_runtime_masks(model) -> int:
     return len(bands)
 
 
-__all__ = ["SERIES_SCHEMA", "SurfaceSeriesUpdate", "build_surface_series",
+__all__ = ["SERIES_SCHEMA", "SeriesProvider", "SurfaceSeriesUpdate", "build_surface_series",
            "invalidate_runtime_masks", "load_sources", "resolve_source"]

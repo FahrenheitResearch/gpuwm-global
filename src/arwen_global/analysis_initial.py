@@ -1078,6 +1078,60 @@ def surface_virtual_temperature(temperature_src, humidity_src, ln_source, ps_src
     return temperature * (1.0 + 0.608 * humidity)
 
 
+#: The module and function the world hook calls (package 1.1 owns them;
+#: later packages extend the dispatch inside, never this hook).  Contract:
+#: ``edit_frame(frame, world, *, levels_pa, grid) -> (frame, record)``.
+#: ``frame`` is the decoded analysis frame exactly as this function reads it
+#: (``.fields[name].values`` on the source grid, ``.latitude``,
+#: ``.longitude``, ``.vertical_values``, ``.valid_time`` ...); ``levels_pa``
+#: its isobaric levels in Pa, ascending top to bottom; ``grid`` the model's
+#: Gaussian grid.  It returns a frame of the same shape and interface with
+#: the world's edits applied (terrain_height, surface_pressure and the
+#: fields under removed or added terrain, skin, soil, snow, sea) and a
+#: JSON-safe record of what it did, which rides in the provenance.
+WORLD_FRAME_EDITOR = ("arwen_global.world.frame_edits", "edit_frame")
+
+
+def edit_frame_for_world(frame, world, *, levels_pa, grid):
+    """The terrain hook: ``(frame, provenance)`` for a world that is not
+    Earth's.  A world that keeps Earth's terrain leaves the frame to the
+    hooks after this one (the sea and the zonal-mean start, package 2.2)
+    and says so; a world that moves the terrain is handed to the frame
+    editor, and a build without one refuses by name rather than starting
+    the world from Earth's mountains under its label."""
+    from importlib import import_module
+
+    provenance: dict[str, object] = {"record": world.record()}
+    if not world.changes_terrain:
+        provenance["frame_edit"] = (
+            "none: this world keeps Earth's terrain, so the analysis "
+            "frame's terrain and the air above it are as decoded")
+        return frame, provenance
+    reason = "its terrain"
+    module_name, function_name = WORLD_FRAME_EDITOR
+    try:
+        module = import_module(module_name)
+    except ModuleNotFoundError as exc:
+        if exc.name not in (module_name, None):
+            raise
+        raise ValueError(
+            f"world {world.label!r} changes {reason}, which is built by "
+            f"editing the analysis frame, and this build carries no frame "
+            f"editor ({module_name}); refused rather than starting the world "
+            "from Earth's frame under its label"
+        ) from exc
+    edited, record = getattr(module, function_name)(
+        frame, world, levels_pa=np.asarray(levels_pa, dtype=np.float64),
+        grid=grid)
+    missing = [name for name in _REQUIRED_FIELDS if name not in edited.fields]
+    if missing:
+        raise ValueError(
+            f"the world frame editor returned a frame without "
+            f"{', '.join(missing)}; the cold start reads every one of them")
+    provenance["frame_edit"] = record
+    return edited, provenance
+
+
 def analysis_initial_state(cfg, transform, frame=None, statics=None,
                            scratch_destination=None):
     """Return ``(state, surface_geopotential, provenance)`` from a real
@@ -1166,6 +1220,35 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
             frame, fill_frames[0],
             primary_label=mapping_path.name, fill_label=fill_mapping_path.name,
         )
+    # THE WORLD HOOKS (other worlds, plan section 4.3).  The frame is built
+    # or edited before any field of it is read below, and nothing below
+    # knows a world exists.  Earth (no [world] table, or an all-Earth one)
+    # runs no world code at all, so its cold state is the one before worlds
+    # existed.  In order: an invented world's frame (2.6), the statement and
+    # preflight (1.6), the terrain edit (1.1), the zonal-mean start and the
+    # sea-ice rule (2.2); the sea temperature acts on the open-water skin.
+    world = getattr(cfg, "world", None)
+    if world is not None and world.is_invented:
+        # An invented world has no analysis of its own: Earth's zonal-mean
+        # air is raised onto its terrain and its surface built by stated
+        # rules (arwen_global.world.frame), and the result is read below
+        # exactly as a decoded analysis is.  No world code runs for Earth.
+        from .world.folder import world_map_for
+        from .world.frame import invented_world_frame
+
+        # The folder as load_config resolved it beside the config.
+        frame = invented_world_frame(
+            world, frame,
+            world_map_for(world, transform,
+                          folder=getattr(cfg.statics, "world_folder", None)),
+            levels_pa=analysis_levels_pa(
+                np.asarray(frame.vertical_values, dtype=np.float64), mapping_path)[0],
+            soil_layer_bounds_m=soil_layer_bounds_m(
+                fill_mapping_path
+                if getattr(frame.fields.get("soil_temperature"), "source", "primary") == "fill"
+                and fill_mapping_path is not None else mapping_path,
+                "soil_temperature"),
+        )
 
     missing = [name for name in _REQUIRED_FIELDS if name not in frame.fields]
     if missing:
@@ -1181,6 +1264,26 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
     if levels.ndim != 1 or levels.size < 5 or np.any(np.diff(levels) <= 0.0):
         raise ValueError("analysis pressure levels must be ascending top-to-bottom")
     levels, vertical_units = analysis_levels_pa(levels, mapping_path)
+
+    world_statement = None
+    world_provenance = None
+    world_sea_frame_record = None
+    if world is not None and not world.is_earth:
+        # Before any field is read for the cold start, and before the frame
+        # edit: a world the model cannot carry is refused here by name
+        # (worlds package 1.6), and its statement joins the provenance.
+        from .world.statement import describe_config
+
+        world_statement = describe_config(cfg, frame=frame, levels_pa=levels)
+        world_statement.report.raise_if_refused()
+        # The terrain edit and the pressure mover (package 1.1) ...
+        frame, world_provenance = edit_frame_for_world(
+            frame, world, levels_pa=levels, grid=transform.grid)
+        # ... then the zonal-mean start where a world has no Earth land,
+        # then its sea-ice rule (package 2.2), on the edited frame.
+        from .world.start import world_start_frame
+
+        frame, world_sea_frame_record = world_start_frame(world, frame)
 
     grid = transform.grid
     regrid = _global_regridder(frame.latitude, frame.longitude, grid)
@@ -1426,16 +1529,39 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
     from .statics import water_columns
 
     surface_dtype = np.dtype(b.float_dtype)
+    run_open_water = water_columns(
+        np.asarray(land_fraction, dtype=surface_dtype),
+        sea_ice_fraction=np.asarray(seeded.sea_ice_fraction, dtype=surface_dtype),
+    )
     open_water_skin, open_water_skin_record = open_water_skin_temperature(
         frame.fields["skin_temperature"].values,
         frame.fields["land_fraction"].values,
         regrid,
-        water_columns(
-            np.asarray(land_fraction, dtype=surface_dtype),
-            sea_ice_fraction=np.asarray(seeded.sea_ice_fraction, dtype=surface_dtype),
-        ),
+        run_open_water,
         latitude_deg=grid.latitude_deg, longitude_deg=grid.longitude_deg,
     )
+    # Worlds (package 2.2): the world's sea temperature on the open-water
+    # sea columns (inland lakes keep their own skin), after the cold start
+    # has formed the analysis's own.  No world code runs on Earth or on a
+    # world that takes the analysis's sea.
+    world_sea_record = None
+    if world is not None and not world.is_earth and world.sea.temperature != "analysis":
+        from .statics import lake_columns
+        from .world.sea import analysis_open_water_columns, world_open_water_skin
+
+        lakes = lake_columns(
+            np.asarray(land_fraction, dtype=surface_dtype),
+            np.asarray(resolved["lake_fraction"], dtype=surface_dtype),
+            sea_ice_fraction=np.asarray(seeded.sea_ice_fraction, dtype=surface_dtype),
+        ) if "lake_fraction" in resolved else np.zeros(grid.shape, dtype=bool)
+        open_water_skin, world_sea_record = world_open_water_skin(
+            world.sea, open_water_skin,
+            open_water=run_open_water,
+            analysis_open_water=analysis_open_water_columns(
+                frame.fields["land_fraction"].values, regrid, run_open_water) & ~lakes,
+            latitude_deg=grid.latitude_deg,
+            sea_columns=run_open_water & ~lakes,
+        )
 
     surface = SurfaceState(
         temperature_k=b.asarray(open_water_skin, dtype=b.float_dtype),
@@ -1529,6 +1655,24 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
         "soil_layers": _json_safe(soil_layers),
         "era5_completion": _json_safe(era5_completion),
     }
+    if world_provenance is not None:
+        # Absent for Earth: an Earth provenance has the key set it had
+        # before worlds existed.
+        provenance["world"] = _json_safe(world_provenance)
+        # Package 2.2's block: only a world's receipt carries it.
+        provenance["world_sea"] = _json_safe({
+            "frame": world_sea_frame_record,
+            "open_water": world_sea_record,
+        })
+    if world_statement is not None:
+        # Package 1.6: only for a world; Earth's provenance keeps its keys.
+        provenance["world_statement"] = {
+            "sha256": world_statement.sha256, **world_statement.record()}
+    if (world is not None and world.is_invented
+            and getattr(frame, "world_frame", None) is not None):
+        # Package 2.6: every rule and number the invented-world frame was
+        # built by.
+        provenance["world_frame"] = _json_safe(frame.world_frame)
     return (
         ArwenGlobalState(
             atmosphere, surface,
@@ -1559,4 +1703,6 @@ __all__ = [
     "resolve_analysis_mapping",
     "resolve_analysis_mapping_row",
     "surface_virtual_temperature",
+    "WORLD_FRAME_EDITOR",
+    "edit_frame_for_world",
 ]

@@ -18,11 +18,25 @@ The tapes are an intermediate, so by default they are written under the
 output directory and removed when the pictures are drawn.  ``--keep-tapes``
 keeps them, and ``--tapes-dir`` puts them somewhere a reader chooses; either
 way the export receipt travels with them.
+
+A WORLD'S COAST AND NAME (worlds plan, package 2.7).  A run whose
+``[world]`` changes the land mask, or whose tapes say their coast is their
+own (``ARWEN_WORLD_COAST = "own"``), is drawn with the coast of its own
+tapes: the land mask of the first tape is outlined into a map folder
+(:mod:`arwen_global.world.coast`) under ``<outdir>/world-map``, and the
+renderer is pointed at it through ``RUSTWX_BASEMAP_DIR`` for this draw only.
+Any world that is not Earth also has its label, and the tape's science or
+illustration class when the tape carries one, appended to every panel
+title.  ``--own-coast``, ``--map-folder`` and ``--title-suffix`` ask for the
+same by hand.  On Earth the renderer is called exactly as before, in one
+call with no annotation, and its environment is untouched.
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 from pathlib import Path
 import shutil
 
@@ -98,6 +112,173 @@ def add_render_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--overwrite", action="store_true",
         help="replace tapes and pictures that already exist")
+    parser.add_argument(
+        "--own-coast", action="store_true",
+        help="draw the coast of the tapes' own land mask instead of Earth's "
+             "map (automatic when the config's [world] changes the coast)")
+    parser.add_argument(
+        "--map-folder", type=Path, default=None, metavar="DIR",
+        help="draw land, coast and borders from this map folder (the "
+             "natural_earth_10m, natural_earth_110m and us_counties_5m "
+             "layout the renderer reads) instead of Earth's")
+    parser.add_argument(
+        "--title-suffix", default=None, metavar="TEXT",
+        help="append TEXT to every panel title (default for a world that is "
+             "not Earth: its label, and the tape's science or illustration "
+             "class when the tape carries one)")
+
+
+#: Where a world's own map folder is written, under --outdir.
+WORLD_MAP_DIRNAME = "world-map"
+
+#: The panel annotation file the title suffix travels in, under --outdir.
+#: A draw whose tapes carry different classes writes one per class,
+#: ``world-title-1.json`` and on.
+WORLD_ANNOTATION_NAME = "world-title.json"
+
+#: The global attributes a world's tape carries (worlds packages 1.4 and
+#: 2.8) that this door reads: the label (1.4 writes ARWEN_WORLD, 2.8
+#: ARWEN_WORLD_LABEL), the tape's class for its lead time, and whether the
+#: coast is the world's own ("own") or Earth's ("earth").  An Earth tape
+#: carries none of them.
+TAPE_WORLD_ATTRS = ("ARWEN_WORLD", "ARWEN_WORLD_LABEL", "ARWEN_WORLD_CLASS",
+                    "ARWEN_WORLD_COAST")
+
+#: How a tape's class reads in a panel title.  A tape is "science" only on
+#: days 2 to 6 of Earth with its mountains lowered, and then only near the
+#: lowered ranges (``wrfout_export.world_tape_class``); a whole-globe panel
+#: titled plain "science" would claim the rest of the map too.
+CLASS_TITLES = {"science": "science near the lowered ranges only"}
+
+
+def _tape_world(path: Path) -> dict[str, str]:
+    """The world attributes of one tape, or {} for an Earth tape (or a file
+    netCDF4 cannot open here; the renderer then says what is wrong)."""
+
+    try:
+        from netCDF4 import Dataset
+    except ImportError:          # pragma: no cover - netCDF4 is a dependency
+        return {}
+    try:
+        with Dataset(os.fspath(path)) as tape:
+            names = set(tape.ncattrs())
+            return {name: str(tape.getncattr(name))
+                    for name in TAPE_WORLD_ATTRS if name in names}
+    except OSError:
+        return {}
+
+
+def _world_draw_settings(args: argparse.Namespace, world, tapes, outdir: Path,
+                         status) -> tuple[Path | None, list]:
+    """(map folder, [(tapes, annotation file)]) for this draw.
+
+    On Earth: (None, [(all tapes, None)]), which is the one call the door
+    has always made.
+
+    The map folder is the flag's, or one written from the first tape's own
+    land mask when the world changes the coast (by the config's [world] or
+    by the tapes' own ARWEN_WORLD_COAST) or ``--own-coast`` asks.  Every
+    tape of the draw must carry the same mask: one folder is handed to the
+    renderer for all of them.  The title suffix is the flag's, or the
+    world's label with the tape's class; consecutive tapes with the same
+    suffix are drawn in one call.
+    """
+
+    from .world.coast import (
+        check_map_folder, outline_land_mask, read_tape_land_mask,
+        write_map_folder)
+
+    attrs = [_tape_world(tape) for tape in tapes]
+    # `go` and `run-plan` call this door with namespaces of their own that
+    # predate these three options; absent, each is its default.
+    map_folder = getattr(args, "map_folder", None)
+    own_coast = (getattr(args, "own_coast", False)
+                 or (world is not None and world.changes_coast)
+                 or any(row.get("ARWEN_WORLD_COAST") == "own" for row in attrs))
+    folder = None
+    if map_folder is not None:
+        folder = check_map_folder(Path(map_folder))
+    elif own_coast:
+        lat, lon, land, digest = read_tape_land_mask(tapes[0])
+        for other in tapes[1:]:
+            if read_tape_land_mask(other)[3] != digest:
+                raise ValueError(
+                    f"{other} carries a land mask that differs from "
+                    f"{tapes[0]}'s; one draw takes one coast, so render "
+                    "tapes of different coasts separately")
+        outline = outline_land_mask(lat, lon, land)
+        folder = check_map_folder(write_map_folder(
+            outline, outdir / WORLD_MAP_DIRNAME,
+            source={"tape": Path(tapes[0]).name, "land_mask_sha256": digest,
+                    "world_label": None if world is None else world.label,
+                    "world_identity": None if world is None
+                    else world.identity_hash}))
+        status.note(
+            f"own coast: {len(outline.coast)} coast lines, "
+            f"{outline.land_cells} land cells of {outline.cells}, map folder "
+            f"{folder}")
+
+    explicit = getattr(args, "title_suffix", None)
+    config_label = None
+    if world is not None and not world.is_earth:
+        # A world left with the default label would otherwise be titled
+        # "earth"; its token says which world it is instead.
+        config_label = (world.label if world.label != "earth"
+                        else f"world {world.token}")
+    suffixes = []
+    for row in attrs:
+        if explicit:
+            suffixes.append(explicit)
+            continue
+        label = row.get("ARWEN_WORLD") or row.get("ARWEN_WORLD_LABEL") or config_label
+        klass = row.get("ARWEN_WORLD_CLASS")
+        klass = CLASS_TITLES.get(klass, klass)
+        suffixes.append(None if not label
+                        else f"{label} ({klass})" if klass else label)
+
+    groups: list[tuple[list, Path | None]] = []
+    files: dict[str, Path] = {}
+    distinct = list(dict.fromkeys(s for s in suffixes if s))
+    for tape, suffix in zip(tapes, suffixes):
+        annotation = None
+        if suffix:
+            annotation = files.get(suffix)
+            if annotation is None:
+                outdir.mkdir(parents=True, exist_ok=True)
+                name = (WORLD_ANNOTATION_NAME if len(distinct) == 1 else
+                        f"world-title-{distinct.index(suffix) + 1}.json")
+                annotation = outdir / name
+                annotation.write_text(
+                    json.dumps({"title_suffix": suffix}) + "\n", encoding="utf-8")
+                files[suffix] = annotation
+        if groups and groups[-1][1] == annotation:
+            groups[-1][0].append(tape)
+        else:
+            groups.append(([tape], annotation))
+    return folder, groups
+
+
+@contextlib.contextmanager
+def _map_folder_environment(folder: Path | None):
+    """``RUSTWX_BASEMAP_DIR`` set to ``folder`` for the draw, then restored.
+
+    The engine copies this process's environment into the renderer's and
+    leaves an explicit ``RUSTWX_BASEMAP_DIR`` alone, and the renderer reads
+    that variable before any other map root.  ``None`` touches nothing.
+    """
+
+    if folder is None:
+        yield
+        return
+    before = os.environ.get("RUSTWX_BASEMAP_DIR")
+    os.environ["RUSTWX_BASEMAP_DIR"] = str(folder)
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop("RUSTWX_BASEMAP_DIR", None)
+        else:
+            os.environ["RUSTWX_BASEMAP_DIR"] = before
 
 
 def _sweep_render_scratch(outdir: Path, status) -> None:
@@ -228,11 +409,13 @@ def render(args: argparse.Namespace) -> int:
         _require_renderer()
         checkpoints, tapes = _expand(args.inputs)
         size = _parse_size(args.size)
+        world = None
 
         if checkpoints:
             tapes_dir = Path(args.tapes_dir) if args.tapes_dir else outdir / "tapes"
             status.stage("export", step_count=len(checkpoints))
             cfg = load_config(_config_for(args))
+            world = cfg.world
             written = export_wrfout(
                 cfg, checkpoints, tapes_dir,
                 nlat=args.nlat, nlon=args.nlon,
@@ -244,9 +427,14 @@ def render(args: argparse.Namespace) -> int:
             tapes = [*tapes, *written]
         else:
             tapes_dir = None
+            if args.config is not None:
+                world = load_config(Path(args.config)).world
 
         if not tapes:
             raise ValueError("nothing to render: no checkpoints and no tapes")
+
+        map_folder, groups = _world_draw_settings(
+            args, world, tapes, outdir, status)
 
         status.stage("draw", step_count=len(tapes))
         from gpuwm.render import render_wrfouts_rust
@@ -257,9 +445,22 @@ def render(args: argparse.Namespace) -> int:
         # at the call with a TypeError after the tapes had been exported
         # (measured 2026-09-07 against 2.7.0 and against the tree the model is
         # developed on; both signatures agree and neither has it).
-        pictures, failures, skipped = render_wrfouts_rust(
-            tapes, products=args.products, timeidx=None,
-            outdir=outdir, size=size)
+        #
+        # On Earth there is one group, every tape, and its `annotate` is None,
+        # which is the engine's own default and adds no argument to the
+        # renderer's command line: the one call this door has always made.
+        # A world's tapes of different classes are drawn group by group, each
+        # with its own title; the renderer draws one file per invocation
+        # either way.
+        pictures, failures, skipped = [], [], []
+        with _map_folder_environment(map_folder):
+            for group, annotation in groups:
+                drawn, failed, passed_over = render_wrfouts_rust(
+                    group, products=args.products, timeidx=None,
+                    outdir=outdir, size=size, annotate=annotation)
+                pictures.extend(drawn)
+                failures.extend(failed)
+                skipped.extend(passed_over)
         status.note(f"{len(pictures)} pictures, {len(failures)} failures")
 
         if tapes_dir is not None and not args.keep_tapes:

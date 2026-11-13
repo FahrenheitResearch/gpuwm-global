@@ -3348,6 +3348,17 @@ class RRTMGPRadiation:
     ozone_climatology: str = "cam-zonal-monthly"
     update_count: int = field(default=0, init=False)
     trace_vmr: dict[str, float] = field(default_factory=dict, init=False)
+    #: Factor on the in-cloud liquid and ice paths both solvers radiate.
+    #: 1.0 (default) is WRF's RRTMG: homogeneous cloud in every cloudy
+    #: subcolumn, and the call is the call it always was.  Below 1 it is
+    #: the effective-thickness correction for unresolved in-cloud
+    #: variability (the plane-parallel albedo bias): Cahalan et al. 1994
+    #: (J. Atmos. Sci. 51, 2434) measured about 0.7 for marine
+    #: stratocumulus, and Tiedtke 1996 (Mon. Wea. Rev. 124, 745) put 0.7
+    #: on liquid and ice, shortwave and longwave, in the ECMWF model.  A
+    #: declared departure from WRF; the native option
+    #: radiation_cloud_inhomogeneity hands it in.
+    cloud_path_scale: float = 1.0
 
     def __post_init__(self) -> None:
         import cupy as cp
@@ -3364,6 +3375,10 @@ class RRTMGPRadiation:
             raise ValueError("column_chunk must be positive")
         if self.validation_mode not in ("fused", "full"):
             raise ValueError("validation_mode must be 'fused' or 'full'")
+        if (isinstance(self.cloud_path_scale, bool)
+                or not isinstance(self.cloud_path_scale, (int, float))
+                or not 0.0 < float(self.cloud_path_scale) <= 1.0):
+            raise ValueError("cloud_path_scale must be a number in (0, 1]")
         self.lw_tables = load_gas_tables("lw")
         self.sw_tables = load_gas_tables("sw")
         if (not np.array_equal(self.lw_tables.press_ref,
@@ -3536,6 +3551,27 @@ class RRTMGPRadiation:
             if index is not None:
                 vmr[:, :, index] = DTYPE(value)
         return xp.ascontiguousarray(vmr)
+
+    def select_trace_gases(self, valid_time, overrides=None) -> dict[str, float]:
+        """Re-select the well-mixed gases for ``valid_time``, then apply
+        ``overrides``, over the values the next call's gas fill reads.
+
+        The constructor selects them once, from ``start_time``; a forecast
+        that runs across a year end and wants the gases of each call's
+        valid year calls this before the call.  The selection is
+        :func:`trace_gases` of that instant alone, so it carries no state
+        and a restarted run re-selects what the straight run did.  Only the
+        gases the selection names are written, each in the slot it already
+        holds, so the gas fill's write order is the constructor's.
+        """
+        selected = trace_gases(valid_time, overrides)
+        for gas, value in selected.items():
+            if gas not in self.trace_vmr:
+                raise ValueError(
+                    f"unknown trace gas {gas!r}; known well-mixed gases: "
+                    f"{sorted(self.trace_vmr)}")
+            self.trace_vmr[gas] = value
+        return selected
 
     @staticmethod
     def _solar_constant(valid_time) -> float:
@@ -4035,6 +4071,12 @@ class RRTMGPRadiation:
         cldfra_total = max_random_total_cloud_cover(cldfra, xp=cp)
 
         workspace = getattr(self, "chunk_workspace", None)
+        if self.cloud_path_scale != 1.0:
+            # The inhomogeneity factor (see the field): both solvers read
+            # the scaled in-cloud paths, the sizes and the record stay.
+            scale = DTYPE(self.cloud_path_scale)
+            paths = dataclasses.replace(
+                paths, clwp=paths.clwp * scale, ciwp=paths.ciwp * scale)
         if workspace is not None:
             if (int(workspace.nz) != nz
                     or int(workspace.column_chunk) != self.column_chunk

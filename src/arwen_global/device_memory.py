@@ -276,6 +276,214 @@ def environment_pool_limit(environ=None) -> str | None:
     return value or None
 
 
+#: The phrases a CUDA library puts in an out-of-memory error.  CuPy's pool
+#: raises ``OutOfMemoryError``; a refusal outside the pool (a cuFFT plan's
+#: work area, a driver call) arrives as ``CUDARuntimeError`` /
+#: ``CUDADriverError`` / ``CuFFTError`` carrying one of these.  MEASURED
+#: 2026-11-12 on an RTX 5090 standing in for a 16 GB card with other
+#: processes on it: 11 of 12 deaths were the pool's ``OutOfMemoryError``
+#: and one was ``CUDA_ERROR_OUT_OF_MEMORY`` from a driver call.
+OUT_OF_MEMORY_MARKERS = (
+    "out of memory",
+    "cudaErrorMemoryAllocation",
+    "CUDA_ERROR_OUT_OF_MEMORY",
+    "CUFFT_ALLOC_FAILED",
+    "CUBLAS_STATUS_ALLOC_FAILED",
+    "CUSOLVER_STATUS_ALLOC_FAILED",
+)
+
+
+def is_out_of_memory(error) -> bool:
+    """Whether ``error``, or an exception it was raised from, is the card
+    running out of memory: CuPy's ``OutOfMemoryError`` by name, or a CUDA
+    library error whose text says so (:data:`OUT_OF_MEMORY_MARKERS`).
+
+    A host ``MemoryError`` is NOT one (the card fallback cannot help a host
+    that is out of memory), and neither is :class:`DeviceMemoryExhausted`,
+    which is this package's own verdict after a fallback was tried.
+    """
+
+    seen = 0
+    while error is not None and seen < 8:
+        if isinstance(error, DeviceMemoryExhausted):
+            return False
+        if type(error).__name__ == "OutOfMemoryError":
+            return True
+        kind = type(error).__name__
+        if kind != "MemoryError" and (
+                kind.startswith(("CUDA", "CuFFT", "CUFFT", "CuBLAS", "CUBLAS",
+                                 "CuSolver", "CUSOLVER"))
+                or "cuda" in type(error).__module__.lower()):
+            text = str(error)
+            if any(marker in text for marker in OUT_OF_MEMORY_MARKERS):
+                return True
+        error = error.__cause__ or error.__context__
+        seen += 1
+    return False
+
+
+class DeviceMemoryExhausted(RuntimeError):
+    """The card ran out of memory mid-run and no lighter plan fits it.
+
+    Raised by :func:`arwen_global.runner.run` in place of the CUDA error
+    once a fallback was weighed and none was possible; the message names
+    the cause, the free memory seen, what else holds the card and the
+    flags to resume with.  ``RuntimeError`` so the doors print it as one
+    line, at the device exit code (``cli.EXIT_DEVICE``).
+    """
+
+
+def _card_free_bytes_now() -> int | None:
+    """``memGetInfo``'s free bytes from inside a process that already holds
+    a context (the allocator hook's), or ``None``."""
+
+    import sys
+
+    cupy = sys.modules.get("cupy")
+    if cupy is None:
+        return None
+    try:
+        free, _total = cupy.cuda.runtime.memGetInfo()
+    except Exception:  # noqa: BLE001 - a card that will not report is reported as not reporting
+        return None
+    return int(free)
+
+
+#: What the door leaves unplanned on a card that other processes share or
+#: that drives a display, because such a card's other tenants can grow or
+#: multiply after the door has read it.  MEASURED 2026-11-12 on an RTX
+#: 5070 Ti (16 GB) at T383 L40, the one-band semi-Lagrangian plan: with
+#: 512 MiB held by another process from before the start the run kept one
+#: band and its tightest moment left 150 MiB of the card free, and with
+#: five 222 MiB contexts opening after the start (1,110 MiB) one segment in
+#: eleven died.  Half a GiB is room for another tenant that size to arrive
+#: or grow after the start; it is not room for five, and the run's own
+#: fallback (``runner.run``) is what covers a larger arrival.
+SHARED_CARD_MARGIN_BYTES = 512 * 2**20
+
+
+def _visible_card_row(rows, environ) -> dict | None:
+    """The ``nvidia-smi`` row of the card this process's CUDA device 0 is,
+    or ``None`` when that cannot be told without opening a context."""
+
+    visible = environ.get("CUDA_VISIBLE_DEVICES")
+    if visible is not None:
+        first = str(visible).split(",")[0].strip()
+        if not first or first == "-1":
+            return None
+        if first.startswith(("GPU-", "MIG-")):
+            for row in rows:
+                if row["uuid"].startswith(first):
+                    return row
+            return None
+        # A bare index counts in CUDA's order, which is nvidia-smi's only
+        # when the order is the bus order or there is one card to order.
+        if first.isdigit() and (
+                len(rows) == 1
+                or environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"):
+            for row in rows:
+                if row["index"] == first:
+                    return row
+        return None
+    if len(rows) == 1:
+        return rows[0]
+    if environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID":
+        for row in rows:
+            if row["index"] == "0":
+                return row
+    return None
+
+
+def card_neighbours(*, environ=None, run=None, own_pid=None) -> dict | None:
+    """What OTHER processes hold on this run's card, and whether it drives
+    a display, read through ``nvidia-smi`` (no CUDA context is opened).
+
+    ``{"card": uuid, "display_active": bool | None, "processes": [{"pid",
+    "name", "used_bytes"}], "other_bytes": int, "own_bytes": int | None}``,
+    this process left out of ``processes`` and reported as ``own_bytes``;
+    ``None`` when ``nvidia-smi`` is missing, fails, or the card cannot be
+    told apart from the others on the machine.  ``run`` is the
+    ``subprocess.run`` seam, for tests.
+    """
+
+    import os
+    import shutil
+    import subprocess
+
+    environ = os.environ if environ is None else environ
+    own_pid = os.getpid() if own_pid is None else int(own_pid)
+    runner = subprocess.run if run is None else run
+    smi = shutil.which("nvidia-smi") if run is None else "nvidia-smi"
+    if not smi:
+        return None
+
+    def query(*args) -> list[list[str]] | None:
+        try:
+            done = runner([smi, *args, "--format=csv,noheader,nounits"],
+                          capture_output=True, text=True, timeout=30)
+        except Exception:  # noqa: BLE001 - no reading is reported as no reading
+            return None
+        if getattr(done, "returncode", 1) != 0:
+            return None
+        return [[field.strip() for field in line.split(",")]
+                for line in str(done.stdout or "").splitlines() if line.strip()]
+
+    cards = query("--query-gpu=index,uuid,display_active")
+    if not cards:
+        return None
+    rows = [{"index": c[0], "uuid": c[1],
+             "display_active": (None if len(c) < 3 else
+                                {"enabled": True, "disabled": False}.get(
+                                    c[2].lower()))}
+            for c in cards if len(c) >= 2]
+    card = _visible_card_row(rows, environ)
+    if card is None:
+        return None
+    apps = query("--query-compute-apps=pid,process_name,used_memory,gpu_uuid")
+    if apps is None:
+        return None
+    processes, own = [], None
+    for app in apps:
+        if len(app) < 4 or app[3] != card["uuid"]:
+            continue
+        try:
+            pid, used = int(app[0]), int(app[2]) * 2**20
+        except ValueError:
+            continue
+        if pid == own_pid:
+            own = used
+            continue
+        processes.append({"pid": pid, "name": app[1], "used_bytes": used})
+    return {
+        "card": card["uuid"],
+        "display_active": card["display_active"],
+        "processes": processes,
+        "other_bytes": sum(p["used_bytes"] for p in processes),
+        "own_bytes": own,
+    }
+
+
+def neighbours_phrase(neighbours: dict | None) -> str:
+    """``3 other processes hold 1,390 MiB on this card (pid 11 python3 222
+    MiB, ...)``, or what could not be read."""
+
+    if neighbours is None:
+        return "what else holds the card could not be read (nvidia-smi)"
+    procs = neighbours.get("processes") or []
+    display = neighbours.get("display_active")
+    tail = "; the card drives a display" if display else ""
+    if not procs:
+        return "no other process holds memory on this card" + tail
+    listed = ", ".join(
+        f"pid {p['pid']} {p['name']} {p['used_bytes'] >> 20:,} MiB"
+        for p in procs[:8])
+    more = "" if len(procs) <= 8 else f", and {len(procs) - 8} more"
+    return (f"{len(procs)} other process{'' if len(procs) == 1 else 'es'} "
+            f"hold{'s' if len(procs) == 1 else ''} "
+            f"{int(neighbours['other_bytes']) >> 20:,} MiB on this card "
+            f"({listed}{more}){tail}")
+
+
 class DevicePeakTracker:
     """Allocator hook: running maximum of ``pool.used_bytes()`` after each
     successful allocation through ``pool.malloc``.
@@ -304,6 +512,11 @@ class DevicePeakTracker:
         }
         self._own_limit_bytes = 0
         self._limit_found = None
+        # The card refusing an allocation: how often, and the last time
+        # what the pool and the card held (``refusal_row``), so a run that
+        # falls back or stops can say what it saw.
+        self.refusals = 0
+        self.last_refusal: dict[str, object] | None = None
 
     def hold_pool_to(self, limit_bytes, *, reason: str = "",
                      environ=None) -> dict[str, object]:
@@ -430,14 +643,58 @@ class DevicePeakTracker:
         row["last_lift_at_allocation"] = int(self.allocations)
         return True
 
+    def _refused(self, size, error) -> bool:
+        """The card refused ``size`` bytes: record what the pool and the
+        card held, hand the pool's cached free blocks back once, and say
+        whether the allocation should be tried again.
+
+        CuPy's default pool already frees its cached blocks and retries
+        before it raises (``MemoryPool._try_malloc``), so on that pool the
+        retry here gains nothing and costs one call; the driver's async
+        pool does not, and there it is the difference.  Either way the
+        record is what a fallback or a clean stop reports.
+        """
+
+        if not is_out_of_memory(error):
+            return False
+        self.refusals += 1
+        row: dict[str, object] = {
+            "request_bytes": int(size),
+            "allocation": int(self.allocations),
+            "error": f"{type(error).__name__}: {error}"[:400],
+        }
+        for key, read in (("pool_total_bytes", "total_bytes"),
+                          ("pool_used_bytes", "used_bytes"),
+                          ("pool_limit_bytes", "get_limit")):
+            try:
+                row[key] = int(getattr(self._pool, read)())
+            except Exception:  # noqa: BLE001 - a pool that will not say is recorded as not saying
+                row[key] = None
+        row["card_free_bytes"] = _card_free_bytes_now()
+        self.last_refusal = row
+        release = getattr(self._pool, "free_all_blocks", None)
+        if release is None:
+            return False
+        try:
+            release()
+        except Exception:  # noqa: BLE001 - the allocation's own error stands
+            return False
+        return True
+
     def __call__(self, size):
+        retried = False
         while True:
             try:
                 memory = self._malloc(size)
                 break
             except Exception as error:  # noqa: BLE001 - re-raised unless the run's own limit was the reason
-                if not self._lift_pool_limit(size, error):
+                if self._lift_pool_limit(size, error):
+                    continue
+                if retried or not self._refused(size, error):
                     raise
+                retried = True
+                if self.last_refusal is not None:
+                    self.last_refusal["retried"] = True
         started = time.perf_counter()
         used = self._pool.used_bytes()
         # The held total is folded beside the live total at every
@@ -542,6 +799,11 @@ class DevicePeakTracker:
             # The run's own ceiling on the pool, whose it was, and how
             # often it had to yield (hold_pool_to).
             "pool_limit": self.pool_limit_receipt(),
+            # How often the CARD refused an allocation, and what the pool
+            # and the card held the last time it did.
+            "device_refusals": int(self.refusals),
+            "last_refusal": (None if self.last_refusal is None
+                             else dict(self.last_refusal)),
         }
 
 
@@ -669,7 +931,13 @@ def pool_limit_phrase(row: dict[str, object]) -> str:
 
 __all__ = [
     "DEVICE_ALLOCATORS",
+    "DeviceMemoryExhausted",
     "DevicePeakTracker",
+    "OUT_OF_MEMORY_MARKERS",
+    "SHARED_CARD_MARGIN_BYTES",
+    "card_neighbours",
+    "is_out_of_memory",
+    "neighbours_phrase",
     "MECHANISM",
     "OUT_OF_POOL_RESERVE_BYTES",
     "POOL_LIMIT_ENV",

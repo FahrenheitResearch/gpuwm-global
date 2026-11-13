@@ -41,12 +41,14 @@ from .device_memory import (
 from .dynamics import MoistHybridModel
 from .initial_conditions import analytic_initial_state
 from .insitu.ledger import InsituLedger, insitu_owned_files
+from .longrun_gates import LONG_RUN_THRESHOLD_S, receipt_block as longrun_receipt_block
 from .physics import NativeArwenPhysicsBridge, ReferencePhysics
 from .pins import pins_hash, pins_receipt
 from .profile import PROFILE_NAME, StepProfiler, attach_profiler, calibrate
-from .receipt import write_receipt
+from .receipt import software_stack, world_receipt_rows, write_receipt
 from .semi_implicit import build_semi_implicit
 from .semilag.step import SEMILAG_INTEGRATORS
+from .water import OCEAN_EXCHANGE_NAME
 
 
 RECEIPT_NAME = "arwen-global-receipt.json"
@@ -194,11 +196,35 @@ def build_diffusion(cfg: ArwenGlobalConfig):
     )
 
 
-def build_physics(cfg: ArwenGlobalConfig, backend, clock=None):
+def build_physics(cfg: ArwenGlobalConfig, backend, clock=None, grid=None):
     """The physics suite, run on the forecast ``clock``
     (arwen_global.clock.ForecastClock).  Without one the clock is resolved
     from the config alone: its stated start_time_utc, else the idealized
-    fixture (a native suite with neither is refused by the clock)."""
+    fixture (a native suite with neither is refused by the clock).
+    ``grid`` is the model's Gaussian grid, which the orographic drag's
+    statistics are checked against (built from the config when absent).
+    A world that changes the sun hands it to the suite here, or is refused
+    by name (arwen_global.world.radiation.attach_sun); an Earth run never
+    reaches world code.  A world that changes the air is refused here under
+    a suite that radiates no trace gas (physics.native_options.
+    world_air_physics_refusal), and its gases reach the native radiation
+    through _build_physics."""
+    world = world_of(cfg)
+    if not world.is_earth:
+        from .physics.native_options import world_air_physics_refusal
+
+        reason = world_air_physics_refusal(world, cfg.physics_mode)
+        if reason is not None:
+            raise ValueError(reason)
+    physics = _build_physics(cfg, backend, clock, grid)
+    if not world.is_earth:
+        from .world.radiation import attach_sun
+
+        physics = attach_sun(physics, world)
+    return physics
+
+
+def _build_physics(cfg: ArwenGlobalConfig, backend, clock=None, grid=None):
     from .clock import resolve_forecast_clock
 
     if cfg.physics_mode == "none":
@@ -239,14 +265,62 @@ def build_physics(cfg: ArwenGlobalConfig, backend, clock=None):
         # What CAN still move is the engine underneath the carried code: that
         # is the seam manifest's job, and the doctor reports it by file.
         options = dict(cfg.native_adapter_options)
+        world = world_of(cfg)
+        if not world.is_earth:
+            # A world's [world.air] gases (CO2, methane, nitrous oxide) onto
+            # the radiation's own options; never into the config, whose hash
+            # already carries them through the world's identity.
+            from .physics.native_options import world_air_options
+
+            options = world_air_options(options, world)
         if clock is not None and clock.dated:
             # The radiation's declination and hour angle run on the
             # forecast clock: the analysis valid time when the run starts
             # from one (a stated start_time_utc has already been checked
             # equal to it), never a literal the analysis has moved away from.
             options["start_time_utc"] = clock.iso
-        return NativeArwenPhysicsBridge(cfg.native_adapter_name or "", options)
+        bridge = NativeArwenPhysicsBridge(cfg.native_adapter_name or "", options)
+        from .physics.orographic_drag import attach_orographic_statistics
+
+        attach_orographic_statistics(bridge.adapter, cfg, grid)
+        return bridge
     raise AssertionError(cfg.physics_mode)
+
+
+def world_of(cfg):
+    """The world a config runs on: ``cfg.world``, or Earth for a config
+    object built without one (a hand-made test double)."""
+    from .world.spec import EARTH
+
+    world = getattr(cfg, "world", None)
+    return EARTH if world is None else world
+
+
+def frame_world_reason(world) -> str | None:
+    """Why ``world`` needs an analysis start, or None when it does not.
+
+    A world that moves the terrain, the sea or the coast, or invents its
+    surface, is built by editing the analysis frame (the hooks in
+    ``analysis_initial.analysis_initial_state``); an analytic or
+    baroclinic-wave start has no frame to edit, and running it would label
+    an Earth state with that world.  A world that changes only the sun, the
+    day length or the air acts in the physics and the dynamics and starts
+    from any initial state."""
+    if world.is_earth:
+        return None
+    reasons = []
+    if world.changes_terrain:
+        reasons.append("its terrain")
+    if world.changes_sea:
+        reasons.append("its sea")
+    if world.is_invented:
+        reasons.append("its invented surface")
+    # Not the rotation: its re-balanced start (packages 2.2/3.2) edits an
+    # analysis frame when there is one, and an idealized start of another
+    # rotation (package 1.8's ladder) is a test case's own business.
+    if not reasons:
+        return None
+    return ", ".join(reasons)
 
 
 def adopt_checkpoint_clock(model, state, label: str) -> None:
@@ -254,9 +328,19 @@ def adopt_checkpoint_clock(model, state, label: str) -> None:
     refused by name when the checkpoint was integrated from another start
     (arwen_global.clock.check_checkpoint_clock), stamped with the clock when
     it was written before checkpoints carried one, so every checkpoint the
-    resumed run writes is dated like the uninterrupted run's."""
+    resumed run writes is dated like the uninterrupted run's.
+
+    The same door holds the state to the model's WORLD
+    (checkpoint.check_checkpoint_world): every reader that rebuilds a model
+    from a config and adopts a checkpoint (a restart, a cycle, a tape or a
+    parent export) is refused by name when the checkpoint was integrated on
+    another world.  A checkpoint with no world record reads as Earth."""
+    from .checkpoint import check_checkpoint_world
     from .clock import FORECAST_CLOCK_KEY, check_checkpoint_clock
 
+    world = getattr(model, "world_spec", None)
+    if world is not None:
+        check_checkpoint_world(state.physics_state.metadata, world, label)
     clock = getattr(model, "forecast_clock", None)
     if clock is None:
         return
@@ -322,7 +406,8 @@ def resolve_latitude_bands(cfg: ArwenGlobalConfig) -> int:
     return auto_latitude_bands(cfg)
 
 
-def latitude_bands_receipt(model, cfg, sized_by_door: bool) -> dict[str, object]:
+def latitude_bands_receipt(model, cfg, sized_by_door: bool, plan=None
+                           ) -> dict[str, object]:
     """The band schedule grid space streamed through, for a receipt.
 
     The count, the rows it cut them into, and who chose it.  It is NOT
@@ -333,15 +418,23 @@ def latitude_bands_receipt(model, cfg, sized_by_door: bool) -> dict[str, object]
     Every door that sizes a run writes this, because a door that priced a
     band count and a receipt that does not name one is a run nobody can
     check afterwards.
+
+    ``chosen_by`` is ``"fallback"`` when the count is the lighter plan a
+    run moved to after the card ran out of memory (:func:`run`).
     """
+    if getattr(plan, "bands_chosen_by", None) == "fallback":
+        chosen = "fallback"
+    elif sized_by_door:
+        chosen = "sizer"
+    else:
+        chosen = ("config" if int(getattr(cfg, "latitude_bands", 0) or 0)
+                  else "sizer")
     return {
         **model.pipeline.receipt(),
         # The door writes the count it priced into the config it hands
         # the run, so the config carrying one does not say who chose it;
         # the door says so instead.
-        "chosen_by": "sizer" if sized_by_door
-        else ("config" if int(getattr(cfg, "latitude_bands", 0) or 0)
-              else "sizer"),
+        "chosen_by": chosen,
     }
 
 
@@ -455,6 +548,59 @@ def open_card_session(cfg: ArwenGlobalConfig, transform, bands: int):
     return session
 
 
+def books_open_water_exchange(cfg: ArwenGlobalConfig) -> bool:
+    """Whether a run books open water to the exchange account: the native
+    suite does, whose kernels never read the surface reservoir.  The
+    reference suite caps one call's evaporation by its reservoir and keeps
+    it, and a run without physics exchanges no surface water.  The native
+    option ``open_water_exchange = false`` keeps the finite reservoir, the
+    bookkeeping of 0.1.8 and earlier."""
+    if cfg.physics_mode != "arwen-native":
+        return False
+    return bool(dict(cfg.native_adapter_options or {}).get(
+        "open_water_exchange", True))
+
+
+def carried_physics_arrays(cfg: ArwenGlobalConfig) -> frozenset[str]:
+    """The arrays of ``checkpoint.LATER_CARRIED_PHYSICS_ARRAYS`` a run of
+    ``cfg`` carries between calls: Noah's snow age under native
+    ``snow_ageing = true``, nothing otherwise.  A restart archive that
+    lacks one of these is a gap the receipt and stderr name; one that lacks
+    an array the run does not carry is missing nothing."""
+    if cfg.physics_mode != "arwen-native":
+        return frozenset()
+    from .physics.native_options import NativePhysicsOptions
+    from .physics.native_state import NOAH_SNOW_AGE
+
+    ageing = dict(cfg.native_adapter_options or {}).get(
+        "snow_ageing", NativePhysicsOptions.snow_ageing)
+    return frozenset({NOAH_SNOW_AGE}) if ageing is True else frozenset()
+
+
+def _world_spin(cfg: ArwenGlobalConfig, world) -> dict[str, float]:
+    """The dynamics' rotation rate under a world whose day is not 24 hours
+    (``arwen_global.world.clock.PlanetClock``), and the radiation interval
+    that restores the config's own degrees of sun per call, said once on
+    stderr when the configured one moves the sun further."""
+    import sys
+
+    from .world.clock import PlanetClock
+
+    planet = PlanetClock.from_world(world)
+    if planet is None:
+        return {}
+    if cfg.physics_mode == "arwen-native":
+        from .physics.native_options import NativePhysicsOptions
+
+        interval = dict(cfg.native_adapter_options or {}).get(
+            "radiation_interval_s", NativePhysicsOptions.radiation_interval_s)
+        advice = planet.radiation_interval_advice(float(interval), float(cfg.dt_s))
+        if advice is not None:
+            print(f"gpuwm-global: world {world.label!r}: {advice['sentence']}",
+                  file=sys.stderr)
+    return {"rotation_rate_s": planet.rotation_rate_s}
+
+
 def build_model_and_cold_state(cfg: ArwenGlobalConfig, transform=None, *,
                                scratch_destination: str | Path | None = None,
                                card_session=None):
@@ -467,6 +613,15 @@ def build_model_and_cold_state(cfg: ArwenGlobalConfig, transform=None, *,
     session = card_session
     if session is None and int(getattr(cfg, "cards", 1) or 1) > 1:
         session = open_card_session(cfg, transform, bands)
+    world = world_of(cfg)
+    needs_frame = frame_world_reason(world)
+    if needs_frame is not None and cfg.initial_mode != "analysis":
+        raise ValueError(
+            f"world {world.label!r} changes {needs_frame}, which is built by "
+            "editing the analysis frame, and this config starts from "
+            f"initial mode {cfg.initial_mode!r}, which has no frame: set "
+            "[initial] mode = \"analysis\" (a world that changes only the sun "
+            "or the air starts from any initial state)")
     if cfg.initial_mode == "analysis":
         from .analysis_initial import analysis_initial_state
 
@@ -494,12 +649,29 @@ def build_model_and_cold_state(cfg: ArwenGlobalConfig, transform=None, *,
         # Every checkpoint of this run carries the clock it was integrated
         # under, so a restart or a render is checked against it.
         cold.physics_state.metadata[FORECAST_CLOCK_KEY] = clock.metadata()
+    if not world.is_earth:
+        # The world, on the clock's precedent: every checkpoint of this run
+        # carries the record of the world it was integrated on, so a
+        # restart, a cycle or a render under another world is refused by
+        # name (checkpoint.check_checkpoint_world).  Earth stamps nothing,
+        # so its checkpoints are byte-identical to those before worlds.
+        from .checkpoint import WORLD_RECORD_KEY
+
+        cold.physics_state.metadata[WORLD_RECORD_KEY] = world.record()
     diffusion = build_diffusion(cfg)
+    # A world with another day length spins the dynamics at the rate its
+    # sun's hour angle is derived from (arwen_global.world.clock, one
+    # function for both).  An Earth run passes nothing and keeps the
+    # model's own rotation rate.
+    spin = {}
+    if world.changes_rotation:
+        spin = _world_spin(cfg, world)
     model = MoistHybridModel(
+        **spin,
         transform=transform,
         vertical=cfg.vertical,
         surface_geopotential=surface_geopotential,
-        physics=build_physics(cfg, transform.backend, clock),
+        physics=build_physics(cfg, transform.backend, clock, transform.grid),
         physics_split=cfg.physics_split,
         integrator=cfg.integrator,
         diffusion=diffusion,
@@ -517,6 +689,7 @@ def build_model_and_cold_state(cfg: ArwenGlobalConfig, transform=None, *,
         ),
         mass_fixer=cfg.mass_fixer,
         water_fixer=cfg.water_fixer,
+        open_water_exchange=books_open_water_exchange(cfg),
         positivity_repair=cfg.positivity_repair,
         maximum_cfl=cfg.maximum_cfl,
         minimum_fold_determinant=cfg.minimum_fold_determinant,
@@ -536,6 +709,8 @@ def build_model_and_cold_state(cfg: ArwenGlobalConfig, transform=None, *,
         card_halo_rows=int(getattr(cfg, "card_halo_rows", 16)),
     )
     model.forecast_clock = clock
+    # Not "world": the card exchange already uses that word for its rank count.
+    model.world_spec = world
     cold, _, _, _ = model._repair_positivity(cold)
     model.initialize_mass_target(cold.atmosphere)
     model.initialize_water_target(cold)
@@ -767,12 +942,21 @@ def _greenhouse_gas_receipt(cfg: ArwenGlobalConfig, clock=None) -> dict | None:
     from .physics.native_options import NativePhysicsOptions
 
     raw = dict(cfg.native_adapter_options)
+    world = world_of(cfg)
+    if not world.is_earth:
+        # The gases the radiation was built with: a world's air included, so
+        # the receipt names what was radiated.  Earth never reaches world code.
+        from .physics.native_options import world_air_options
+
+        raw = world_air_options(raw, world)
     if clock is not None and clock.dated:
         raw["start_time_utc"] = clock.iso
     options = NativePhysicsOptions.from_mapping(raw)
     if options.radiation != "rrtmgp":
         return None
-    return options.greenhouse_gas_record()
+    # The whole run's span (duration_s is in the identity, so every segment
+    # of a restarted run states the same schedule).
+    return options.greenhouse_gas_record(cfg.duration_s)
 
 
 class PositivityFixerLedger:
@@ -1183,6 +1367,10 @@ class _CheckpointWriter:
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._pending = None
         self.last_arrays = None
+        # Called on the caller's thread with each archive's host arrays and
+        # record before the write is handed off (the long-run products,
+        # arwen_global.longrun_ops); the arrays are the checkpoint's own.
+        self.on_arrays = None
 
     def submit(self, path: Path, state, trackers: dict, *, want_metadata: bool = False):
         """Publish ``state`` to ``path`` off the model thread; returns the
@@ -1209,6 +1397,8 @@ class _CheckpointWriter:
             integrator=cfg.integrator,
         )
         metadata = checkpoint_metadata(arrays, **record) if want_metadata else None
+        if self.on_arrays is not None:
+            self.on_arrays(path, arrays, record)
         self._pending = self._executor.submit(
             write_checkpoint_arrays, path, arrays, metadata=metadata,
             compression=self.compression, **record,
@@ -1399,44 +1589,219 @@ def _snapshot_for(cfg, backend):
     return PinnedSnapshot(backend.xp)
 
 
-def _surface_update_for(cfg, model, state):
-    """The dated surface series this run follows, or None
-    (arwen_global.surface_series)."""
-    path = getattr(cfg, "surface_series", None)
-    if not path:
-        return None
+class SurfaceServices:
+    """The run's lower-boundary services: the SST and sea-ice provider on
+    the boundary machine (arwen_global.surface_boundary) and the greenness
+    march (arwen_global.land_climatology), each None when the run holds
+    what it would write."""
+
+    def __init__(self, cfg, boundary=None, provider=None, greenness=None, identity=None):
+        self.cfg = cfg
+        self.boundary = boundary
+        self.provider = provider
+        self.greenness = greenness
+        self.identity = identity
+
+    @property
+    def active(self) -> bool:
+        return self.boundary is not None or self.greenness is not None
+
+    def apply(self, state, *, model=None) -> None:
+        if self.boundary is not None:
+            self.boundary.apply(state, model=model)
+        if self.greenness is not None:
+            self.greenness.apply(state)
+
+    def diagnostics(self, state) -> dict:
+        reader = getattr(self.provider, "diagnostics", None)
+        return {} if reader is None else reader(state)
+
+    def initialize(self, state) -> None:
+        """A cold start's prognostic boundary arrays (the slab ocean's, or a
+        calibration's accumulators) into ``state``'s physics namespace;
+        nothing for a provider that keeps none."""
+        start = getattr(self.provider, "initialize", None)
+        if start is not None:
+            start(state)
+
+    def check_restart_state(self, state, label: str) -> None:
+        check = getattr(self.provider, "check_state", None)
+        if check is not None:
+            check(state, label)
+
+    def receipt(self) -> dict | None:
+        if not self.active:
+            return None
+        out = {} if self.boundary is None else self.boundary.receipt()
+        out["greenness"] = ("held at the start" if self.greenness is None
+                            else self.greenness.receipt())
+        return out
+
+    def boundary_receipt(self) -> dict:
+        ocean = self.cfg.ocean
+        out = ocean.receipt()
+        if ocean.implicit and ocean.mode == "hold":
+            out["ocean_mode"] = "hold (implicit)"
+        out["greenness"] = self.cfg.land.resolved(ocean)
+        if self.identity is not None:
+            out["restart_identity"] = self.identity
+        out["future_surface_records"] = 0 if ocean.mode != "series" else None
+        return out
+
+
+def _surface_services_for(cfg, model, cold) -> SurfaceServices:
+    """The lower-boundary services of this run, built from the COLD state
+    (the analysis the run starts from, rebuilt by every segment), so the
+    starting anomaly of a restarted segment is the straight run's."""
     import numpy as np
 
-    from .surface_series import SurfaceSeriesUpdate
+    from .surface_boundary import SurfaceBoundary
 
+    ocean = cfg.ocean
+    greenness_daily = cfg.land.resolved(ocean) == "daily"
+    rule = ocean.mode in ("anomaly", "climatology") or ocean.ice_mode in (
+        "anomaly", "climatology")
+    series = ocean.mode == "series"
+    slab = ocean.mode == "slab"
+    calibrate = bool(getattr(ocean, "qflux_calibration", False))
+    real = getattr(cfg.statics, "source", None) == "real"
+    if not (rule or series or slab or (greenness_daily and real)):
+        return SurfaceServices(cfg)
+    if (slab or calibrate) and cfg.physics_mode not in ("reference", "arwen-native"):
+        raise ValueError(
+            f"[ocean] mode = {ocean.mode!r}"
+            + (" with qflux_calibration" if calibrate else "")
+            + " reads the surface fluxes of a physics suite, and physics.mode = "
+            f"{cfg.physics_mode!r} computes none")
     clock = getattr(model, "forecast_clock", None)
     start = None if clock is None else getattr(clock, "start_utc", None)
     if start is None:
         raise ValueError(
-            "surface_update.series dates its records and this run has no "
-            "forecast clock (an undated idealized run cannot follow a dated SST)")
+            "the ocean rule, the surface series and the greenness march are dated "
+            "and this run has no forecast clock (an undated idealized run holds its "
+            "surface)")
+    grid = model.transform.grid
     statics_fields = statics_provenance = None
-    if getattr(cfg.statics, "source", None) == "real":
+    if real:
         from .statics import load_statics
 
-        statics_fields, statics_provenance = load_statics(cfg.statics, model.transform.grid)
-    grid = model.transform.grid
-    update = SurfaceSeriesUpdate(
-        path, start_time=start, duration_s=float(cfg.duration_s),
-        statics_fields=statics_fields, statics_provenance=statics_provenance,
-        terrain_height_m=np.zeros((int(grid.nlat), int(grid.nlon))),
-        latitude_deg=np.asarray(grid.latitude_deg, dtype=np.float64))
-    print(f"gpuwm-global: surface series {path} ({update.provenance.get('source')}, "
-          f"{len(update.valid)} records {update.valid[0].isoformat()} .. "
-          f"{update.valid[-1].isoformat()}): SST every step, sea ice per record, "
-          f"greenness daily", flush=True)
-    model.surface_update = update
-    return update
+        statics_fields, statics_provenance = load_statics(cfg.statics, grid)
+    provider = None
+    coupler = None
+    if slab:
+        from .ocean_coupler import SlabProvider, physics_identity
+        from .ocean_qflux import load_qflux
+        from .ocean_rules import RuleProvider, cold_surface_planes, reference_sst
+        from .surface_climatology import load_climatology
+
+        climatology = load_climatology(ocean.climatology)
+        if climatology.sha256 != ocean.climatology_sha256:
+            raise ValueError(
+                f"the climatology {ocean.climatology} changed since the config was "
+                "read (its SHA-256 is not the one in the config identity)")
+        qflux = load_qflux(ocean.slab_qflux)
+        if qflux.sha256 != ocean.slab_qflux_sha256:
+            raise ValueError(
+                f"the Q-flux file {ocean.slab_qflux} changed since the config was read "
+                "(its SHA-256 is not the one in the config identity)")
+        planes = cold_surface_planes(cold.surface)
+        target = None
+        if ocean.needs_anomaly:
+            from dataclasses import replace as _replace
+
+            reference = None
+            if ocean.anomaly_reference == "mean-7d":
+                reference = reference_sst(ocean.anomaly_reference_series, start=start,
+                                          nlat=int(grid.nlat), nlon=int(grid.nlon))
+            target = RuleProvider(
+                _replace(ocean, mode="anomaly",
+                         sea_ice=_replace(ocean.sea_ice, mode="hold")),
+                climatology, grid, start_time=start, cold_surface=planes,
+                model_truncation=int(cfg.truncation), reference=reference)
+        provider = SlabProvider(
+            ocean, climatology, qflux, grid, start_time=start, cold_surface=planes,
+            model_truncation=int(cfg.truncation), rule=target,
+            physics_mode=cfg.physics_mode, physics_identity=physics_identity(cfg),
+            duration_s=float(cfg.duration_s))
+        print(f"gpuwm-global: ocean slab (depth {ocean.slab_depth}, restoring "
+              f"{ocean.slab_relaxation_days or 'none'} d toward {ocean.slab_target}), sea "
+              f"ice {ocean.ice_mode}, climatology {ocean.climatology} (sha256 "
+              f"{climatology.sha256[:12]}), Q-flux {ocean.slab_qflux} (sha256 "
+              f"{qflux.sha256[:12]})", flush=True)
+    elif series:
+        from .surface_series import SeriesProvider
+
+        provider = SeriesProvider(cfg.surface_series, start_time=start,
+                                  duration_s=float(cfg.duration_s))
+        print(f"gpuwm-global: surface series {provider.path} "
+              f"({provider.provenance.get('source')}, {len(provider.valid)} records "
+              f"{provider.valid[0].isoformat()} .. {provider.valid[-1].isoformat()}): "
+              "SST every step, sea ice per record", flush=True)
+    elif rule:
+        from .ocean_rules import RuleProvider, cold_surface_planes, reference_sst
+        from .surface_climatology import load_climatology
+
+        climatology = load_climatology(ocean.climatology)
+        if climatology.sha256 != ocean.climatology_sha256:
+            raise ValueError(
+                f"the climatology {ocean.climatology} changed since the config was "
+                "read (its SHA-256 is not the one in the config identity)")
+        reference = None
+        if ocean.needs_anomaly and ocean.anomaly_reference == "mean-7d":
+            reference = reference_sst(ocean.anomaly_reference_series, start=start,
+                                      nlat=int(grid.nlat), nlon=int(grid.nlon))
+        provider = RuleProvider(
+            ocean, climatology, grid, start_time=start,
+            cold_surface=cold_surface_planes(cold.surface),
+            model_truncation=int(cfg.truncation), reference=reference)
+        print(f"gpuwm-global: ocean {ocean.mode}, sea ice {ocean.ice_mode}, from "
+              f"{ocean.climatology} (sha256 {climatology.sha256[:12]}); no surface "
+              "record later than the start is read", flush=True)
+        if calibrate:
+            from .ocean_coupler import SlabProvider, physics_identity
+
+            coupler = SlabProvider(
+                ocean, climatology, None, grid, start_time=start,
+                cold_surface=cold_surface_planes(cold.surface),
+                model_truncation=int(cfg.truncation), rule=provider, calibrate=True,
+                physics_mode=cfg.physics_mode, physics_identity=physics_identity(cfg),
+                duration_s=float(cfg.duration_s))
+            print("gpuwm-global: Q-flux calibration: the slab's flux is deposited by "
+                  f"month after {ocean.qflux_calibration_spinup_days:g} days of spin-up",
+                  flush=True)
+    boundary = None
+    if provider is not None:
+        boundary = SurfaceBoundary(
+            provider, statics_fields=statics_fields,
+            statics_provenance=statics_provenance,
+            terrain_height_m=np.zeros((int(grid.nlat), int(grid.nlon))),
+            latitude_deg=np.asarray(grid.latitude_deg, dtype=np.float64),
+            coupler=coupler)
+        if coupler is not None:
+            # The rows and the identity are the calibration's (the rule's,
+            # with what the calibration adds).
+            provider = coupler
+    greenness = None
+    if greenness_daily and real:
+        from .land_climatology import GreennessMarch
+
+        greenness = GreennessMarch(statics_fields, start_time=start)
+    identity = provider.identity_block() if hasattr(provider, "identity_block") else None
+    services = SurfaceServices(cfg, boundary, provider, greenness, identity)
+    model.surface_update = services
+    return services
 
 
 def _surface_update_receipt(model):
     update = getattr(model, "surface_update", None)
     return None if update is None else update.receipt()
+
+
+def _surface_boundary_receipt(model, cfg):
+    update = getattr(model, "surface_update", None)
+    if update is None:
+        update = SurfaceServices(cfg)
+    return update.boundary_receipt()
 
 
 def _section(profiler, name: str):
@@ -1554,8 +1919,24 @@ def run(
     forcing=None,
     forcing_record=None,
     branch_config: bool = False,
+    notice=None,
 ) -> dict[str, object]:
     """Integrate ``cfg`` into ``outdir``.
+
+    AN OUT-OF-MEMORY MID-RUN IS NOT THE END OF THE RUN.  When the card
+    refuses an allocation (CuPy's ``OutOfMemoryError`` or a CUDA library's
+    out-of-memory error) on a one-card cupy run, the run gives its memory
+    back, reads the card again, and carries on from its newest checkpoint
+    on the next plan priced below the one that ran out
+    (``sizing.fallback_plan``: more latitude bands and/or the pinned host
+    tier).  Neither is in the config identity and neither changes a bit,
+    so the checkpoints it writes are the ones the uninterrupted run would
+    have written.  It says so in one line (``notice``, a callable taking
+    the sentence; stderr when ``None``) and in the receipt's ``recovery``
+    row.  When no lighter plan fits the card it stops with
+    :class:`device_memory.DeviceMemoryExhausted`, whose message names the
+    cause, the free memory seen, what else holds the card and the flags
+    to resume with.
 
     ``tapes`` (:class:`TapeRequest`) has the run write the wrfout tape of
     every checkpoint it writes, from its own state and beside the forecast
@@ -1623,21 +2004,59 @@ def run(
     # allocator afterwards.
     restore_plan_cache = disable_fft_plan_cache(cfg.backend)
     try:
-        return _run_tracked(
-            cfg, outdir, restart=restart, overwrite=overwrite,
-            progress=progress, tracker=tracker, until_s=until_s,
-            profile_steps=int(profile_steps), profile_warmup=int(profile_warmup),
-            allocator=allocator,
-            sized_by_door=bool(sized_by_door) or (
-                door_plan is not None
-                and getattr(door_plan, "bands_chosen_by", None) == "sizer"),
-            door_plan=door_plan,
-            tapes=tapes,
-            predicted_peak_bytes=predicted_peak_bytes,
-            forcing=forcing,
-            forcing_record=forcing_record,
-            branch_config=bool(branch_config),
-        )
+        recovery: list[dict] = []
+        written: list[str] = []
+        carried = None
+        current_cfg, plan, resume = cfg, door_plan, restart
+        sized = bool(sized_by_door) or (
+            door_plan is not None
+            and getattr(door_plan, "bands_chosen_by", None) == "sizer")
+        while True:
+            attempt: dict = {
+                "restart": resume, "checkpoints": [],
+                "started": time.perf_counter(),
+                # A refusal recorded before this attempt is not its cause.
+                "refusals_before": 0 if tracker is None else tracker.refusals,
+            }
+            try:
+                return _run_tracked(
+                    current_cfg, outdir, restart=resume, overwrite=overwrite,
+                    progress=progress, tracker=tracker, until_s=until_s,
+                    profile_steps=int(profile_steps),
+                    profile_warmup=int(profile_warmup),
+                    allocator=allocator, sized_by_door=sized,
+                    door_plan=plan, attempt=attempt, carried=carried,
+                    recovery=recovery or None,
+                    resume_in_place=bool(recovery),
+                    earlier_checkpoints=tuple(written),
+                    tapes=tapes,
+                    # The one pre-run prediction belongs to the plan the
+                    # door admitted; a lighter plan is priced afresh.
+                    predicted_peak_bytes=(
+                        _NOT_PREDICTED if recovery else predicted_peak_bytes),
+                    forcing=forcing,
+                    forcing_record=forcing_record,
+                    # A branch reads its parent under another hash only
+                    # until the run has a checkpoint of its own to resume.
+                    branch_config=bool(branch_config) and resume == restart,
+                )
+            except Exception as exc:  # noqa: BLE001 - re-raised unless the card ran out and a lighter plan may fit
+                if not _may_fall_back(current_cfg, attempt, exc):
+                    raise
+                attempt["error"] = f"{type(exc).__name__}: {exc}"[:600]
+            # Out of the handler, so the dead attempt's frames (its model,
+            # its state, every device array they held) are released before
+            # the card is read again.
+            carried = attempt.get("carried") or carried
+            # The dead attempt's checkpoints are the run's too (the next
+            # attempt carries on from the newest of them), so the receipt
+            # lists them before the ones the next attempt writes.
+            written.extend(str(path) for path in attempt.get("checkpoints") or ()
+                           if Path(path).is_file() and str(path) not in written)
+            current_cfg, plan, resume = _fall_back(
+                current_cfg, plan, attempt, recovery, tracker, allocator,
+                until_s=until_s, original_restart=restart, notice=notice)
+            sized = False
     finally:
         restore_plan_cache()
         if tracker is not None:
@@ -1650,6 +2069,299 @@ def run(
                 # in it goes away, not here; this drops the allocator's
                 # own hold.
                 close()
+
+
+#: How many times one run may move to a lighter plan.  Each move is to a
+#: plan priced strictly below the last, so the ladder ends the moves by
+#: itself; this bounds a card whose other tenants keep growing.
+MAX_FALLBACKS = 4
+
+
+def _may_fall_back(cfg, attempt: dict, error) -> bool:
+    """Whether a run that raised ``error`` may carry on on a lighter plan:
+    the card ran out of memory, on a one-card cupy run, before its steps
+    were all taken (a death after the last checkpoint has nothing left to
+    integrate)."""
+
+    from .device_memory import is_out_of_memory
+
+    if str(getattr(cfg, "backend", "numpy")) != "cupy":
+        return False
+    if int(getattr(cfg, "cards", 1) or 1) > 1:
+        # The other ranks are mid-collective; one rank cannot change plan
+        # alone.
+        return False
+    if attempt.get("loop_done"):
+        return False
+    return is_out_of_memory(error)
+
+
+def _newest_checkpoint(attempt: dict):
+    """The newest checkpoint the attempt wrote that is on disk, else the
+    checkpoint it started from (``None`` for a cold start)."""
+
+    for path in reversed(list(attempt.get("checkpoints") or ())):
+        if Path(path).is_file():
+            return path
+    return attempt.get("restart")
+
+
+def _step_of_checkpoint(path) -> int | None:
+    if path is None:
+        return 0
+    name = Path(path).stem
+    digits = name[len(CHECKPOINT_PREFIX):] if name.startswith(
+        CHECKPOINT_PREFIX) else ""
+    return int(digits) if digits.isdigit() else None
+
+
+def _drop_diagnostics_after(path, step) -> None:
+    """Drop the diagnostics rows past ``step`` from ``path``.
+
+    A death between a step's diagnostics row and its checkpoint (in the
+    checkpoint's device-to-host copy, say) leaves a row for a step the run
+    carries on from before; the attempt that carries on writes that row
+    again, so the dead attempt's is dropped and every step keeps one row.
+    """
+
+    if path is None or step is None:
+        return
+    target = Path(path)
+    if not target.is_file():
+        return
+    lines = target.read_text(encoding="utf-8").splitlines(keepends=True)
+    kept = []
+    for line in lines:
+        try:
+            row_step = int(json.loads(line)["step"])
+        except Exception:  # noqa: BLE001 - a row this cannot read is kept as it is
+            kept.append(line)
+            continue
+        if row_step <= int(step):
+            kept.append(line)
+    if len(kept) == len(lines):
+        return
+    staged = target.with_name(target.name + ".tmp")
+    with staged.open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write("".join(kept))
+    os.replace(staged, target)
+
+
+def _plan_words(bands, slices) -> str:
+    bands = int(bands or 1)
+    tier = ("the host tier holding " + ", ".join(slices)) if slices \
+        else "nothing parked"
+    return f"{bands} latitude band{'' if bands == 1 else 's'} with {tier}"
+
+
+def _plan_flags(bands, spill_on) -> str:
+    return (f"--latitude-bands {int(bands)} --host-spill "
+            f"{'on' if spill_on else 'off'}")
+
+
+def _user_pool_limit_bytes(pool, environ=None) -> int | None:
+    """The limit ``CUPY_GPU_MEMORY_LIMIT`` put on the pool, in bytes as the
+    pool reads it (CuPy resolves a percentage itself), or ``None`` when the
+    environment sets none, sets ``0`` (CuPy's "no limit") or the pool will
+    not say.  The run's own limit is released before this is read, so a
+    limit the pool still carries is the user's (``hold_pool_to``)."""
+
+    from .device_memory import environment_pool_limit
+
+    if pool is None or environment_pool_limit(environ) is None:
+        return None
+    try:
+        limit = int(pool.get_limit())
+    except Exception:  # noqa: BLE001 - a pool that will not say has no limit to weigh
+        return None
+    return limit or None
+
+
+def _refusal_words(refusal: dict | None, error: str,
+                   user_limit: int | None = None) -> str:
+    """``the card refused 810 MiB with 738 MiB free while the pool held
+    13.05 GiB``, or the error itself when the pool saw no refusal.
+
+    When the request did not fit under ``user_limit`` (the pool limit
+    ``CUPY_GPU_MEMORY_LIMIT`` set) it was that limit, not the card, that
+    refused it, and the words say so: MEASURED 2026-11-13 at T383 L40 on
+    the 16 GB card under a 6 GiB limit, the line said the card refused
+    101 MiB with 9,284 MiB of it free."""
+
+    if not refusal:
+        return f"the CUDA call failed with {error.rstrip('.')}"
+    request = int(refusal["request_bytes"])
+    total = refusal.get("pool_total_bytes")
+    if user_limit and total is not None and int(total) + request > user_limit:
+        text = (f"the pool limit CUPY_GPU_MEMORY_LIMIT sets "
+                f"({user_limit / 2**30:.2f} GiB) refused {request >> 20:,} MiB")
+    else:
+        text = f"the card refused {request >> 20:,} MiB"
+    free = refusal.get("card_free_bytes")
+    if free is not None:
+        text += f" with {int(free) >> 20:,} MiB free"
+    total, used = refusal.get("pool_total_bytes"), refusal.get("pool_used_bytes")
+    if total is not None and used is not None:
+        text += (f" while this run's pool held {int(total) / 2**30:.2f} GiB, "
+                 f"{int(used) / 2**30:.2f} GiB of it in use")
+    return text
+
+
+def _fall_back(cfg, plan, attempt: dict, recovery: list, tracker, allocator,
+               *, until_s, original_restart, notice):
+    """Give the dead attempt's memory back, read the card, and choose the
+    plan the run carries on with; ``(cfg, plan, resume_checkpoint)``, or
+    :class:`DeviceMemoryExhausted` when none fits."""
+
+    import dataclasses
+    import gc
+    import sys
+
+    from .device_memory import (DeviceMemoryExhausted, card_neighbours,
+                                installed_pool, neighbours_phrase)
+    from .sizing import (GIB, OUT_OF_POOL_BYTES, _free_device_bytes,
+                         estimate_global_memory, fallback_plan, lighter_plans)
+
+    gc.collect()
+    pool = None
+    cupy = sys.modules.get("cupy")
+    if cupy is not None and str(getattr(cfg, "backend", "")) == "cupy":
+        try:
+            pool = installed_pool(cupy)
+            release = getattr(pool, "free_all_blocks", None)
+            if release is not None:
+                release()
+        except Exception:  # noqa: BLE001 - nothing handed back is weighed as such
+            pool = None
+    if tracker is not None:
+        tracker.release_pool_limit()
+    refusal = None
+    if tracker is not None and tracker.refusals > int(
+            attempt.get("refusals_before", 0)):
+        refusal = tracker.last_refusal
+    error = str(attempt.get("error") or "an out-of-memory error")
+    bands = int(attempt.get("bands") or getattr(cfg, "latitude_bands", 0) or 1)
+    slices = tuple(attempt.get("spill_slices") or ())
+    resume = _newest_checkpoint(attempt)
+    resume_step = _step_of_checkpoint(resume)
+    _drop_diagnostics_after(attempt.get("diagnostics"), resume_step)
+    died_at = attempt.get("step")
+    neighbours = card_neighbours()
+    free = _free_device_bytes()
+    credit = 0
+    if free and neighbours and neighbours.get("own_bytes") is not None:
+        # This process's context and libraries are on the card now and were
+        # not when the door read it; the plan's out-of-pool term already
+        # charges them, so they are credited back, up to that term.
+        held = 0
+        try:
+            held = int(pool.total_bytes()) if pool is not None else 0
+        except Exception:  # noqa: BLE001 - nothing to credit on doubt
+            held = int(neighbours["own_bytes"])
+        credit = max(0, min(int(neighbours["own_bytes"]) - held,
+                            int(OUT_OF_POOL_BYTES)))
+    usable = None if not free else int(free) + credit
+    # A pool limit the user set binds a lighter plan as the card does: its
+    # pool part has to fit under the limit, so the plans are weighed against
+    # the limit plus the out-of-pool term their card figure carries.
+    # Without this, MEASURED 2026-11-13 at T383 L40 on the 16 GB card under
+    # a 6 GiB limit, the run rebuilt on 2, 4 and 8 bands, each priced
+    # against the card's 15.2 GiB and each refused by the limit, and then
+    # told the user to free a card nothing else held.
+    user_limit = _user_pool_limit_bytes(pool)
+    weighed = usable
+    if usable and user_limit:
+        weighed = min(int(usable), int(user_limit) + int(OUT_OF_POOL_BYTES))
+    try:
+        estimate = estimate_global_memory(cfg)
+        lighter = lighter_plans(cfg, bands, slices, estimate)
+    except Exception:  # noqa: BLE001 - a plan that cannot be priced is no plan
+        estimate, lighter = None, []
+    where = ("" if died_at is None else f" after step {int(died_at)}")
+    cause = (f"the card ran out of memory{where} on "
+             f"{_plan_words(bands, slices)}: "
+             f"{_refusal_words(refusal, error, user_limit)}")
+    seen = ("the card could not be read again" if not usable else
+            f"with this run's memory given back the card has "
+            f"{usable / GIB:.2f} GiB free to it")
+    limit_words = ""
+    if user_limit:
+        limit_words = (f"; CUPY_GPU_MEMORY_LIMIT holds this run's pool to "
+                       f"{user_limit / GIB:.2f} GiB")
+    others = neighbours_phrase(neighbours) + limit_words
+    nxt = None
+    why = ""
+    if len(recovery) >= MAX_FALLBACKS:
+        why = f"the run has already moved to a lighter plan {len(recovery)} times"
+    elif estimate is not None and weighed:
+        nxt = fallback_plan(
+            cfg, weighed, bands, slices, estimate,
+            why=f"after the card ran out of memory{where}")
+    if nxt is None:
+        if not why:
+            if not lighter:
+                why = "no plan is priced below this one"
+            elif not usable:
+                why = "so no lighter plan could be weighed against it"
+            else:
+                count, spill, card = min(lighter, key=lambda row: row[2])
+                tier = " with the host tier on" if spill else ""
+                fits = "fits it"
+                if user_limit and weighed < usable:
+                    fits = "fits under that limit"
+                why = (f"no lighter plan {fits} (the lightest, {count} "
+                       f"latitude band{'' if count == 1 else 's'}{tier}, "
+                       f"prices at {card / GIB:.2f} GiB)")
+        if lighter:
+            count, spill, _card = lighter[0]
+            flags = _plan_flags(count, spill)
+        else:
+            flags = _plan_flags(bands, bool(slices))
+        resume_text = (f"--restart {resume}" if resume is not None
+                       else "no checkpoint (start it again)")
+        until = "" if until_s is None else f" --until-s {until_s:g}"
+        remedy = ("Raise or unset CUPY_GPU_MEMORY_LIMIT" if user_limit
+                  else "Free the card of what else holds it")
+        message = (
+            f"{cause}; {seen}, and {others}; {why}.  The run stopped "
+            f"cleanly.  {remedy} and resume "
+            f"with: {resume_text} {flags}{until}")
+        raise DeviceMemoryExhausted(message)
+    spill_on = bool(nxt.spill_slices)
+    new_cfg = dataclasses.replace(
+        cfg, latitude_bands=int(nxt.bands),
+        host_spill="on" if spill_on else "off")
+    hold_pool_to_plan(tracker, nxt, allocator)
+    row = {
+        "last_completed_step": None if died_at is None else int(died_at),
+        "error": error,
+        "refusal": refusal,
+        "from_plan": {"latitude_bands": bands, "host_spill_slices": list(slices)},
+        "to_plan": nxt.receipt(),
+        "card_free_bytes_after_release": None if free is None else int(free),
+        "own_out_of_pool_credit_bytes": int(credit),
+        "user_pool_limit_bytes": user_limit,
+        "neighbours": neighbours,
+        "resumed_from": None if resume is None else str(resume),
+        "resumed_from_step": resume_step,
+        "original_restart": (None if original_restart is None
+                             else str(original_restart)),
+        "attempt_wall_seconds": round(
+            time.perf_counter() - float(attempt.get("started", 0.0)), 3),
+    }
+    recovery.append(row)
+    sentence = (
+        f"{cause}; {others}.  Carrying on from "
+        + (f"step {resume_step}" if resume is not None else "the start")
+        + f" on {_plan_words(nxt.bands, nxt.spill_slices)}, priced at "
+        f"{nxt.card_bytes / GIB:.2f} GiB of card against {usable / GIB:.2f} "
+        "GiB free (same forecast, same bits; "
+        f"{_plan_flags(nxt.bands, spill_on)} is this plan)")
+    if notice is None:
+        print(f"gpuwm-global: {sentence}", file=sys.stderr, flush=True)
+    else:
+        notice(sentence)
+    return new_cfg, nxt, resume
 
 
 def _carries_assimilation_chain(metadata: dict) -> bool:
@@ -1749,7 +2461,26 @@ def _run_tracked(
     forcing=None,
     forcing_record=None,
     branch_config: bool = False,
+    attempt: dict | None = None,
+    carried: dict | None = None,
+    recovery: list | None = None,
+    resume_in_place: bool = False,
+    earlier_checkpoints: tuple = (),
 ) -> dict[str, object]:
+    """One attempt at the run (:func:`run` calls it again, on a lighter
+    plan, after the card runs out of memory).
+
+    ``attempt`` is filled in as the attempt goes (the plan it built, the
+    checkpoints it wrote, the step it reached) so a fallback knows where to
+    carry on from.  ``carried`` is the first attempt's conservation targets
+    and segment-start diagnostics, held by every later attempt so it
+    continues THAT run (a restart from an assimilation chain would
+    otherwise re-target to the later checkpoint's means).  ``recovery`` is
+    the receipt's row of fallbacks taken; ``resume_in_place`` leaves the
+    run directory the dead attempt prepared as it is;
+    ``earlier_checkpoints`` are the checkpoints earlier attempts wrote, which
+    the receipt lists before this attempt's.
+    """
     if predicted_peak_bytes is _NOT_PREDICTED:
         predicted_peak_bytes = _sizing_model_peak_bytes(
             cfg, free_bytes=getattr(door_plan, "free_bytes", None))
@@ -1759,6 +2490,11 @@ def _run_tracked(
             "--branch-from-other-config names a branch from a parent "
             "checkpoint; give that checkpoint with --restart"
         )
+    from .boundary_options import long_run_refusal
+
+    refusal = long_run_refusal(cfg)
+    if refusal is not None:
+        raise ValueError(refusal)
     if until_s is not None:
         until_s = float(until_s)
         if not math.isfinite(until_s) or until_s <= 0.0:
@@ -1791,27 +2527,77 @@ def _run_tracked(
         # A branch under another config (the explicit opt-in) reads the
         # parent with every other check intact and the hash comparison
         # left to the receipt, which names both.
+        # The world is checked before the config hash, which would refuse a
+        # checkpoint of another world too but without naming why.
         restart_metadata, restart_arrays = read_checkpoint(
             restart,
             expected_config_hash=None if branch_config else cfg.config_hash,
             semi_implicit_scheme=cfg.semi_implicit_scheme,
             integrator=cfg.integrator,
+            expected_world=world_of(cfg),
         )
-    _prepare_outdir(
-        output,
-        overwrite,
-        keep=(
-            frozenset()
-            if restart is None
-            else frozenset({Path(restart).resolve()})
-        ),
-    )
+        carried_arrays = carried_physics_arrays(cfg)
+        restart_metadata["absent_carried_physics_arrays"] = [
+            name for name in restart_metadata.get(
+                "absent_carried_physics_arrays", [])
+            if name.removeprefix("physics__") in carried_arrays
+        ]
+        from .longrun_ops import refuse_time_mean
+
+        refuse_time_mean(restart_metadata, f"restart checkpoint {restart}")
+    from .longrun_ops import launch_gate
+
+    launch_estimate = launch_gate(
+        cfg, output,
+        start_s=0.0 if restart_metadata is None else float(restart_metadata["time_s"]),
+        until_s=until_s)
+    if launch_estimate is not None:
+        wall = launch_estimate.get("wall_s")
+        print(f"gpuwm-global: this segment writes about "
+              f"{launch_estimate['disk_bytes'] / 1e9:.2f} GB "
+              f"({launch_estimate['checkpoints_on_disk']} checkpoints of "
+              f"{launch_estimate['checkpoint_bytes_each'] / 1e9:.2f} GB at most on disk); "
+              f"{launch_estimate['free_bytes'] / 1e9:.1f} GB free"
+              + ("" if wall is None else
+                 f"; about {wall / 3600.0:.1f} h of stepping at the planning rate"
+                 " (cold build and export not counted)"),
+              flush=True)
+    if resume_in_place:
+        # The dead attempt prepared this directory and wrote the
+        # checkpoints this attempt carries on from: nothing is swept.
+        output.mkdir(parents=True, exist_ok=True)
+    else:
+        _prepare_outdir(
+            output,
+            overwrite,
+            keep=(
+                frozenset()
+                if restart is None
+                else frozenset({Path(restart).resolve()})
+            ),
+        )
     diagnostics_path = output / DIAGNOSTICS_NAME
     receipt_path = output / RECEIPT_NAME
     transform = build_transform(cfg)
     model, cold = build_model_and_cold_state(
         cfg, transform, scratch_destination=output)
     cold_diag = model.diagnostics(cold)
+    # The boundary rule is built from the cold state on every segment, and a
+    # restart written under another rule is refused here, before any of its
+    # arrays becomes the run's state.
+    surface_update = _surface_services_for(cfg, model, cold)
+    if restart is not None:
+        from .ocean_rules import check_restart_identity
+
+        check_restart_identity(surface_update.identity,
+                               restart_metadata.get("physics_metadata"),
+                               f"restart checkpoint {restart}")
+    elif surface_update.identity is not None:
+        from .ocean_rules import IDENTITY_KEY
+
+        cold.physics_state.metadata[IDENTITY_KEY] = surface_update.identity
+    if restart is None:
+        surface_update.initialize(cold)
     target_mass = cold_diag["global_mean_surface_pressure_pa"]
     target_water = cold_diag["global_mean_total_water_kg_m2"]
     trackers = normalize_trackers()
@@ -1824,9 +2610,11 @@ def _run_tracked(
         state = cold
     else:
         state = state_from_checkpoint(
-            restart_metadata, restart_arrays, transform.backend
+            restart_metadata, restart_arrays, transform.backend,
+            carried_physics_arrays=carried_physics_arrays(cfg),
         )
         adopt_checkpoint_clock(model, state, f"restart checkpoint {restart}")
+        surface_update.check_restart_state(state, f"restart checkpoint {restart}")
         # The second time level rides with the state.  Without it the
         # resumed run would take a non-extrapolated start-up step in the
         # middle of a forecast, which is not the continuation of the
@@ -1875,6 +2663,12 @@ def _run_tracked(
             }
             target_mass = epoch["global_mean_surface_pressure_pa"]
             target_water = epoch["global_mean_total_water_kg_m2"]
+    # The open-water exchange account (native physics, water.
+    # OCEAN_EXCHANGE_NAMES): a cold start and a checkpoint written before
+    # the account existed are given a zero one here, before the first
+    # checkpoint, and the receipt says which; a state that carries one into
+    # a run without it refuses.
+    exchange_account_fill = model.ensure_exchange_account(state)
     # The cold state's only readers above are done; on a cold start it IS
     # ``state`` and on a restart it is dead weight (one spectral state,
     # 1.19 GiB at T533 with 40 levels, held for the whole run otherwise).
@@ -1884,6 +2678,15 @@ def _run_tracked(
         # the checkpoint reader on the card and is parked here, into the
         # same named slots.
         state = attach_host_tier(cfg, model, state)
+    if carried is not None:
+        # A later attempt of the same run: the first attempt's targets,
+        # exactly, so the fixers hold what the uninterrupted run held.
+        model.set_conservation_targets(*carried["model_targets"])
+        target_mass, target_water = carried["receipt_targets"]
+        restart_targets = carried["restart_targets"]
+    if attempt is not None:
+        attempt["bands"] = int(model.pipeline.receipt()["latitude_bands"])
+        attempt["spill_slices"] = tuple(getattr(model, "spill_slices", ()) or ())
     _release_cached_device_blocks(transform.backend)
 
     # The in-situ ledger watches every step from here on (default on; the
@@ -1931,9 +2734,77 @@ def _run_tracked(
     if until_s is not None:
         total_steps = int(round(until_s / cfg.dt_s))
     checkpoints: list[str] = []
+    from .longrun_ops import CheckpointRetention, LongRunProducts, SummaryGeometry
+
+    clock_start = getattr(getattr(model, "forecast_clock", None), "start_utc", None)
+    retention = CheckpointRetention(
+        output, cfg.output, dt_s=cfg.dt_s, start=clock_start,
+        protected=() if restart is None else (restart,))
+    # The daily summary's derived planes (surface stress, sea-level pressure,
+    # 850 hPa vorticity, water paths) are made on the host from the
+    # checkpoint's own arrays through a numpy synthesis of the run's grid;
+    # the model's transform, state and card are never touched.
+    summary_geometry, geometry_note = None, None
+    if cfg.output.daily_summary:
+        try:
+            summary_geometry = SummaryGeometry.for_run(
+                cfg, transform, transform.backend.to_numpy(model.surface_geopotential))
+            if summary_geometry.surface_geopotential.shape != tuple(
+                    summary_geometry.grid.shape):
+                raise ValueError("the terrain plane is not the whole grid")
+        except Exception as exc:  # noqa: BLE001 - the summary keeps its planes
+            summary_geometry = None
+            geometry_note = f"off: {type(exc).__name__}: {exc}"
+    products = LongRunProducts(
+        output, cfg.output, start=clock_start, dt_s=cfg.dt_s,
+        config_hash=cfg.config_hash, physics_state_schema=state.physics_state.schema,
+        semi_implicit_scheme=cfg.semi_implicit_scheme, integrator=cfg.integrator,
+        geometry=summary_geometry)
+    if geometry_note is not None:
+        products.geometry_note = geometry_note
+    if products.enabled and clock_start is None:
+        raise ValueError("[output] mean_state and daily_summary are dated by the "
+                         "forecast clock, and this run has none")
+    products_resume = (products.resume(Path(restart)) if restart is not None
+                       else ("fresh" if products.enabled else "off"))
+
+    def _long_run_products(path, arrays, record):
+        if not products.enabled:
+            return
+        import numpy as np
+
+        products.add(arrays, {
+            "step": record["step"], "time_s": record["time_s"],
+            "physics_metadata": record["physics_metadata"],
+            "trackers": json.loads(json.dumps(record["trackers"], default=float)),
+            "dtypes": {name: str(np.asarray(value).dtype)
+                       for name, value in arrays.items()},
+        })
+        products.write_sidecar(path)
+
+    writer.on_arrays = _long_run_products
+    # The software stack a replay of any window has to reproduce, read once
+    # before the first step (receipt.software_stack); descriptive only.
+    stack = software_stack(cfg.backend)
     start_wall = time.perf_counter()
-    initial_segment_diag = model.diagnostics(state)
-    _append_diagnostics(diagnostics_path, initial_segment_diag)
+    if carried is not None:
+        # The step this attempt starts at already has its row in the file
+        # (the dead attempt wrote it beside the checkpoint), and the
+        # segment started where the first attempt did.
+        initial_segment_diag = carried["segment_start_diagnostics"]
+    else:
+        initial_segment_diag = model.diagnostics(state)
+        _append_diagnostics(diagnostics_path, initial_segment_diag)
+    if attempt is not None:
+        attempt["checkpoints"] = checkpoints
+        attempt["diagnostics"] = str(diagnostics_path)
+        attempt["step"] = int(state.step)
+        attempt["carried"] = carried or {
+            "model_targets": model.conservation_targets(),
+            "receipt_targets": (target_mass, target_water),
+            "restart_targets": restart_targets,
+            "segment_start_diagnostics": initial_segment_diag,
+        }
     if restart is None:
         path = write_checkpoint(
             _checkpoint_path(output, state.step),
@@ -1960,7 +2831,8 @@ def _run_tracked(
     # The loop below never reads a state after stepping it, so the model
     # may drop its input namespace mid-step (memory only, same bits).
     model.release_input_namespace = True
-    surface_update = _surface_update_for(cfg, model, state)
+    if not surface_update.active:
+        surface_update = None
     # The forcing operator and the record writer exist only when the run
     # asks for them (arwen_global.forcing); a run that names neither
     # takes none of the branches below.
@@ -1989,6 +2861,8 @@ def _run_tracked(
                 record_writer.offer(state, transform.backend.to_numpy)
             step_wall_seconds += time.perf_counter() - step_started
             step_count += 1
+            if attempt is not None:
+                attempt["step"] = int(state.step)
             if model.pipeline.exchange is not None:
                 model.pipeline.exchange.session.mark_step()
             _update_trackers(trackers, supplementary, metrics,
@@ -2002,6 +2876,8 @@ def _run_tracked(
                 diag["step_metrics"] = metrics
                 diag["positivity_fixer_ledger"] = fixer_ledger.record()
                 diag["stratospheric_floor_ledger"] = floor_ledger.record()
+                if surface_update is not None:
+                    diag.update(surface_update.diagnostics(state))
                 _append_diagnostics(diagnostics_path, diag)
                 if tape_writer is not None:
                     # The previous tape reads the host arrays its checkpoint
@@ -2014,6 +2890,7 @@ def _run_tracked(
                     checkpoint = writer.submit(
                         _checkpoint_path(output, state.step), state, trackers,
                     )
+                    retention.prune(in_flight=checkpoint)
                 checkpoints.append(str(checkpoint))
                 if tape_writer is not None:
                     with _section(profiler, "tape"):
@@ -2044,6 +2921,8 @@ def _run_tracked(
             "name": cfg.name,
             "status": "error",
             "config_hash": cfg.config_hash,
+            # The world the dead run was on; absent for Earth.
+            **world_receipt_rows(world_of(cfg)),
             "pins_hash": pins_hash(cfg.semi_implicit_scheme, cfg.integrator),
             "pins": pins_receipt(cfg.semi_implicit_scheme, cfg.integrator),
             "model": "moist-hybrid-spectral",
@@ -2054,8 +2933,10 @@ def _run_tracked(
             # death is exactly when a reader needs to know which band
             # count was streaming and who chose it, and the successful
             # receipt carried it while this one did not.
-            "latitude_bands": latitude_bands_receipt(model, cfg, sized_by_door),
+            "latitude_bands": latitude_bands_receipt(model, cfg, sized_by_door,
+                                                     plan=door_plan),
         "surface_update": _surface_update_receipt(model),
+        "surface_boundary": _surface_boundary_receipt(model, cfg),
             # And the other half of the same decision.  A run that died
             # recorded which band count was streaming and neither what the
             # pinned host tier was holding nor what the sizer priced, so
@@ -2069,6 +2950,7 @@ def _run_tracked(
             "sizer": None if door_plan is None else door_plan.receipt(),
             "error_type": type(exc).__name__,
             "error_message": str(exc),
+            "software_stack": stack,
             "completed_step": int(state.step),
             "completed_time_s": float(state.time_s),
             "run_trackers": trackers,
@@ -2085,7 +2967,7 @@ def _run_tracked(
             # receipt is the one artifact that has to say it.
             "radiation_greenhouse_gases": _greenhouse_gas_receipt(
                 cfg, getattr(model, "forecast_clock", None)),
-            "checkpoints": checkpoints,
+            "checkpoints": [*earlier_checkpoints, *checkpoints],
             **({} if tapes is None else {"tapes": (
                 tape_writer.receipt() if tape_writer is not None
                 else {"outdir": str(tapes.outdir), "refused": tapes_refused})}),
@@ -2099,9 +2981,14 @@ def _run_tracked(
             "restart": None if restart_metadata is None else {
                 "path": str(restart),
                 "checkpoint_self_sha256": restart_metadata["self_sha256"],
+                "absent_carried_physics_arrays": restart_metadata.get(
+                    "absent_carried_physics_arrays", []),
             },
             "wall_seconds": float(time.perf_counter() - start_wall),
             "step_wall": _step_wall_receipt(step_count, step_wall_seconds),
+            # The lighter plans this run moved to after the card ran out
+            # of memory (run), when it moved at all.
+            **({"recovery": list(recovery)} if recovery else {}),
         }
         if ledger is not None:
             # The failure receipt is the post-mortem; a ledger fault here
@@ -2116,6 +3003,8 @@ def _run_tracked(
         write_receipt(receipt_path, failure)
         raise
 
+    if attempt is not None:
+        attempt["loop_done"] = True
     # Every checkpoint is on disk before the receipt that lists it.
     writer.close()
     # And every tape.
@@ -2126,6 +3015,8 @@ def _run_tracked(
         forcing_rows["forcing"] = forcing_op.finish(output, end_s=state.time_s)
     if record_writer is not None:
         forcing_rows["forcing_record"] = record_writer.write(record_out)
+    products.finish(run_complete=state.step >= int(round(cfg.duration_s / cfg.dt_s)))
+    retention.prune()
     final_diag = model.diagnostics(state)
     # The cards block is built BEFORE the gates, because gate WIRE-1 is
     # one of them and it reads the achieved rate out of this block.
@@ -2144,6 +3035,10 @@ def _run_tracked(
         "status": status,
         "config_hash": cfg.config_hash,
         "config": cfg.config_identity,
+        # The world this run integrated on (label, identity, settings),
+        # beside the config identity it already joins.  ABSENT for Earth, so
+        # an Earth receipt has the key set it had before worlds existed.
+        **world_receipt_rows(world_of(cfg)),
         # The pin of the arithmetic this run integrated: the scheme's
         # (pins.SEMI_IMPLICIT_PINS), the same pin its checkpoints carry.
         "pins_hash": pins_hash(cfg.semi_implicit_scheme, cfg.integrator),
@@ -2190,8 +3085,10 @@ def _run_tracked(
         # NOT part of the identity (it changes no arithmetic), so it is
         # recorded where a reader can see what the run did rather than
         # where a hash would refuse a restart for it.
-        "latitude_bands": latitude_bands_receipt(model, cfg, sized_by_door),
+        "latitude_bands": latitude_bands_receipt(model, cfg, sized_by_door,
+                                                     plan=door_plan),
         "surface_update": _surface_update_receipt(model),
+        "surface_boundary": _surface_boundary_receipt(model, cfg),
         "host_spill": _host_spill_receipt(cfg, model, wall_steps=step_count,
                                           wall_seconds=step_wall_seconds,
                                           plan=door_plan),
@@ -2246,13 +3143,26 @@ def _run_tracked(
            if species_fixer else {}),
         "positivity_fixer_ledger": fixer_ledger.record(),
         "stratospheric_floor_ledger": floor_ledger.record(),
-        "checkpoints": checkpoints,
+        # Gates LR-0 to LR-9 over every diagnostics row this folder holds,
+        # on runs longer than 384 h only.  Read-only and outside ``status``:
+        # their thresholds are engineering proposals (longrun_gates).
+        **({"longrun_gates": longrun_receipt_block(
+            diagnostics_path,
+            getattr(model.forecast_clock, "start_utc", None))}
+           if cfg.duration_s > LONG_RUN_THRESHOLD_S else {}),
+        "checkpoints": [*earlier_checkpoints, *checkpoints],
         # The run's own tapes (run --tapes), in no identity: where they
         # went, which were written, what each cost, which failed (left to
         # export), or why the run wrote none.
         **({} if tapes is None else {"tapes": (
             tape_writer.receipt() if tape_writer is not None
             else {"outdir": str(tapes.outdir), "refused": tapes_refused})}),
+        "long_run_outputs": {
+            "retention": retention.receipt(),
+            "products": {**products.receipt(), "resume": products_resume},
+            "launch_estimate": launch_estimate,
+        },
+        "software_stack": stack,
         "segment_until_s": until_s,
         **({"branch": {
             "opt_in": "branch_config (--branch-from-other-config)",
@@ -2262,12 +3172,28 @@ def _run_tracked(
             "parent_checkpoint_self_sha256": restart_metadata["self_sha256"],
         }} if branch_config else {}),
         "restart_targets": restart_targets,
+        # Where open water's surface water is booked, and whether this
+        # segment had to give the state a zero exchange account (a cold
+        # start, or a checkpoint from before the account existed).
+        "open_water_exchange": {
+            "enabled": bool(model.open_water_exchange),
+            "account": OCEAN_EXCHANGE_NAME if model.open_water_exchange else None,
+            "filled": exchange_account_fill,
+        },
         "restart": None if restart_metadata is None else {
             "path": str(restart),
             "checkpoint_self_sha256": restart_metadata["self_sha256"],
             "inherited_run_trackers": restart_metadata["run_trackers"],
+            "absent_carried_physics_arrays": restart_metadata.get(
+                "absent_carried_physics_arrays", []),
         },
         "wall_seconds": float(time.perf_counter() - start_wall),
+        # The lighter plans this run moved to after the card ran out of
+        # memory, each with what the card showed (run); absent when it
+        # never moved.  The trackers above come from the checkpoints and
+        # cover the whole run; the receipt-only ledgers and the wall cover
+        # this last attempt, from the checkpoint it carried on from.
+        **({"recovery": list(recovery)} if recovery else {}),
         "insitu": None if ledger is None else ledger.close(),
         # MEASURED at the allocator over the whole run (tables, initial
         # state, every step); the sizing model's pre-run prediction rides
@@ -2469,5 +3395,5 @@ def run_gates(
 __all__ = [
     "adopt_checkpoint_clock",
     "build_model_and_cold_state", "build_physics", "build_transform",
-    "run", "run_gates",
+    "frame_world_reason", "run", "run_gates", "world_of",
 ]

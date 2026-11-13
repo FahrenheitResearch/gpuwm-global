@@ -18,6 +18,18 @@ access.  The halocarbons and the other minor gases keep the RFMIP
 climatology the radiation loads (their radiative weight at forecast range is
 negligible), and ozone keeps its climatological profile.
 
+WHICH YEAR (``[radiation] ghg_year``).  Under ``"start"`` (the default, and
+every run before the key existed) the gases are those of the START time's
+year for the whole run.  Under ``"valid"`` the radiation re-selects them at
+every call from the call's VALID year, so a run that crosses 31 December
+radiates the next year's row from the first call at or after 1 January
+00:00 UTC.  Either way the selection is a pure function of one instant (the
+start, or the call's valid time), so a restarted run selects exactly what
+the straight run did.  A valid year past a table's last year holds that last
+year, and the receipt says so in a line of its own
+(:func:`greenhouse_gas_record`, ``held_past_table``).  Nothing is projected
+forward: the value held is a published annual mean.
+
 SOURCE.  NOAA GML Carbon Cycle Greenhouse Gases group, "Trends in
 globally-averaged CO2, CH4 and N2O determined from NOAA Global Monitoring
 Laboratory measurements", https://doi.org/10.15138/9N0H-ZH07,
@@ -30,7 +42,7 @@ may be revised by NOAA; re-pinning is editing these three tables and
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from types import MappingProxyType
 
 #: The name every receipt carries for the tables below.
@@ -83,10 +95,72 @@ N2O_PPB = MappingProxyType({
 _TABLES = (("co2", CO2_PPM, 1.0e-6), ("ch4", CH4_PPB, 1.0e-9),
            ("n2o", N2O_PPB, 1.0e-9))
 
+#: The year rules ``[radiation] ghg_year`` admits.  ``"start"``: the start
+#: time's year for the whole run (the default).  ``"valid"``: each
+#: radiation call's valid year.
+GHG_YEAR_RULES = ("start", "valid")
+
+#: The units each gas's table is published in, for the receipt's hold line.
+_UNITS = {"co2": "ppm", "ch4": "ppb", "n2o": "ppb"}
+
 
 def _year_of(table, year: int) -> int:
     earlier = [entry for entry in table if entry <= year]
     return max(earlier) if earlier else min(table)
+
+
+def _held_past_table(first_year: int, last_year: int) -> str | None:
+    """The receipt's line for valid years past a table's last published
+    year, or None when every year from ``first_year`` to ``last_year`` has
+    its own row in every table."""
+    held = {
+        gas: max(table) for gas, table, _ in _TABLES if last_year > max(table)
+    }
+    if not held:
+        return None
+    first_held = max(first_year, min(held.values()) + 1)
+    span = (f"year {first_held} is" if first_held == last_year
+            else f"years {first_held}-{last_year} are")
+    values = ", ".join(
+        f"{gas.upper()} {dict(table)[held[gas]]:.2f} {_UNITS[gas]} ({held[gas]})"
+        for gas, table, _ in _TABLES if gas in held
+    )
+    return (
+        f"valid {span} past the last published NOAA GML annual "
+        f"mean; the radiation holds the last published year: {values}. "
+        "A year's mean is published only after the year ends, and nothing "
+        "is projected forward"
+    )
+
+
+def _as_utc(value: date | datetime) -> datetime:
+    if isinstance(value, datetime):
+        return (value.replace(tzinfo=timezone.utc) if value.tzinfo is None
+                else value.astimezone(timezone.utc))
+    return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+
+
+def greenhouse_gas_schedule(start: date | datetime,
+                            end: date | datetime) -> list[dict[str, object]]:
+    """Under ``ghg_year = "valid"``: one row per calendar year the run's
+    valid times touch, from ``start`` to ``end`` inclusive, each with the
+    UTC instant it takes effect, the table year each gas is read at and
+    the mole fractions (before any case override)."""
+    first, last = _as_utc(start), _as_utc(end)
+    if last < first:
+        raise ValueError("the schedule's end precedes its start")
+    rows = []
+    for year in range(first.year, last.year + 1):
+        begins = max(first, datetime(year, 1, 1, tzinfo=timezone.utc))
+        rows.append({
+            "valid_year": year,
+            "from_utc": begins.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "table_year": {
+                gas: _year_of(table, year) for gas, table, _ in _TABLES
+            },
+            "mole_fraction": present_day_greenhouse_gases(date(year, 1, 1)),
+        })
+    return rows
 
 
 def present_day_greenhouse_gases(valid: date | datetime) -> dict[str, float]:
@@ -100,13 +174,26 @@ def present_day_greenhouse_gases(valid: date | datetime) -> dict[str, float]:
 
 
 def greenhouse_gas_record(valid: date | datetime,
-                          overrides: dict[str, float] | None = None
+                          overrides: dict[str, float] | None = None,
+                          *, rule: str = "start",
+                          end: date | datetime | None = None,
                           ) -> dict[str, object]:
-    """What a receipt says the radiation ran with: the year each table was
-    read at, the mole fractions after any case override, and the source."""
+    """What a receipt says the radiation ran with: the year rule, the year
+    each table was read at, the mole fractions after any case override,
+    and the source.
+
+    ``valid`` is the run's start.  Under ``rule="valid"`` the record also
+    carries ``by_valid_year``, the schedule from ``valid`` to ``end`` (the
+    run's last valid time), with each year's mole fractions after the
+    override.  ``held_past_table`` is present, under either rule, when a
+    year the radiation reads is past a table's last published year."""
+    if rule not in GHG_YEAR_RULES:
+        raise ValueError(
+            f"ghg_year must be one of {', '.join(GHG_YEAR_RULES)}, got {rule!r}")
     selected = present_day_greenhouse_gases(valid)
     record: dict[str, object] = {
         "source": GREENHOUSE_GAS_SOURCE,
+        "ghg_year": rule,
         "valid_year": int(valid.year),
         "table_year": {
             gas: _year_of(table, valid.year) for gas, table, _ in _TABLES
@@ -116,10 +203,25 @@ def greenhouse_gas_record(valid: date | datetime,
     }
     if overrides:
         record["mole_fraction"].update(overrides)
+    last_year = int(valid.year)
+    if rule == "valid":
+        if end is None:
+            raise ValueError(
+                "a ghg_year = \"valid\" record needs the run's last valid time")
+        schedule = greenhouse_gas_schedule(valid, end)
+        for row in schedule:
+            if overrides:
+                row["mole_fraction"].update(overrides)
+        record["by_valid_year"] = schedule
+        last_year = int(schedule[-1]["valid_year"])
+    held = _held_past_table(int(valid.year), last_year)
+    if held is not None:
+        record["held_past_table"] = held
     return record
 
 
 __all__ = [
-    "CH4_PPB", "CO2_PPM", "GREENHOUSE_GAS_SOURCE", "N2O_PPB",
-    "greenhouse_gas_record", "present_day_greenhouse_gases",
+    "CH4_PPB", "CO2_PPM", "GHG_YEAR_RULES", "GREENHOUSE_GAS_SOURCE",
+    "N2O_PPB", "greenhouse_gas_record", "greenhouse_gas_schedule",
+    "present_day_greenhouse_gases",
 ]

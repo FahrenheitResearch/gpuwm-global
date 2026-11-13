@@ -34,6 +34,8 @@ from .da.static_covariance import (
 )
 
 TABLE_NAME = "static-covariance.npz"
+#: The door's name in a refusal on another world.
+STATIC_COVARIANCE_DOOR = "da static-covariance (the data-assimilation door)"
 RECEIPT_NAME = "static-covariance-receipt.json"
 RECEIPT_SCHEMA = "gpuwm.arwen-global-static-covariance-receipt/v1"
 
@@ -159,7 +161,16 @@ def estimate_table(
     (the config's when None) at ``precision`` (float64 by default: the
     estimation is a statistics job on differences a few thousandths of the
     fields, and the balance operator's two transforms and Laplacians are
-    not to lose digits to the run's single precision)."""
+    not to lose digits to the run's single precision).
+
+    Refused by name on another world, as every leg of the DA door is
+    (:mod:`arwen_global.world.refusals`): the table exists only to be
+    assimilated with."""
+    from .world.refusals import refuse_on_world
+
+    refuse_on_world(getattr(cfg, "world", None), door=STATIC_COVARIANCE_DOOR,
+                    family="assimilation",
+                    source=f"config {getattr(cfg, 'name', '')!r}")
     start = time.perf_counter()
     out = Path(out)
     table_path = out / TABLE_NAME

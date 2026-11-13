@@ -38,6 +38,7 @@ from .pins import (
     scheme_of_pins_hash,
 )
 from .spill import spilled
+from .world.spec import EARTH_IDENTITY, world_identity_of
 from .state import (
     SEEDED_SURFACE_MEMBERS,
     SURFACE_ARRAY_NAMES,
@@ -46,6 +47,19 @@ from .state import (
     PhysicsState,
     SurfaceState,
 )
+from .ocean_coupler import CALIBRATION_ARRAYS, HELD_NET_FLUX, SLAB_ARRAYS
+from .water import OCEAN_EXCHANGE_NAMES, OPEN_WATER_EVAPORATION_NAME
+
+#: Physics-namespace accounts that are float64 whatever the run's precision
+#: (water.OCEAN_EXCHANGE_DTYPE, and the coupled ocean's state, books and
+#: calibration sums, ocean_coupler).  The reader keeps them in the dtype
+#: they were written in; every other real array is read in the run's
+#: precision.  A float64 array read in a float32 run's precision is a
+#: restart that is not the straight run: the slab's mixed-layer temperature
+#: lost its last bits on the first card restart.
+FLOAT64_PHYSICS_ACCOUNTS = frozenset((
+    *OCEAN_EXCHANGE_NAMES, OPEN_WATER_EVAPORATION_NAME,
+    *SLAB_ARRAYS, *CALIBRATION_ARRAYS, HELD_NET_FLUX))
 
 TRACKER_KEYS = (
     "maximum_spectral_cfl",
@@ -72,6 +86,101 @@ TRACKER_KEYS = (
 # added there (the 2026-09-01 static fields) is checkpointed here without
 # a second hand-kept list drifting from the first.
 _SURFACE_MAP = SURFACE_ARRAY_NAMES
+
+#: Physics-namespace arrays that runs began carrying after checkpoints
+#: already existed, each keyed to the physics-metadata entry whose non-null
+#: value says the run that wrote the archive ran the scheme that carries
+#: it.  An archive with that entry set and the array missing was written by
+#: a run that discarded the state between calls; the native namespace
+#: fills the array with its seed on resume (native_state._array), and the
+#: reader records the gap as ``absent_carried_physics_arrays``; a run that
+#: carries the array says so on resume, because the resumed run then
+#: differs from the run that wrote the archive.  An archive whose lineage
+#: never ran the scheme lacks the array too, and its resume seeds exactly
+#: what an uninterrupted run seeds, so it is not listed.
+#:
+#: ``noah_snotime`` (native_state.NOAH_SNOW_AGE): Noah's snow age, carried
+#: only under native ``snow_ageing = true``.  Without it (the default, and
+#: every release up to 0.1.8) it is rebuilt as zeros on every land call; an
+#: archive from such a run resumes under ageing with every snowpack at age
+#: zero, fresh-snow albedo.
+LATER_CARRIED_PHYSICS_ARRAYS = {"noah_snotime": "last_land_time_s"}
+#: The physics-metadata key under which every checkpoint of a run on another
+#: world carries that world's record (``WorldSpec.record()``: label, identity
+#: hash, settings).  It rides in the physics metadata on the precedent of the
+#: forecast clock (``clock.FORECAST_CLOCK_KEY``): the cold state is stamped
+#: once and every checkpoint the run writes, through any door, carries it
+#: without a writer knowing worlds exist.  An Earth run writes NO record, so
+#: its checkpoints are byte-identical to those written before worlds existed,
+#: and a checkpoint with no record (all of those) reads as Earth.
+WORLD_RECORD_KEY = "world"
+
+
+class WorldMismatchError(ValueError):
+    """A checkpoint was integrated on another world than the reader's."""
+
+
+def checkpoint_world_record(metadata) -> dict | None:
+    """The world record a checkpoint's metadata carries, or None (Earth,
+    including every checkpoint written before worlds existed).  Accepts the
+    whole checkpoint metadata or its ``physics_metadata`` alone."""
+    if not isinstance(metadata, dict):
+        return None
+    physics = metadata.get("physics_metadata", metadata)
+    if not isinstance(physics, dict):
+        return None
+    record = physics.get(WORLD_RECORD_KEY)
+    return record if isinstance(record, dict) else None
+
+
+def checkpoint_world_identity(metadata) -> str:
+    """``"none"`` for Earth (and every checkpoint without a world record),
+    otherwise the 64-hex identity of the world the state was integrated on."""
+    return world_identity_of(checkpoint_world_record(metadata))
+
+
+def _describe_world_record(record: dict | None) -> str:
+    if record is None or world_identity_of(record) == EARTH_IDENTITY:
+        return "Earth (world identity none)"
+    identity = world_identity_of(record)
+    return f"world {record.get('label')!r} (world identity {identity[:12]})"
+
+
+def _describe_world(world) -> str:
+    if world.is_earth:
+        return "Earth (world identity none)"
+    return (
+        f"world {world.label!r} (world identity {world.token}, changing "
+        + ", ".join(world.changed_settings()) + ")"
+    )
+
+
+def check_checkpoint_world(physics_metadata, world, label: str) -> None:
+    """Refuse a state integrated on another world than ``world``.
+
+    The pattern of the forecast clock's refusal
+    (``clock.check_checkpoint_clock``): the record the checkpoint carries is
+    compared with the world the reader was built for, and a mismatch is
+    refused by name before anything is integrated or stamped.  The config
+    hash already differs between two worlds, but "config identity does not
+    match" does not tell the operator that the mountains, the sun or the
+    coast are not the ones the state was integrated under.  A checkpoint
+    with no record reads as Earth, so an Earth reader accepts every
+    checkpoint written before worlds existed and a world reader refuses
+    them.  The label is a name and never decides: two worlds with the same
+    settings share an identity whatever they are called.
+    """
+    written = checkpoint_world_record(physics_metadata)
+    if world_identity_of(written) == world.identity_hash:
+        return
+    raise WorldMismatchError(
+        f"world mismatch: {label} was integrated on "
+        f"{_describe_world_record(written)} but this config runs "
+        f"{_describe_world(world)}; a state from another world would be "
+        "resumed under, or stamped with, terrain, sun, sea or air it was "
+        "never integrated with.  Use the config of the world the checkpoint "
+        "names, or cold-start this world from its analysis"
+    )
 
 
 def _canonical(value: object) -> bytes:
@@ -604,8 +713,15 @@ def read_checkpoint(
     expected_config_hash: str | None = None,
     semi_implicit_scheme: str | None = None,
     integrator: str = DEFAULT_INTEGRATOR,
+    expected_world=None,
 ) -> tuple[dict, dict[str, np.ndarray]]:
     """Read and verify a checkpoint.
+
+    ``expected_world`` (a ``WorldSpec``) is the world the reader runs on:
+    a checkpoint integrated on another world is refused by name
+    (:class:`WorldMismatchError`) before the config-hash comparison, which
+    would refuse it too but without saying why.  None skips the check
+    (inspection, comparison of two checkpoints of one run).
 
     The arithmetic pin is checked against the scheme the reader integrates
     with when ``semi_implicit_scheme`` is given (the restart door and every
@@ -734,6 +850,9 @@ def read_checkpoint(
         raise ValueError("checkpoint physics metadata must be an object")
     if not _sha(metadata["config_hash"]):
         raise ValueError("checkpoint config hash is malformed")
+    if expected_world is not None:
+        check_checkpoint_world(
+            metadata["physics_metadata"], expected_world, f"checkpoint {source}")
     if expected_config_hash is not None and metadata["config_hash"] != expected_config_hash:
         raise ValueError("checkpoint config identity does not match this run")
     if (
@@ -771,6 +890,12 @@ def read_checkpoint(
     if not (spectral_names | grid_names | surface_names) - set(absent_seeded) <= set(arrays):
         raise ValueError("checkpoint atmosphere/surface array set is incomplete")
     metadata["absent_seeded_surface_arrays"] = absent_seeded
+    metadata["absent_carried_physics_arrays"] = sorted(
+        f"physics__{name}"
+        for name, ran in LATER_CARRIED_PHYSICS_ARRAYS.items()
+        if f"physics__{name}" not in arrays
+        and metadata["physics_metadata"].get(ran) is not None
+    )
     if any(
         not (
             name in spectral_names or name in grid_names
@@ -811,8 +936,14 @@ def read_checkpoint(
 
 def state_from_checkpoint(
     metadata: dict, arrays: dict[str, np.ndarray], backend, *, transform=None,
+    carried_physics_arrays=frozenset(),
 ):
     """Rebuild the bundle a checkpoint holds.
+
+    ``carried_physics_arrays`` names the physics arrays of
+    ``LATER_CARRIED_PHYSICS_ARRAYS`` the caller's run carries between calls
+    (``runner.carried_physics_arrays``); an archive that lacks one of them
+    is said on stderr.  The default, none, says nothing.
 
     A schema-v3 checkpoint needs no transform.  A spectral-tracer-era
     checkpoint (schema v2) holds the ten condensate and number-moment
@@ -871,6 +1002,11 @@ def state_from_checkpoint(
                 dtype=(
                     backend.complex_dtype
                     if np.iscomplexobj(value)
+                    # The float64 accounts keep the precision they were
+                    # written in, so a restart continues the same sums
+                    # (water.OCEAN_EXCHANGE_DTYPE).
+                    else value.dtype
+                    if name.removeprefix("physics__") in FLOAT64_PHYSICS_ACCOUNTS
                     else backend.float_dtype
                 ),
             )
@@ -880,6 +1016,31 @@ def state_from_checkpoint(
         metadata=dict(metadata["physics_metadata"]),
     )
     physics.validate()
+    # A gap is said only for a state the reader's run carries: with
+    # snow_ageing off (the default) the age is zeros on every call and no
+    # plane is made, so an archive without one is missing nothing, and an
+    # export or an inspection never steps the land at all.
+    absent = [
+        name for name in metadata.get("absent_carried_physics_arrays") or []
+        if name.removeprefix("physics__") in carried_physics_arrays
+    ]
+    if absent:
+        import sys
+
+        print(
+            "gpuwm-global: the checkpoint carries no "
+            + ", ".join(absent)
+            + " (written before that state was carried between calls, or by "
+            "a run that did not carry it); "
+            "it resumes from the seed"
+            + (
+                ": every snowpack restarts at age zero, at its fresh-snow "
+                "albedo (the arithmetic of native snow_ageing = false, which "
+                "the run that wrote it ran)"
+                if "physics__noah_snotime" in absent else ""
+            ),
+            file=sys.stderr,
+        )
     return ArwenGlobalState(atmosphere, surface, physics)
 
 
@@ -902,9 +1063,15 @@ def trajectory_from_checkpoint(metadata: dict, arrays: dict, backend):
 
 
 __all__ = [
+    "LATER_CARRIED_PHYSICS_ARRAYS",
     "TRACKER_KEYS",
+    "WORLD_RECORD_KEY",
+    "WorldMismatchError",
     "bundle_arrays",
+    "check_checkpoint_world",
     "checkpoint_metadata",
+    "checkpoint_world_identity",
+    "checkpoint_world_record",
     "normalize_trackers",
     "read_checkpoint",
     "read_checkpoint_header",

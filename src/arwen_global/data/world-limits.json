@@ -1,0 +1,622 @@
+{
+  "schema": "arwen-global.world-limits/v1",
+  "about": "The limits of the model a world is measured against, Earth's own figures measured with this model, the rules that give a world its label, and the fixture worlds that pin each rule. A measured bound changes a row here, not code (docs/ARWEN_GLOBAL_WORLDS.md). Read by arwen_global.world.limits.",
+  "labels": ["earth", "science", "illustration", "not supported yet"],
+  "result_sentence": "This is the weather of the first N days after Earth was changed, over a sea surface that does not respond. It is not this world's climate.",
+  "limits": {
+    "skin_temperature_max_k": {
+      "value": 355.0, "unit": "K",
+      "name": "the radiation's surface-temperature range",
+      "source": "RRTMGP k-distribution temperature table, 160 to 355 K; a skin outside it stops the run in the radiation's range gate (core/rrtmgp.py, 'tsfc ... outside the LW temperature range')",
+      "caution": 5.0
+    },
+    "air_temperature_min_k": {
+      "value": 140.0, "unit": "K",
+      "name": "the dynamics' research bound on the coldest air",
+      "source": "dynamics.py: 'temperature outside research bounds' below 140 K; the radiation radiates air between 120 and 160 K as 160 K (core/rrtmgp.py, cold_floor) and refuses below 120 K",
+      "caution": 20.0
+    },
+    "radiation_table_floor_k": {
+      "value": 160.0, "unit": "K",
+      "name": "the radiation tables' coldest temperature",
+      "source": "core/rrtmgp.py cold_floor: colder air radiates as 160 K",
+      "caution": 0.0
+    },
+    "surface_pressure_ceiling_pa": {
+      "value": 109663.0, "unit": "Pa",
+      "name": "the radiation tables' pressure ceiling",
+      "source": "RRTMGP pressure tables end at 109,663.316 Pa of layer pressure (da/analysis.py RADIATION_SURFACE_PRESSURE_CEILING_PA)",
+      "caution": 1116.0
+    },
+    "surface_pressure_floor_pa": {
+      "value": 45000.0, "unit": "Pa",
+      "name": "the floor for taller terrain",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md): taller mountains are refused when the predicted lowest surface pressure is under 450 hPa, until a test moves that number; the vertical grid is proven strictly increasing only down to 500 hPa (vertical.py, HybridCoordinate) and the dynamics refuse under 300 hPa (dynamics.py)",
+      "caution": 0.0
+    },
+    "ocean_water_store_kg_m2": {
+      "value": 500.0, "unit": "kg m-2",
+      "name": "the water store every column pays its evaporation from",
+      "source": "[initial] surface_water_kg_m2 of the shipped T255 configs; a column that empties stops the run (water.py)",
+      "caution": 5.0
+    },
+    "thin_air_surface_pressure_pa": {
+      "value": 80000.0, "unit": "Pa",
+      "name": "the thinnest air the full physics is trusted with",
+      "source": "docs/arwen-global-worlds-pressure-audit.md: Grell-Freitas holds six live absolute-pressure thresholds and New Tiedtke seven, Morrison none, and the vertical coordinate is checked only down to a 500 hPa surface; the row stays until those thresholds scale with one world-wide factor. The 0.8 bar value itself is a judgment from the worlds page (docs/ARWEN_GLOBAL_WORLDS.md), not a measurement",
+      "caution": 0.0
+    },
+    "terrain_scale_max": {
+      "value": 2.0, "unit": "times Earth's",
+      "name": "the tallest terrain the [world] table accepts",
+      "source": "world/spec.py TERRAIN_SCALE_RANGE; the preflight refuses narrower, from the frame",
+      "caution": 0.0
+    },
+    "tilt_hot_land_deg": {
+      "value": 45.0, "unit": "degrees",
+      "name": "the tilt above which a summer continent can reach the skin limit",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md): above about 45 degrees with land, a summer continent can pass the radiation's 355 K skin limit within a season (an estimate, not a run)",
+      "caution": 0.0
+    },
+    "brightness_plan_low": {
+      "value": 0.9, "unit": "times the model's solar constant",
+      "name": "the dimmest sun the plan labels",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md): a sun 5 to 10 percent brighter or dimmer",
+      "caution": 0.0
+    },
+    "brightness_plan_high": {
+      "value": 1.1, "unit": "times the model's solar constant",
+      "name": "the brightest sun the plan labels",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md): a sun 5 to 10 percent brighter or dimmer",
+      "caution": 0.0
+    },
+    "brightness_min": {
+      "value": 0.1, "unit": "times the model's solar constant",
+      "name": "the dimmest sun the [world] table accepts",
+      "source": "world/spec.py BRIGHTNESS_RANGE",
+      "caution": 0.0
+    },
+    "brightness_max": {
+      "value": 4.0, "unit": "times the model's solar constant",
+      "name": "the brightest sun the [world] table accepts",
+      "source": "world/spec.py BRIGHTNESS_RANGE",
+      "caution": 0.0
+    },
+    "day_length_min_h": {
+      "value": 12.0, "unit": "h",
+      "name": "the shortest day",
+      "source": "world/spec.py DAY_LENGTH_RANGE_H: the stability bound of the rotation term at faster rotation is not measured yet",
+      "caution": 0.0
+    },
+    "day_length_max_h": {
+      "value": 2400.0, "unit": "h",
+      "name": "the longest day",
+      "source": "world/spec.py DAY_LENGTH_RANGE_H: a slower world waits for the top absorber's setting for slowly rotating worlds",
+      "caution": 0.0
+    },
+    "co2_preindustrial_ppm": {
+      "value": 280.0, "unit": "ppm",
+      "name": "pre-industrial CO2, for the multiples the labels name",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "caution": 0.0
+    },
+    "co2_glacial_ppm": {
+      "value": 180.0, "unit": "ppm",
+      "name": "the low end of the CO2 range shown as an illustration (the coldest glacial air)",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md): CO2 from 180 to 1,120 ppm",
+      "caution": 0.0
+    },
+    "co2_illustration_max_ppm": {
+      "value": 1120.0, "unit": "ppm",
+      "name": "the high end of the CO2 range shown as an illustration",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md): CO2 from 180 to 1,120 ppm; from 1,120 to under 10,000 ppm a result must say 'unvalidated above eight times pre-industrial' in full",
+      "caution": 0.0
+    },
+    "co2_radiation_max_ppm": {
+      "value": 10000.0, "unit": "ppm",
+      "name": "the largest CO2 the radiation accepts",
+      "source": "physics/native_options.py: trace_co2_ppm must lie in (0, 1e4) ppm; world/spec.py CO2_RANGE_PPM",
+      "caution": 0.0
+    },
+    "trace_gas_max_ppb": {
+      "value": 100000.0, "unit": "ppb",
+      "name": "the largest methane or nitrous oxide the [world] table accepts",
+      "source": "world/spec.py TRACE_RANGE_PPB",
+      "caution": 0.0
+    }
+  },
+  "measured_earth": {
+    "skin_temperature_max_k": {
+      "value": 336.58, "unit": "K",
+      "source": "hottest model skin at T255: 2026-11-11 03Z, 20.36 S 138.28 E, 1-day run from GDAS 2026-11-10 18Z. Not northern summer: no northern-summer T255 output had been written; the T383 run from ERA5 2019-05-20 reached 336.65 K"
+    },
+    "air_temperature_min_k": {
+      "value": 175.17, "unit": "K",
+      "source": "coldest model air at T255: minimum_temperature_k at hour 72 of the 5-day run from ERA5 2019-01-15 (diagnostics.jsonl); the 10-day run from GDAS 2026-11-10 18Z reached 179.07 K and a T383 10-day run 169.49 K"
+    },
+    "surface_pressure_min_pa": {
+      "value": 50168.9, "unit": "Pa",
+      "source": "lowest model surface pressure at T255: hour 48 of the 5-day run from ERA5 2019-01-15 (diagnostics.jsonl)"
+    },
+    "surface_pressure_max_pa": {
+      "value": 107577.2, "unit": "Pa",
+      "source": "highest model surface pressure at T255: hour 144 of the 10-day run from GDAS 2026-11-10 18Z; 107,019 Pa at its step 0 (diagnostics.jsonl)"
+    },
+    "ocean_store_days": {
+      "value": 23.9, "unit": "days",
+      "source": "days until the first ocean column empties its 500 kg m-2 store on the 0.1.6 line: Gulf of Tehuantepec, 5-day T255 run from ERA5 2019-01-15; 24.8 days in the Persian Gulf from the 10-day run from GDAS 2026-11-10 18Z"
+    }
+  },
+  "request_keys": {
+    "gravity_m_s2": "another gravity (refused by the [world] table: not built yet)",
+    "radius_km": "another planet radius (refused by the [world] table: not built yet)",
+    "year_length_d": "another year length, in Earth days (refused by the [world] table: not built yet)",
+    "air.composition": "another air composition, by name (refused by the [world] table: not built yet)",
+    "air.surface_pressure_pa": "another amount of air, as a global-mean surface pressure (refused by the [world] table)",
+    "sun.star": "another star, by name; 'sun' is Earth's",
+    "sun.locked": "true for a tidally locked planet whose sea answers its sky",
+    "sea.ocean": "a sea that answers the atmosphere ('slab' or 'dynamic'); every world here holds its sea",
+    "sea.ice_grows": "true when sea ice must grow and melt",
+    "run.climate": "true when the result is asked to be the world's climate rather than its first weeks of weather",
+    "run.regional_zoom": "true for a regional ArWen zoom nested in this world",
+    "run.assimilation": "true for cycling, assimilation or an observation scorecard on this world"
+  },
+  "fact_keys": {
+    "facts.run_days": "the run's length in model days",
+    "facts.surface_pressure_min_pa": "the lowest surface pressure the preflight predicts for the start",
+    "facts.surface_pressure_max_pa": "the highest surface pressure the preflight predicts for the start",
+    "facts.skin_temperature_max_k": "the hottest land skin the preflight predicts for the start",
+    "facts.air_temperature_min_k": "the coldest air expected during the run",
+    "facts.ocean_store_days": "days until this world's first ocean column empties its water store (0.1.6 line)"
+  },
+  "fallback": {
+    "id": "unlisted_change",
+    "label": "illustration",
+    "setting": "world",
+    "limit": "a change no row of this table names: shown as an illustration until a row is written for it"
+  },
+  "rules": [
+    {
+      "id": "mountains_lowered", "label": "science", "setting": "terrain",
+      "limit": "mountains lowered or removed: science for days 2 to 6 near the removed ranges. Days 0 to 2 are the air falling into the space where rock was; after about a week, and anywhere far from the ranges, a difference is shown only where it exceeds the noise floor of a perturbed control",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"all": [
+        {"any": [
+          {"key": "terrain.scale", "op": "<", "value": 1.0},
+          {"key": "terrain.cap_m", "op": "present"}
+        ]},
+        {"key": "sea.land", "op": "==", "value": "keep"},
+        {"key": "surface.folder", "op": "absent"}
+      ]}
+    },
+    {
+      "id": "mountains_raised", "label": "illustration", "setting": "terrain.scale",
+      "limit": "taller mountains: refused when the predicted lowest surface pressure is under 450 hPa, where the model's bottom layer thins",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"key": "terrain.scale", "op": ">", "value": 1.0}
+    },
+    {
+      "id": "mountains_beyond_table", "label": "not supported yet", "setting": "terrain.scale",
+      "limit": "terrain more than twice Earth's height is outside the [world] table",
+      "source": "world/spec.py TERRAIN_SCALE_RANGE",
+      "when": {"key": "terrain.scale", "op": ">", "limit": "terrain_scale_max"}
+    },
+    {
+      "id": "terrain_too_tall", "label": "not supported yet", "setting": "terrain",
+      "limit": "the terrain is too tall for the model: the predicted lowest surface pressure is under the 450 hPa floor",
+      "source": "preflight refusal terrain_too_tall (world/preflight.py)",
+      "when": {"key": "facts.surface_pressure_min_pa", "op": "<", "limit": "surface_pressure_floor_pa"}
+    },
+    {
+      "id": "pressure_over_ceiling", "label": "not supported yet", "setting": "terrain",
+      "limit": "the predicted surface pressure is over the radiation tables' ceiling",
+      "source": "preflight refusal pressure_over_ceiling (world/preflight.py)",
+      "when": {"key": "facts.surface_pressure_max_pa", "op": ">", "limit": "surface_pressure_ceiling_pa"}
+    },
+    {
+      "id": "start_skin_over_limit", "label": "not supported yet", "setting": "terrain",
+      "limit": "the start's land skin, warmed where terrain was removed, is over the radiation's 355 K limit",
+      "source": "preflight refusal start_skin_over_limit (world/preflight.py)",
+      "when": {"key": "facts.skin_temperature_max_k", "op": ">", "limit": "skin_temperature_max_k"}
+    },
+    {
+      "id": "air_too_cold", "label": "not supported yet", "setting": "world",
+      "limit": "the air is expected colder than the dynamics' 140 K research bound, where the run stops",
+      "source": "dynamics.py research bound; the worlds page (docs/ARWEN_GLOBAL_WORLDS.md), margin 2",
+      "when": {"key": "facts.air_temperature_min_k", "op": "<", "limit": "air_temperature_min_k"}
+    },
+    {
+      "id": "run_outlasts_water_store", "label": "not supported yet", "setting": "facts.run_days",
+      "limit": "the run is longer than the days until the first ocean column empties its 500 kg m-2 water store on the 0.1.6 line, where the run stops; a longer run needs the long-run line",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md); the days on Earth are the measured row above",
+      "when": {"any": [
+        {"all": [
+          {"key": "facts.ocean_store_days", "op": "present"},
+          {"key": "facts.run_days", "op": ">", "ref": "facts.ocean_store_days"}
+        ]},
+        {"all": [
+          {"key": "facts.ocean_store_days", "op": "absent"},
+          {"key": "facts.run_days", "op": ">", "measured": "ocean_store_days"}
+        ]}
+      ]}
+    },
+    {
+      "id": "tilt", "label": "illustration", "setting": "sun.obliquity_deg",
+      "limit": "another tilt: correct sun geometry, with ozone and vegetation on Earth's calendar; for the first weeks from an analysis",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"all": [
+        {"key": "sun.obliquity_deg", "op": "!=", "value": 23.5},
+        {"key": "sun.orbit", "op": "!=", "value": "perpetual-equinox"}
+      ]}
+    },
+    {
+      "id": "tilt_high_with_land", "label": "illustration", "setting": "sun.obliquity_deg",
+      "limit": "above about 45 degrees of tilt with land, a summer continent can pass the radiation's 355 K skin limit within a season and the run stops by name",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"all": [
+        {"key": "sun.obliquity_deg", "op": ">", "limit": "tilt_hot_land_deg"},
+        {"key": "sun.obliquity_deg", "op": "<", "value": 135.0},
+        {"key": "sun.orbit", "op": "!=", "value": "perpetual-equinox"},
+        {"key": "sea.land", "op": "==", "value": "keep"}
+      ]}
+    },
+    {
+      "id": "orbit_changed", "label": "illustration", "setting": "sun.orbit",
+      "limit": "another orbit: the sun's geometry is the world's, everything keyed to the calendar is Earth's",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"key": "sun.orbit", "op": "!=", "value": "earth"}
+    },
+    {
+      "id": "brightness", "label": "illustration", "setting": "sun.brightness",
+      "limit": "another sun: over a held ocean this is the land and atmosphere's fast adjustment, and a 10-day difference map from one twin is mostly chaos",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"key": "sun.brightness", "op": "!=", "value": 1.0}
+    },
+    {
+      "id": "brightness_beyond_plan", "label": "illustration", "setting": "sun.brightness",
+      "limit": "a sun more than 10 percent brighter or dimmer than the model's: beyond the range the plan labels, unvalidated, and the hottest-skin and coldest-air margins decide whether it runs",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"any": [
+        {"key": "sun.brightness", "op": "<", "limit": "brightness_plan_low"},
+        {"key": "sun.brightness", "op": ">", "limit": "brightness_plan_high"}
+      ]}
+    },
+    {
+      "id": "brightness_beyond_table", "label": "not supported yet", "setting": "sun.brightness",
+      "limit": "a sun outside 0.1 to 4 times the model's solar constant is outside the [world] table",
+      "source": "world/spec.py BRIGHTNESS_RANGE",
+      "when": {"any": [
+        {"key": "sun.brightness", "op": "<", "limit": "brightness_min"},
+        {"key": "sun.brightness", "op": ">", "limit": "brightness_max"}
+      ]}
+    },
+    {
+      "id": "day_length", "label": "illustration", "setting": "sun.day_length_h",
+      "limit": "another day length: an adjustment from a state balanced for Earth's rotation, not comparable with published equilibrium results that took 1,500 days of spin-up",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"key": "sun.day_length_h", "op": "!=", "value": 24.0}
+    },
+    {
+      "id": "day_length_too_short", "label": "not supported yet", "setting": "sun.day_length_h",
+      "limit": "a day shorter than 12 hours waits for the measured stability bound of the model's rotation term",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md); world/spec.py DAY_LENGTH_RANGE_H",
+      "when": {"key": "sun.day_length_h", "op": "<", "limit": "day_length_min_h"}
+    },
+    {
+      "id": "day_length_too_long", "label": "not supported yet", "setting": "sun.day_length_h",
+      "limit": "a day longer than 100 Earth days waits for the top absorber's setting for slowly rotating worlds, which today damps the day-to-night flow such a world is made of",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md); world/spec.py DAY_LENGTH_RANGE_H",
+      "when": {"key": "sun.day_length_h", "op": ">", "limit": "day_length_max_h"}
+    },
+    {
+      "id": "waterworld", "label": "illustration", "setting": "sea.land",
+      "limit": "a waterworld: the prescribed sea temperature largely decides the answer, and no ice can grow or melt",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"key": "sea.land", "op": "==", "value": "none"}
+    },
+    {
+      "id": "sea_level_raised", "label": "illustration", "setting": "sea.level_m",
+      "limit": "a higher sea: new coastlines under today's weather; the ice sheets whose melting would raise the sea are still there",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"all": [
+        {"key": "sea.level_m", "op": ">", "value": 0.0},
+        {"key": "sea.land", "op": "==", "value": "keep"}
+      ]}
+    },
+    {
+      "id": "sea_level_lowered", "label": "not supported yet", "setting": "sea.level_m",
+      "limit": "a lower sea uncovers land the edited-Earth surface has no rule to build",
+      "source": "world/spec.py, world.sea.level_m",
+      "when": {"key": "sea.level_m", "op": "<", "value": 0.0}
+    },
+    {
+      "id": "sea_prescribed", "label": "illustration", "setting": "sea",
+      "limit": "another sea surface on Earth's coasts: held for the whole run, so it decides much of the answer",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"all": [
+        {"any": [
+          {"key": "sea.temperature", "op": "!=", "value": "analysis"},
+          {"key": "sea.ice", "op": "!=", "value": "analysis"}
+        ]},
+        {"key": "sea.land", "op": "==", "value": "keep"},
+        {"key": "surface.folder", "op": "absent"}
+      ]}
+    },
+    {
+      "id": "invented_surface", "label": "illustration", "setting": "surface.folder",
+      "limit": "an invented continent: sea temperature, land cover and soil are set by stated rules, and the starting soil wetness the user typed decides the continental interior for more than a month. Good for Earth's air over this map; it is not that world's past or climate, and days 0 to 20 are spin-up",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md): a Pangea is an illustration",
+      "when": {"key": "surface.folder", "op": "present"}
+    },
+    {
+      "id": "co2_changed", "label": "illustration", "setting": "air.co2_ppm",
+      "limit": "CO2 held at a number: over a held ocean this is the land and atmosphere's fast adjustment; four times CO2 can warm the troposphere by at most about 0.06 K a day, so a 10-day difference map from one twin is mostly chaos",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"key": "air.co2_ppm", "op": "!=", "value": "dated"}
+    },
+    {
+      "id": "co2_below_glacial", "label": "illustration", "setting": "air.co2_ppm",
+      "limit": "CO2 below the 180 ppm of the coldest glacial air: below the range the plan labels",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"key": "air.co2_ppm", "op": "<", "limit": "co2_glacial_ppm"}
+    },
+    {
+      "id": "co2_unvalidated", "label": "illustration", "setting": "air.co2_ppm",
+      "limit": "CO2 above 1,120 ppm: it runs, and is unvalidated above eight times pre-industrial",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"all": [
+        {"key": "air.co2_ppm", "op": ">", "limit": "co2_illustration_max_ppm"},
+        {"key": "air.co2_ppm", "op": "<", "limit": "co2_radiation_max_ppm"}
+      ]}
+    },
+    {
+      "id": "co2_beyond_radiation", "label": "not supported yet", "setting": "air.co2_ppm",
+      "limit": "CO2 at or above 10,000 ppm is outside the radiation's gas range; a runaway greenhouse is outside every scheme",
+      "source": "physics/native_options.py trace_co2_ppm range; the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"key": "air.co2_ppm", "op": ">=", "limit": "co2_radiation_max_ppm"}
+    },
+    {
+      "id": "trace_gas_changed", "label": "illustration", "setting": "air",
+      "limit": "another trace gas: over a held ocean this is the fast adjustment, and its forcing is a number, not a weather map",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"any": [
+        {"key": "air.ch4_ppb", "op": "!=", "value": "dated"},
+        {"key": "air.n2o_ppb", "op": "!=", "value": "dated"}
+      ]}
+    },
+    {
+      "id": "trace_gas_beyond_table", "label": "not supported yet", "setting": "air",
+      "limit": "methane or nitrous oxide at or above 100,000 ppb is outside the [world] table",
+      "source": "world/spec.py TRACE_RANGE_PPB",
+      "when": {"any": [
+        {"key": "air.ch4_ppb", "op": ">=", "limit": "trace_gas_max_ppb"},
+        {"key": "air.n2o_ppb", "op": ">=", "limit": "trace_gas_max_ppb"}
+      ]}
+    },
+    {
+      "id": "planet_constants", "label": "not supported yet", "setting": "planet",
+      "limit": "another gravity, radius or air composition, or air thicker than 1.09 bar: the full-physics kernels have Earth's gravity and air compiled in and are pinned by hash, the radiation tables stop at 1,096.6 hPa, and about 240 lines in about 35 files read Earth's constants directly",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"any": [
+        {"key": "gravity_m_s2", "op": "present"},
+        {"key": "radius_km", "op": "present"},
+        {"key": "air.composition", "op": "present"},
+        {"key": "air.surface_pressure_pa", "op": ">", "limit": "surface_pressure_ceiling_pa"}
+      ]}
+    },
+    {
+      "id": "thin_air", "label": "not supported yet", "setting": "air.surface_pressure_pa",
+      "limit": "air thinner than about 0.8 bar under the full physics: both carried convection schemes hold live thresholds in absolute pressure that do not scale with the air (docs/arwen-global-worlds-pressure-audit.md), so they would be silently wrong, not refused",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"key": "air.surface_pressure_pa", "op": "<", "limit": "thin_air_surface_pressure_pa"}
+    },
+    {
+      "id": "air_mass_changed", "label": "not supported yet", "setting": "air.surface_pressure_pa",
+      "limit": "another amount of air is not supported yet: both carried convection schemes hold live absolute-pressure thresholds that do not scale with the air (docs/arwen-global-worlds-pressure-audit.md)",
+      "source": "world/spec.py NOT_SUPPORTED_YET['air.surface_pressure_pa']",
+      "when": {"all": [
+        {"key": "air.surface_pressure_pa", "op": ">=", "limit": "thin_air_surface_pressure_pa"},
+        {"key": "air.surface_pressure_pa", "op": "<=", "limit": "surface_pressure_ceiling_pa"}
+      ]}
+    },
+    {
+      "id": "year_length", "label": "not supported yet", "setting": "year_length_d",
+      "limit": "another year length: ozone, vegetation, the land-use season and trace gases are keyed to a 365-day calendar in six places",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"key": "year_length_d", "op": "present"}
+    },
+    {
+      "id": "another_star", "label": "not supported yet", "setting": "sun.star",
+      "limit": "another star: the solar spectrum is fixed and the surface has one broadband albedo",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"all": [
+        {"key": "sun.star", "op": "present"},
+        {"key": "sun.star", "op": "!=", "value": "sun"}
+      ]}
+    },
+    {
+      "id": "tidally_locked", "label": "not supported yet", "setting": "sun.locked",
+      "limit": "a tidally locked planet whose sea is consistent with its sky needs the full physics' own slab ocean, and nobody knows yet whether the dark hemisphere's top levels fall to the 140 K limit",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"key": "sun.locked", "op": "==", "value": true}
+    },
+    {
+      "id": "responding_ocean", "label": "not supported yet", "setting": "sea.ocean",
+      "limit": "a world's own climate: no ocean or sea ice answers the atmosphere, and the one 10-day run on record loses 21.7 W m-2 at the top of the atmosphere; this waits for the slab ocean and thermodynamic sea ice, after the energy deficit is understood",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"any": [
+        {"key": "sea.ocean", "op": "present"},
+        {"key": "run.climate", "op": "==", "value": true}
+      ]}
+    },
+    {
+      "id": "ice_grows", "label": "not supported yet", "setting": "sea.ice_grows",
+      "limit": "ice cannot grow: prescribed thin ice is a heater (61 W m-2 through 1 m of ice with a 30 K difference, physics/frozen_surface.py) and a skin colder than 160 K stops the radiation; snowball and ice-age worlds wait for thermodynamic sea ice",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"key": "sea.ice_grows", "op": "==", "value": true}
+    },
+    {
+      "id": "regional_zoom_changed_coast", "label": "not supported yet", "setting": "run.regional_zoom",
+      "limit": "a regional ArWen zoom takes terrain, coast and land use from Earth's geography, so on a world with its own coast the storm would sit on modern Earth (world/refusals.py refuses it)",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"all": [
+        {"key": "run.regional_zoom", "op": "==", "value": true},
+        {"key": "world.changes_coast", "op": "==", "value": true}
+      ]}
+    },
+    {
+      "id": "assimilation_on_world", "label": "not supported yet", "setting": "run.assimilation",
+      "limit": "assimilation, cycling and observation scorecards compare against Earth's observations and stay refused on any world",
+      "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
+      "when": {"all": [
+        {"key": "run.assimilation", "op": "==", "value": true},
+        {"key": "world.is_earth", "op": "==", "value": false}
+      ]}
+    }
+  ],
+  "fixtures": [
+    {"id": "earth-no-table", "request": {}, "label": "earth", "rules": []},
+    {"id": "earth-all-earth-table", "request": {
+      "label": "earth",
+      "terrain": {"scale": 1.0, "air_mass": "conserve"},
+      "sun": {"obliquity_deg": 23.5, "brightness": 1.0, "day_length_h": 24.0, "orbit": "earth"},
+      "sea": {"level_m": 0.0, "land": "keep", "temperature": "analysis", "ice": "analysis"},
+      "air": {"co2_ppm": "dated", "ch4_ppb": "dated", "n2o_ppb": "dated"}
+    }, "label": "earth", "rules": []},
+    {"id": "no-mountains", "request": {"label": "flat-earth", "terrain": {"scale": 0.0}},
+      "label": "science", "rules": ["mountains_lowered"]},
+    {"id": "no-mountains-fill", "request": {"label": "flat-earth-fill", "terrain": {"scale": 0.0, "air_mass": "fill"}},
+      "label": "science", "rules": ["mountains_lowered"]},
+    {"id": "half-mountains", "request": {"label": "half-mountains", "terrain": {"scale": 0.5}},
+      "label": "science", "rules": ["mountains_lowered"]},
+    {"id": "no-tibet", "request": {"label": "no-tibet", "terrain": {"scale": 0.0,
+      "box": {"south_deg": 20.0, "north_deg": 50.0, "west_deg": 60.0, "east_deg": 110.0, "taper_deg": 5.0}}},
+      "label": "science", "rules": ["mountains_lowered"]},
+    {"id": "mountains-capped", "request": {"label": "capped-1500", "terrain": {"cap_m": 1500.0}},
+      "label": "science", "rules": ["mountains_lowered"]},
+    {"id": "no-mountains-over-ceiling", "request": {"label": "flat-earth", "terrain": {"scale": 0.0},
+      "facts": {"surface_pressure_max_pa": 110000.0}},
+      "label": "not supported yet", "rules": ["mountains_lowered", "pressure_over_ceiling"]},
+    {"id": "no-mountains-hot-skin", "request": {"label": "flat-earth", "terrain": {"scale": 0.0},
+      "facts": {"skin_temperature_max_k": 357.0}},
+      "label": "not supported yet", "rules": ["mountains_lowered", "start_skin_over_limit"]},
+    {"id": "no-mountains-30-days", "request": {"label": "flat-earth", "terrain": {"scale": 0.0},
+      "facts": {"run_days": 30.0}},
+      "label": "not supported yet", "rules": ["mountains_lowered", "run_outlasts_water_store"]},
+    {"id": "taller-mountains", "request": {"label": "taller-1-5", "terrain": {"scale": 1.5}},
+      "label": "illustration", "rules": ["mountains_raised"]},
+    {"id": "taller-mountains-too-tall", "request": {"label": "taller-1-5", "terrain": {"scale": 1.5},
+      "facts": {"surface_pressure_min_pa": 42000.0}},
+      "label": "not supported yet", "rules": ["mountains_raised", "terrain_too_tall"]},
+    {"id": "mountains-beyond-table", "request": {"label": "taller-2-5", "terrain": {"scale": 2.5}},
+      "label": "not supported yet", "rules": ["mountains_raised", "mountains_beyond_table"]},
+    {"id": "on-its-side", "request": {"label": "on-its-side", "sun": {"obliquity_deg": 90.0}},
+      "label": "illustration", "rules": ["tilt", "tilt_high_with_land"]},
+    {"id": "on-its-side-cold", "request": {"label": "on-its-side", "sun": {"obliquity_deg": 90.0},
+      "facts": {"air_temperature_min_k": 135.0}},
+      "label": "not supported yet", "rules": ["tilt", "tilt_high_with_land", "air_too_cold"]},
+    {"id": "no-tilt", "request": {"label": "no-tilt", "sun": {"obliquity_deg": 0.0}},
+      "label": "illustration", "rules": ["tilt"]},
+    {"id": "perpetual-equinox", "request": {"label": "equinox", "sun": {"orbit": "perpetual-equinox"}},
+      "label": "illustration", "rules": ["orbit_changed"]},
+    {"id": "eccentric-orbit", "request": {"label": "eccentric-0-1", "sun": {"orbit": "eccentric", "eccentricity": 0.1, "perihelion_deg": 0.0}},
+      "label": "illustration", "rules": ["orbit_changed"]},
+    {"id": "sun-5-percent-brighter", "request": {"label": "bright-sun", "sun": {"brightness": 1.05}},
+      "label": "illustration", "rules": ["brightness"]},
+    {"id": "sun-half-again-brighter", "request": {"label": "very-bright-sun", "sun": {"brightness": 1.5}},
+      "label": "illustration", "rules": ["brightness", "brightness_beyond_plan"]},
+    {"id": "day-12h", "request": {"label": "day-12h", "sun": {"day_length_h": 12.0}},
+      "label": "illustration", "rules": ["day_length"]},
+    {"id": "day-6h", "request": {"label": "day-6h", "sun": {"day_length_h": 6.0}},
+      "label": "not supported yet", "rules": ["day_length", "day_length_too_short"]},
+    {"id": "day-4000h", "request": {"label": "slow-day", "sun": {"day_length_h": 4000.0}},
+      "label": "not supported yet", "rules": ["day_length", "day_length_too_long"]},
+    {"id": "co2-doubled", "request": {"label": "co2-x2", "air": {"co2_ppm": 560.0}},
+      "label": "illustration", "rules": ["co2_changed"]},
+    {"id": "co2-quadrupled", "request": {"label": "co2-x4", "air": {"co2_ppm": 1120.0}},
+      "label": "illustration", "rules": ["co2_changed"]},
+    {"id": "co2-eight-times", "request": {"label": "co2-x8", "air": {"co2_ppm": 2240.0}},
+      "label": "illustration", "rules": ["co2_changed", "co2_unvalidated"]},
+    {"id": "co2-below-glacial", "request": {"label": "co2-150", "air": {"co2_ppm": 150.0}},
+      "label": "illustration", "rules": ["co2_changed", "co2_below_glacial"]},
+    {"id": "co2-runaway", "request": {"label": "co2-20000", "air": {"co2_ppm": 20000.0}},
+      "label": "not supported yet", "rules": ["co2_changed", "co2_beyond_radiation"]},
+    {"id": "methane-doubled", "request": {"label": "ch4-x2", "air": {"ch4_ppb": 3800.0}},
+      "label": "illustration", "rules": ["trace_gas_changed"]},
+    {"id": "zonal-ice", "request": {"label": "zonal-ice", "sea": {"ice": "zonal"}},
+      "label": "illustration", "rules": ["sea_prescribed"]},
+    {"id": "sea-plus-70", "request": {"label": "sea-plus-70", "sea": {"level_m": 70.0}},
+      "label": "illustration", "rules": ["sea_level_raised"]},
+    {"id": "sea-minus-50", "request": {"label": "sea-minus-50", "sea": {"level_m": -50.0}},
+      "label": "not supported yet", "rules": ["sea_level_lowered"]},
+    {"id": "waterworld", "request": {"label": "waterworld", "terrain": {"scale": 0.0},
+      "sea": {"land": "none", "temperature": "zonal-mean", "ice": "none"}},
+      "label": "illustration", "rules": ["waterworld"]},
+    {"id": "waterworld-20-days", "request": {"label": "waterworld", "terrain": {"scale": 0.0},
+      "sea": {"land": "none", "temperature": "zonal-mean", "ice": "none"},
+      "facts": {"run_days": 20.0, "ocean_store_days": 30.0}},
+      "label": "illustration", "rules": ["waterworld"]},
+    {"id": "waterworld-store-runs-dry", "request": {"label": "waterworld", "terrain": {"scale": 0.0},
+      "sea": {"land": "none", "temperature": "zonal-mean", "ice": "none"},
+      "facts": {"run_days": 20.0, "ocean_store_days": 18.0}},
+      "label": "not supported yet", "rules": ["waterworld", "run_outlasts_water_store"]},
+    {"id": "aquaplanet-tilted", "request": {"label": "aqua-tilt-60", "terrain": {"scale": 0.0},
+      "sun": {"obliquity_deg": 60.0},
+      "sea": {"land": "none", "temperature": "aqua-control", "ice": "none"}},
+      "label": "illustration", "rules": ["waterworld", "tilt"]},
+    {"id": "aquaplanet-equinox", "request": {"label": "aqua-qobs", "terrain": {"scale": 0.0},
+      "sun": {"orbit": "perpetual-equinox"},
+      "sea": {"land": "none", "temperature": "aqua-qobs", "ice": "none"}},
+      "label": "illustration", "rules": ["waterworld", "orbit_changed"]},
+    {"id": "pangea-250ma", "request": {"label": "pangea-250ma",
+      "sea": {"temperature": "zonal-mean", "ice": "none"},
+      "surface": {"folder": "pangea-250ma.world", "land_cover": "open-shrubland", "soil_wetness": 0.3}},
+      "label": "illustration", "rules": ["invented_surface"]},
+    {"id": "pangea-own-climate", "request": {"label": "pangea-250ma",
+      "sea": {"temperature": "zonal-mean", "ice": "none", "ocean": "slab"},
+      "surface": {"folder": "pangea-250ma.world", "soil_wetness": 0.3}},
+      "label": "not supported yet", "rules": ["invented_surface", "responding_ocean"]},
+    {"id": "pangea-regional-zoom", "request": {"label": "pangea-250ma",
+      "sea": {"temperature": "zonal-mean", "ice": "none"},
+      "surface": {"folder": "pangea-250ma.world", "soil_wetness": 0.3},
+      "run": {"regional_zoom": true}},
+      "label": "not supported yet", "rules": ["invented_surface", "regional_zoom_changed_coast"]},
+    {"id": "earth-regional-zoom", "request": {"run": {"regional_zoom": true}},
+      "label": "earth", "rules": []},
+    {"id": "tilt-with-assimilation", "request": {"label": "on-its-side", "sun": {"obliquity_deg": 90.0},
+      "run": {"assimilation": true}},
+      "label": "not supported yet", "rules": ["tilt", "tilt_high_with_land", "assimilation_on_world"]},
+    {"id": "thick-air", "request": {"label": "thick-air", "air": {"surface_pressure_pa": 150000.0}},
+      "label": "not supported yet", "rules": ["planet_constants"]},
+    {"id": "slightly-less-air", "request": {"label": "less-air", "air": {"surface_pressure_pa": 90000.0}},
+      "label": "not supported yet", "rules": ["air_mass_changed"]},
+    {"id": "nitrous-oxide-beyond-table", "request": {"label": "n2o-high", "air": {"n2o_ppb": 200000.0}},
+      "label": "not supported yet", "rules": ["trace_gas_changed", "trace_gas_beyond_table"]},
+    {"id": "thin-air", "request": {"label": "thin-air", "air": {"surface_pressure_pa": 60000.0}},
+      "label": "not supported yet", "rules": ["thin_air"]},
+    {"id": "tidally-locked", "request": {"label": "locked", "sun": {"locked": true}},
+      "label": "not supported yet", "rules": ["tidally_locked"]},
+    {"id": "red-dwarf", "request": {"label": "red-dwarf", "sun": {"star": "m-dwarf"}},
+      "label": "not supported yet", "rules": ["another_star"]},
+    {"id": "snowball", "request": {"label": "snowball", "sun": {"brightness": 0.94}, "sea": {"ice_grows": true}},
+      "label": "not supported yet", "rules": ["brightness", "ice_grows"]},
+    {"id": "mars", "request": {"label": "mars",
+      "gravity_m_s2": 3.72, "radius_km": 3389.5, "year_length_d": 687.0,
+      "air": {"composition": "co2", "surface_pressure_pa": 610.0},
+      "sun": {"obliquity_deg": 25.19, "brightness": 0.431, "day_length_h": 24.62}},
+      "label": "not supported yet",
+      "rules": ["planet_constants", "thin_air", "year_length", "tilt", "brightness", "brightness_beyond_plan", "day_length"]},
+    {"id": "venus", "request": {"label": "venus",
+      "gravity_m_s2": 8.87, "radius_km": 6051.8, "year_length_d": 224.7,
+      "air": {"composition": "co2", "surface_pressure_pa": 9.2e6},
+      "sun": {"obliquity_deg": 177.4, "brightness": 1.91, "day_length_h": 2802.0}},
+      "label": "not supported yet",
+      "rules": ["planet_constants", "year_length", "day_length_too_long", "tilt", "brightness", "brightness_beyond_plan", "day_length"]},
+    {"id": "titan", "request": {"label": "titan",
+      "gravity_m_s2": 1.352, "radius_km": 2574.7, "year_length_d": 10759.0,
+      "air": {"composition": "n2-ch4", "surface_pressure_pa": 146700.0},
+      "sun": {"obliquity_deg": 26.7, "brightness": 0.011, "day_length_h": 382.7}},
+      "label": "not supported yet",
+      "rules": ["planet_constants", "year_length", "brightness_beyond_table", "tilt", "brightness", "brightness_beyond_plan", "day_length"]}
+  ]
+}

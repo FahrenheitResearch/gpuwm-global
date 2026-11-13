@@ -36,8 +36,8 @@ apart. `gpu-cu13` pulls `cupy-cuda13x[ctk]`, `gpu-cu12` pulls
 card figures on this page came off. Either line also resolves the engine
 `gpuwm>=2.9.13,<2.10`, its data companion `gpuwm-data` beside it, numpy, scipy
 and netCDF4. Against the published `gpuwm 2.9.13`,
-`python tools/measure_boundary.py` reads 240 symbols across 71 modules with
-no gap (Linux, 2026-11-11). Without either extra the package installs and
+`python tools/measure_boundary.py` reads 242 symbols across 72 modules with
+no gap (Linux, 2026-11-13). Without either extra the package installs and
 every CPU door runs; the forecast needs the card.
 
 The rows dated 2026-11 on this page were taken on the published engines
@@ -85,7 +85,7 @@ install; that is fixed from 0.1.3.
 `gpuwm-global` needs `gpuwm>=2.9.13,<2.10`. The floor is the engine this
 release's test suite and forecast proofs ran on. The ceiling is not
 decoration: the engine's own trees are not supersets of each other across
-minors, and this package imports 240 symbols across that boundary.
+minors, and this package imports 242 symbols across that boundary.
 `python tools/measure_boundary.py` regenerates the measurement rather than
 trusting a table, and names the symbols it could not check on a host without
 a CUDA runtime instead of counting them clean. The physics used in the
@@ -128,7 +128,7 @@ That builds the static surface fields, integrates the forecast, exports
 render-ready tapes and draws the product pictures, naming the stage it is in
 while the detail goes to the run's log.
 
-Fifty-seven experiments ship inside the package and resolve by bare name from
+Fifty-nine experiments ship inside the package and resolve by bare name from
 any directory (`gpuwm-global configs` lists them); a path that exists always
 wins over a shipped name, so an edited copy runs.
 
@@ -379,7 +379,7 @@ band counts 2 to 32, and 892 of 892 waist comparisons bit-exact on each card
 
 ## The doors
 
-One console script, 51 commands. `gpuwm-global <command> --help` prints every
+One console script, 60 commands. `gpuwm-global <command> --help` prints every
 option; [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) is the same surface on
 one page, generated from the parser.
 
@@ -389,9 +389,11 @@ one page, generated from the parser.
 | `run` | run a configured experiment: the forecast, its gates and its receipt |
 | `statics` | build and cache the surface static fields for a truncation |
 | `surface-series` | build a dated SST, sea-ice and greenness series on a config's grid, from GDAS analyses or one GFS cycle's own forecast, for `run --surface-series` |
+| `climatology fetch`, `climatology build` | stage the public monthly SST and sea-ice climatology (NOAA OISST v2.1, 1991-2020; optionally the WOA18 mixed-layer depth), each file verified by size and SHA-256, and build it onto a config's grid as one byte-reproducible file |
 | `export` | render-ready global lat-lon `wrfout` tapes from checkpoints (`export-wrfout` is an accepted alias of the same door) |
 | `render` | draw the products from a finished run through the Rust renderer |
 | `configs` | list the experiments that ship inside the package |
+| `world list`, `world new`, `world describe`, `world twin`, `world perturb`, `world diff` | other worlds: the shipped presets, a world config written from an Earth one, what a world changes before any card time, and a twin with its own noise floor (the control, a control perturbed at rounding level, and world-minus-Earth tapes that show a difference only where it beats the two controls' and print the uniform pressure offset they remove) |
 | `doctor`, `fetch-doors` | what is installed, staged and missing; and stage what is missing |
 | `fetch-analysis` | fetch the one whole-globe GDAS object a cold start needs, or with `--source era5` one ERA5 hour from 1940 on ([ERA5 start](docs/ARWEN_GLOBAL_ERA5.md)), and print the run it feeds |
 | `score` | score a finished run against ASOS stations and radiosondes through `rw_asos` and `rw_igra2`, with the GFS and IFS analyses as secondary references, one row per lead, at any truncation |
@@ -482,6 +484,32 @@ on a different day through a different export and a different render call
 
 ---
 
+## Other worlds
+
+Experimental: a research tool, not a forecast product. The same model runs
+Earth changed: no mountains, another tilt, a brighter or dimmer sun, other
+CO2, a higher sea, no land, or a continent from a paleo-elevation map. A world is a `[world]` table at the end of an ordinary
+config, and an all-Earth table changes nothing: the config hashes the same and
+ten steps write the same bytes.
+
+```bash
+gpuwm-global world list
+gpuwm-global world new flat-earth \
+    --from arwen_global_gdas_t255_native_sl_si_24h --out flat-earth.toml
+gpuwm-global world describe flat-earth.toml
+```
+
+Every world is checked on the CPU before any card time, labelled science,
+illustration or not supported yet, and named on its receipt, checkpoints and
+tapes. The sea is held for the whole run, so every result says: *This is the
+weather of the first N days after Earth was changed, over a sea surface that
+does not respond. It is not this world's climate.*
+[docs/ARWEN_GLOBAL_WORLDS.md](docs/ARWEN_GLOBAL_WORLDS.md) is the whole
+surface, its limits, what was measured, and the credits for the published
+maps and profiles it uses.
+
+---
+
 ## Where things come from
 
 - **The engine.** `gpuwm` supplies the GRIB2 source decoder, the observation
@@ -505,6 +533,20 @@ on a different day through a different export and a different render call
   bundle as the observation doors.
 - **Statics** come from the public geography archive through the engine, cached
   once per truncation.
+- **The monthly sea-surface climatology** is NOAA OISST v2.1's 1991-2020
+  monthly long-term mean of SST and sea-ice concentration from NOAA PSL
+  (45,945,542 and 31,003,804 bytes), and, with `--with-mld`, the NOAA WOA18
+  monthly mixed-layer depth (twelve files, 85,127,108 bytes, found in the
+  regional engine's ocean cache when it has them). No route needs a
+  credential. The rows, with their byte counts, SHA-256 pins, licences and
+  citations, are `arwen_global/data/surface_climatology_sources.json`.
+  `gpuwm-global climatology build` puts them on a config's Gaussian grid with
+  the cold start's open-water rule over the statics ocean, NaN on land and
+  inland lakes, and writes the same bytes from the same inputs; the file's
+  provenance gives, for every month, the mean SST and each hemisphere's ice
+  extent and area on the source grid and on the model grid, so what the
+  regrid and the coastline change is stated in the file. It is a
+  climatology, not any year's observation.
 
 ---
 
@@ -533,6 +575,7 @@ on a different day through a different export and a different render call
 | [arwen-global-abi-operator.md](docs/arwen-global-abi-operator.md) | the GOES ABI clear-sky infrared operator |
 | [arwen-global-microwave-operator.md](docs/arwen-global-microwave-operator.md) | the ATMS clear-sky over-ocean operator |
 | [arwen-global-airliner-heights.md](docs/arwen-global-airliner-heights.md) | experimental: the ADS-B altitude pair as an upper-air height observation, and one day measured |
+| [ARWEN_GLOBAL_WORLDS.md](docs/ARWEN_GLOBAL_WORLDS.md) | other worlds: the `[world]` table, the presets, the checks before any card time, the twins and their noise floor, what is refused, and the credits |
 | [ARWEN_GLOBAL_CLIENT.md](docs/ARWEN_GLOBAL_CLIENT.md) | driving this model from a program: the versioned documents, the plan envelope, the durable run files, and what is not offered |
 | [CLI-REFERENCE.md](docs/CLI-REFERENCE.md) | every command and every option, generated from the parser |
 

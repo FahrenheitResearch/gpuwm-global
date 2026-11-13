@@ -847,7 +847,8 @@ reference/native physics half step
     -> dry-mass fixer
     -> physics half step
     -> positivity repair
-    -> global total-water fixer through finite surface reservoir
+    -> global total-water fixer through the surface reservoir (with native
+       physics, the open-water exchange account on ocean, lakes and sea ice)
     -> validation, diagnostics, checkpoint
 ```
 
@@ -931,6 +932,79 @@ mass-coordinate drift through one spatially uniform surface-reservoir
 correction. Its maximum absolute correction is checkpointed and receipted.
 This is an explicit numerical source/sink accounting mechanism, not an
 unreported conservation claim.
+
+### Open water: the exchange account
+
+Every physics call books the column water it moves (surface evaporation,
+precipitation reaching the ground, the closure of its own ledger) against the
+explicit surface reservoir, and the run refuses when a column's reservoir
+falls below zero. Over land that is the right bound. Over open water it is
+not: an ocean, a lake or the sea under its ice does not run dry, and a column
+whose evaporation exceeds its rain empties the 500 kg/m2 most shipped
+configurations seed in 100 days at 5 mm a day of E - P.
+
+So with native physics the movement on open-water columns is booked to a
+signed account, `ocean_exchange_kg_m2` in the physics namespace, and the
+reservoir there keeps the value it had. The columns are the open-water side
+of the land/water rule (`1 + (1 - land_fraction) >= 1.5`) without the sea-ice
+override, so the ocean, inland lakes and ice-covered sea, fixed by the statics
+for the run; land ice is land. The global water fixer's uniform correction
+goes to the account on those columns and to the reservoir on land. Every
+water ledger counts the account beside the runoff outflow account: the
+conservation total is held water plus outflow plus the account, and its
+global mean is a diagnostic (`global_mean_ocean_exchange_kg_m2`), an in-situ
+ledger row (`water_ocean_exchange_kg_m2`) and a term of the water-budget
+instrument's reservoir. The account is float64 whatever the run's precision,
+so a season of small increments is summed without the rounding of a float32
+running total, and a checkpoint keeps it in float64.
+
+No native scheme reads the reservoir, so the atmosphere is the one the finite
+reservoir gives: `tests/test_arwen_global_open_water_exchange_cuda.py` takes
+one native physics half-step on a card from the native T3 smoke cold state,
+with the account and on the finite reservoir, and every prognostic array is
+byte-identical while only the reservoir and the account differ (a whole run
+cannot be compared there: that configuration's first step is refused by
+RRTMGP's skin bound under 0.1.5 as well); `tests/test_arwen_global_open_water_exchange.py`
+shows the same of the native closure on the CPU with stand-in kernels. The
+reference suite is a test suite and keeps its finite reservoir: it caps one
+call's evaporation at the reservoir over the step, so it is not a
+configuration for long runs.
+
+The finite reservoir was also the only bound on an open-water column that
+evaporates without limit (a lake column that started from a 321 K land skin
+drained it in 117 h, `analysis_initial.open_water_skin_temperature`). The
+native suite therefore keeps a runaway watch in its place: each open-water
+column's evaporation, the surface moisture flux the boundary layer applied,
+summed over fixed 24 h blocks of model time from the start
+(`ocean_evaporation_day_kg_m2`). A column whose sum in a block passes the
+native option `open_water_evaporation_ceiling_kg_m2_day` (default 60, a mean
+latent flux of about 1,700 W/m2) refuses the run, naming the column. The
+default is a provisional engineering value and not a measured one; with
+`open_water_evaporation_refusal = false` the watch reports without refusing.
+Neither option is in the config identity. The step diagnostics
+`maximum_open_water_evaporation_day_kg_m2`,
+`maximum_open_water_evaporation_last_day_kg_m2` and
+`open_water_evaporation_exceeds_ceiling` carry the largest column of the
+current block, the largest of the last finished block, and the comparison.
+
+The account changes no config hash, so a checkpoint written before it
+resumes: the state is given a zero account, the receipt's
+`open_water_exchange.filled` says so, and the open-water reservoirs keep the
+value that checkpoint carried. A run that does not book the account (the
+reference suite, a run without physics) refuses a state that carries one.
+
+The native option `open_water_exchange = false` turns the account off and
+keeps the finite reservoir on open water, the bookkeeping of 0.1.8 and every
+earlier release; the runaway watch, which stands in for the reservoir's
+bound, runs only with the account. It is bookkeeping, not arithmetic the
+atmosphere reads, so it is outside the config identity. With it off, a
+shipped forecast writes the arrays 0.1.8 wrote. With the account on (the
+default), every array 0.1.8 wrote is the same except the open-water
+reservoir, `surface_water_kg_m2`, and the checkpoint carries the account's
+two arrays besides (`ocean_exchange_kg_m2`, `ocean_evaporation_day_kg_m2`). A
+run of more than a few weeks wants the account on: the finite reservoir
+refuses the run once an open-water column whose evaporation exceeds its rain
+has emptied it.
 
 ## Checkpoints and receipts
 

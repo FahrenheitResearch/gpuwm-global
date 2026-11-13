@@ -1,9 +1,9 @@
 # The carried physics, and where it differs from the engine's
 
-`src/arwen_global/core/` carries the physics this model was graded with: eleven
+`src/arwen_global/core/` carries the physics this model was graded with: twelve
 Python modules, the float64 mirror used by kernel scorecards to compare GPU
 arithmetic (code verification), the CUDA
-loader, fifteen kernel sources and the four WRF parameter tables. Every one of
+loader, sixteen kernel sources and the four WRF parameter tables. Every one of
 them exists on the engine as well, and the two lines move independently. That
 is not an accident to be tidied away; it is the arrangement. What it needs is
 a file that says, for each place the two differ, what differs, why, and what
@@ -67,10 +67,10 @@ they are not the identity of a row. The identity is a FINGERPRINT: per carried
 file, a unified diff of the engine's copy against this one with zero context
 lines and the carve's own rewiring applied to the engine side, then a SHA-256
 over each hunk's engine-side lines and another over its carried-side lines. All
-35 carried files are measured that way, whatever their suffix; a pair either
+37 carried files are measured that way, whatever their suffix; a pair either
 side of which does not decode as text has no lines to diff, so it is compared
 byte for byte instead and a difference there is one whole-file hunk.
-`src/arwen_global/data/engine-divergence.json` carries all 852 of them with the
+`src/arwen_global/data/engine-divergence.json` carries all 865 of them with the
 class and decision of the row they belong to, and the engine line keys its own
 change lists by the engine-side hash, so the same difference has the same name
 on both sides. `tools/fingerprint_engine_divergence.py` documents the
@@ -99,7 +99,7 @@ normalisation exactly and is what recomputes it.
   `load_trace_climatology`, unchanged since 2.8.0. Of what the re-baseline
   decides to pull, only the constant-division respelling (`SFCLAY-CU-4`
   and its four siblings) moves bits once it is taken, and then on
-  Blackwell cards only. The longwave lid fix then added two hunks, measured on the same engine, filed as `RRTMGP-26`. The 2.8.0 baseline
+  Blackwell cards only. The longwave lid fix then added two hunks, measured on the same engine, filed as `RRTMGP-26`. The valid-year gas selection added one more, measured on the same engine, filed as `RRTMGP-27`. The in-cloud path factor added three, measured on the same engine, filed as `RRTMGP-28`. The 2.8.0 baseline
   before it is in the git history of this file; it read 361 hunks forward
   from 2.7.3, dropped 14 and read 66 new ones.
 * **This package:** the model source revision `a2a674a2757c2dfc70fc9a2b12b4412ba3b18fcd`
@@ -127,7 +127,7 @@ other need no engine and always run.
 Four carried files and the four parameter tables are byte-identical to the
 engine's once the carve's rewiring is applied, so they have no rows and an
 engine change to any of them can be taken as it stands. That is a measurement
-and not an assertion: the fingerprint tool reads every one of the 35 carried
+and not an assertion: the fingerprint tool reads every one of the 37 carried
 files, the four `.TBL` parameter tables among them, and a file with no row is
 a file the tool found nothing in rather than a file it skipped. Change one
 byte of any of them, on either side, and the gate fails naming the file and
@@ -154,7 +154,7 @@ because it repairs two defects the engine still carries.
 
 ## The rows
 
-The sections follow the order of the carve's own table, which is the eleven
+The sections follow the order of the carve's own table, which is the twelve
 modules, then the float64 mirror, then the loader, then the kernels, then the
 notice that travels with them.
 
@@ -187,6 +187,8 @@ notice that travels with them.
 | `RRTMGP-24` | 843-844, after 866, 876-882, after 894, after 959, after 1562, 1600-1608, 1610-1610, 1614-1614, 1629-1629, 1657-1657, 2652-2652, 3305-3305, 3817-3817, 3865-3865, 3896-3899, 3948-3949, 3972-3977, 3979-3979, 3993-3993, 4005-4010, 4019-4025, 4027-4027, 4456-4456, 4493-4500, 4526-4537, 4709-4730, 4732-4742, 4750-4753, 4757-4770, 4774-4781, 4788-4788, 4840-4849, 4852-4852, 4886-4886, 4929-4936, 4939-4939 | 922-923, 946-954, 964-1004, 1017-1090, 1158-1187, 1379-1399, 1437-1446, 1448-1448, 1452-1452, 1467-1467, 1495-1495, 2668-2670, 3285-3285, 3704-3704, 3752-3752, 3783-3784, 3861-3866, 3889-3891, 3893-3893, 3907-3907, 3919-3921, 3930-3952, 3954-3954, 4235-4235, 4272-4280, 4306-4319, 4491-4516, 4518-4532, after 4539, 4543-4543, after 4546, 4553-4553, 4605-4624, 4627-4634, 4668-4669, 4712-4729, 4732-4739 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01, and v2.8.2 (4c27749), 2026-10-02 | nothing: the engine records every output word unchanged | **none** |
 | `RRTMGP-25` | 3915-3916, 3918-3919 | 3800-3800, 3802-3802 | equal to carried | engine-fix | engine v2.8.2 (4c27749), 2026-10-02 | nothing at a fixed step | **none** |
 | `RRTMGP-26` | 664-681, 693-693 | 757-762, 774-774 | equal to engine | global-fix | package 9df6bf6 and 9d4ea0f, 2026-10-05 | level-0 potential temperature drift -59.4 to -10.6 K/day (T255, GDAS 2026-09-01 00Z); binds only below a 2 hPa top | **offer** |
+| `RRTMGP-27` | 3554-3574 | after 3324 | equal to engine | global-fix | package, 2026-11-12 | nothing unless called: the default `ghg_year = "start"` never calls it; under `"valid"` CO2 steps by the year's published change, 2.85 ppm from 2024 to 2025 | **offer** |
+| `RRTMGP-28` | 3351-3361, 3378-3381, 4066-4071 | after 3145, after 3164, after 3678 | equal to engine | global-fix | package fix/albedo, 2026-11-12 | nothing at the shipped default | **offer** |
 
 **`RRTMGP-1`.** Both copies now open with the same third-party notice. One word inside it differs, because this copy cites the reference commit from its docstring and the engine's cites it from its header. Take an engine rewording of the notice whenever it is convenient.
 
@@ -237,6 +239,10 @@ notice that travels with them.
 **`RRTMGP-25`.** The half-interval hour offset of the shortwave geometry reads `_physics_period_seconds(minutes, cfg)` instead of `_physics_interval_seconds(minutes, _model_clock_dt(cfg))`. The new helper returns the old expression unless the configuration sets `use_adaptive_time_step`, which the namespace this package's native suite hands radiation does not carry, so every value is the old one. It needs the helper `PHYSICS-19` adds to the driver; take it only with an adaptive step.
 
 **`RRTMGP-26`.** WRF's longwave puts `nint(p_top*.01/4)` 4 hPa layers above the model top (module_ra_rrtmg_lw.F:11565,12998-13001), and below a 2 hPa top that rounds to none; WRF then moves the model's own top interface to zero pressure (`plev(ncol,nlayers+1) = 0.00`, :12344), so the air above the top is still radiated, merged into the top model layer. Both copies transcribed the count and not the moved interface, so a 1 hPa top took no longwave layer at all: the top model layer (1.0 to 1.4 hPa on the default 40-level stack) saw no downward longwave from the air above it and cooled to space. This copy keeps the model's top interface, because its heating is formed on the model's own layer thicknesses, and gives the longwave the shortwave's count when the 4 hPa rule gives fewer: one layer from the model top to the coefficient floor, the shape the shortwave already uses. Measured on the T255 native day from GDAS 2026-09-01 00Z, the level-0 potential temperature drift went from -59.4 to -10.6 K a day. It binds only for a model top under 2 hPa, which no regional top reaches, so the engine's regional runs are unaffected; its global line, and any regional run with such a top, has the same gap. With this row the longwave count is never below the shortwave's, so the bound `RRTMGP-14` would take (the larger of the two spectra's counts) equals the longwave count here.
+
+**`RRTMGP-27`.** The driver selects its well-mixed gases once, in the constructor, from `start_time`, so a forecast that runs across 31 December radiates the start year's CO2 for as long as it runs; the engine's copy does the same. This copy adds one public method, `select_trace_gases(valid_time, overrides)`, which re-runs the same `trace_gases` selection for a given instant and writes the result into the slots `trace_vmr` already holds, in the constructor's order, so the gas fill's write order is unchanged. It holds no state: the selection is a function of the instant alone, which is what makes a restarted run re-select exactly what the straight run did. Nothing inside the driver calls it. This package's native runtime calls it before each radiation call when a config sets `[radiation] ghg_year = "valid"`, with the valid time the driver dates its ozone and solar geometry by; under the default it is never called and every value is the constructor's. Inside one calendar year the method writes the values the constructor already wrote, so the two rules are bit-identical there (pinned on the card by `tests/test_greenhouse_gases_by_year_cuda.py`). The engine's regional runs are days long and rarely cross a year end; its global line, and any run that does, has the same gap, so the method is offered as is. Measured against the 2.8.5 baseline this file is keyed to, the addition is one pure-insertion hunk and leaves every other row's fingerprint unchanged.
+
+**`RRTMGP-28`.** The driver takes `cloud_path_scale` (default 1.0) and, below 1, multiplies the in-cloud liquid and ice paths that both the longwave and the shortwave solver radiate; the sizes and the size-bounding record are left as they were. It is the effective-thickness correction for in-cloud variability a homogeneous subcolumn cannot carry (Cahalan et al. 1994, about 0.7 for marine stratocumulus; Tiedtke 1996, 0.7 on liquid and ice in both spectra in the ECMWF model). WRF's RRTMG has no such factor, so it is a declared departure, reached only through the native option `radiation_cloud_inhomogeneity = "tiedtke1996"`; at 1.0 the call is the call it always was (`tests/test_arwen_global_cloud_radiation_options_card.py`). See `docs/albedo-fixes.md`.
 
 ### `core/gf.py`
 
@@ -438,9 +444,10 @@ At 2.8.1 to 2.8.5 the engine's new driver options and structure (`PHYSICS-19`, `
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
-| `MORRISON-PY-1` | 42-43, 57-60, 135-144, 168-168, 174-176, 210-218, 252-254 | 63-63, after 76, after 150, after 173, 179-179, 213-217, 251-251 | equal to engine | global-fix | owner bef189b1d, 2026-09-12 | nothing by itself; it carries the two quantities of MORRISON-CU-1 | **offer** |
-| `MORRISON-PY-2` | 4-4, after 29, 172-172 | 4-4, 30-32, 177-177 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing: the engine records every output word unchanged | **none** |
-| `MORRISON-PY-3` | after 33 | 37-54 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing in this package | **none** |
+| `MORRISON-PY-1` | 76-77, 91-94, 174-183, 211-211, 217-219, 253-261, 295-297 | 63-63, after 76, after 150, after 173, 179-179, 213-217, 251-251 | equal to engine | global-fix | owner bef189b1d, 2026-09-12 | nothing by itself; it carries the two quantities of MORRISON-CU-1 | **offer** |
+| `MORRISON-PY-2` | 4-4, after 62, 215-215 | 4-4, 30-32, 177-177 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing: the engine records every output word unchanged | **none** |
+| `MORRISON-PY-3` | after 66 | 37-54 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing in this package | **none** |
+| `MORRISON-PY-4` | 24-24, 28-60, 74-74, 98-102, after 196, 199-205 | 24-24, after 27, after 61, after 79, 164-164, 167-168 | equal to engine | global-fix | package fix/droplet-number, 2026-11-12 | nothing at the shipped default | **offer** |
 
 **`MORRISON-PY-1`.** The driver half of the sedimentation repair: two scratch volumes, allocated as named slots so a stepping run creates nothing per step, carrying the two per-level quantities the process stage publishes to the sedimentation stage. At this model's working truncation with 40 levels that is two 45 MiB volumes, and both arms of the card comparison reported the same device peak, 8.80 GiB, so they did not move the card requirement. At 2.8.1 the engine's `apply` preparation (`MORRISON-PY-3`) replaced the neighbouring lines.
 
@@ -448,24 +455,40 @@ At 2.8.1 to 2.8.5 the engine's new driver options and structure (`PHYSICS-19`, `
 
 **`MORRISON-PY-3`.** `apply` forms potential temperature, the Exner function and layer depth in one elementwise kernel that reproduces the separate array operations' roundings. This package calls `launch_morrison` and never `apply`.
 
+**`MORRISON-PY-4`.** The launcher half of `MORRISON-CU-4`: `launch_morrison` takes an optional `droplet_number_m3` plane; None, the default, compiles and launches exactly what it always did, and a plane selects the `MORR_DROPLET_PLANE` build through the carried loader's integer tier and appends the two arguments to the launches.
+
+### `core/terrain_drag.py`
+
+These rows, and the two of `core/kernels/terrain_drag.cu` below, are measured against **gpuwm 2.9.13**, the engine this package's declared range installs with and the version both files were carried from. The other rows of this document still read 2.8.5, whose copy of both files predates the wind-sector fix (its `td_atan2f` is the double `atan2` rounded once, which picks another sector than WRF on one sector-boundary column per oracle grid); a re-baseline of the whole document at 2.9.13 finds these four rows unchanged.
+
+| Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
+|---|---|---|---|---|---|---|---|
+| `TERRAIN-DRAG-1` | 1-1, 3-4, 6-11, 13-24 | 1-1, 3-3, 5-7, 9-41 | not present | adaptation | package e2a95aa, 2026-11-11 | nothing | **none** |
+| `TERRAIN-DRAG-2` | after 27, 34-35, 40-40, after 111, after 178 | 45-45, 52-58, 63-63, 135-211, 279-447 | not present | adaptation | package e2a95aa, 2026-11-11 | nothing | **none** |
+
+**`TERRAIN-DRAG-1`.** The docstring says what is carried and why: `gwd_opt = 1` only, from this package's own Gaussian-grid statistics. `launch_gwdo`, the column-input packing and the NVRTC compile route are the engine's lines unchanged (the module key is spelled under this package's name by the carve's own rewiring, so it is no hunk).
+
+**`TERRAIN-DRAG-2`.** What is not carried, with the imports only it needed: `topo_wind` (YSU's surface-wind correction over complex terrain), `gwd_opt = 3` (the GSL drag suite, whose kernel reads the trigonometric header this package does not ship), the regional PBL-top helper, and the domain object that builds both from a regional domain's static fields; the kernel source list loses the trigonometric header with them. An engine change to `launch_gwdo`, `_column_inputs`, `_module` or the constants is taken as it stands, re-measured here; a change to the parts not carried needs nothing.
+
 ### `core/npref.py`
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
 | `NPREF-1` | 1-37 | after 0 | not present | global-fix | package cd407ae, 2026-09-12 | nothing | **offer** |
-| `NPREF-2` | 1045-1046, 1051-1056, 1075-1083, 1123-1132, 1136-1136, after 1137, after 1139, 1387-1389, 1409-1412, 1945-1945, 2047-2048, 2096-2097, 2135-2135 | 1049-1049, after 1053, 1072-1075, 1115-1116, 1120-1120, 1122-1122, 1125-1125, after 1372, after 1391, 1924-1924, after 2025, 2073-2073, after 2110 | equal to engine | global-fix | owner bef189b1d, 2026-09-12 | the mirror half of MORRISON-CU-1 | **offer** |
-| `NPREF-3` | 4320-4320, 4489-4491, after 4502, after 4766, 4806-4806, 4819-4821, 4828-4828, 4857-4857 | 4394-4394, 4563-4565, 4577-4577, 4825-4830, 4870-4870, 4883-4885, 4892-4894, 4917-4918 | equal to carried | engine-fix | engine 3669990e8, 2026-09-04 | nothing in any field this mirror already returns | **none** |
-| `NPREF-4` | 4736-4749, 4752-4753, 4758-4759, 4837-4844, 4859-4859, 4866-4866 | 4811-4811, after 4813, after 4817, 4903-4904, after 4919, 4926-4926 | equal to engine | deliberate | owner c3f2de9b7, corrected by 47ea9ae89, both 2026-09-04 | nothing at the three original options | **refuse** |
-| `NPREF-5` | 6365-6366, 6368-6372, 6408-6410, 6773-6774, 6777-6778 | 6425-6425, after 6426, after 6461, after 6818, after 6820 | equal to engine | deliberate | owner 36cb7cd43, 2026-09-05 | nothing at the shipped default | **refuse** |
-| `NPREF-7` | 6568-6575, 6578-6590 | 6619-6636, after 6638 | neither | global-fix | owner 304177d6f, 2026-09-04; engine 4d523b793, same day | identical where the index is above one; the height differs in one corner | **offer** |
-| `NPREF-8` | 6601-6602 | after 6648 | equal to engine | global-fix | owner 304177d6f, 2026-09-04 | narrow but not empty | **offer** |
-| `NPREF-9` | 7456-7462, 7464-7465, 7471-7487, 7489-7492, 7506-7506, 7512-7517, 7520-7520, 7524-7524, 7539-7542, 7555-7556, 7558-7562, 7578-7578, 7580-7580 | after 7497, 7499-7499, after 7504, 7506-7508, 7522-7522, 7528-7531, 7534-7534, 7538-7538, 7553-7555, after 7567, 7569-7575, 7591-7591, 7593-7593 | equal to engine | global-fix | owner 50e109983, 2026-09-04 | up to 3.35 W/m2 of spurious absorption removed | **offer** |
-| `NPREF-10` | 7767-7767, 7772-7911, 7918-7921, 7935-7951, 7953-7954, 7986-7988, 8008-8010, 8041-8045, 8059-8069, 8071-8072, after 8073, 8075-8092 | 7780-7780, after 7784, 7791-7791, 7805-7806, after 7807, 7839-7840, 7860-7862, after 7892, after 7905, 7907-7908, 7910-7911, 7913-7917 | equal to engine | global-fix | owner 4bf9f3e94, 9cfc20654 and 984c1cc61, 2026-09-04; eaa150a42, 2026-09-04; f6999e233, 2026-09-05 | the mirror half of RRTMGP-10, RRTMGP-12 and RRTMGP-13 | **offer** |
-| `NPREF-11` | after 9352, 9354-9354, 9439-9440, 9453-9454, 9456-9458, 9460-9463, 9465-9465, 9493-9493 | 9178-9183, 9185-9185, 9270-9273, 9286-9289, 9291-9294, 9296-9299, 9301-9301, 9329-9329 | equal to carried | engine-fix | engine ab874b32e, 2026-09-04 | 1.23 percent on the shallow tendencies at a 90 s step | **pull** |
-| `NPREF-12` | 3257-3257, 3309-3309, 3421-3421, 3442-3442, 3454-3454 | 3303-3303, 3355-3355, 3467-3467, 3488-3488, 3500-3500 | equal to carried | no-behaviour | engine 9a2f350e7, 2026-09-14 | nothing, comments only | **none** |
-| `NPREF-13` | after 2300 | 2276-2346 | not present | engine-fix | engine 72f18213d, 2026-09-16 | nothing in this package | **none** |
+| `NPREF-2` | 1045-1046, 1051-1056, 1075-1083, 1123-1132, 1136-1136, after 1137, after 1139, 1390-1392, 1412-1415, 1948-1948, 2056-2057, 2105-2106, 2145-2145 | 1049-1049, after 1053, 1072-1075, 1115-1116, 1120-1120, 1122-1122, 1125-1125, after 1372, after 1391, 1924-1924, after 2025, 2073-2073, after 2110 | equal to engine | global-fix | owner bef189b1d, 2026-09-12 | the mirror half of MORRISON-CU-1 | **offer** |
+| `NPREF-3` | 4330-4330, 4499-4501, after 4512, after 4776, 4816-4816, 4829-4831, 4838-4838, 4867-4867 | 4394-4394, 4563-4565, 4577-4577, 4825-4830, 4870-4870, 4883-4885, 4892-4894, 4917-4918 | equal to carried | engine-fix | engine 3669990e8, 2026-09-04 | nothing in any field this mirror already returns | **none** |
+| `NPREF-4` | 4746-4759, 4762-4763, 4768-4769, 4847-4854, 4869-4869, 4876-4876 | 4811-4811, after 4813, after 4817, 4903-4904, after 4919, 4926-4926 | equal to engine | deliberate | owner c3f2de9b7, corrected by 47ea9ae89, both 2026-09-04 | nothing at the three original options | **refuse** |
+| `NPREF-5` | 6375-6376, 6378-6382, 6418-6420, 6783-6784, 6787-6788 | 6425-6425, after 6426, after 6461, after 6818, after 6820 | equal to engine | deliberate | owner 36cb7cd43, 2026-09-05 | nothing at the shipped default | **refuse** |
+| `NPREF-7` | 6578-6585, 6588-6600 | 6619-6636, after 6638 | neither | global-fix | owner 304177d6f, 2026-09-04; engine 4d523b793, same day | identical where the index is above one; the height differs in one corner | **offer** |
+| `NPREF-8` | 6611-6612 | after 6648 | equal to engine | global-fix | owner 304177d6f, 2026-09-04 | narrow but not empty | **offer** |
+| `NPREF-9` | 7466-7472, 7474-7475, 7481-7497, 7499-7502, 7516-7516, 7522-7527, 7530-7530, 7534-7534, 7549-7552, 7565-7566, 7568-7572, 7588-7588, 7590-7590 | after 7497, 7499-7499, after 7504, 7506-7508, 7522-7522, 7528-7531, 7534-7534, 7538-7538, 7553-7555, after 7567, 7569-7575, 7591-7591, 7593-7593 | equal to engine | global-fix | owner 50e109983, 2026-09-04 | up to 3.35 W/m2 of spurious absorption removed | **offer** |
+| `NPREF-10` | 7777-7777, 7782-7921, 7928-7931, 7945-7961, 7963-7964, 7996-7998, 8018-8020, 8051-8055, 8069-8079, 8081-8082, after 8083, 8085-8102 | 7780-7780, after 7784, 7791-7791, 7805-7806, after 7807, 7839-7840, 7860-7862, after 7892, after 7905, 7907-7908, 7910-7911, 7913-7917 | equal to engine | global-fix | owner 4bf9f3e94, 9cfc20654 and 984c1cc61, 2026-09-04; eaa150a42, 2026-09-04; f6999e233, 2026-09-05 | the mirror half of RRTMGP-10, RRTMGP-12 and RRTMGP-13 | **offer** |
+| `NPREF-11` | after 9362, 9364-9364, 9449-9450, 9463-9464, 9466-9468, 9470-9473, 9475-9475, 9503-9503 | 9178-9183, 9185-9185, 9270-9273, 9286-9289, 9291-9294, 9296-9299, 9301-9301, 9329-9329 | equal to carried | engine-fix | engine ab874b32e, 2026-09-04 | 1.23 percent on the shallow tendencies at a 90 s step | **pull** |
+| `NPREF-12` | 3267-3267, 3319-3319, 3431-3431, 3452-3452, 3464-3464 | 3303-3303, 3355-3355, 3467-3467, 3488-3488, 3500-3500 | equal to carried | no-behaviour | engine 9a2f350e7, 2026-09-14 | nothing, comments only | **none** |
+| `NPREF-13` | after 2310 | 2276-2346 | not present | engine-fix | engine 72f18213d, 2026-09-16 | nothing in this package | **none** |
 | `NPREF-14` | 609-611, after 669 | 572-576, 635-673 | equal to carried | engine-fix | engine v2.8.2 (4c27749), 2026-10-02 | nothing in this package | **none** |
-| `NPREF-15` | 3506-3507, 3513-3513, 3530-3530, 3532-3532, 3541-3541, 3544-3544, 3549-3549, 3552-3552, 3560-3560, 3563-3563, 3616-3616, 3618-3619, 3623-3623, after 3637, 3639-3639, 3641-3641, 3750-3751, 3801-3801, 3809-3809 | 3552-3553, 3559-3559, 3576-3576, 3578-3581, 3590-3594, 3597-3600, 3605-3605, 3608-3610, 3618-3622, 3625-3628, 3681-3682, 3684-3685, 3689-3690, 3705-3705, 3707-3707, 3709-3709, 3818-3819, 3869-3872, 3880-3883 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01, and v2.8.2 (4c27749), 2026-10-02 | nothing in this package | **none** |
+| `NPREF-15` | 3516-3517, 3523-3523, 3540-3540, 3542-3542, 3551-3551, 3554-3554, 3559-3559, 3562-3562, 3570-3570, 3573-3573, 3626-3626, 3628-3629, 3633-3633, after 3647, 3649-3649, 3651-3651, 3760-3761, 3811-3811, 3819-3819 | 3552-3553, 3559-3559, 3576-3576, 3578-3581, 3590-3594, 3597-3600, 3605-3605, 3608-3610, 3618-3622, 3625-3628, 3681-3682, 3684-3685, 3689-3690, 3705-3705, 3707-3707, 3709-3709, 3818-3819, 3869-3872, 3880-3883 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01, and v2.8.2 (4c27749), 2026-10-02 | nothing in this package | **none** |
+| `NPREF-16` | 1323-1324, 1329-1331, 1335-1335, 1377-1377, 1418-1418, 1990-1990, 2009-2011, 2013-2015, 2109-2110, 2200-2200 | 1309-1309, 1314-1314, 1318-1318, 1360-1360, 1394-1394, 1966-1966, after 1984, after 1985, 2076-2076, 2165-2165 | equal to engine | global-fix | package fix/droplet-number, 2026-11-12 | nothing at the shipped default | **offer** |
 
 **`NPREF-1`.** The third-party notice for what this file transcribes. Its RTE+RRTMGP half matches the engine's own header for the same work; its AER half is the correction of RRTMGP-2, in the mirror rather than the driver, and applies to the engine's copy unchanged.
 
@@ -494,6 +517,8 @@ At 2.8.1 to 2.8.5 the engine's new driver options and structure (`PHYSICS-19`, `
 **`NPREF-14`.** WRF advects w at the model-top level too, with horizontal fluxes extrapolated from the last two mass levels and a one-sided lid term; this mirror gives that level zero tendency. It is the float64 mirror of the regional dycore, which this package does not carry and no door calls, so the standing is `NPREF-13`'s.
 
 **`NPREF-15`.** Three more regional dycore mirror changes: the radiative open boundary takes WRF's staggered map factors, the normal-direction diffusion term is excluded on outer open and specified rows as WRF does, and the vertical-velocity damping starts at `w_crit_cfl` under implicit vertical advection, with the default unchanged. Same standing as `NPREF-14`.
+
+**`NPREF-16`.** The mirror half of `MORRISON-CU-4`: `np_morrison_column` takes the column's droplet number, WRF's 250 cm-3 by default, and both resets read it.
 
 ### `core/kernels/__init__.py`
 
@@ -613,15 +638,18 @@ At 2.8.1 to 2.8.5 the engine's new driver options and structure (`PHYSICS-19`, `
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
-| `MORRISON-CU-1` | 158-163, 165-166, 174-174, after 202, 366-366, 374-377, 393-396, 890-940, 944-944, after 954, 960-961, after 1005, 1042-1043, 1109-1109, 1115-1115, 1121-1122, 1145-1146, 1164-1188, 1208-1209, 1218-1219 | after 157, 159-159, 167-168, 197-198, after 361, after 368, after 383, after 876, 880-880, 892-892, 898-898, 961-961, after 997, after 1062, after 1067, after 1072, 1095-1096, 1117-1131, 1151-1152, 1161-1161 | equal to engine | global-fix | owner bef189b1d, 2026-09-12 | about 1.1 percent on both cloud droplet fall speeds on a column that warms 4 K in a step | **offer** |
-| `MORRISON-CU-2` | 112-112, 133-133, 138-139, 152-152, 178-179, 242-242, 245-245, 414-416, 477-477, 580-581, 660-660, 694-694, 719-719, 1088-1088 | 112-112, 133-133, 138-139, 152-152, 172-173, 238-238, 241-241, 401-403, 464-464, 567-568, 647-647, 681-681, 706-706, 1042-1042 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | Blackwell cards only: at most one unit in the last place per constant division | **pull** |
-| `MORRISON-CU-3` | 4-4, 946-946, after 952, after 968, after 978, 1160-1161, after 1268 | 4-4, 882-882, 889-889, 906-908, 919-933, 1110-1114, 1211-1222 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing: the engine records every output word unchanged | **none** |
+| `MORRISON-CU-1` | 165-170, 172-173, 181-181, after 209, 374-374, 382-385, 401-404, 899-949, 953-953, after 963, 969-970, after 1014, 1051-1052, 1127-1127, 1133-1133, 1139-1140, 1163-1164, 1182-1206, 1226-1227, 1236-1237 | after 157, 159-159, 167-168, 197-198, after 361, after 368, after 383, after 876, 880-880, 892-892, 898-898, 961-961, after 997, after 1062, after 1067, after 1072, 1095-1096, 1117-1131, 1151-1152, 1161-1161 | equal to engine | global-fix | owner bef189b1d, 2026-09-12 | about 1.1 percent on both cloud droplet fall speeds on a column that warms 4 K in a step | **offer** |
+| `MORRISON-CU-2` | 119-119, 140-140, 145-146, 159-159, 185-186, 249-249, 252-252, 423-425, 486-486, 589-590, 669-669, 703-703, 728-728, 1106-1106 | 112-112, 133-133, 138-139, 152-152, 172-173, 238-238, 241-241, 401-403, 464-464, 567-568, 647-647, 681-681, 706-706, 1042-1042 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | Blackwell cards only: at most one unit in the last place per constant division | **pull** |
+| `MORRISON-CU-3` | 4-4, 955-955, after 961, after 977, after 987, 1178-1179, after 1295 | 4-4, 882-882, 889-889, 906-908, 919-933, 1110-1114, 1211-1222 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing: the engine records every output word unchanged | **none** |
+| `MORRISON-CU-4` | 17-23, 126-126, 131-131, 370-370, 407-408, 1057-1061, 1065-1069, 1129-1129, 1278-1282, 1286-1290, 1352-1353, 1360-1360 | after 16, 119-119, 124-124, after 358, 386-386, 1002-1002, after 1005, 1064-1064, 1202-1202, after 1205, 1279-1279, 1286-1286 | equal to engine | global-fix | package fix/droplet-number, 2026-11-12 | nothing at the shipped default | **offer** |
 
 **`MORRISON-CU-1`.** WRF builds two quantities once per level inside its column loop and then spends them, unchanged, in the sedimentation block that runs after the loop closes and before the tendency apply: the cloud droplet Stokes coefficient, frozen above the warm branch's small melt, and the particle-size reference density. Nothing writes the temperature between the melt and the apply, so the density the sedimentation block reads is the one the process section's own reconstruction used. Both copies of this kernel rebuilt both quantities from the temperature they held at sedimentation time, which is the post-process one. The Stokes coefficient is the expensive half, minus 0.288 percent per kelvin at 278 K on every cloudy level; the density was stale by the entry cleanup and melt alone, about 8e-4 K and 2.4e-6 relative. The remedy is the one WRF's own structure names: the process stage publishes both and the sedimentation stage consumes them. It is NOT handing the sedimentation stage its current temperature, which would have moved the size distribution about 2,400 times further from WRF than the error it removes, in the wrong direction. Measured against the unmodified reference driver over the 28 oracle columns and 10,948 compared values, desktop, NVIDIA GeForce RTX 3080, 2026-09-12: values disagreeing with the reference fall from 3,554 to 3,505, no field gets worse, and every field's worst distance in units of the last place is unchanged. The engine carries the identical rebuild from the original port commit and is owed the offer. Not confined to a climate band: cloud droplet sedimentation touches every column that holds cloud water. At 2.8.1 the engine restructured the sedimentation stage these quantities feed (`MORRISON-CU-3`) and respelled one division on a line this row also touches (`MORRISON-CU-2`), so the offer is now made into the per-category structure.
 
 **`MORRISON-CU-2`.** The same respelling as `SFCLAY-CU-4`, in this kernel, and the same decision for the same reason.
 
 **`MORRISON-CU-3`.** Sedimentation becomes one warp per hydrometeor category, the substep count is one maximum reduced across the five categories in shared memory (a chain of `fmaxf`, exactly associative), and terminal velocities are computed once instead of twice. The finalize stage gains a fast path for a cell with no hydrometeors and positive vapor; read statement by statement, every statement it skips adds zero or writes the value it writes. The engine records the outputs word-identical. It lands on the lines where `MORRISON-CU-1`'s published level quantities are consumed, so a take re-applies that offer inside the per-category structure.
+
+**`MORRISON-CU-4`.** The kernel half of the per-column droplet number. Under the `MORR_DROPLET_PLANE` build the process and finalize stages take a column plane of droplet numbers and the column count, and both of WRF's `INUM = 1` resets (on entry to the process section, F:1493-1495, and after the final radii) read the column's value. Without the define, which is every build `launch_morrison` makes unless it is handed a plane, both resets read WRF's literal 250 cm-3; the plane build handed 250 cm-3 everywhere is bit-identical to it (`tests/test_arwen_global_morrison_droplet_number_card.py`). The values the native option hands it are MPAS-Thompson's landmask prescription, 300 cm-3 over land and 100 cm-3 over ocean. A declared departure from WRF's Morrison, opt-in, offered as a capability.
 
 ### `core/kernels/rrtmgp_rte.cu`
 
@@ -675,13 +703,24 @@ At 2.8.1 to 2.8.5 the engine's new driver options and structure (`PHYSICS-19`, `
 
 **`LIBM-3`.** The gamma itself: gfk_gamma_product, gfk_gammaf_positive and gfk_tgamma, this project's own work, against the engine's correctly rounded variant. The gamma this package carries is the one the global model was graded with; the engine's variant moves the cumulus mass-flux shape factor on 68.17 percent of all 53,687,093 reachable float32 tuning values and the deep mass flux by up to 7.3 percent on converged columns, and taking it is a numerics choice to grade against observations, not a fix to pull. Those two figures are the engine line's own measurements, recorded with its commit c0ffc53b5 on 2026-09-04: the shape-factor count from the header compiled unmodified as host C++ (gcc 13.3.0, `-ffp-contract=off`, x86-64 SSE2, no card) and enumerated over the whole reachable set rather than sampled, the mass-flux bound from the shipped kernel compiled the same way over the engine's 216-column WRF capture; that record names the compiler and the date and no host. Nothing in this package has re-measured either. The other cumulus scheme is untouched either way: it uses only the logarithm, exponential and power surface.
 
+### `core/kernels/terrain_drag.cu`
+
+| Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
+|---|---|---|---|---|---|---|---|
+| `TERRAIN-DRAG-CU-1` | 1-3, 8-16 | 1-9, 14-19 | not present | adaptation | package e2a95aa, 2026-11-11 | nothing | **none** |
+| `TERRAIN-DRAG-CU-2` | after 182, after 476 | 186-267, 562-1033 | not present | adaptation | package e2a95aa, 2026-11-11 | nothing | **none** |
+
+**`TERRAIN-DRAG-CU-1`.** The header names the one kernel carried, `gwdo_column`, and says the other three are not; the rest of the header, the wind-sector helpers `td_atanf`/`td_atan2f`/`td_nint` and `gwdo_column` are the engine's words unchanged. One comment line is the carve's to rewrite rather than a hunk: the engine dates the wind-sector fix by the development branch it landed on, and `DEVICE_EXACT` dates it by the release that still had the old form. `tests/test_arwen_global_orographic_drag.py` holds the carried kernel to the engine's WRF v4.6.1 column oracle (149 columns, two vertical grids, six grid lengths) word for word on a card under the engine's strict numerics (`GPUWM_NUMERICS=strict`), to the engine's own kernel word for word in either mode, and the package's numpy transcription of it to WRF's words without a card. In the engine's default fast numerics the compile boundary drops `-fmad=false` and the words move (measured on an RTX 4090: 11,306 of 80,460 RUBLTEN words on the 90-level grid, up to 0.17 m s-2 where a fused rounding flips a branch); that is the arithmetic the other carried kernels compile in, since the carried loader asks for no `-fmad=false` at all.
+
+**`TERRAIN-DRAG-CU-2`.** `topo_wind_static`, `terrain_pbl_top` and `gwdo_gsl_column` are not carried. Take an engine change to `gwdo_column` or the sector helpers as it stands (and re-run the oracle test); a change to the three that are absent needs nothing.
+
 ### `core/kernels/LICENSE-third-party.txt`
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
-| `KERNEL-NOTICE-1` | 15-30, 34-42, 49-60, after 71, 109-110, 130-151, 167-171, 177-177, 179-191, 206-206, 210-221 | 15-26, 30-38, 45-67, 79-103, 141-142, 162-185, 201-202, 208-209, 211-212, 227-308, 312-365 | not present | adaptation | package cd407ae and 78cad51, both 2026-09-12 | nothing | **none** |
+| `KERNEL-NOTICE-1` | 15-32, 36-44, 51-63, after 74, 112-113, 133-154, 170-174, 180-180, 182-194, 209-209, 213-224 | 15-26, 30-38, 45-67, 79-103, 141-142, 162-185, 201-202, 208-209, 211-212, 227-308, 312-365 | not present | adaptation | package cd407ae and 78cad51, both 2026-09-12 | nothing | **none** |
 
-**`KERNEL-NOTICE-1`.** The notice beside the device sources, narrowed by rule to the files this package actually ships rather than inherited whole. The carve's own scope rules do the narrowing, so the remaining differences are the ones the rules do not cover: the reason the notice sits beside the code rather than inside it is this package's receipt digests and not the source tree's frozen-digest suites, the scope paragraph names one header instead of a list of files this package does not have, the McICA generator is filed under its own work, and the closing scope section says whose work the gamma routines are. At 2.8.1 and 2.8.5 the engine's notice also grew sections for work this package does not ship (the trigonometric cores, CORE-MATH, the log-gamma coefficients and the binary64 boundary-layer library); the narrowing rule leaves them out.
+**`KERNEL-NOTICE-1`.** The notice beside the device sources, narrowed by rule to the files this package actually ships rather than inherited whole. The carve's own scope rules do the narrowing, so the remaining differences are the ones the rules do not cover: the reason the notice sits beside the code rather than inside it is this package's receipt digests and not the source tree's frozen-digest suites, the scope paragraph names one header instead of a list of files this package does not have, the McICA generator is filed under its own work, and the closing scope section says whose work the gamma routines are. The two paragraphs that say which modules the libm header is prepended to also name the orographic drag's launcher, since 2026-11-11 (package e2a95aa), because that launcher prepends the header to `terrain_drag.cu` and its bytes are then inside a third assembled string. At 2.8.1 and 2.8.5 the engine's notice also grew sections for work this package does not ship (the trigonometric cores, CORE-MATH, the log-gamma coefficients and the binary64 boundary-layer library); the narrowing rule leaves them out.
 ## PULL
 
 Engine fixes this package should take. Each one lands on the model's own
@@ -823,12 +862,23 @@ here is owed to this package; the list is what to send.
   WRF's 4 hPa rule rounds to none and the engine transcribes the count
   without WRF's moved top interface. Package commits `9df6bf6` and
   `9d4ea0f`, 2026-10-05.
+* `RRTMGP-27`, re-selecting the well-mixed gases for a call's valid time,
+  so a run across a year end can radiate each year's gases. Package
+  commit, 2026-11-12.
 * `SFCLAY-PY-2` with `SFCLAY-CU-3` and `NPREF-4`, as a new option rather than
   an edit to an existing branch. Taking it is also how the engine's momentum
   friction velocity comes across here in one step, which is the whole of
   `PHYSICS-8`'s refusal.
 * `RRTMGP-2` and `NPREF-1`. The McICA subcolumn generator is AER's work, not
   rte-rrtmgp's, and the engine's notices file it by its filename prefix.
+* `MORRISON-CU-4` with `MORRISON-PY-4` and `NPREF-16`. A per-column cloud
+  droplet number, a land and an ocean value, as an opt-in in place of
+  WRF's single `NDCNST`; nothing moves at the default. Package branch
+  `fix/droplet-number`, 2026-11-12.
+* `RRTMGP-28`. An opt-in factor on the in-cloud liquid and ice paths both
+  solvers radiate, the Tiedtke (1996) 0.7 for unresolved in-cloud
+  variability; nothing moves at the default of 1. Package branch
+  `fix/albedo`, 2026-11-12.
 
 ## REFUSE
 

@@ -22,7 +22,7 @@ from arwen_global import cli  # noqa: E402
 EXPECTED = {
     "abi-fast-model", "abi-reference", "abi-score", "assimilate",
     "check-migration", "check-native-candidate", "check-native-evidence",
-    "check-receipt", "configs", "cycle", "da", "doctor", "export",
+    "check-receipt", "climatology", "configs", "cycle", "da", "doctor", "export",
     "export-mapped-parent", "export-parent", "export-wrfout", "fetch-analysis", "fetch-doors", "go",
     "inspect",
     "inspect-export", "inspect-parent-series", "inspect-regional-frame",
@@ -30,7 +30,7 @@ EXPECTED = {
     "microwave", "migrate-level4-checkpoint", "native-qualify", "obs",
     "physics-manifest", "pins", "render", "run", "run-plan", "score", "sources",
     "statics", "surface-series", "transform-check",
-    "translate-regional-frame",
+    "translate-regional-frame", "world",
 }
 
 

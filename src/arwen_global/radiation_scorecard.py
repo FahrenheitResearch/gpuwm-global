@@ -111,6 +111,10 @@ from .water_budget import (
     region_masks,
     synthetic_grid,
 )
+from .world.refusals import refuse_on_world
+
+#: The door's name in a refusal on another world.
+RADIATION_SCORECARD_DOOR = "the radiation scorecard"
 
 CHECKPOINT_LAND_FRACTION = "surface__land_fraction"
 CHECKPOINT_SKIN = "surface__surface_temperature_k"
@@ -1316,6 +1320,20 @@ def summary_lines(result: dict) -> list[str]:
     return lines
 
 
+def run_checkpoints(run_dir) -> list[Path]:
+    """The run's checkpoints in step order, without the long-run sidecars.
+
+    A long run writes ``<checkpoint>.longrun.npz`` beside each checkpoint
+    (arwen_global.longrun_ops.SIDECAR_SUFFIX); it matches the checkpoint
+    glob but carries no checkpoint metadata, so reading it refused the
+    whole scorecard ("checkpoint ... has no metadata").
+    """
+    from .longrun_ops import SIDECAR_SUFFIX
+
+    return sorted(path for path in Path(run_dir).glob("arwen_global_step*.npz")
+                  if not path.name.endswith(SIDECAR_SUFFIX))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--run-dir", type=Path)
@@ -1341,6 +1359,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.run_dir is None:
         parser.error("--run-dir is required unless --calibrate")
     receipt = read_receipt(args.run_dir)
+    refuse_on_world(receipt, door=RADIATION_SCORECARD_DOOR, family="scorecard",
+                    source=f"run receipt in {args.run_dir}")
     # The reference decode first: it is cheap beside the checkpoint reads
     # and a refusal there is recorded per product, never fatal.
     reference_frames = None
@@ -1358,7 +1378,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"reference at step {step}: {frame.get('product')} valid {frame.get('valid_time')}", flush=True)
     reader = RadiationReader.from_receipt(receipt, optics=not args.no_optics)
     reader._truncation = int(receipt["config"]["truncation"])
-    paths = sorted(Path(args.run_dir).glob("arwen_global_step*.npz"))
+    paths = run_checkpoints(args.run_dir)
     if args.max_checkpoints:
         paths = paths[: args.max_checkpoints]
     samples = []

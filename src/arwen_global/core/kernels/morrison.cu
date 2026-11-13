@@ -14,6 +14,13 @@
 // lines 4066-4149.  gpuwm.verify.npref.np_morrison_column is the float64
 // mirror.  Mixing ratios are kg/kg dry air; moments kg-1; bottom fluxes are
 // kg m-2, numerically millimetres of precipitation.
+//
+// DECLARED DEPARTURE, compiled only under MORR_DROPLET_PLANE (native option
+// morrison_droplet_number = "land_ocean"): WRF's single NDCNST (F:276) is
+// replaced by a per-column value, the land or the ocean droplet number of
+// MPAS-Thompson's landmask prescription.  The process and finalize kernels
+// then take the column plane (m-3) and the column count; without the define
+// every reset below reads WRF's literal 250.0e6f exactly as before.
 
 #define MORR_KMAX_GENERIC 256
 #define MORR_KMAX_SHALLOW 64
@@ -116,12 +123,12 @@ __device__ __forceinline__ MorrMoments morr_bound(
         real qc, real qr, real qi, real qs, real qg, real rhoa,
         real pres, real temp,
         real* nc, real* nr, real* ni, real* ns, real* ng,
-        bool reset_cloud_number, real morr_rhog)
+        bool reset_cloud_number, real morr_rhog, real nc_fixed)
 {
     MorrMoments m;
     m.lc = m.lr = m.li = m.ls = m.lg = 0.0f;
     m.pg = 2.0f;
-    if (reset_cloud_number) *nc = 250.0e6f / rhoa;
+    if (reset_cloud_number) *nc = nc_fixed / rhoa;
     if (qc >= MQSMALL) {
         // PGAM uses WRF's separate hard-coded 287.15 reference density,
         // rebuilt from the CURRENT T3D: :1558 reads it after the small
@@ -360,6 +367,7 @@ __device__ __forceinline__ void morr_limit_cold_rain(
 __device__ __forceinline__ void morr_process_level(
         real* qv, real* qc, real* qr, real* qi, real* qs, real* qg,
         real* nc, real* nr, real* ni, real* ns, real* ng,
+        real nc_fixed,
         real* temp, real pressure, real rhoa, real dt,
         real qvs, real qvi, real xlv, real xls, real cpm,
         bool warm, real* stale_lami, real* cloud_nc_for_sedimentation,
@@ -396,7 +404,8 @@ __device__ __forceinline__ void morr_process_level(
     *pgam_rho_out = pressure / (287.15f * (*temp));
     MorrMoments m = morr_bound(*qc, *qr, *qi, *qs, *qg, rhoa,
                                 pressure, *temp,
-                                nc, nr, ni, ns, ng, true, morr_rhog);
+                                nc, nr, ni, ns, ng, true, morr_rhog,
+                                nc_fixed);
     *stale_lami = warm ? 0.0f : m.li;
     // INUM=1: DUMFNC=NC3D, without NC3DTEN, at WRF 3367-3374.
     *cloud_nc_for_sedimentation = *nc;
@@ -1045,10 +1054,19 @@ void morrison_process_levels(real* __restrict__ theta,
                              real* __restrict__ effi,
                              real* __restrict__ effs,
                              real morr_ag, real morr_bg, real morr_rhog,
-                             real dt, int has_cu_tendencies, int ncell)
+                             real dt, int has_cu_tendencies, int ncell
+#ifdef MORR_DROPLET_PLANE
+                             , const real* __restrict__ nc_plane, int ncol
+#endif
+                             )
 {
     size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= (size_t)ncell) return;
+#ifdef MORR_DROPLET_PLANE
+    real nc_fixed = nc_plane[idx % (size_t)ncol];
+#else
+    real nc_fixed = 250.0e6f;   // WRF NDCNST (F:276), cm-3 to m-3
+#endif
     real piik = pii[idx], p = pressure[idx];
     real temp = theta[idx] * piik;
     real rhoa = p / (RD * temp);
@@ -1108,7 +1126,7 @@ void morrison_process_levels(real* __restrict__ theta,
     real cloud_nc_for_sedimentation = 0.0f;
     real pgam_rho_k = 0.0f, acn_k = 0.0f;
     morr_process_level(&qvk, &qck, &qrk, &qik, &qsk, &qgk,
-                       &nck, &nrk, &nik, &nsk, &ngk,
+                       &nck, &nrk, &nik, &nsk, &ngk, nc_fixed,
                        &temp, p, rhoa, dt, qvs, qvi, xlv, xls, cpm,
                        warm, &stale_lami,
                        &cloud_nc_for_sedimentation,
@@ -1257,10 +1275,19 @@ void morrison_finalize_levels(real* __restrict__ theta,
                               real* __restrict__ effs,
                               real* __restrict__ effr,
                               real morr_rhog,
-                              int ncell)
+                              int ncell
+#ifdef MORR_DROPLET_PLANE
+                              , const real* __restrict__ nc_plane, int ncol
+#endif
+                              )
 {
     size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= (size_t)ncell) return;
+#ifdef MORR_DROPLET_PLANE
+    real nc_fixed = nc_plane[idx % (size_t)ncol];
+#else
+    real nc_fixed = 250.0e6f;   // WRF NDCNST (F:276), cm-3 to m-3
+#endif
     real temp = theta[idx] * pii[idx];
     bool ice_to_snow = ice_to_snow_scratch[idx] != 0.0f;
     real rhoa = rho_in[idx];
@@ -1322,13 +1349,14 @@ void morrison_finalize_levels(real* __restrict__ theta,
     MorrMoments m = morr_bound(qc[idx], qr[idx], qi[idx], qs[idx], qg[idx],
                                 rhoa, pressure[idx], temp,
                                 &nc[idx], &nr[idx], &ni[idx],
-                                &ns[idx], &ng[idx], false, morr_rhog);
+                                &ns[idx], &ng[idx], false, morr_rhog,
+                                nc_fixed);
     effc[idx] = qc[idx] >= MQSMALL
               ? (m.pg + 3.0f) / (2.0f * m.lc) * 1.0e6f : 25.0f;
     effr[idx] = qr[idx] >= MQSMALL ? 1.5e6f / m.lr : 25.0f;
     effi[idx] = qi[idx] >= MQSMALL ? 1.5e6f / m.li : 25.0f;
     effs[idx] = qs[idx] >= MQSMALL ? 1.5e6f / m.ls : 25.0f;
     ni[idx] = fminf(ni[idx], 0.3e6f / rhoa);
-    nc[idx] = 250.0e6f / rhoa;
+    nc[idx] = nc_fixed / rhoa;
     theta[idx] = temp / pii[idx];
 }

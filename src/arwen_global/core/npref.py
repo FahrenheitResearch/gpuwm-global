@@ -1320,16 +1320,19 @@ def _np_morrison_final_phase_cleanup(q, n, temperature, rho,
 
 
 def _np_morrison_level_moments(q, n, rhoa, temperature, pressure,
-                               *, reset_cloud=True, morr_rimed_ice=1):
+                               *, reset_cloud=True, morr_rimed_ice=1,
+                               droplet_number_m3=250.0e6):
     """Scalar PSD reconstruction used by the WRF process section.
 
     The cloud-number rebound is stateful inside a process section: INUM=1
     is imposed once, then a 1--60 um LAMC clamp alters NC3D at fixed QC
-    (WRF v4.6.1 lines 1493-1586 and 2108-2215).
+    (WRF v4.6.1 lines 1493-1586 and 2108-2215).  ``droplet_number_m3`` is
+    WRF's NDCNST in m-3; anything but 250e6 is the declared land/ocean
+    departure the kernel builds under MORR_DROPLET_PLANE.
     """
     nn = {name: max(float(value), 0.0) for name, value in n.items()}
     if reset_cloud:
-        nn["nc"] = 250.0e6 / rhoa
+        nn["nc"] = droplet_number_m3 / rhoa
     lam = {name: 0.0 for name in ("c", "r", "i", "s", "g")}
     pgam = 2.0
     if q["qc"] >= _MORR_QSMALL:
@@ -1371,7 +1374,7 @@ def _np_morrison_level_moments(q, n, rhoa, temperature, pressure,
 
 def _np_morrison_apply_level(q, n, temperature, pressure, rhoa, dt,
                              qvs, qvi, xlv, xls, cpm, warm, *,
-                             morr_rimed_ice=1):
+                             morr_rimed_ice=1, droplet_number_m3=250.0e6):
     """WRF rate-vector skeleton for one Morrison level.
 
     Rates are diagnosed from one begin-of-process snapshot, then mutated in
@@ -1412,7 +1415,7 @@ def _np_morrison_apply_level(q, n, temperature, pressure, rhoa, dt,
     pgam_rho = pressure / (287.15 * temperature)
     lam, pgam, n = _np_morrison_level_moments(
         q, n, rhoa, temperature, pressure, reset_cloud=True,
-        morr_rimed_ice=morr_rimed_ice)
+        morr_rimed_ice=morr_rimed_ice, droplet_number_m3=droplet_number_m3)
     stale_lami = 0.0 if warm else lam["i"]
     cloud_nc_for_sedimentation = n["nc"]
     r = {name: 0.0 for name in (
@@ -1984,7 +1987,7 @@ def np_morrison_column(theta, qv, qc, qr, qi, qs, qg,
                        nc, nr, ni, ns, ng, rho, pii, pressure, dz, dt,
                        rainnc=0.0, snownc=0.0, graupelnc=0.0,
                        morr_rimed_ice=1, *, qrcuten=None, qscuten=None,
-                       qicuten=None):
+                       qicuten=None, droplet_number_m3=250.0e6):
     """Float64 one-column mirror of gpuwm's WRF Morrison port.
 
     The ordering follows ``MORR_TWO_MOMENT_MICRO``: time-varying
@@ -2003,7 +2006,13 @@ def np_morrison_column(theta, qv, qc, qr, qi, qs, qg,
     ``qrcuten``/``qscuten``/``qicuten`` triplet carries raw KF mass rates;
     all three must be supplied together and seed Nr/Ns/Ni in WRF statement
     order before process calculations (F:1327-1343).
+    ``droplet_number_m3`` is the column's fixed droplet number in m-3:
+    WRF's NDCNST (250 cm-3, F:276) by default, or the land or ocean value
+    of the declared departure (the kernel's MORR_DROPLET_PLANE build).
     """
+    droplet_number_m3 = float(droplet_number_m3)
+    if not math.isfinite(droplet_number_m3) or droplet_number_m3 <= 0.0:
+        raise ValueError("droplet_number_m3 must be finite and positive")
     names = ("theta", "qv", "qc", "qr", "qi", "qs", "qg",
              "nc", "nr", "ni", "ns", "ng", "rho", "pii",
              "pressure", "dz")
@@ -2097,7 +2106,8 @@ def np_morrison_column(theta, qv, qc, qr, qi, qs, qg,
          pgam_rho[k], acn[k]) = _np_morrison_apply_level(
             qk, nk, float(t[k]), float(p[k]), float(rhoa[k]), float(dt),
             float(qvs), float(qvi), float(xlv), float(xls), float(cpm), warm,
-            morr_rimed_ice=morr_rimed_ice)
+            morr_rimed_ice=morr_rimed_ice,
+            droplet_number_m3=droplet_number_m3)
         if not warm:
             fp32 = np.finfo(np.float32).eps
             for mass in sediment_floor:
@@ -2187,7 +2197,7 @@ def np_morrison_column(theta, qv, qc, qr, qi, qs, qg,
     n = {"nc": bounded["c"], "nr": bounded["r"],
          "ni": np.minimum(bounded["i"], 0.3e6 / rhoa),
          "ns": bounded["s"], "ng": bounded["g"]}
-    n["nc"] = 250.0e6 / rhoa
+    n["nc"] = droplet_number_m3 / rhoa
 
     out = {"theta": t / a["pii"], **q, **n,
            "effc": effc, "effr": effr, "effi": effi, "effs": effs,

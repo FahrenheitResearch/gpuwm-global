@@ -283,6 +283,16 @@ SEAM: tuple[tuple[str, str], ...] = (
      "update_diagnostics, imported inside carried npref's two "
      "reference-state builders.  Nothing in this package or its suite calls "
      "them, which is where all 26 differing lines live"),
+    ("gpuwm/nvrtc_ptx_cache.py",
+     "compile_using_nvrtc, the NVRTC route carried terrain_drag compiles "
+     "gwdo_column through with -fmad=false and --ftz=false (CuPy's "
+     "RawModule would append -ftz=true).  Reached only under "
+     "orographic_drag = 'kim-gwdo'; it decides the compiled words of the "
+     "drag kernel, which is why it is pinned and not measured by symbol"),
+    ("gpuwm/kernel_compile_notice.py",
+     "observe_module_compile, the context carried terrain_drag compiles its "
+     "module inside, as the engine's own launcher does.  It prints and "
+     "times a first compile and moves no number"),
 )
 
 

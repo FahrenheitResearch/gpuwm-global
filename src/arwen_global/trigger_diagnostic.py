@@ -416,6 +416,13 @@ def measure_run(
 ) -> dict[str, object]:
     run_dir = Path(run_dir)
     receipt = cs.read_receipt_or_config(run_dir, config)
+    # Local solar time here is UTC + longitude / 15 on a 24-hour day; a run
+    # on a world with another day length is refused by name, from its
+    # receipt (or config) and from every checkpoint's world record.
+    from .world.clock import checkpoint_day_length_h, receipt_day_length_h, refuse_local_time
+
+    refuse_local_time("trigger_diagnostic", receipt_day_length_h(receipt),
+                      f"the run in {run_dir}")
     if start_utc_s is None:
         start_utc_s = cs.run_start_utc_s(receipt)
     if start_utc_s is None:
@@ -423,6 +430,8 @@ def measure_run(
     paths = sorted(Path(p) for p in (checkpoints or run_dir.glob("arwen_global_step*.npz")))
     if len(paths) < 2:
         raise ValueError(f"{len(paths)} checkpoints give no interval; at least 2 are needed")
+    for path in paths:
+        refuse_local_time("trigger_diagnostic", checkpoint_day_length_h(path), str(path))
     reader = cs.SoundingReader(receipt, omega=False)
     samples: list[IntervalSample] = []
     previous = None

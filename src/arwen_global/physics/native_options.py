@@ -1,6 +1,7 @@
 """Pure, fail-closed options for the built-in Arwen CUDA column suite."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import math
@@ -8,10 +9,41 @@ import math
 from ..core.ysu_contract import YSU_FREE_ATMOSPHERE_MIXING_LENGTHS
 
 from ..constants import NATIVE_PHYSICS_ACKNOWLEDGEMENT
+from .cloud_radiation_options import (
+    CLOUD_INHOMOGENEITY_FACTORS,
+    RADIATION_LIQUID_RADIUS_MODES,
+)
 
 
 # Option value -> the name the component order reports for the slot.
 CUMULUS_COMPONENTS = {"gf": "gf", "own": "arwen-massflux-v1", "ntiedtke": "ntiedtke"}
+
+# Morrison droplet-number modes: WRF's single NDCNST, or the declared
+# land/ocean departure (see NativePhysicsOptions.morrison_droplet_number).
+MORRISON_DROPLET_NUMBER_MODES = frozenset({"fixed", "land_ocean"})
+#: RRTMGP gas name -> (the option that overrides it, its unit as a mole
+#: fraction).  The order is the order a receipt lists them in.
+GAS_OPTIONS = {
+    "co2": ("trace_co2_ppm", 1.0e-6),
+    "ch4": ("trace_ch4_ppb", 1.0e-9),
+    "n2o": ("trace_n2o_ppb", 1.0e-9),
+}
+
+#: [world.air] key -> the option it sets (arwen_global.world.spec.Air).
+WORLD_AIR_OPTIONS = {
+    "co2_ppm": "trace_co2_ppm",
+    "ch4_ppb": "trace_ch4_ppb",
+    "n2o_ppb": "trace_n2o_ppb",
+}
+
+#: The options that leave the identity (and the normalized options) when
+#: they are None; trace_co2_ppm is not among them because it has carried
+#: its None into every config hash since it existed.
+_DATED_UNLESS_SET = ("trace_ch4_ppb", "trace_n2o_ppb")
+
+#: Open upper bound of the methane and nitrous oxide options, ppb: the
+#: world table's own bound (arwen_global.world.spec.TRACE_RANGE_PPB).
+TRACE_PPB_LIMIT = 1.0e5
 
 
 @dataclass(frozen=True)
@@ -44,6 +76,27 @@ class NativePhysicsOptions:
     # before.  Joins the identity only when "rfmip-median" is NOT chosen,
     # i.e. the new default moves the hash (it changes the arithmetic).
     ozone: str = "cam-zonal-monthly"
+    # Which year's greenhouse gases the radiation reads
+    # (physics.greenhouse_gases.GHG_YEAR_RULES), spelled in a config as
+    # [radiation] ghg_year.  "start" (default): the start time's year for
+    # the whole run, the arithmetic of every checkpoint before the option
+    # existed, so it leaves the identity.  "valid": re-selected at every
+    # radiation call from the call's valid year; joins the identity.
+    ghg_year: str = "start"
+    # The liquid effective radius the radiation reads for Morrison cloud
+    # (physics.cloud_radiation_options).  "scheme" (default): Morrison's own
+    # effc, what this package has always radiated.  "wrf_relcalc": what
+    # WRF v4.7.1's RRTMG radiates for Morrison, which it leaves out of
+    # has_reqc (module_physics_init.F:1000-1024): relcalc's 14 um over ocean
+    # and sea ice, 8 um over warm snow-free land.  Joins the identity only
+    # when not "scheme".
+    radiation_liquid_radius: str = "scheme"
+    # Unresolved in-cloud variability in the radiation.  "none" (default):
+    # homogeneous cloudy subcolumns, WRF's RRTMG.  "tiedtke1996": liquid and
+    # ice in-cloud paths times 0.7 in both solvers (Cahalan et al. 1994;
+    # Tiedtke 1996), a declared departure from WRF.  Joins the identity only
+    # when not "none".
+    radiation_cloud_inhomogeneity: str = "none"
     surface_layer: str = "sfclay"
     sfclay_option: int = 1
     # Land thermal-roughness closure of the surface layer (sfclay.cu
@@ -194,6 +247,25 @@ class NativePhysicsOptions:
     cumulus_column_chunk: int = 131_072
     microphysics: str = "morrison"
     morr_rimed_ice: int = 1
+    # Morrison's fixed cloud droplet number.  "fixed" (the default) is WRF's
+    # INUM=1 arm with its single NDCNST = 250 cm-3
+    # (module_mp_morr_two_moment.F:271-276), every result bit-identical to
+    # the port.  "land_ocean" is a DECLARED DEPARTURE from WRF's Morrison:
+    # the constant becomes one value per column, the land value on a column
+    # the model calls land (land_fraction above one half, the same split as
+    # native_runtime._xland) and the ocean value on every other column,
+    # sea ice included.  The pair defaults to MPAS-Thompson's landmask
+    # prescription (300 cm-3 land, 100 cm-3 ocean,
+    # mpas_atmphys_init_microphysics.F init_thompson_clouddroplets_forMPAS),
+    # which is the maritime/continental guidance WRF's own Thompson carries
+    # beside its Nt_c (module_mp_thompson.F:80-88, WRF 4.7.1).  The droplet
+    # number sets the cloud size distribution, so the liquid effective
+    # radius RRTMGP reads, and Khairoutdinov-Kogan autoconversion
+    # (PRC ~ N^-1.79, morrison.cu:413-414); both move.  See
+    # docs/morrison-droplet-number.md.
+    morrison_droplet_number: str = "fixed"
+    morrison_droplet_number_land_cm3: float = 300.0
+    morrison_droplet_number_ocean_cm3: float = 100.0
     dx_m: float = 50_000.0
     # Measured and reported, never enforced: the suite writes
     # native_water_residual_exceeds_tolerance into its diagnostics and no gate
@@ -214,12 +286,41 @@ class NativePhysicsOptions:
     read_lai_2d: bool = True
     noah_thermal_conductivity_option: int = 1
     wrf_rrtmg_compatibility: str = "none"
-    # CO2 override in ppm.  None (the default) radiates the present-day
-    # CO2, CH4 and N2O of the run's valid year from the dated NOAA GML
-    # table in physics/greenhouse_gases.py; a number overrides CO2 alone,
-    # for an arm that must hold a declared concentration.  Until 2026-10-05
-    # the default was a fixed 369.55 ppm, the air of about 2000.
+    # THE WELL-MIXED GREENHOUSE GASES the radiation (RRTMGP) reads, one
+    # override per gas.  None (the default for each) radiates that gas's
+    # present-day mole fraction for the run's valid year from the dated
+    # NOAA GML table in physics/greenhouse_gases.py; a number overrides that
+    # gas alone, on every column and level, for the whole run.  Until
+    # 2026-10-05 the CO2 default was a fixed 369.55 ppm, the air of about
+    # 2000.
+    #
+    # trace_co2_ppm: CO2 in ppm (micromoles per mole of dry air), finite
+    # and inside (0, 1e4).  trace_ch4_ppb and trace_n2o_ppb: methane and
+    # nitrous oxide in ppb (nanomoles per mole), finite and inside
+    # (0, 1e5).  The bounds are open because RRTMGP refuses a mole
+    # fraction of exactly zero (core.rrtmgp.trace_gases).  What the bounds
+    # do NOT say: this radiation's response to a gas is checked only
+    # across the RFMIP clear-sky experiments (the CO2 runs reach eight
+    # times the pre-industrial 284.3 ppm, 2,274 ppm), by
+    # tests/test_arwen_global_world_air_device.py against the published
+    # RTE-RRTMGP reference fluxes of those experiments.  A CO2 above eight
+    # times pre-industrial is accepted and radiated, and is UNVALIDATED.
+    #
+    # Identity: a gas left on its dated table (None) is not in the
+    # identity, so every checkpoint written before the methane and nitrous
+    # oxide options existed keeps its hash; a number joins it (a different
+    # trajectory).  CO2 has been in the identity since it was an option,
+    # None included, and stays there as it was.
+    #
+    # A WORLD sets the same three gases from its [world.air] table
+    # (co2_ppm, ch4_ppb, n2o_ppb, each "dated" or a number):
+    # :func:`world_air_options` writes them onto these options when the
+    # physics is built, never into the config, so the world's air joins the
+    # config hash once, through the world's own identity.  A gas named in
+    # both places is refused ("name it in one place").
     trace_co2_ppm: float | None = None
+    trace_ch4_ppb: float | None = None
+    trace_n2o_ppb: float | None = None
     # Stratospheric cold-top floor: OFF by default (retired 2026-10-05),
     # kept as an option for research arms.  It was installed after the 384 h
     # native baseline arm (T255, GDAS 2026-09-01 00Z) died at hour 83.4
@@ -246,6 +347,52 @@ class NativePhysicsOptions:
     stratospheric_floor_k: float = 0.0
     stratospheric_floor_pa: float = 500.0
     stratospheric_relaxation_time_s: float = 1_800.0
+    # The open-water runaway watch (water.OPEN_WATER_EVAPORATION_NAME): the
+    # most one open-water column may evaporate in a 24 h block of model
+    # time before the run is refused, and whether it is refused or only
+    # reported.  60 kg/m2 a day (a mean latent flux of about 1,700 W/m2) is
+    # a provisional engineering value until a long run has measured the
+    # distribution.  Both are refusal settings, not arithmetic: outside the
+    # identity at every value, so a run that only reports shares its
+    # lineage with the one that refuses.
+    open_water_evaporation_ceiling_kg_m2_day: float = 60.0
+    open_water_evaporation_refusal: bool = True
+    # Whether the forecast loop books open water to the exchange account
+    # (runner.books_open_water_exchange).  False keeps the finite surface
+    # reservoir on open water, the bookkeeping of 0.1.8 and every earlier
+    # release, so with it off a shipped config writes the checkpoint
+    # arrays 0.1.8 wrote; the runaway watch above runs only with
+    # the account.  No native kernel reads the reservoir, so the atmosphere
+    # is the same either way: bookkeeping, outside the identity, and a run
+    # with it off refuses a state that carries an account
+    # (dynamics.ensure_exchange_account).
+    open_water_exchange: bool = True
+    # Noah's snow age (WRF SNOTIME) carried between land calls, so a pack
+    # ages and its albedo decays as ALCALC intends (noah.cu:154-173).  Off
+    # rebuilds the age as zeros on every call: the arithmetic of 0.1.5 and
+    # every earlier release, where each pack sat at its fresh-snow albedo.
+    # It changes the numbers of every run with snow, so on it joins the
+    # identity: a config that sets it hashes apart from one that does not,
+    # and a checkpoint written under the zero-age arithmetic is refused
+    # rather than resumed with different physics.  Off is the default, so
+    # a shipped forecast keeps 0.1.8's hash and arithmetic; a long run sets
+    # it (docs/ARWEN_GLOBAL_LONG_RUNS.md), because a pack that lies for
+    # weeks should darken.
+    snow_ageing: bool = False
+    # Orographic gravity-wave drag (arwen_global.physics.orographic_drag):
+    # "none" (the default) or "kim-gwdo", WRF's gwd_opt = 1, the KIM
+    # orographic gravity-wave drag with flow blocking (Choi and Hong 2015),
+    # carried from the engine (arwen_global.core.terrain_drag) and added to
+    # YSU's momentum tendencies from the column state YSU read, as WRF's PBL
+    # driver adds it.  It reads the sub-grid orography statistics of
+    # arwen_global.orographic_statics (gpuwm-global statics CONFIG
+    # --orographic) and the grid length dx_m above, one value for the globe.
+    # Before this option the model had no gravity-wave drag of any kind.
+    # OFF by default because nothing has measured it on this model yet: the
+    # long-run validation (plan WPG-check) decides the default.  Joins the
+    # identity only when not "none", so every earlier checkpoint keeps its
+    # hash.
+    orographic_drag: str = "none"
 
     @classmethod
     def from_mapping(cls, raw: dict[str, object]) -> "NativePhysicsOptions":
@@ -269,12 +416,26 @@ class NativePhysicsOptions:
         suite is built from.  ``from_mapping(normalized)`` rebuilds these
         options exactly; ``from_mapping(identity)`` does NOT (an option the
         identity drops comes back as its default), so nothing that runs a
-        scheme may be built from the identity."""
-        return asdict(self)
+        scheme may be built from the identity.
+
+        A methane or nitrous oxide override left at None is left out: the
+        normalized options are stored in the config and written into
+        receipts, which must read as they did before those options existed,
+        and ``from_mapping`` fills the None back in."""
+        payload = asdict(self)
+        for name in _DATED_UNLESS_SET:
+            if payload[name] is None:
+                del payload[name]
+        return payload
 
     @property
     def identity(self) -> dict[str, object]:
         payload = asdict(self)
+        # A gas on its dated table changes nothing an earlier checkpoint
+        # was written under (the options did not exist); a number does.
+        for name in _DATED_UNLESS_SET:
+            if payload[name] is None:
+                del payload[name]
         # The identity carries every normalised option and the config hash
         # (and so every checkpoint's restart admission) is built from it.
         # A scheme-scoped flag joins only under the scheme that reads it:
@@ -303,14 +464,44 @@ class NativePhysicsOptions:
             # The held planes are the arithmetic every checkpoint before
             # the option carried.
             del payload["radiation_between"]
+        if self.orographic_drag == "none":
+            # The arithmetic every checkpoint before the option carried.
+            del payload["orographic_drag"]
         if self.ozone == "rfmip-median":
             # The arithmetic every checkpoint before the option carried.
             del payload["ozone"]
+        if self.ghg_year == "start":
+            # The selection every checkpoint before the option carried.
+            del payload["ghg_year"]
+        # WRF's single droplet number is the arithmetic every checkpoint
+        # before the option carried; under it the two values are not read.
+        if self.morrison_droplet_number == "fixed":
+            del payload["morrison_droplet_number"]
+            del payload["morrison_droplet_number_land_cm3"]
+            del payload["morrison_droplet_number_ocean_cm3"]
+        # The two radiation couplings at their defaults are the call every
+        # checkpoint before the options carried.
+        if self.radiation_liquid_radius == "scheme":
+            del payload["radiation_liquid_radius"]
+        if self.radiation_cloud_inhomogeneity == "none":
+            del payload["radiation_cloud_inhomogeneity"]
         # A config that follows its analysis states no clock; the analysis
         # (initial.analysis_grib, in the identity) is what dates the run.
         if self.start_time_utc is None:
             del payload["start_time_utc"]
+        # Ageing on is a new trajectory and always joins the hash; off (the
+        # default) is the zero-age arithmetic of 0.1.8 and earlier, and
+        # leaves the hash every checkpoint written under it carries.
+        if not self.snow_ageing:
+            del payload["snow_ageing"]
+        del payload["open_water_evaporation_ceiling_kg_m2_day"]
+        del payload["open_water_evaporation_refusal"]
+        del payload["open_water_exchange"]
         return payload
+
+    @property
+    def orographic_drag_enabled(self) -> bool:
+        return self.orographic_drag != "none"
 
     @property
     def cumulus_enabled(self) -> bool:
@@ -349,27 +540,48 @@ class NativePhysicsOptions:
             raise ValueError("start_time_utc must carry an explicit UTC offset")
         return value.astimezone(timezone.utc)
 
-    def greenhouse_gas_overrides(self) -> dict[str, float]:
+    def _gas_overrides(self) -> dict[str, float]:
+        """Mole fraction of every gas whose option is set, by RRTMGP name."""
+        out: dict[str, float] = {}
+        for gas, (name, scale) in GAS_OPTIONS.items():
+            value = getattr(self, name)
+            if value is not None:
+                out[gas] = float(value) * scale
+        return out
+
+    def greenhouse_gas_overrides(self, valid: datetime | None = None
+                                 ) -> dict[str, float]:
         """The well-mixed gas mole fractions handed to RRTMGP over its
-        climatology: the dated present-day CO2, CH4 and N2O of the run's
-        valid year, with ``trace_co2_ppm`` over CO2 when it is set."""
+        climatology: the dated present-day CO2, CH4 and N2O of ``valid``'s
+        year (the start time when None), with ``trace_co2_ppm``,
+        ``trace_ch4_ppb`` and ``trace_n2o_ppb`` over their gas wherever one
+        is set."""
         from .greenhouse_gases import present_day_greenhouse_gases
 
-        gases = present_day_greenhouse_gases(self.start_time)
-        if self.trace_co2_ppm is not None:
-            gases["co2"] = float(self.trace_co2_ppm) * 1.0e-6
+        gases = present_day_greenhouse_gases(
+            self.start_time if valid is None else valid)
+        gases.update(self._gas_overrides())
         return gases
 
-    def greenhouse_gas_record(self) -> dict[str, object]:
+    def greenhouse_gas_record(self, duration_s: float | None = None
+                              ) -> dict[str, object]:
         """The receipt's record of what the radiation ran with, its source
-        named."""
+        named, and which gases an option overrode.  Under
+        ``ghg_year = "valid"`` it needs the run's ``duration_s`` for the
+        year-by-year schedule."""
+        from datetime import timedelta
+
         from .greenhouse_gases import greenhouse_gas_record
 
-        overrides = (
-            None if self.trace_co2_ppm is None
-            else {"co2": float(self.trace_co2_ppm) * 1.0e-6}
-        )
-        return greenhouse_gas_record(self.start_time, overrides)
+        overrides = self._gas_overrides() or None
+        end = None
+        if self.ghg_year == "valid":
+            if duration_s is None:
+                raise ValueError(
+                    "the ghg_year = \"valid\" record needs the run's duration")
+            end = self.start_time + timedelta(seconds=float(duration_s))
+        return greenhouse_gas_record(
+            self.start_time, overrides, rule=self.ghg_year, end=end)
 
     def validate(self) -> None:
         if self.acknowledgement != NATIVE_PHYSICS_ACKNOWLEDGEMENT:
@@ -407,15 +619,37 @@ class NativePhysicsOptions:
             raise ValueError("ntiedtke_tiedtke_closure must be true or false")
         if not isinstance(self.gf_updraft_only_when_downdraft_dry, bool):
             raise ValueError("gf_updraft_only_when_downdraft_dry must be true or false")
+        if not isinstance(self.snow_ageing, bool):
+            raise ValueError("snow_ageing must be true or false")
         if not isinstance(self.gf_resolved_convergence_closure, bool):
             raise ValueError("gf_resolved_convergence_closure must be true or false")
+        if self.orographic_drag not in {"none", "kim-gwdo"}:
+            raise ValueError(
+                "orographic_drag must be 'none' or 'kim-gwdo' (WRF gwd_opt = 1, "
+                "arwen_global/core/kernels/terrain_drag.cu), got "
+                f"{self.orographic_drag!r}")
         if self.ozone not in {"cam-zonal-monthly", "rfmip-median"}:
             raise ValueError("ozone must be 'cam-zonal-monthly' or 'rfmip-median'")
         from .radiation_between import validate_mode
 
         validate_mode(self.radiation_between)
+        if self.ghg_year not in {"start", "valid"}:
+            raise ValueError(
+                f"ghg_year must be 'start' or 'valid', got {self.ghg_year!r}")
         if self.radiation_validation_mode not in {"fused", "full"}:
             raise ValueError("radiation_validation_mode must be 'fused' or 'full'")
+        if self.radiation_liquid_radius not in RADIATION_LIQUID_RADIUS_MODES:
+            raise ValueError(
+                "radiation_liquid_radius must be one of "
+                f"{sorted(RADIATION_LIQUID_RADIUS_MODES)}, got "
+                f"{self.radiation_liquid_radius!r}"
+            )
+        if self.radiation_cloud_inhomogeneity not in CLOUD_INHOMOGENEITY_FACTORS:
+            raise ValueError(
+                "radiation_cloud_inhomogeneity must be one of "
+                f"{sorted(CLOUD_INHOMOGENEITY_FACTORS)}, got "
+                f"{self.radiation_cloud_inhomogeneity!r}"
+            )
         if self.sfclay_option not in {1, 91}:
             raise ValueError("sfclay_option must be 1 or 91")
         if self.sfclay_iz0tlnd not in {0, 1, 2, 3} or isinstance(self.sfclay_iz0tlnd, bool):
@@ -435,6 +669,22 @@ class NativePhysicsOptions:
             )
         if self.morr_rimed_ice not in {0, 1}:
             raise ValueError("morr_rimed_ice must be 0 or 1")
+        if self.morrison_droplet_number not in MORRISON_DROPLET_NUMBER_MODES:
+            raise ValueError(
+                "morrison_droplet_number must be one of "
+                f"{sorted(MORRISON_DROPLET_NUMBER_MODES)}, got "
+                f"{self.morrison_droplet_number!r}"
+            )
+        for name in ("morrison_droplet_number_land_cm3",
+                     "morrison_droplet_number_ocean_cm3"):
+            raw = getattr(self, name)
+            # Morrison's own droplet bounds are a 1-60 um mean diameter
+            # clamp, not a number range; 1 to 2000 cm-3 spans every
+            # published cloud regime (Thompson's Nt_c_max is 1999 cm-3).
+            if (isinstance(raw, bool) or not isinstance(raw, (int, float))
+                    or not math.isfinite(float(raw))
+                    or not 1.0 <= float(raw) <= 2000.0):
+                raise ValueError(f"{name} must be a number in [1, 2000] cm-3")
         if self.noah_thermal_conductivity_option not in {1, 2}:
             raise ValueError("noah_thermal_conductivity_option must be 1 or 2")
         if self.wrf_rrtmg_compatibility not in {"none", "wrf-v4.6.1-v1", "wrf-v4.6.1-v2"}:
@@ -459,6 +709,18 @@ class NativePhysicsOptions:
                 "trace_co2_ppm must be None (the dated present-day table) "
                 "or a finite concentration in (0, 1e4) ppm"
             )
+        for name in ("trace_ch4_ppb", "trace_n2o_ppb"):
+            raw = getattr(self, name)
+            if raw is None:
+                continue
+            if (isinstance(raw, bool) or not isinstance(raw, (int, float))
+                    or not math.isfinite(float(raw))
+                    or not 0.0 < float(raw) < TRACE_PPB_LIMIT):
+                raise ValueError(
+                    f"{name} must be None (the dated present-day table) or "
+                    f"a finite concentration in (0, {TRACE_PPB_LIMIT:g}) "
+                    f"ppb, got {raw!r}"
+                )
         if self.radiation_interval_s <= 0.0 or self.land_surface_interval_s <= 0.0:
             raise ValueError("native physics intervals must be positive")
         if self.stratospheric_floor_pa <= 0.0:
@@ -497,6 +759,77 @@ class NativePhysicsOptions:
         for name in ("use_monthly_albedo", "read_lai_2d"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} must be true or false")
+        ceiling = self.open_water_evaporation_ceiling_kg_m2_day
+        if (isinstance(ceiling, bool) or not isinstance(ceiling, (int, float))
+                or not math.isfinite(float(ceiling)) or float(ceiling) <= 0.0):
+            raise ValueError(
+                "open_water_evaporation_ceiling_kg_m2_day must be a finite "
+                "positive kg/m2 per 24 h; open_water_evaporation_refusal = "
+                "false reports the watch without refusing")
+        if not isinstance(self.open_water_evaporation_refusal, bool):
+            raise ValueError("open_water_evaporation_refusal must be true or false")
+        if not isinstance(self.open_water_exchange, bool):
+            raise ValueError("open_water_exchange must be true or false")
 
 
-__all__ = ["CUMULUS_COMPONENTS", "NativePhysicsOptions"]
+def world_air_options(options: Mapping[str, object], world) -> dict[str, object]:
+    """The native adapter options a run on ``world`` radiates with.
+
+    ``options`` is the config's ``[physics] native_adapter_options`` (raw
+    or normalized); ``world`` its ``cfg.world`` (or None).  For Earth, for
+    None and for a world whose air is Earth's, the result is a plain copy of
+    ``options``: no world code changes an Earth run.  Otherwise each gas
+    the world's ``[world.air]`` names as a number (co2_ppm, ch4_ppb,
+    n2o_ppb) is written onto its option (trace_co2_ppm, trace_ch4_ppb,
+    trace_n2o_ppb); a gas left "dated" keeps the option's own value.
+
+    Refused by name: a gas the world sets that the options also set (the
+    config reader refuses the CO2 pair at load; this is the same rule at the
+    point the physics is built, for every gas).
+
+    The result is NOT for the config: the world joins the config hash
+    through its own identity, and writing its gases into the stored options
+    as well would count them twice and make a config written back out from
+    them carry the same gas in two places."""
+    out = dict(options)
+    if world is None or world.is_earth or not world.changes_air:
+        return out
+    for key, name in WORLD_AIR_OPTIONS.items():
+        value = getattr(world.air, key)
+        if isinstance(value, str):
+            # "dated": the option (None, or an arm's own number) stands.
+            continue
+        if out.get(name) is not None:
+            raise ValueError(
+                f"world.air.{key} and [physics] native_adapter_options "
+                f"{name} both set the {key.split('_')[0].upper()}: name it "
+                "in one place")
+        out[name] = float(value)
+    return out
+
+
+def world_air_physics_refusal(world, physics_mode: str) -> str | None:
+    """Why ``world``'s air cannot be radiated under ``physics_mode``, or
+    None.  Only the native suite's RRTMGP reads trace gases; the reference
+    suite's gray radiation has no CO2, methane or nitrous oxide in it, and
+    physics "none" has no radiation at all, so a changed air there would be
+    a label on an unchanged run."""
+    if world is None or world.is_earth or not world.changes_air:
+        return None
+    if physics_mode == "arwen-native":
+        return None
+    gases = ", ".join(
+        f"world.{name}" for name in world.changed_settings()
+        if name.startswith("air."))
+    return (
+        f"world {world.label!r} changes its air ({gases}), "
+        f"and physics.mode = {physics_mode!r} radiates no trace gas: only "
+        "the native suite's RRTMGP reads CO2, methane and nitrous oxide, so "
+        "set physics.mode = \"arwen-native\" or leave [world.air] dated")
+
+
+__all__ = [
+    "CUMULUS_COMPONENTS", "GAS_OPTIONS", "NativePhysicsOptions",
+    "TRACE_PPB_LIMIT", "WORLD_AIR_OPTIONS", "world_air_options",
+    "world_air_physics_refusal",
+]

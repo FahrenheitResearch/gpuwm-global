@@ -88,6 +88,7 @@ from .runner import (
     _update_trackers,
     adopt_checkpoint_clock,
     build_model_and_cold_state,
+    carried_physics_arrays,
     build_transform,
     run_gates,
     vertical_grid_receipt,
@@ -96,6 +97,32 @@ from .runner import (
 ANALYSIS_PREFIX = "arwen_global_analysis_step"
 REPORT_PREFIX = "assimilation-report-step"
 DEFAULT_INTERVAL_S = 3600.0
+#: The door's name in a refusal on another world.
+CYCLE_DOOR = "cycle (forecast and assimilation in one process)"
+
+
+def refuse_cycle_on_world(cfg, restart=None, *, door: str = CYCLE_DOOR) -> None:
+    """Refuse an assimilating door on another world, by name, before any
+    work: the config's world first, then the world the ``restart``
+    checkpoint (if any) was integrated on, read from its header alone.  An
+    Earth config and an Earth checkpoint carry no world record and pass
+    with nothing else read (:mod:`arwen_global.world.refusals`)."""
+    from .world.refusals import refuse_on_world
+
+    refuse_on_world(getattr(cfg, "world", None), door=door,
+                    family="assimilation",
+                    source=f"config {getattr(cfg, 'name', '')!r}")
+    if restart is not None and Path(restart).is_file():
+        from .checkpoint import read_checkpoint_header
+
+        try:
+            header = read_checkpoint_header(restart)
+        except Exception:
+            # Not a readable checkpoint: the door's own reader refuses it
+            # with its own words later; this check has nothing to say.
+            return
+        refuse_on_world(header, door=door, family="assimilation",
+                        source=f"checkpoint {restart}")
 
 # What the door does when a cycle's gate of record fails: the background
 # is carried forward unchanged and the failure is recorded.  Applying an
@@ -309,7 +336,12 @@ def cycle(
     every decoded row whose ``received_time`` lies after it and counts the
     rows whose receipt time nobody recorded (amendment F, row by row
     through the observation streams module).  Returns the receipt, the
-    run's with a ``cycle`` record."""
+    run's with a ``cycle`` record.
+
+    Refused by name on another world (:data:`CYCLE_DOOR`), before the card
+    is touched: the config's world, and the world of the ``restart``
+    checkpoint read from its header."""
+    refuse_cycle_on_world(cfg, restart, door=CYCLE_DOOR)
     # Same order as the forecast door: the allocator first, so the slab's
     # arena is the first thing on the card, then the peak hook on top of it.
     allocator = select_device_allocator(
@@ -475,7 +507,9 @@ def _cycle_tracked(
     if restart is None:
         state = cold
     else:
-        state = state_from_checkpoint(restart_metadata, restart_arrays, backend)
+        state = state_from_checkpoint(
+            restart_metadata, restart_arrays, backend,
+            carried_physics_arrays=carried_physics_arrays(cfg))
         adopt_checkpoint_clock(model, state, f"restart checkpoint {restart}")
         trackers = normalize_trackers(restart_metadata["run_trackers"])
         if state.time_s >= until_s - 1.0e-9:

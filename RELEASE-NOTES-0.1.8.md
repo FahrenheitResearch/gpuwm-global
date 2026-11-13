@@ -58,7 +58,7 @@ Experimental, each off unless named. A run that names none of them is
 
 - **Two coarse grids**, `arwen_global_gdas_t63_native_sl_si_24h` and
   `arwen_global_gdas_t127_native_sl_si_24h`: the T255 day of record with
-  its truncation and grid spacing changed and nothing else. 57 experiments
+  its truncation and grid spacing changed and nothing else. Fifty-seven experiments
   now ship. Neither has been scored against an analysis.
 - **Single-column cases**, `tools/arwen_global_scm_cases.py`: the native
   physics suite, as a forecast calls it, on DYCOMS-II RF01 and six

@@ -95,6 +95,7 @@ DEVICE_WORK: dict[str, str] = {
     "ntiedtke.cu": "wrf",
     "sfclay.cu": "wrf",
     "ysu.cu": "wrf",
+    "terrain_drag.cu": "wrf",
     "common.cuh": "own",
     "ysu_validation.cu": "own",
     "rrtmgp_validation.cu": "own",

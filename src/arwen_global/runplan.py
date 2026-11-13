@@ -437,7 +437,7 @@ def _config_reference(value: object, base: Path, label: str) -> Path:
     """A plan's ``config.path``: a file, or the name of a shipped experiment.
 
     The shipped-name spelling is here because it is the one a client can
-    actually offer in a picker: ``gpuwm-global configs`` lists 55 experiments
+    actually offer in a picker: ``gpuwm-global configs`` lists the experiments
     that travel inside the wheel, and a client that could only name a file
     would have to unpack one first.  A path that exists always wins, on the
     package's own rule, so a reader who edits a copy runs their copy.

@@ -21,9 +21,42 @@ import cupy as cp
 
 from gpuwm.config import RunConfig
 from gpuwm.core import constants as c
-from arwen_global.core.kernels import get_kernel
+from arwen_global.core.kernels import get_kernel, get_kernel_int_defines
 from gpuwm.core.morrison_constants import rimed_ice_constants
 from gpuwm.core.state import DTYPE, DomainState
+
+#: The integer tier that compiles morrison.cu's per-column droplet number.
+_DROPLET_PLANE_TIER = (("MORR_DROPLET_PLANE", 1),)
+
+
+def _droplet_plane_kernels(plane, surface_shape, sediment_name):
+    """The MORR_DROPLET_PLANE build of the three stages, as launchers.
+
+    The process and finalize stages of that build take two trailing
+    arguments, the column plane in m-3 and the column count; the returned
+    launchers append them, so the launch statements are the WRF build's.
+    The sedimentation stage reads no droplet number and is taken from the
+    same build only so one call never mixes two modules.
+    """
+    if (plane.shape != surface_shape or plane.dtype != DTYPE
+            or not plane.flags.c_contiguous):
+        raise ValueError("droplet_number_m3 must be contiguous float32 "
+                         f"with shape {surface_shape}")
+    ncol = np.int32(surface_shape[0] * surface_shape[1])
+
+    def with_plane(kernel):
+        def launch(grid, block, args):
+            return kernel(grid, block, tuple(args) + (plane, ncol))
+        return launch
+
+    tier = _DROPLET_PLANE_TIER
+    return (
+        with_plane(get_kernel_int_defines(
+            "morrison", "morrison_process_levels", tier)),
+        get_kernel_int_defines("morrison", sediment_name, tier),
+        with_plane(get_kernel_int_defines(
+            "morrison", "morrison_finalize_levels", tier)),
+    )
 
 _CELL_TPB = 64
 _COLUMN_TPB = 32
@@ -38,6 +71,7 @@ def launch_morrison(theta, qv, qc, qr, qi, qs, qg,
                     graupelnc, graupelncv, sr, dt: float,
                     *, effc=None, effr=None, effi=None, effs=None,
                     qrcuten=None, qscuten=None, qicuten=None,
+                    droplet_number_m3=None,
                     morr_rimed_ice: int = 1,
                     _rhoa_scratch=None, _ice_to_snow_scratch=None,
                     _pgam_rho_scratch=None, _acn_scratch=None) -> None:
@@ -61,6 +95,11 @@ def launch_morrison(theta, qv, qc, qr, qi, qs, qg,
     ``qrcuten``/``qscuten``/``qicuten`` are the optional all-or-none raw KF
     mass rates used by WRF to seed rain/snow/ice number moments before process
     calculations (module_mp_morr_two_moment.F:1327-1343).
+    ``droplet_number_m3`` is a DECLARED DEPARTURE from WRF: None (the
+    default) keeps WRF's single NDCNST of 250 cm-3 (F:276) and the kernels
+    this launcher has always compiled; a contiguous float32 ``(ny, nx)``
+    plane in m-3 replaces it per column, through the MORR_DROPLET_PLANE
+    build of the same source.
     """
     shape = theta.shape
     if len(shape) != 3:
@@ -155,11 +194,15 @@ def launch_morrison(theta, qv, qc, qr, qi, qs, qg,
     ncol = ny * nx
     cell_blocks = (ncell + _CELL_TPB - 1) // _CELL_TPB
     column_blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
-    process = get_kernel("morrison", "morrison_process_levels")
     sediment_name = ("morrison_sediment_64" if nz <= _SHALLOW_KMAX
                      else "morrison_sediment_256")
-    sediment = get_kernel("morrison", sediment_name)
-    finalize = get_kernel("morrison", "morrison_finalize_levels")
+    if droplet_number_m3 is None:
+        process = get_kernel("morrison", "morrison_process_levels")
+        sediment = get_kernel("morrison", sediment_name)
+        finalize = get_kernel("morrison", "morrison_finalize_levels")
+    else:
+        process, sediment, finalize = _droplet_plane_kernels(
+            droplet_number_m3, surface_shape, sediment_name)
 
     process((cell_blocks,), (_CELL_TPB,),
             (theta, qv, qc, qr, qi, qs, qg, nc, nr, ni, ns, ng,

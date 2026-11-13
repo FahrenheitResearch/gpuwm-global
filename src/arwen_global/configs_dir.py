@@ -1,8 +1,9 @@
 """The experiment TOMLs that ship inside the wheel, and how a name resolves.
 
-Fifty-seven configurations travel with this package: the fifty-four
-``arwen_global_*`` experiments and the three ``global_spectral_*`` dry-core
-cases.  The count is stated here and nowhere else that a reader meets it;
+Fifty-nine configurations travel with this package: the fifty-six
+``arwen_global_*`` experiments (two of them, ``arwen_global_world_*``, carry
+a ``[world]`` table and run on another planet) and the three
+``global_spectral_*`` dry-core cases.  The count is stated here and nowhere else that a reader meets it;
 `gpuwm-global doctor` and `gpuwm-global configs` read the directory.  Before the carve they lived in a repository directory, so every
 command in every document began with a relative path into a checkout the
 reader did not have.

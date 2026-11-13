@@ -1,0 +1,70 @@
+{
+  "schema": "gpuwm.arwen-global-surface-climatology-sources/v1",
+  "about": "Rows an undated monthly surface climatology is built from (gpuwm-global climatology fetch / build). A new product is a new row (file names, routes, byte count and SHA-256, the variable and its units), never a new code path. Every file is verified by its byte count and SHA-256 before it is installed and again before it is decoded; a file with other bytes is refused, whatever its name. No route needs credentials.",
+  "rows": [
+    {
+      "id": "oisst-v21-mon-ltm-1991-2020",
+      "default": true,
+      "description": "NOAA OISST v2.1 (0.25 degree, daily analyses) as the PSL monthly long-term means over 1991-2020: sea surface temperature and sea-ice concentration, January to December.",
+      "period": "1991-01-01 .. 2020-12-31",
+      "licence": "NOAA data, a US Government work with no restriction on use; PSL asks for the acknowledgement 'NOAA OI SST V2 High Resolution Dataset data provided by the NOAA PSL, Boulder, Colorado, USA, from their website at https://psl.noaa.gov'.",
+      "citation": "Huang, B., C. Liu, V. Banzon, E. Freeman, G. Graham, B. Hankins, T. Smith and H.-M. Zhang, 2021: Improvements of the Daily Optimum Interpolation Sea Surface Temperature (DOISST) Version 2.1, J. Climate, https://doi.org/10.1175/JCLI-D-20-0166.1 (the reference the files' own comment attribute gives).",
+      "pins_measured": "2026-11-12 UTC: each file downloaded twice from the route below, the same bytes both times; PSL's THREDDS fileServer route was tried the same hour and cut both transfers short, so it is not listed.",
+      "files": [
+        {
+          "name": "sst.mon.ltm.1991-2020.nc",
+          "plane": "sst_k",
+          "urls": ["https://downloads.psl.noaa.gov/Datasets/noaa.oisst.v2.highres/sst.mon.ltm.1991-2020.nc"],
+          "bytes": 45945542,
+          "sha256": "5bcb7c974b5e440466d477d209b02fa538a41f173cebe9611ab6e729c130c346",
+          "variable": "sst",
+          "latitude": "lat",
+          "longitude": "lon",
+          "months": 12,
+          "units": "degC",
+          "water": "finite"
+        },
+        {
+          "name": "icec.mon.ltm.1991-2020.nc",
+          "plane": "sea_ice_fraction",
+          "urls": ["https://downloads.psl.noaa.gov/Datasets/noaa.oisst.v2.highres/icec.mon.ltm.1991-2020.nc"],
+          "bytes": 31003804,
+          "sha256": "9bf38abadd9dc1bef8cfb066385a388eab3241685f5ac465ab105795c5754731",
+          "variable": "icec",
+          "latitude": "lat",
+          "longitude": "lon",
+          "months": 12,
+          "units": "fraction",
+          "units_note": "the file's units attribute says 'percent', but its valid_range is [0, 1] and its largest value is 1.0: the values are a fraction, and a decoded value above 1 is refused",
+          "water": "sst_k",
+          "fill_on_water": 0.0,
+          "fill_note": "the ice file is missing wherever no year of the period had ice; on the SST file's water points that is no ice, so it reads 0"
+        }
+      ]
+    },
+    {
+      "id": "woa18-a5b7-mld",
+      "default": false,
+      "description": "NOAA World Ocean Atlas 2018 monthly mixed-layer depth, 0.25 degree, 2005-2017, density increment 0.125 kg m-3 from 10 m (M_an, the objectively analysed mean). Not a default row: fetched and built with --with-mld.",
+      "period": "2005 .. 2017",
+      "licence": "NOAA data, public domain: https://www.ncei.noaa.gov/sites/default/files/2023-12/NCEI%20PD-10-2-02%20-%20Open%20Data%20Policy%20Signed.pdf",
+      "citation": "Locarnini et al. 2018, NOAA Atlas NESDIS 81; Zweng et al. 2018, NOAA Atlas NESDIS 82",
+      "code_citation": "the routes, byte counts and SHA-256 are copied from the regional engine's gpuwm/ocean/mixed_layer/climatology.py (gpuwm 2.9.13, lines 17-35 and 49-62); that module is not imported",
+      "engine_cache": "ocean",
+      "files": [
+        {"name": "woa18_A5B7_M0201_04.nc", "plane": "mixed_layer_depth_m", "month": 1, "bytes": 7059931, "sha256": "f0824a1a5aa63617bc8fe138296be389e712dae2bd23e6fdbff8a6feafee2a69", "urls": ["https://www.ncei.noaa.gov/data/oceans/woa/WOA18/DATA/mld/netcdf/A5B7/0.25/woa18_A5B7_M0201_04.nc", "https://www.ncei.noaa.gov/thredds-ocean/fileServer/ncei/woa/mld/A5B7/0.25/woa18_A5B7_M0201_04.nc"], "variable": "M_an", "latitude": "lat", "longitude": "lon", "units": "m", "water": "open-range", "valid_open_range": [0.0, 11000.0]},
+        {"name": "woa18_A5B7_M0202_04.nc", "plane": "mixed_layer_depth_m", "month": 2, "bytes": 7001993, "sha256": "88045cf16487c2a133156cddf86bac53726f50e55d98d0c0211897121cad6102", "urls": ["https://www.ncei.noaa.gov/data/oceans/woa/WOA18/DATA/mld/netcdf/A5B7/0.25/woa18_A5B7_M0202_04.nc", "https://www.ncei.noaa.gov/thredds-ocean/fileServer/ncei/woa/mld/A5B7/0.25/woa18_A5B7_M0202_04.nc"], "variable": "M_an", "latitude": "lat", "longitude": "lon", "units": "m", "water": "open-range", "valid_open_range": [0.0, 11000.0]},
+        {"name": "woa18_A5B7_M0203_04.nc", "plane": "mixed_layer_depth_m", "month": 3, "bytes": 7077588, "sha256": "6d96f72a226cfbc72cdce47582dd70815670734685c3e4204e1152181c074271", "urls": ["https://www.ncei.noaa.gov/data/oceans/woa/WOA18/DATA/mld/netcdf/A5B7/0.25/woa18_A5B7_M0203_04.nc", "https://www.ncei.noaa.gov/thredds-ocean/fileServer/ncei/woa/mld/A5B7/0.25/woa18_A5B7_M0203_04.nc"], "variable": "M_an", "latitude": "lat", "longitude": "lon", "units": "m", "water": "open-range", "valid_open_range": [0.0, 11000.0]},
+        {"name": "woa18_A5B7_M0204_04.nc", "plane": "mixed_layer_depth_m", "month": 4, "bytes": 7080799, "sha256": "22308a2ecc9f5ac70effe6039eeac8c8fa8da79f67ca6d6215811ac1da3659ec", "urls": ["https://www.ncei.noaa.gov/data/oceans/woa/WOA18/DATA/mld/netcdf/A5B7/0.25/woa18_A5B7_M0204_04.nc", "https://www.ncei.noaa.gov/thredds-ocean/fileServer/ncei/woa/mld/A5B7/0.25/woa18_A5B7_M0204_04.nc"], "variable": "M_an", "latitude": "lat", "longitude": "lon", "units": "m", "water": "open-range", "valid_open_range": [0.0, 11000.0]},
+        {"name": "woa18_A5B7_M0205_04.nc", "plane": "mixed_layer_depth_m", "month": 5, "bytes": 7135206, "sha256": "0e6a0418f810b1e3efee39a0b11d9ff1916626a3c80f04b599654c73449c943f", "urls": ["https://www.ncei.noaa.gov/data/oceans/woa/WOA18/DATA/mld/netcdf/A5B7/0.25/woa18_A5B7_M0205_04.nc", "https://www.ncei.noaa.gov/thredds-ocean/fileServer/ncei/woa/mld/A5B7/0.25/woa18_A5B7_M0205_04.nc"], "variable": "M_an", "latitude": "lat", "longitude": "lon", "units": "m", "water": "open-range", "valid_open_range": [0.0, 11000.0]},
+        {"name": "woa18_A5B7_M0206_04.nc", "plane": "mixed_layer_depth_m", "month": 6, "bytes": 7080737, "sha256": "85a85810357b2d49d0004527be3b9aa21dd9689c391abf03bf4a3d92f01db8ce", "urls": ["https://www.ncei.noaa.gov/data/oceans/woa/WOA18/DATA/mld/netcdf/A5B7/0.25/woa18_A5B7_M0206_04.nc", "https://www.ncei.noaa.gov/thredds-ocean/fileServer/ncei/woa/mld/A5B7/0.25/woa18_A5B7_M0206_04.nc"], "variable": "M_an", "latitude": "lat", "longitude": "lon", "units": "m", "water": "open-range", "valid_open_range": [0.0, 11000.0]},
+        {"name": "woa18_A5B7_M0207_04.nc", "plane": "mixed_layer_depth_m", "month": 7, "bytes": 7098972, "sha256": "2f722b09065698f5b226533e99822f79600caa6fc83e79464b0fac72298c3d46", "urls": ["https://www.ncei.noaa.gov/data/oceans/woa/WOA18/DATA/mld/netcdf/A5B7/0.25/woa18_A5B7_M0207_04.nc", "https://www.ncei.noaa.gov/thredds-ocean/fileServer/ncei/woa/mld/A5B7/0.25/woa18_A5B7_M0207_04.nc"], "variable": "M_an", "latitude": "lat", "longitude": "lon", "units": "m", "water": "open-range", "valid_open_range": [0.0, 11000.0]},
+        {"name": "woa18_A5B7_M0208_04.nc", "plane": "mixed_layer_depth_m", "month": 8, "bytes": 7125573, "sha256": "c17f52a8578702fd6bd0f81b64b2a8cd9799ecfaac49c93dba773b61032e1c52", "urls": ["https://www.ncei.noaa.gov/data/oceans/woa/WOA18/DATA/mld/netcdf/A5B7/0.25/woa18_A5B7_M0208_04.nc", "https://www.ncei.noaa.gov/thredds-ocean/fileServer/ncei/woa/mld/A5B7/0.25/woa18_A5B7_M0208_04.nc"], "variable": "M_an", "latitude": "lat", "longitude": "lon", "units": "m", "water": "open-range", "valid_open_range": [0.0, 11000.0]},
+        {"name": "woa18_A5B7_M0209_04.nc", "plane": "mixed_layer_depth_m", "month": 9, "bytes": 7122581, "sha256": "a622e0a31b9120625ccd456e6aa0c9f172f115d965c19138c2801da8fafc4256", "urls": ["https://www.ncei.noaa.gov/data/oceans/woa/WOA18/DATA/mld/netcdf/A5B7/0.25/woa18_A5B7_M0209_04.nc", "https://www.ncei.noaa.gov/thredds-ocean/fileServer/ncei/woa/mld/A5B7/0.25/woa18_A5B7_M0209_04.nc"], "variable": "M_an", "latitude": "lat", "longitude": "lon", "units": "m", "water": "open-range", "valid_open_range": [0.0, 11000.0]},
+        {"name": "woa18_A5B7_M0210_04.nc", "plane": "mixed_layer_depth_m", "month": 10, "bytes": 7151890, "sha256": "b4495bb60c48674d192f740fcc574a8625554b11e21008404a9379809d9ae177", "urls": ["https://www.ncei.noaa.gov/data/oceans/woa/WOA18/DATA/mld/netcdf/A5B7/0.25/woa18_A5B7_M0210_04.nc", "https://www.ncei.noaa.gov/thredds-ocean/fileServer/ncei/woa/mld/A5B7/0.25/woa18_A5B7_M0210_04.nc"], "variable": "M_an", "latitude": "lat", "longitude": "lon", "units": "m", "water": "open-range", "valid_open_range": [0.0, 11000.0]},
+        {"name": "woa18_A5B7_M0211_04.nc", "plane": "mixed_layer_depth_m", "month": 11, "bytes": 7098125, "sha256": "7799924bc67549979096d23a3acae3ff6ab4fc12d8f879bb5e227fa71d63c5e2", "urls": ["https://www.ncei.noaa.gov/data/oceans/woa/WOA18/DATA/mld/netcdf/A5B7/0.25/woa18_A5B7_M0211_04.nc", "https://www.ncei.noaa.gov/thredds-ocean/fileServer/ncei/woa/mld/A5B7/0.25/woa18_A5B7_M0211_04.nc"], "variable": "M_an", "latitude": "lat", "longitude": "lon", "units": "m", "water": "open-range", "valid_open_range": [0.0, 11000.0]},
+        {"name": "woa18_A5B7_M0212_04.nc", "plane": "mixed_layer_depth_m", "month": 12, "bytes": 7093713, "sha256": "7866f62dce3fb1d8c7567964b3408b62204c4e582e96b33e018146c381b3be31", "urls": ["https://www.ncei.noaa.gov/data/oceans/woa/WOA18/DATA/mld/netcdf/A5B7/0.25/woa18_A5B7_M0212_04.nc", "https://www.ncei.noaa.gov/thredds-ocean/fileServer/ncei/woa/mld/A5B7/0.25/woa18_A5B7_M0212_04.nc"], "variable": "M_an", "latitude": "lat", "longitude": "lon", "units": "m", "water": "open-range", "valid_open_range": [0.0, 11000.0]}
+      ]
+    }
+  ]
+}

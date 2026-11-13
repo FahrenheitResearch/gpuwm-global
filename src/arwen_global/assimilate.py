@@ -108,6 +108,25 @@ from .surface_energy import (
 # Converts a ln-pressure separation into metres for localization geometry
 # only (roughly R_d * 260 K / g, rounded); no thermodynamic quantity is
 # derived from it.
+#: The door's name in a refusal on another world
+#: (:mod:`arwen_global.world.refusals`).
+ASSIMILATE_DOOR = "assimilate (the observation analysis)"
+
+
+def _refuse_assimilation_on_world(cfg, metadata=None, *, source: str = "") -> None:
+    """Refuse an analysis on another world by name: the config's world, and
+    the world a background's metadata says it was integrated on.  Earth
+    carries no world record and passes with nothing else read."""
+    from .world.refusals import refuse_on_world
+
+    refuse_on_world(getattr(cfg, "world", None), door=ASSIMILATE_DOOR,
+                    family="assimilation",
+                    source=f"config {getattr(cfg, 'name', '')!r}")
+    if metadata is not None:
+        refuse_on_world(metadata, door=ASSIMILATE_DOOR, family="assimilation",
+                        source=source or "the background state")
+
+
 LOCALIZATION_SCALE_HEIGHT_M = 7600.0
 # Vertical influence of an aloft (aircraft) report: the ADAS/Bratseth
 # height-separation correlation model exp(-(dz / zrange)^2) with the
@@ -1709,7 +1728,12 @@ def analyse(
     the analysis is always a new state carrying its chain), the report
     without its ``analysis`` entry (the writer adds the path and hash of
     what it wrote), and the wall seconds of each phase.
+
+    Refused by name on another world (:data:`ASSIMILATE_DOOR`).
     """
+    _refuse_assimilation_on_world(
+        cfg, getattr(getattr(state, "physics_state", None), "metadata", None),
+        source="the background state's physics metadata")
     options = options or AssimilationOptions()
     clock = _Stopwatch()
     moment = _resolve_analysis_time(analysis_time, rows)
@@ -2196,7 +2220,22 @@ def assimilate(
     forecast does and is now sized by the same door, so the report says
     what the sizer chose for it and against what; without it the one door
     of the three that leaves no record of its own plan is the one that
-    used to leave no record because it never asked."""
+    used to leave no record because it never asked.
+
+    Refused by name on another world (:data:`ASSIMILATE_DOOR`) before the
+    model is built: the config's world, then the background checkpoint's,
+    read from its header."""
+    _refuse_assimilation_on_world(cfg)
+    if Path(checkpoint).is_file():
+        from .checkpoint import read_checkpoint_header
+
+        try:
+            header = read_checkpoint_header(checkpoint)
+        except Exception:
+            header = None  # the reader below refuses it in its own words
+        if header is not None:
+            _refuse_assimilation_on_world(
+                cfg, header, source=f"checkpoint {checkpoint}")
     options = options or AssimilationOptions()
     clock = _Stopwatch()
     if not obs_locations:

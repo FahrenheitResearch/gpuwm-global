@@ -31,6 +31,7 @@ from .constants import (
     SPECTRAL_FIELDS,
     WATER_SPECIES,
     DEFAULT_EULERIAN_STEP_RULE_FRACTION,
+    CONVECTIVE_RAIN_ACCUMULATOR,
 )
 from .bands import (
     BandPipeline,
@@ -49,8 +50,21 @@ from .spill import SpilledArray, resident, spilled
 from .state import ArwenGlobalState, MoistHybridState
 from .transport import GridTracerTransport
 from .vertical import HybridCoordinate
-from .water import atmospheric_water_column, total_water_column
+from .water import (
+    OCEAN_EXCHANGE_DTYPE,
+    OCEAN_EXCHANGE_NAME,
+    atmospheric_water_column,
+    exchange_columns,
+    total_water_column,
+)
 from .lnps_reference import lnps_anomaly_coefficients
+from .longrun_gates import (
+    ATMOSPHERE_ZONAL_NAMES,
+    RADIATION_ACCUMULATOR_ROWS,
+    atmosphere_band_zonal_means,
+    atmosphere_rows,
+    surface_rows,
+)
 
 
 class SynthesisMemo:
@@ -426,6 +440,14 @@ class MoistHybridModel:
     )
     mass_fixer: bool = True
     water_fixer: bool = True
+    # The open-water exchange account (water.OCEAN_EXCHANGE_NAMES).  On,
+    # the state carries the account (ensure_exchange_account) and the native
+    # suite's closure and the water fixer book open-water columns to it
+    # instead of the finite reservoir; off, the finite-reservoir bookkeeping,
+    # and a state carrying an account is refused.  The forecast loop turns
+    # it on for native physics (runner.books_open_water_exchange); the
+    # native atmosphere is the same either way.
+    open_water_exchange: bool = False
     positivity_repair: bool = True
     maximum_cfl: float = 0.75
     # [sponge] Top-of-model graded wave absorber.  This is a DYCORE
@@ -2514,6 +2536,42 @@ class MoistHybridModel:
             None if total_water_kg_m2 is None else float(total_water_kg_m2)
         )
 
+    def ensure_exchange_account(self, bundle: ArwenGlobalState) -> str | None:
+        """Give the state the open-water exchange account this model books.
+
+        Returns None when there was nothing to do (the account is there, or
+        the model runs without it) and otherwise the sentence a receipt
+        carries: the namespace had no account and was given a zero one.  A
+        zero account changes no total, so a state given one here has the
+        conservation total it had.  A model with the account switched off
+        refuses a state that carries one: its open-water columns' water
+        would be counted in an account nothing books any more.
+        """
+        arrays = bundle.physics_state.arrays
+        if not self.open_water_exchange:
+            if OCEAN_EXCHANGE_NAME in arrays:
+                raise ValueError(
+                    "the state carries an open-water exchange account "
+                    f"({OCEAN_EXCHANGE_NAME}) and this run keeps the finite "
+                    "surface reservoir on open water (the account is native "
+                    "physics bookkeeping); it was written by a run that "
+                    "booked open water to the account and cannot be continued "
+                    "on the finite reservoir"
+                )
+            return None
+        if OCEAN_EXCHANGE_NAME in arrays:
+            return None
+        like = bundle.surface.water_kg_m2
+        xp = self.transform.backend.xp
+        arrays[OCEAN_EXCHANGE_NAME] = xp.zeros(
+            tuple(like.shape), dtype=OCEAN_EXCHANGE_DTYPE)
+        return (
+            f"the state carried no {OCEAN_EXCHANGE_NAME}; it was given a zero "
+            "account at step " + str(int(bundle.step)) + ", so open water is "
+            "booked to it from here and the surface reservoir on open-water "
+            "columns keeps the value it had"
+        )
+
     def _fix_total_water(self, bundle: ArwenGlobalState):
         if not self.water_fixer:
             return bundle, 0.0
@@ -2525,12 +2583,30 @@ class MoistHybridModel:
             raise FloatingPointError("global total-water correction is non-finite")
         surface = bundle.surface.copy()
         xp = self.transform.backend.xp
+        physics_state = bundle.physics_state
+        account = physics_state.arrays.get(OCEAN_EXCHANGE_NAME)
         # The one place the step writes into a member of a COPIED surface.
         # A parked array is never mutated in place (spill.SpilledArray.copy
         # hands back the same slot, because nothing else distinguishes a
         # copy), so the correction is applied to a staged copy and the slot
         # is replaced with the result.  Same expression, same order.
-        water = resident(xp, surface.water_kg_m2) + correction
+        held = resident(xp, surface.water_kg_m2)
+        booked = None
+        if account is None:
+            water = held + correction
+        else:
+            # The open-water exchange account takes the uniform correction
+            # on ocean, lake and sea-ice columns (water.exchange_columns),
+            # the reservoir on land, so every column's total moves by the
+            # same constant as before and an open-water column can never
+            # be the one the refusal below names.  Land columns get the
+            # same expression as without the account.
+            ocean = exchange_columns(resident(xp, surface.land_fraction), xp)
+            water = xp.where(ocean, held, held + correction)
+            staged_account = resident(xp, account)
+            booked = xp.where(ocean, staged_account + correction, staged_account)
+            del ocean, staged_account
+        del held
         # A global "any" is exactly associative, so a band folds into it in
         # any order; it goes through the fold so the refusal is the globe's
         # whatever the schedule was.
@@ -2541,6 +2617,18 @@ class MoistHybridModel:
             raise FloatingPointError(
                 "global total-water repair requires more surface water than available"
             )
+        if booked is not None:
+            if isinstance(account, SpilledArray):
+                account.store(booked)
+            else:
+                from .state import PhysicsState
+
+                physics_state = PhysicsState(
+                    schema=physics_state.schema,
+                    arrays={**physics_state.arrays, OCEAN_EXCHANGE_NAME: booked},
+                    metadata=physics_state.metadata,
+                )
+            del booked
         water = xp.maximum(water, 0.0)
         if isinstance(surface.water_kg_m2, SpilledArray):
             surface.water_kg_m2.store(water)
@@ -2553,9 +2641,10 @@ class MoistHybridModel:
         # fingerprint check refuses any write into the caller's arrays --
         # so this copy was a whole second namespace (1.21 GiB at T383 L40
         # float32, measured by the allocation census) standing beside the
-        # original at every repair.
+        # original at every repair.  With the exchange account the dict is
+        # new and every other array in it is the caller's, by reference.
         return ArwenGlobalState(
-            bundle.atmosphere, surface, bundle.physics_state
+            bundle.atmosphere, surface, physics_state
         ), correction
 
     def _physics_exchange(self, bundle: ArwenGlobalState, dt_s: float):
@@ -3721,6 +3810,11 @@ class MoistHybridModel:
         return end.with_grid_tracers(self._park_tracers(tracers)), metrics
 
     def step(self, bundle: ArwenGlobalState, dt_s: float):
+        # Every caller that steps a state (the forecast loop, the cycle,
+        # the ensemble) gets the bookkeeping the model runs; the forecast
+        # loop has already done this at its start and said so in the
+        # receipt, so for it this is a dictionary lookup.
+        self.ensure_exchange_account(bundle)
         if self._target_mass_pa is None:
             self.initialize_mass_target(bundle.atmosphere)
         if self.water_fixer and self._target_total_water_kg_m2 is None:
@@ -4015,6 +4109,12 @@ class MoistHybridModel:
             xp, grid.shape, self.transform.backend.float_dtype,
             name="diagnostics_atmospheric_water", exchange=self.pipeline.exchange,
         )
+        # The long-run rows (longrun_gates): per band, one zonal mean per
+        # row of each column quantity, reduced once over the globe below.
+        longrun = LatitudeAccumulator(
+            xp, (len(ATMOSPHERE_ZONAL_NAMES), grid.nlat), xp.float64,
+            name="diagnostics_longrun_zonal", exchange=self.pipeline.exchange,
+        )
         speed_max = t_min = t_max = None
         condensate_max = moment_max = None
         for rows in self.pipeline.local_slices():
@@ -4022,6 +4122,8 @@ class MoistHybridModel:
             atmospheric.add_band(
                 rows, xp.sum(atmospheric_water_column(g), axis=0)
             )
+            longrun.add_band(rows, atmosphere_band_zonal_means(
+                xp, g, self.surface_geopotential[rows]))
             u = host(g["u"])
             v = host(g["v"])
             t = host(g["temperature"])
@@ -4052,7 +4154,15 @@ class MoistHybridModel:
         soil_water = host(stores["soil"])
         native_water = host(stores["native"])
         outflow_water = host(stores["outflow"])
+        exchange_water = host(stores["exchange"])
         total_water = host(stores["total"])
+        mean_ps = float(grid.global_mean(ps))
+        mean_atmospheric = float(grid.global_mean(atmospheric_water))
+        longrun_rows = atmosphere_rows(
+            grid, host(longrun.complete()), mean_ps, mean_atmospheric,
+            rotation_rate_s=self.rotation_rate_s)
+        del longrun
+        longrun_rows.update(self._longrun_surface_rows(bundle))
         return {
             "time_s": float(bundle.time_s),
             "step": int(bundle.step),
@@ -4070,6 +4180,13 @@ class MoistHybridModel:
             "global_mean_water_outflow_kg_m2": float(
                 grid.global_mean(outflow_water)
             ),
+            # The open-water exchange account, P - E booked on ocean, lake
+            # and sea-ice columns since the start (zero, and absent from
+            # the total, for a state that does not carry it); per-column
+            # values live in physics_state["ocean_exchange_kg_m2"].
+            "global_mean_ocean_exchange_kg_m2": float(
+                grid.global_mean(exchange_water)
+            ),
             "global_mean_total_water_kg_m2": float(grid.global_mean(total_water)),
             "maximum_wind_m_s": float(speed_max),
             "minimum_temperature_k": float(t_min),
@@ -4079,4 +4196,43 @@ class MoistHybridModel:
             "maximum_total_condensate_kg_kg": float(condensate_max),
             "maximum_number_moment_per_kg": float(moment_max),
             "physics_state_array_count": int(len(bundle.physics_state.arrays)),
+            # The long-run rows (longrun_gates): area means on this grid's
+            # quadrature, read by gates LR-1 to LR-9.  A row whose inputs
+            # this state does not carry is absent.
+            **longrun_rows,
         }
+
+    #: Surface members and physics-state arrays the long-run rows read.
+    _LONGRUN_SURFACE_MEMBERS = (
+        "land_fraction", "water_kg_m2", "soil_water_fraction", "temperature_k",
+        "sea_surface_temperature_k", "sea_ice_fraction",
+        "accumulated_rain_kg_m2", "accumulated_snow_kg_m2",
+        "accumulated_graupel_kg_m2",
+    )
+    _LONGRUN_PHYSICS_ARRAYS = (
+        "noah_snowc", CONVECTIVE_RAIN_ACCUMULATOR,
+        "olr", "swdnt", "swupt", "gsw", "glw", "lwupb", "hfx", "qfx",
+        *(name for name, _row in RADIATION_ACCUMULATOR_ROWS),
+    )
+
+    def _longrun_surface_rows(self, bundle) -> dict[str, object]:
+        """The surface's and the namespace's long-run rows, on the host.
+
+        Whole-globe planes (the surface and the namespace are whole after
+        the physics' card gather), read through ``resident`` so a parked
+        plane is staged and released like every other reader's."""
+        xp = self.transform.backend.xp
+        host = self.transform.backend.to_numpy
+
+        def plane(value):
+            return None if value is None else np.asarray(host(resident(xp, value)))
+
+        surface = {name: plane(getattr(bundle.surface, name, None))
+                   for name in self._LONGRUN_SURFACE_MEMBERS}
+        physics_state = getattr(bundle, "physics_state", None)
+        arrays = getattr(physics_state, "arrays", None) or {}
+        physics = {name: plane(arrays.get(name))
+                   for name in self._LONGRUN_PHYSICS_ARRAYS}
+        return surface_rows(
+            self.transform.grid, surface, physics,
+            getattr(physics_state, "metadata", None))

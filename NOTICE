@@ -316,6 +316,53 @@ anyone's code:
 
 --------------------------------------------------------------------------
 
+NOAA GML greenhouse-gas annual means
+
+The native radiation's CO2, CH4 and N2O are the NOAA Global Monitoring
+Laboratory globally averaged marine surface annual means (Lan, X.,
+Tans, P. and K.W. Thoning, NOAA GML, doi:10.15138/9N0H-ZH07), pinned as
+numbers in src/arwen_global/physics/greenhouse_gases.py, with the CO2 row
+also in the carried src/arwen_global/core/rrtmgp.py. No NOAA file is in this
+distribution. The files they were read from state their terms under "USE OF
+NOAA GML DATA": the data "are made freely available to the public and the
+scientific community", and GML asks that publications using them cite
+them, which this notice and every run's receipt do.
+
+--------------------------------------------------------------------------
+
+Other worlds: the published maps and profiles they use
+
+A world other than Earth (docs/ARWEN_GLOBAL_WORLDS.md) can read two
+published works. Neither is carried in this distribution.
+
+PALEOMAP paleo-elevation maps. An invented world can be built from
+Scotese, C. R. and Wright, N. M. (2018), PALEOMAP Paleodigital Elevation
+Models (PaleoDEMS) for the Phanerozoic, Zenodo,
+https://doi.org/10.5281/zenodo.5460860, licensed under the Creative Commons
+Attribution 4.0 International licence
+(https://creativecommons.org/licenses/by/4.0/). The module
+arwen_global/world/sources/paleodem.py fetches the record's 1 degree
+archive at the user's request into a folder of the user's own, checks it
+against the size and md5 the record states, and unpacks the maps and the
+record's own licence file beside them. It writes the credit line above
+into the world folder it builds, and the world statement prints it from
+there. A world's surface and terrain are a modified form of the map: it is
+averaged to the model grid, spectrally filtered and flooded from the
+largest ocean. The licence asks anyone who shares that form, or pictures
+drawn from it, to credit the creators, link the licence and say that the
+material was modified.
+
+Aqua-Planet Experiment sea-surface temperatures. The four profiles a world
+may name as its sea temperature (aqua-control, aqua-peaked, aqua-flat and
+aqua-qobs, in arwen_global/world/sea.py) are implemented from the formulas
+published by Neale, R. B. and Hoskins, B. J., A standard test for AGCMs
+including their physical parametrizations: I: The proposal, Atmospheric
+Science Letters 1, 101-107, doi:10.1006/asle.2000.0019, as given on the
+Aqua-Planet Experiment's sea-surface temperature sheet. No text or data
+file of theirs is carried.
+
+--------------------------------------------------------------------------
+
 Data services (not redistributed)
 
 This software fetches data at the user's request from third-party services
@@ -328,7 +375,9 @@ is subject to them:
   - ECMWF: the open-data global forecast set, under ECMWF's own open licence;
   - Iowa State University Environmental Mesonet: the surface station archive;
   - the WMO Information System 2 (WIS2) global brokers;
-  - UCAR COSMIC: GNSS radio-occultation profiles.
+  - UCAR COSMIC: GNSS radio-occultation profiles;
+  - Zenodo: the PALEOMAP paleo-elevation maps, under the licence named in
+    the section on other worlds above.
 
 The geography archive this model builds its static surface fields from is
 fetched through the engine and is not part of this distribution.

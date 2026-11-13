@@ -53,6 +53,108 @@ def library_versions() -> dict[str, str]:
     return out
 
 
+#: Distribution name prefixes whose wheels carry the CUDA user-space a CuPy
+#: run loads (runtime, NVRTC, cuBLAS, cuFFT, ...): recorded in the software
+#: stack beside the libraries above.
+CUDA_WHEEL_PREFIXES = ("nvidia-", "cuda-", "gpuwm-kernels")
+
+
+def software_stack(backend: str) -> dict[str, object]:
+    """Everything a later replay of a run's window has to reproduce, read
+    once at the start of a run: the interpreter and platform, every
+    recorded library and every CUDA user-space wheel by version, and on the
+    CuPy backend the card (name, compute capability, memory), the CUDA
+    runtime, driver-API and NVRTC versions CuPy reports and the NVIDIA
+    driver version ``nvidia-smi`` reports.  Descriptive, in no identity;
+    it never raises (a field it cannot read says so)."""
+    import platform
+    import sys
+
+    stack: dict[str, object] = {"backend": str(backend)}
+    try:
+        from ._version import __version__ as package_version
+
+        stack["arwen_global"] = str(package_version)
+    except Exception as exc:  # noqa: BLE001
+        stack["arwen_global"] = f"unreadable ({type(exc).__name__})"
+    # The version above is the installed distribution's; a run from a source
+    # tree on PYTHONPATH imports that tree instead, and says where it is
+    # (the receipt's physics_modules hash the files that integrated).
+    stack["arwen_global_imported_from"] = str(Path(__file__).resolve().parent)
+    stack["python"] = sys.version.split()[0]
+    stack["platform"] = {"system": platform.system(), "release": platform.release(),
+                         "machine": platform.machine(),
+                         "libc": " ".join(platform.libc_ver()).strip() or None}
+    stack["libraries"] = library_versions()
+    try:
+        from importlib.metadata import distributions
+
+        wheels = {}
+        for dist in distributions():
+            name = (dist.metadata.get("Name") or "").lower()
+            if name.startswith(CUDA_WHEEL_PREFIXES):
+                wheels[name] = dist.version
+        stack["cuda_wheels"] = dict(sorted(wheels.items()))
+    except Exception as exc:  # noqa: BLE001
+        stack["cuda_wheels"] = f"unreadable ({type(exc).__name__}: {exc})"
+    stack["device"] = _device_stack() if str(backend) == "cupy" else None
+    return stack
+
+
+def _device_stack() -> dict[str, object]:
+    device: dict[str, object] = {}
+
+    def read(key, getter):
+        try:
+            device[key] = getter()
+        except Exception as exc:  # noqa: BLE001
+            device[key] = f"unreadable ({type(exc).__name__}: {exc})"
+
+    try:
+        import cupy as cp
+    except Exception as exc:  # noqa: BLE001
+        return {"cupy": f"not importable ({type(exc).__name__})"}
+
+    def version(number):
+        number = int(number)
+        return f"{number // 1000}.{(number % 1000) // 10}"
+
+    device["cupy"] = cp.__version__
+    read("cuda_runtime", lambda: version(cp.cuda.runtime.runtimeGetVersion()))
+    read("cuda_driver_api", lambda: version(cp.cuda.runtime.driverGetVersion()))
+    read("nvrtc", lambda: ".".join(str(n) for n in cp.cuda.nvrtc.getVersion()))
+    read("ordinal", lambda: int(cp.cuda.runtime.getDevice()))
+
+    def card():
+        props = cp.cuda.runtime.getDeviceProperties(int(cp.cuda.runtime.getDevice()))
+        name = props["name"]
+        return {"name": name.decode() if isinstance(name, bytes) else str(name),
+                "compute_capability": f"{props['major']}.{props['minor']}",
+                "total_memory_bytes": int(props["totalGlobalMem"]),
+                "multiprocessors": int(props["multiProcessorCount"])}
+
+    read("card", card)
+    read("nvidia_driver", _nvidia_driver_version)
+    return device
+
+
+def _nvidia_driver_version() -> str:
+    """The kernel driver's version string, from ``nvidia-smi`` (the CUDA
+    calls above report only the driver API level)."""
+    import os as _os
+    import subprocess
+
+    command = ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"]
+    visible = _os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")[0].strip()
+    if visible:
+        command.insert(1, f"--id={visible}")
+    out = subprocess.run(command, capture_output=True, text=True, timeout=20, check=True)
+    lines = [line.strip() for line in out.stdout.splitlines() if line.strip()]
+    if not lines:
+        raise RuntimeError("nvidia-smi printed no driver version")
+    return lines[0]
+
+
 def finalize_receipt(payload: dict[str, object]) -> dict[str, object]:
     result = dict(payload)
     result["schema"] = RECEIPT_SCHEMA
@@ -126,6 +228,32 @@ def engine_seam_verdict() -> dict[str, object]:
     return verdict
 
 
+#: The receipt key a run on another world carries its record under.  The
+#: same name as the checkpoint's physics-metadata key
+#: (``checkpoint.WORLD_RECORD_KEY``) so one reader serves both.
+RECEIPT_WORLD_KEY = "world"
+
+
+def world_receipt_rows(world) -> dict[str, object]:
+    """The receipt rows a run on ``world`` adds: ``{"world": record}`` for
+    a world that is not Earth's, and NOTHING for Earth, so an Earth receipt
+    has the key set it had before worlds existed.  ``world`` is a
+    ``WorldSpec`` or None (a config built without one is Earth's)."""
+    if world is None or world.is_earth:
+        return {}
+    return {RECEIPT_WORLD_KEY: world.record()}
+
+
+def receipt_world_identity(payload) -> str:
+    """``"none"`` for a receipt of an Earth run (including every receipt
+    written before worlds existed), otherwise the world's identity hash."""
+    from .world.spec import world_identity_of
+
+    if not isinstance(payload, dict):
+        return world_identity_of(None)
+    return world_identity_of(payload.get(RECEIPT_WORLD_KEY))
+
+
 def write_receipt(path: str | Path, payload: dict[str, object]) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -171,4 +299,12 @@ def check_receipt(path: str | Path) -> dict[str, object]:
     return payload
 
 
-__all__ = ["check_receipt", "finalize_receipt", "write_receipt"]
+__all__ = [
+    "RECEIPT_WORLD_KEY",
+    "check_receipt",
+    "finalize_receipt",
+    "receipt_world_identity",
+    "software_stack",
+    "world_receipt_rows",
+    "write_receipt",
+]

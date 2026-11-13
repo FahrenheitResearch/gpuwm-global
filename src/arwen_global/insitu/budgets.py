@@ -14,9 +14,11 @@ findings ask for):
 
 * mass_pa: global-mean surface pressure = g * total (moist) column mass.
 * water_<species>_kg_m2: column water per species; water_atmosphere is
-  their sum; water_surface / soil / native / outflow are the reservoir
-  accounts of water.total_water_column, and water_total is the held +
-  booked-exit total the global water fixer and the drift gate read.
+  their sum; water_surface / soil / native / outflow / ocean_exchange are
+  the reservoir accounts of water.total_water_column (ocean_exchange is the
+  signed open-water exchange account, zero for a state without one), and
+  water_total is the held + booked-exit total the global water fixer and
+  the drift gate read.
 * dry_enthalpy_j_m2 = int cp T dp/g.
 * kinetic_energy_j_m2 = int 0.5 (u^2 + v^2) dp/g.
 * potential_energy_j_m2 = int Phi dp/g, Phi the model's own full-level
@@ -58,6 +60,7 @@ from ..water import (
     NATIVE_CANOPY_STORE_NAMES,
     NATIVE_SNOW_STORE_NAMES,
     SOIL_LAYER_THICKNESS_M,
+    OCEAN_EXCHANGE_NAMES,
     WATER_OUTFLOW_NAMES,
 )
 
@@ -65,7 +68,7 @@ FROZEN_SPECIES = ("qi", "qs", "qg")
 
 
 def reservoir_columns(bundle, xp) -> dict[str, object]:
-    """Surface, soil, native-store and outflow columns at exactly
+    """Surface, soil, native-store, outflow and exchange columns at exactly
     water.total_water_column's pricing, WITHOUT its driven-negative
     refusals.
 
@@ -105,11 +108,17 @@ def reservoir_columns(bundle, xp) -> dict[str, object]:
         resident(xp, arrays[name]) if name is not None
         else xp.zeros_like(surface_water)
     )
+    name = next((name for name in OCEAN_EXCHANGE_NAMES if name in arrays), None)
+    exchange = (
+        resident(xp, arrays[name]) if name is not None
+        else xp.zeros_like(surface_water)
+    )
     return {
         "surface": surface_water,
         "soil": soil,
         "native": native,
         "outflow": outflow,
+        "exchange": exchange,
     }
 
 #: (name, definition) in the exact order ``ledger_row`` packs them.
@@ -124,6 +133,8 @@ LEDGER_TERMS: tuple[tuple[str, str], ...] = (
     ("water_soil_kg_m2", "soil water at land-fraction weight"),
     ("water_native_kg_m2", "native canopy + snow stores"),
     ("water_outflow_kg_m2", "cumulative booked runoff exits"),
+    ("water_ocean_exchange_kg_m2",
+     "open-water exchange account, P - E booked on ocean, lake and sea ice"),
     ("water_total_kg_m2", "held + booked exits: the fixer/gate total"),
     ("dry_enthalpy_j_m2", "int cp T dp/g"),
     ("kinetic_energy_j_m2", "int 0.5 (u^2+v^2) dp/g"),
@@ -233,6 +244,7 @@ def ledger_row(model, bundle, geometry: LedgerGeometry):
         + stores["soil"].astype(xp.float64)
         + stores["native"].astype(xp.float64)
         + stores["outflow"].astype(xp.float64)
+        + stores["exchange"].astype(xp.float64)
     )
     columns = xp.stack([
         g["ps"].astype(xp.float64),
@@ -242,6 +254,7 @@ def ledger_row(model, bundle, geometry: LedgerGeometry):
         stores["soil"].astype(xp.float64),
         stores["native"].astype(xp.float64),
         stores["outflow"].astype(xp.float64),
+        stores["exchange"].astype(xp.float64),
         atmosphere + held,
         dry_enthalpy,
         kinetic,

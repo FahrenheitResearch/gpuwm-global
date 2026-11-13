@@ -13,7 +13,14 @@ from ..constants import (
     WATER_SPECIES,
 )
 from ..state import PhysicsState
-from ..water import SOIL_LAYER_THICKNESS_M
+from ..water import (
+    OCEAN_EXCHANGE_NAME,
+    OPEN_WATER_EVAPORATION_BLOCK_S,
+    OPEN_WATER_EVAPORATION_NAME,
+    SOIL_LAYER_THICKNESS_M,
+    book_open_water_exchange,
+    exchange_columns,
+)
 from .banding import (
     COLUMN_MEAN, COUNT, MAX, SAME, SKIP, finish_alone, merge_band_metadata,
     merge_band_scalars, to_host,
@@ -54,6 +61,10 @@ class ArwenCudaColumnSuite:
     # Step profiler slot (arwen_global.profile), forwarded the same
     # way; None is the no-op.
     profiler = None
+    # The sub-grid orography the orographic drag reads (physics.
+    # orographic_drag.OrographicStatistics), set by the run door when
+    # orographic_drag is on and forwarded the same way.
+    orographic_statistics = None
 
     #: How each of a call's scalar readings is formed from the bands'
     #: (physics.banding).  A reading not named here is the same on every
@@ -72,6 +83,11 @@ class ArwenCudaColumnSuite:
         "native_energy_change_exceeds_advisory": MAX,
         "maximum_local_water_repair_kg_m2": MAX,
         "stratospheric_floor_points": COUNT,
+        # The open-water runaway watch (water.OPEN_WATER_EVAPORATION_NAME):
+        # the largest column of the band's rows, so the globe's is the max.
+        "maximum_open_water_evaporation_day_kg_m2": MAX,
+        "maximum_open_water_evaporation_last_day_kg_m2": MAX,
+        "open_water_evaporation_exceeds_ceiling": MAX,
     }
     #: Namespace metadata keys that are NOT the same on every band: the
     #: three call counters a band without the columns they count does not
@@ -82,6 +98,7 @@ class ArwenCudaColumnSuite:
         "frozen_surface_calls": MAX,
         "lead_tile_calls": MAX,
         "lake_surface_calls": MAX,
+        "open_water_evaporation_last_day_max_kg_m2": MAX,
         "radiation_size_bounding_last": SKIP,
         "radiation_size_bounding_sum": SKIP,
     }
@@ -238,7 +255,84 @@ class ArwenCudaColumnSuite:
         # sees whatever this closure stops seeing.
         if "water_outflow_kg_m2" in arrays:
             total += arrays["water_outflow_kg_m2"]
+        # The open-water exchange account is the other booked exit, on the
+        # same terms (water.OCEAN_EXCHANGE_NAMES; present when the run books
+        # it).  Nothing inside the runtime writes it, so it reads the same
+        # before and after the runtime and the residual below is the one
+        # the finite-reservoir ledger measured.
+        if OCEAN_EXCHANGE_NAME in arrays:
+            total += arrays[OCEAN_EXCHANGE_NAME]
         return total
+
+    def _open_water_evaporation(self, batch, persistent, dt_s) -> dict:
+        """The runaway watch on open water (water.OPEN_WATER_EVAPORATION_NAME).
+
+        Adds this call's evaporation, the surface moisture flux the PBL
+        applied (``qfx``, kg/m2/s, dew negative) times the call's dt, to
+        each open-water column's sum for the current 24 h block of model
+        time from the start; when a call opens a new block, the finished
+        block's largest column is kept in the namespace metadata and the
+        plane starts again from zero.  A column whose sum passes the
+        ceiling (``open_water_evaporation_ceiling_kg_m2_day``) refuses the
+        run by name unless ``open_water_evaporation_refusal`` is false.
+        The readings are the largest column so far in this block, the
+        largest of the last finished block, and whether either is above the
+        ceiling; each is the band's own rows, so the globe's is their
+        maximum.
+        """
+        xp = batch.xp
+        arrays = persistent.arrays
+        metadata = persistent.metadata
+        block = int(np.floor(float(batch.time_s) / OPEN_WATER_EVAPORATION_BLOCK_S))
+        held = metadata.get("open_water_evaporation_block")
+        plane = arrays.get(OPEN_WATER_EVAPORATION_NAME)
+        if plane is None:
+            plane = xp.zeros(tuple(batch.surface.water_kg_m2.shape), dtype=xp.float64)
+        water = exchange_columns(batch.surface.land_fraction, xp)
+        last = float(metadata.get("open_water_evaporation_last_day_max_kg_m2", 0.0))
+        if held is not None and block != int(held):
+            last = float(self._host(xp, xp.max(xp.where(water, plane, 0.0))))
+            metadata["open_water_evaporation_last_day_max_kg_m2"] = last
+            plane = xp.zeros_like(plane)
+        metadata["open_water_evaporation_block"] = block
+        flux = xp.asarray(arrays["qfx"], dtype=xp.float64)
+        plane = plane + xp.where(water, flux * float(dt_s), 0.0)
+        arrays[OPEN_WATER_EVAPORATION_NAME] = plane
+        watched = xp.where(water, plane, 0.0)
+        running = float(self._host(xp, xp.max(watched)))
+        ceiling = float(self.options.open_water_evaporation_ceiling_kg_m2_day)
+        if running > ceiling and bool(self.options.open_water_evaporation_refusal):
+            raise FloatingPointError(
+                "an open-water column evaporated more than the runaway "
+                f"ceiling: {self._watched_column(batch, watched, running)} "
+                f"carries {running:.6g} kg/m2 in the 24 h block of model time "
+                f"that began at {block * OPEN_WATER_EVAPORATION_BLOCK_S:.0f} s, "
+                f"above open_water_evaporation_ceiling_kg_m2_day = {ceiling:g} "
+                "(the open-water exchange account has no finite reservoir to "
+                "run out of, so this watch is the refusal in its place; "
+                "open_water_evaporation_refusal = false reports without "
+                "refusing)"
+            )
+        return {
+            "maximum_open_water_evaporation_day_kg_m2": running,
+            "maximum_open_water_evaporation_last_day_kg_m2": last,
+            "open_water_evaporation_exceeds_ceiling": float(
+                max(running, last) > ceiling),
+        }
+
+    def _watched_column(self, batch, watched, value) -> str:
+        """Where the watch's largest column sits, for the refusal."""
+        xp = batch.xp
+        flat = int(self._host(xp, xp.argmax(watched.reshape(-1))))
+        row, column = divmod(flat, int(watched.shape[-1]))
+        where = f"column {column} of row {row} of this band"
+        lat = batch.arrays.get("latitude_deg")
+        lon = batch.arrays.get("longitude_deg")
+        if lat is not None and lon is not None:
+            where += (
+                f" ({float(self._host(xp, lat.reshape(-1)[flat])):.2f} deg latitude, "
+                f"{float(self._host(xp, lon.reshape(-1)[flat])):.2f} deg longitude)")
+        return where
 
     def _energy_column(self, batch):
         xp = batch.xp
@@ -508,12 +602,19 @@ class ArwenCudaColumnSuite:
             before_water = self._water_column(
                 batch, persistent, atmosphere=atmosphere_water)
             before_energy = self._energy_column(batch)
+            # The reservoir as the call received it, for the open-water
+            # exchange account (one plane; only when the namespace books it).
+            reservoir_before = (
+                batch.surface.water_kg_m2.copy()
+                if OCEAN_EXCHANGE_NAME in persistent.arrays else None
+            )
         if self._runtime is None:
             self._runtime = NativePhysicsRuntime(
                 self.options, modules=self._modules
             )
         self._runtime.observer = self.observer
         self._runtime.profiler = self.profiler
+        self._runtime.orographic_statistics = self.orographic_statistics
         self._runtime.offer_atmospheric_water(batch, atmosphere_water)
         del atmosphere_water
         persistent, schedule = self._runtime.run(
@@ -545,6 +646,21 @@ class ArwenCudaColumnSuite:
         batch.surface.water_kg_m2 -= xp.asarray(
             water_residual, dtype=batch.surface.water_kg_m2.dtype
         )
+        if reservoir_before is not None:
+            # Open water is not a finite store: everything the call moved
+            # through the reservoir on an ocean, lake or sea-ice column (the
+            # runtime's flux and fallout bookings and the closure above) is
+            # handed to the signed exchange account and the reservoir there
+            # keeps the value it entered with, so the refusal below can
+            # only fire on land.  Same closed column, same atmosphere.
+            book_open_water_exchange(
+                batch.surface, persistent.arrays, reservoir_before, xp
+            )
+            del reservoir_before
+            evaporation_watch = self._open_water_evaporation(
+                batch, persistent, exchange.dt_s)
+        else:
+            evaporation_watch = {}
         overdraft = xp.any(batch.surface.water_kg_m2 < -1.0e-7)
         batch.surface.water_kg_m2 = xp.maximum(
             batch.surface.water_kg_m2, 0.0
@@ -610,6 +726,7 @@ class ArwenCudaColumnSuite:
         }
         if floor_heating is None:
             diagnostics["mean_stratospheric_floor_heating_j_m2"] = 0.0
+        diagnostics.update(evaporation_watch)
         out.__exit__(None, None, None)
         result = PhysicsResult(
             **prognostics,

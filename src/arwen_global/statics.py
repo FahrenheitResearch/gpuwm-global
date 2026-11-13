@@ -41,7 +41,15 @@ import time
 
 import numpy as np
 
+from .world.spec import EARTH as EARTH_WORLD, WorldSpec
+
 STATICS_SCHEMA = "gpuwm.arwen-global-statics/v1"
+#: The cache-document key an invented world's surface carries its stated
+#: rules under (``arwen_global.world.surface``).  An Earth cache has none.
+WORLD_CACHE_KEY = "world_surface"
+#: The key the folder's name and hashes are added under when an invented
+#: world's surface is read (never a path).
+WORLD_FOLDER_KEY = "world_folder"
 STATICS_SOURCES = ("real", "synthetic")
 #: Longitude width of one build sector.  A 30-degree sector of the 30
 #: arc-second archive is a 3,600 x 21,600 source window (78 M cells, 0.6
@@ -316,6 +324,16 @@ class StaticsOptions:
     (fixed means default) and ``synthetic`` for the analytic planet,
     whose land mask is a formula and carries no geography to look up.
     ``declared`` records whether the config named the source itself.
+
+    ``world`` is the run's world (:class:`arwen_global.world.WorldSpec`),
+    carried here so the one function every caller loads the statics through
+    (:func:`load_statics`) applies the world's surface: Earth reads Earth's
+    cache exactly as before; a flood or a waterworld reads Earth's cache and
+    edits it in memory (:mod:`arwen_global.world.statics_edits`); an
+    invented world reads its own cache from its own folder, named with the
+    world's token.  ``world_folder`` is that folder as the config resolved
+    it (None: ``world.surface.folder`` as written).  Neither enters
+    :attr:`identity`: the world joins the config identity on its own.
     """
 
     source: str = "synthetic"
@@ -324,6 +342,8 @@ class StaticsOptions:
     cache_dir: str | None = None
     valid_time: str | None = None
     declared: bool = False
+    world: WorldSpec = EARTH_WORLD
+    world_folder: str | None = None
 
     @property
     def identity(self) -> dict[str, object] | None:
@@ -389,10 +409,35 @@ def cache_stem(grid, tokens) -> str:
 
 
 def cache_paths(options: StaticsOptions, grid) -> tuple[Path, Path]:
-    """``(npz, sidecar)`` for this truncation and dataset selection."""
+    """``(npz, sidecar)`` for this truncation and dataset selection.
+
+    An invented world's cache is the surface built from its own map in its
+    own folder (:mod:`arwen_global.world.surface`), named for the map's hash
+    and the land class and pinned by the folder's lock file; every other
+    world, Earth included, reads Earth's cache (a flood or a waterworld
+    edits it in memory, :func:`load_statics`)."""
+    world = options.world
+    if world.is_invented:
+        from .world.folder import read_lock
+        from .world.surface import surface_cache_path, surface_key
+
+        folder = world_folder_of(options)
+        lock = read_lock(folder)
+        npz = surface_cache_path(
+            folder, grid, surface_key(lock["map"]["sha256"], world.surface.land_cover))
+        return npz, npz.with_suffix(".json")
     stem = cache_stem(grid, options.tokens())
     directory = cache_dir_for(options)
     return directory / f"{stem}.npz", directory / f"{stem}.json"
+
+
+def world_folder_of(options: StaticsOptions) -> Path:
+    """The invented world's folder: as the config resolved it, or as the
+    world table wrote it."""
+    world = options.world
+    if not world.is_invented:
+        raise ValueError(f"world {world.label!r} has no folder of its own")
+    return Path(options.world_folder or world.surface.folder)
 
 
 def resolve_geog_root(options: StaticsOptions):
@@ -498,6 +543,12 @@ def build_statics(grid, options: StaticsOptions, *,
     from gpuwm.static.build import build_static
     from arwen_global.statics_rows import RowsGrid
 
+    if options.world.is_invented:
+        raise ValueError(
+            f"world {options.world.label!r} has its own surface: its statics "
+            "are written from its own map into its folder, never built from "
+            "the WPS_GEOG archive, which is Earth's.  Build them with the "
+            "world's own tool; the statics door builds Earth's cache only")
     bridge = require_rust_builder()
     root, selection = resolve_geog_root(options)
     landuse = selection.landuse_global_attrs()
@@ -679,9 +730,37 @@ def missing_cache_remedy(npz_path: Path) -> str:
 
 
 def load_statics(options: StaticsOptions, grid) -> tuple[dict[str, np.ndarray], dict]:
-    """The cached real statics for ``grid``, or the refusal with remedy."""
+    """The cached real statics for ``grid``, or the refusal with remedy.
+
+    THE seam every caller reads the statics through, so every caller sees
+    the run's world: Earth's cache as it is on disk for Earth (and for a
+    world that keeps Earth's surface); Earth's cache with the world's flood
+    or waterworld applied in memory (:mod:`arwen_global.world.
+    statics_edits`); or an invented world's own surface, read from its
+    folder with the lock file's hashes checked
+    (:func:`arwen_global.world.surface.load_world_statics`).  An Earth
+    cache is never read for a world with its own surface, and a world's
+    surface never for an edited Earth."""
+    world = options.world
+    if world.is_invented:
+        from .world.surface import load_world_statics
+
+        return load_world_statics(world, grid, folder=world_folder_of(options))
     npz_path, _ = cache_paths(options, grid)
-    return read_cache(npz_path, grid)
+    if world.is_earth:
+        return read_cache(npz_path, grid)
+    fields, document = read_cache(npz_path, grid)
+    if WORLD_CACHE_KEY in document:
+        raise ValueError(
+            f"statics cache {npz_path} carries a world record "
+            f"({str(document[WORLD_CACHE_KEY])[:80]}): it is an invented "
+            "world's surface under Earth's name, and an edited Earth reads "
+            "Earth's cache only")
+    from .world.statics_edits import edit_statics, edits_statics
+
+    if edits_statics(world):
+        return edit_statics(fields, document, world)
+    return fields, document
 
 
 # ---------------------------------------------------------------------------
@@ -919,6 +998,19 @@ def synthetic_surface_statics(land_fraction, soil_temperature_k,
 
 
 def synthetic_provenance(options: StaticsOptions) -> dict:
+    """The receipt's statics row for the synthetic planet.
+
+    Every synthetic cold start passes through here, so this is where a
+    world that changes the coast is refused on the synthetic planet: its
+    land is a formula or the analysis's own, the world's edit lives in the
+    real statics (:func:`load_statics`), and a flood or a waterworld would
+    otherwise start with Earth's land and say nothing."""
+    world = options.world
+    if not world.is_earth and world.changes_coast:
+        raise ValueError(
+            f"world {world.label!r} changes the coast, and the coast is "
+            "written into the real statics; the synthetic planet has none to "
+            "change.  Set [statics] source = \"real\" for this world")
     return {
         "source": "synthetic",
         "declared": bool(options.declared),
@@ -949,6 +1041,15 @@ def real_provenance(options: StaticsOptions, npz_path: Path, cache: dict,
             "covered_cells": int(sum(int(r.get("covered_cells", 0)) for r in receipts)),
             "required_tiles": int(sum(int(r.get("required_tile_count", 0)) for r in receipts)),
         }
+    # A world's rows, only where the document has them: an Earth cache read
+    # for Earth carries neither, and its receipt row stays byte for byte.
+    world_rows: dict[str, object] = {}
+    if not options.world.is_earth:
+        from .world.statics_edits import EDIT_KEY
+
+        world_rows = {key: cache[key]
+                      for key in (WORLD_CACHE_KEY, WORLD_FOLDER_KEY, EDIT_KEY)
+                      if key in cache}
     return {
         "source": "real",
         "declared": bool(options.declared),
@@ -964,6 +1065,7 @@ def real_provenance(options: StaticsOptions, npz_path: Path, cache: dict,
         "builder": cache.get("builder"),
         "built_at_utc": cache.get("built_at_utc"),
         "coverage": coverage,
+        **world_rows,
         **detail,
     }
 
@@ -971,8 +1073,14 @@ def real_provenance(options: StaticsOptions, npz_path: Path, cache: dict,
 def statics_sentence(cfg) -> str:
     """The one line the run door prints about its statics."""
     options = cfg.statics
+    world = options.world
+    if world.is_invented and options.source != "real":
+        raise ValueError(
+            "an invented world ([world.surface] folder) needs [statics] "
+            "source = \"real\": its surface is a statics cache built from "
+            "its map, and the synthetic planet would ignore it")
     if options.source != "real":
-        how = "declared in [statics]" if options.declared else "analytic default"
+        how ="declared in [statics]" if options.declared else "analytic default"
         return (
             f"statics synthetic ({how}): one vegetation class "
             f"{SYNTHETIC_VEGETATION_CATEGORY} and one soil class "
@@ -985,16 +1093,27 @@ def statics_sentence(cfg) -> str:
 
     grid = GaussianGrid.create(cfg.truncation, nlat=cfg.nlat, nlon=cfg.nlon,
                                dealias_factor=cfg.dealias_factor)
+    if world.is_invented:
+        from .world.surface import surface_sentence
+
+        return surface_sentence(world, grid, folder=world_folder_of(options))
     npz_path, _ = cache_paths(options, grid)
     state = "present" if npz_path.is_file() else "MISSING"
-    return (f"statics real (WPS_GEOG {'+'.join(options.tokens())}, cache "
-            f"{npz_path} {state})")
+    sentence = (f"statics real (WPS_GEOG {'+'.join(options.tokens())}, cache "
+                f"{npz_path} {state})")
+    if not world.is_earth:
+        from .world.statics_edits import edits_statics, rule_text
+
+        if edits_statics(world):
+            sentence += f"; world {world.label!r} edits it in memory: {rule_text(world)}"
+    return sentence
 
 
 __all__ = [
     "CACHED_FIELDS", "GEOG_ROLES", "LAND_FRACTION_MARGIN", "SEA_ICE_THRESHOLD",
     "STATICS_SCHEMA",
-    "STATICS_SOURCES", "SURFACE_STATICS_METADATA_KEY",
+    "STATICS_SOURCES", "SURFACE_STATICS_METADATA_KEY", "WORLD_CACHE_KEY",
+    "WORLD_FOLDER_KEY",
     "SURFACE_STATIC_FIELDS", "SYNTHETIC_CONVENTION",
     "SYNTHETIC_LEAF_AREA_INDEX", "SYNTHETIC_SNOW_ALBEDO",
     "SYNTHETIC_SOIL_CATEGORY", "SYNTHETIC_VEGETATION_CATEGORY",
@@ -1003,5 +1122,5 @@ __all__ = [
     "real_convention", "real_provenance", "resolve_geog_root",
     "resolve_surface_statics", "statics_sentence", "surface_statics_metadata",
     "frozen_water_columns", "synthetic_provenance", "synthetic_surface_statics",
-    "water_columns", "write_cache", "xland_plane",
+    "water_columns", "world_folder_of", "write_cache", "xland_plane",
 ]

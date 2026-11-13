@@ -80,7 +80,9 @@ from pathlib import Path
 from .assimilate import AssimilationOptions, assimilate
 from .checkpoint import read_checkpoint, write_checkpoint
 from .config import ArwenGlobalConfig, load_config
-from .cycle import ANALYSIS_PREFIX, cycle as run_cycle, resolve_start_time
+from .cycle import (
+    ANALYSIS_PREFIX, cycle as run_cycle, refuse_cycle_on_world, resolve_start_time,
+)
 from .da_filter import (
     ENSEMBLE_MANIFEST_NAME, read_ensemble_manifest, resolve_filter,
 )
@@ -242,6 +244,29 @@ def read_da_receipt(path: str | Path) -> dict:
     return payload
 
 
+def da_door_name(leg: str) -> str:
+    """A leg's name in a refusal on another world."""
+    return f"da {leg} (the data-assimilation door)"
+
+
+def _refuse_fresh_on_world(base_config: str | Path) -> None:
+    """``fresh`` holds a base config path, not a config: its ``[world]``
+    table is parsed (the same parser the config loader runs) and a world
+    that is not Earth is refused before the analysis is fetched."""
+    from .world.refusals import refuse_on_world
+    from .world.spec import parse_world
+
+    try:
+        raw = tomllib.loads(Path(base_config).read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        # The door reads the base config itself and refuses it in its own
+        # words; this check has nothing to add.
+        return
+    refuse_on_world(parse_world(raw.get("world")), door=da_door_name("fresh"),
+                    family="assimilation",
+                    source=f"base config {Path(base_config).name}")
+
+
 def _checkpoint_identity(path: Path, cfg: ArwenGlobalConfig) -> dict:
     metadata, _ = read_checkpoint(
         path, expected_config_hash=cfg.config_hash,
@@ -267,6 +292,7 @@ def init(
     filter_settings: dict | None = None,
 ) -> dict:
     """Build the ensemble from an analysis and write its manifest."""
+    refuse_cycle_on_world(cfg, from_checkpoint, door=da_door_name("init"))
     start = time.perf_counter()
     output = Path(outdir)
     output.mkdir(parents=True, exist_ok=True)
@@ -342,6 +368,7 @@ def analyze(
 ) -> dict:
     """One analysis of a checkpoint against observation tables, the report
     with its scorecard beside the analysis checkpoint, and the receipt."""
+    refuse_cycle_on_world(cfg, checkpoint, door=da_door_name("analyze"))
     start = time.perf_counter()
     filter = resolve_filter(filter_name)
     if filter.members != 1:
@@ -402,6 +429,7 @@ def cycle(
     distributes the increment through the window (D), and
     ``information_cutoff_utc`` is recorded with every window's latency
     classes (F)."""
+    refuse_cycle_on_world(cfg, restart, door=da_door_name("cycle"))
     start = time.perf_counter()
     output = Path(outdir)
     manifest = None
@@ -786,7 +814,11 @@ def fresh(
     bins and the shipped stream roster; ``filter_name``, ``members``,
     ``observation_bin_s`` and the streams named replace those parts, and
     the receipt's ``defaults`` lists which parts were defaulted.
+
+    A base config on another world is refused by name before anything is
+    fetched or written.
     """
+    _refuse_fresh_on_world(base_config)
     start = time.perf_counter()
     output = Path(outdir)
     output.mkdir(parents=True, exist_ok=True)
@@ -1041,6 +1073,7 @@ def localisation(
     from .da.localisation import derive_from_store
     from .da.options import FilterOptions
 
+    refuse_cycle_on_world(cfg, door=da_door_name("localisation"))
     start = time.perf_counter()
     store = _library_store(ensemble)
     derivation = derive_from_store(cfg, store, step=step)
@@ -1074,6 +1107,7 @@ def forecast(
 ) -> dict:
     """The forecast from an analysis checkpoint: the runner's restart,
     with the DA receipt naming the analysis it started from."""
+    refuse_cycle_on_world(cfg, analysis, door=da_door_name("forecast"))
     start = time.perf_counter()
     output = Path(outdir)
     identity = _checkpoint_identity(Path(analysis), cfg)

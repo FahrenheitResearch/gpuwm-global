@@ -117,6 +117,10 @@ CARVE: tuple[tuple[str, str], ...] = (
 CORE_MODULES: tuple[str, ...] = (
     "rrtmgp", "gf", "ntiedtke", "sfclay", "ysu", "ysu_contract", "landuse",
     "physics_inventory", "physics", "noah", "morrison",
+    # The orographic drag's launcher (WRF gwd_opt = 1), carried from the
+    # published engine 2.9.13 and cut to that one option; it compiles its
+    # kernel through the engine's NVRTC route, not this directory's loader.
+    "terrain_drag",
 )
 
 #: Every kernel a carried module compiles, plus the headers those kernels are
@@ -129,6 +133,7 @@ CORE_KERNELS: tuple[str, ...] = (
     "rrtmgp_rte.cu", "rrtmgp_gas.cu", "rrtmgp_cloud.cu", "rrtmgp_mcica.cu",
     "rrtmgp_validation.cu",
     "common.cuh", "glibc_flt32.cuh", "rrtmgp_planck_common.cuh",
+    "terrain_drag.cu",
 )
 
 CORE_CARVE: tuple[tuple[str, str], ...] = (
@@ -183,8 +188,8 @@ CORE_CARVE: tuple[tuple[str, str], ...] = (
 CORE_REWIRE: tuple[tuple[str, str], ...] = (
     (r"gpuwm\.core\.kernels", "arwen_global.core.kernels"),
     (r"gpuwm\.verify\.npref", "arwen_global.core.npref"),
-    (r"gpuwm\.core\.(physics_inventory|ysu_contract|rrtmgp|gf|ntiedtke"
-     r"|sfclay|ysu|landuse|physics|noah|morrison)\b",
+    (r"gpuwm\.core\.(physics_inventory|ysu_contract|terrain_drag|rrtmgp|gf"
+     r"|ntiedtke|sfclay|ysu|landuse|physics|noah|morrison)\b",
      r"arwen_global.core.\1"),
 )
 
@@ -721,10 +726,12 @@ KERNEL_NOTICE_SCOPE: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = 
       "",
       "glibc_flt32.cuh is covered here for the same reason even though it is",
       "not a compilation unit of its own: the loader prepends it to gf and to",
-      "ntiedtke, so its bytes sit inside those two modules' assembled",
-      "strings.  The Python counterparts of the same transcriptions, which",
-      "nothing digests, do carry their notice in their own header:",
-      "arwen_global/core/rrtmgp.py and arwen_global/core/npref.py.")),
+      "ntiedtke, and the orographic drag's launcher (arwen_global/core/",
+      "terrain_drag.py) prepends it to terrain_drag.cu, so its bytes sit",
+      "inside those three modules' assembled strings.  The Python",
+      "counterparts of the same transcriptions, which nothing digests, do",
+      "carry their notice in their own header: arwen_global/core/rrtmgp.py",
+      "and arwen_global/core/npref.py.")),
     # What is covered here, and the libm scope, both narrowed to this
     # directory's fifteen files.
     ('core/kernels/LICENSE-third-party.txt',
@@ -766,7 +773,8 @@ KERNEL_NOTICE_SCOPE: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = 
       "tests/test_cuda_libm_table_copies.py enumerates the table copies and keeps",
       "them in step, so this list is machine-checkable rather than prose."),
      ("Scope in this directory: both libm grants are carried by one file,",
-      "glibc_flt32.cuh, which the loader prepends to gf and to ntiedtke.  It",
+      "glibc_flt32.cuh, which the loader prepends to gf and to ntiedtke and",
+      "the orographic drag's launcher prepends to terrain_drag.cu.  It",
       "holds the logf / expf / exp2f / powf cores and their data tables (Arm,",
       "MIT), and FDLIBM's expm1f (s_expm1f.c) and the positive arm of FDLIBM's",
       "lgammaf reduction (e_lgammaf_r.c).  No other device source here carries",
@@ -1013,6 +1021,13 @@ DEVICE_EXACT: tuple[tuple[str, str, str], ...] = (
      "// (" + _TOOL.upper() + ".md: __fmaf_rn/__fmul_rn/__fadd_rn are "
      "NVIDIA-guaranteed",
      "// (__fmaf_rn/__fmul_rn/__fadd_rn are NVIDIA-guaranteed"),
+    # The engine's comment dates the wind-sector fix by the development
+    # branch it landed on, which is not a name this package publishes
+    # (tests/test_no_provenance.py); the release that still carried the old
+    # form is the date a reader can check.
+    ("terrain_drag.cu",
+     "// WHY NOT atan2() IN DOUBLE.  Until lane/" + "verify-gwdo-kim this read",
+     "// WHY NOT atan2() IN DOUBLE.  In gpuwm 2.8.5 this read"),
 )
 
 #: What a carried device source may not contain when the carve is done.  The

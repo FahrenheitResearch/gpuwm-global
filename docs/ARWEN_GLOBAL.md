@@ -663,13 +663,72 @@ naming an unregistered adapter is refused before a transform is built.
 There is no silent fallback to the reference suite. What the built-in
 adapter's evidence currently covers is in the envelope below.
 
+### Orographic gravity-wave drag (off by default)
+
+Until `orographic_drag = "kim-gwdo"` the global model had no gravity-wave
+drag of any kind: the only momentum sink aloft is the zonal-mean drag in the
+top levels. The option adds WRF's `gwd_opt = 1`, the KIM orographic
+gravity-wave drag with flow blocking (Choi and Hong 2015), carried from the
+engine (`arwen_global/core/terrain_drag.py`, `kernels/terrain_drag.cu`) and
+added to YSU's momentum tendencies from the column state YSU read, where
+WRF's PBL driver adds it. It is a native adapter option and ships **off**:
+nothing has measured it on this model over a season yet, and the long-run
+validation decides the default. There is still no non-orographic
+gravity-wave drag (the drag of waves from convection and fronts, which
+carries most of the momentum into the upper stratosphere and mesosphere).
+
+```toml
+native_adapter_options = { ..., dx_m = 52100.0, orographic_drag = "kim-gwdo" }
+```
+
+It reads ten sub-grid orography planes per column (VAR, CON, OA1-4, OL1-4)
+from WPS_GEOG's `orogwd_10m`, which `gpuwm fetch-geog` stages by default.
+Build them once per truncation, after the land-surface statics:
+
+```bash
+gpuwm-global statics CONFIG --orographic
+```
+
+A run with the option on and no such cache is refused before the card is
+touched, naming that command. What is prescribed, not measured:
+
+* the planes are GEOGRID.TBL.ARW's: `average_4pt` of the 10-arc-minute
+  source at each column, 0 on water. They are not re-aggregated over a
+  column's own area, so at T255 VAR misses the terrain variance between
+  the 18 km and 52 km scales, as it does for a WRF user at 50 km. The
+  engine's static-fields crate refuses the Gaussian grid for these rows,
+  so this package reads the dataset itself;
+* the scheme's grid length is one value for the globe, `dx_m`;
+* the drag adds no heat (WRF's scheme returns none), so the kinetic energy
+  it removes is not returned as dissipation;
+* the kernel's words are WRF's under the engine's strict numerics
+  (`GPUWM_NUMERICS=strict`); in its default fast numerics multiply-adds are
+  fused, as in the other carried kernels.
+
+The option joins the config identity only when on. The statistics' cache
+identity travels in the physics state, and a restart that would read
+different statistics is refused.
+
+One short measurement, and only that: T255 native from the GDAS 2026-10-15
+00Z analysis, 72 h with the drag on and off (RTX 4090, default numerics).
+Both arms finished every gate with finite fields (largest wind 92.4 and
+92.0 m/s at 72 h). With the drag on, the lowest level's zonal-mean wind
+over 30-60N read 0.84 m/s against 0.98, the 60N zonal-mean wind 10.35
+against 10.74 m/s at 50 hPa and 13.02 against 13.43 at 200 hPa, and the
+polar-cap (60-90N) temperature moved by under 0.25 K at every level from
+10 to 850 hPa. The run took 712 s against 696 s and the same 8.64 GiB
+device peak. A restart at 24 h reproduced the straight run's 48 h
+checkpoint bit for bit, all 134 arrays and its metadata. Three days are not
+a season: whether the drag helps the month-scale circulation is what the
+long-run validation measures.
+
 ### Where that physics lives, and what is still the engine's
 
 The native suite's schemes are inside this package, at
 `arwen_global.core`: the radiation, cumulus, surface-layer, boundary-layer,
 land-surface and microphysics modules, the land-use rulebook, the float64
 mirror used by the kernel scorecards to compare GPU arithmetic (code
-verification, not an observation score), the CUDA loader, twelve kernels and
+verification, not an observation score), the CUDA loader, thirteen kernels and
 three headers, and the four Noah and land-use tables.
 
 They are carried rather than imported because the published engine's copy of
@@ -692,7 +751,7 @@ anyway because their kernels are two of the eight that differ and the loader
 binds its own directory, so a module left on the engine would compile the
 engine's `.cu`. The nine-file figure that used to stand here counted the
 whole engine kernel directory rather than the fifteen files this package
-carries.
+carried then (the orographic drag's kernel joined them on 2026-11-11).
 
 Everything else the package reaches is still the engine's, and the files it
 reaches are pinned by path, size and SHA-256 in

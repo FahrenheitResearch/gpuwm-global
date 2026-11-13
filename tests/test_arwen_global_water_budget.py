@@ -270,7 +270,10 @@ def test_checkpoint_reader_matches_the_model_synthesis_and_the_ledger_row(tmp_pa
     assert reader.grid.area_mean(sample.atmosphere) == pytest.approx(row[LEDGER_INDEX["water_atmosphere_kg_m2"]], rel=1.0e-10)
     reservoir = sum(
         row[LEDGER_INDEX[name]]
-        for name in ("water_surface_kg_m2", "water_soil_kg_m2", "water_native_kg_m2", "water_outflow_kg_m2")
+        for name in (
+            "water_surface_kg_m2", "water_soil_kg_m2", "water_native_kg_m2", "water_outflow_kg_m2",
+            "water_ocean_exchange_kg_m2",
+        )
     )
     assert reader.grid.area_mean(sample.reservoir) == pytest.approx(reservoir, rel=1.0e-10)
     assert reader.grid.area_mean(sample.atmosphere + sample.reservoir) == pytest.approx(

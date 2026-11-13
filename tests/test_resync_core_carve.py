@@ -329,10 +329,15 @@ def test_the_device_rule_is_the_word_table_plus_one_named_string():
     the one that can silently gain a row, and it is asserted here.
     """
 
-    assert len(resync.DEVICE_EXACT) == 1
+    assert len(resync.DEVICE_EXACT) == 2
     name, old, new = resync.DEVICE_EXACT[0]
     assert name == "glibc_flt32.cuh"
     assert len(old) - len(new) == 11
+    # The orographic drag's kernel (carried 2026-11-11): one comment line
+    # that dates a fix by a development branch is dated by a release.
+    name, old, new = resync.DEVICE_EXACT[1]
+    assert name == "terrain_drag.cu"
+    assert len(old) - len(new) == 12
     assert resync.VERBATIM_SUFFIXES == {".cu", ".cuh"}
 
 

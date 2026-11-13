@@ -78,13 +78,18 @@ def _jw_shape(sin_lat, cos_lat):
 
 def jablonowski_williamson_fields(
     eta, lat_rad, *, radius_m: float, rotation_rate_s: float = EARTH_ROTATION_RATE_S,
-    gas_constant: float = DRY_AIR_GAS_CONSTANT,
+    gas_constant: float = DRY_AIR_GAS_CONSTANT, u0_m_s: float = JW_U0,
 ):
     """``(u, temperature, surface_geopotential)`` of the steady state.
 
     ``eta`` is ``p / ps`` at the model's full levels, shaped to broadcast
     against ``lat_rad``.  Everything is float64 host arithmetic: the case
     is a specification and the model reads it once.
+
+    ``u0_m_s`` is the jet speed.  The state is an exact steady solution of
+    the primitive equations for any jet speed and any rotation rate; the
+    published case is ``JW_U0`` at Earth's rate, which the defaults give
+    bit for bit.
     """
     eta = np.asarray(eta, dtype=np.float64)
     lat = np.asarray(lat_rad, dtype=np.float64)
@@ -92,10 +97,11 @@ def jablonowski_williamson_fields(
     cos_lat = np.cos(lat)
     first, second = _jw_shape(sin_lat, cos_lat)
     exponent = gas_constant * JW_LAPSE_K_M / GRAVITY_M_S2
+    u0 = float(u0_m_s)
 
     eta_v = (eta - JW_ETA_0) * (math.pi / 2.0)
     cos_v = np.cos(eta_v)
-    zonal = JW_U0 * cos_v ** 1.5 * np.sin(2.0 * lat) ** 2
+    zonal = u0 * cos_v ** 1.5 * np.sin(2.0 * lat) ** 2
 
     mean_t = JW_T0 * eta ** exponent
     mean_t = np.where(
@@ -104,9 +110,9 @@ def jablonowski_williamson_fields(
         mean_t,
     )
     temperature = mean_t + 0.75 * (
-        eta * math.pi * JW_U0 / gas_constant
+        eta * math.pi * u0 / gas_constant
     ) * np.sin(eta_v) * np.sqrt(cos_v) * (
-        first * 2.0 * JW_U0 * cos_v ** 1.5
+        first * 2.0 * u0 * cos_v ** 1.5
         + second * radius_m * rotation_rate_s
     )
 
@@ -114,8 +120,8 @@ def jablonowski_williamson_fields(
     # mean part is zero: the case's orography IS the balance of its jet.
     surface_v = (1.0 - JW_ETA_0) * (math.pi / 2.0)
     cos_s = math.cos(surface_v)
-    surface_geopotential = JW_U0 * cos_s ** 1.5 * (
-        first * JW_U0 * cos_s ** 1.5 + second * radius_m * rotation_rate_s
+    surface_geopotential = u0 * cos_s ** 1.5 * (
+        first * u0 * cos_s ** 1.5 + second * radius_m * rotation_rate_s
     )
     return zonal, temperature, surface_geopotential
 
@@ -134,13 +140,21 @@ def jablonowski_williamson_perturbation(lat_rad, lon_rad, radius_m: float):
     return JW_PERTURBATION_M_S * np.exp(-((great_circle / scale) ** 2))
 
 
-def baroclinic_wave_initial_state(cfg, transform, statics=None):
+def baroclinic_wave_initial_state(cfg, transform, statics=None, *,
+                                  rotation_rate_s: float = EARTH_ROTATION_RATE_S,
+                                  u0_m_s: float = JW_U0):
     """The Jablonowski and Williamson 2006 state, in this model's own
     variables: ``(bundle, surface_geopotential, provenance)``.
 
     ``cfg.perturbation_amplitude`` scales the wind bump, so the STEADY
     arm of the gate is the same config with the amplitude at zero and
     therefore the same everything else.
+
+    ``rotation_rate_s`` and ``u0_m_s`` build the same exact steady state
+    for another planet's rotation and another jet (the rotation ladder of
+    ``tools/arwen_global_world_benchmarks.py``).  At their defaults the
+    state and the provenance are the published case's, bit for bit; a
+    model that integrates the state must be given the same rotation rate.
     """
     backend = transform.backend
     xp = backend.xp
@@ -154,6 +168,7 @@ def baroclinic_wave_initial_state(cfg, transform, statics=None):
     eta = (pressure["p_full"] / JW_SURFACE_PRESSURE_PA)[:, :1, :1]
     zonal, temperature, surface_geopotential = jablonowski_williamson_fields(
         eta, lat[None], radius_m=grid.radius_m,
+        rotation_rate_s=rotation_rate_s, u0_m_s=u0_m_s,
     )
     u = np.broadcast_to(zonal, pressure["p_full"].shape).copy()
     amplitude = float(cfg.perturbation_amplitude)
@@ -208,6 +223,13 @@ def baroclinic_wave_initial_state(cfg, transform, statics=None):
         "perturbation_m_s": amplitude,
         "surface_pressure_pa": JW_SURFACE_PRESSURE_PA,
     }
+    # Only a state that is not the published case says so, so the
+    # published case's provenance (and every checkpoint that carries it)
+    # is unchanged.
+    if float(rotation_rate_s) != EARTH_ROTATION_RATE_S:
+        provenance["rotation_rate_s"] = float(rotation_rate_s)
+    if float(u0_m_s) != JW_U0:
+        provenance["jet_m_s"] = float(u0_m_s)
     return (
         ArwenGlobalState(atmosphere, surface, PhysicsState()),
         backend.asarray(surface_geopotential, dtype=dtype),
@@ -267,6 +289,166 @@ def _dry_surface(transform, surface_temperature) -> SurfaceState:
         accumulated_graupel_kg_m2=xp.zeros(shape, dtype=dtype),
         **{name: backend.asarray(value, dtype=dtype)
            for name, value in resolved.items()},
+    )
+
+
+# --------------------------------------------------------------------------
+# An atmosphere at rest over terrain.
+#
+# Temperature that is a function of pressure alone, no wind, and a surface
+# pressure that is the same profile's hydrostatic pressure at the height of
+# the ground.  Every pressure surface is then level and isothermal, so the
+# continuous equations hold this state still over ANY terrain.  What moves
+# in a model is what its discrete pressure-gradient force, its hydrostatic
+# sum and its spectral truncation of the ground leave unbalanced on
+# terrain-following levels: the wind that grows is the core's own error
+# over mountains, and with no terrain it is rounding.  This is the resting
+# case of DCMIP 2012 (test 2-0) with the US standard atmosphere's lower
+# profile, so the model top at 1 hPa sits in an isothermal stratosphere
+# rather than at the 78 K a constant lapse would reach there.
+
+#: Sea-level pressure and temperature, lapse rate and tropopause
+#: temperature of the profile (the US standard atmosphere, 1976).
+REST_SEA_LEVEL_PRESSURE_PA = 101325.0
+REST_SEA_LEVEL_TEMPERATURE_K = 288.15
+REST_LAPSE_K_M = 0.0065
+REST_TROPOPAUSE_K = 216.65
+
+
+def rest_atmosphere_temperature(pressure_pa, *,
+                                gas_constant: float = DRY_AIR_GAS_CONSTANT):
+    """Temperature of the resting profile at ``pressure_pa``, which is a
+    function of pressure and nothing else."""
+    p = np.asarray(pressure_pa, dtype=np.float64)
+    exponent = gas_constant * REST_LAPSE_K_M / GRAVITY_M_S2
+    return np.maximum(
+        REST_SEA_LEVEL_TEMPERATURE_K * (p / REST_SEA_LEVEL_PRESSURE_PA) ** exponent,
+        REST_TROPOPAUSE_K,
+    )
+
+
+def rest_atmosphere_surface_pressure(height_m, *,
+                                     gas_constant: float = DRY_AIR_GAS_CONSTANT):
+    """The resting profile's hydrostatic pressure at ``height_m`` above sea
+    level: the closed form of the constant-lapse layer below the
+    tropopause and of the isothermal layer above it."""
+    z = np.asarray(height_m, dtype=np.float64)
+    power = GRAVITY_M_S2 / (gas_constant * REST_LAPSE_K_M)
+    z_trop = (REST_SEA_LEVEL_TEMPERATURE_K - REST_TROPOPAUSE_K) / REST_LAPSE_K_M
+    p_trop = REST_SEA_LEVEL_PRESSURE_PA * (
+        REST_TROPOPAUSE_K / REST_SEA_LEVEL_TEMPERATURE_K) ** power
+    below = REST_SEA_LEVEL_PRESSURE_PA * (
+        1.0 - REST_LAPSE_K_M * np.minimum(z, z_trop)
+        / REST_SEA_LEVEL_TEMPERATURE_K) ** power
+    above = p_trop * np.exp(
+        -GRAVITY_M_S2 * (z - z_trop) / (gas_constant * REST_TROPOPAUSE_K))
+    return np.where(z <= z_trop, below, above)
+
+
+def terrain_on_model_grid(latitude_deg, longitude_deg, values, grid):
+    """Periodic bilinear interpolation of a regular global latitude-longitude
+    field (Earth's terrain height, say) onto the model's Gaussian grid.
+
+    The analysis cold start regrids its terrain the same way (bilinear,
+    then the spectral truncation), through a Rust door; this is plain
+    numpy so a benchmark needs no door.  A field that is not regular, not
+    a full longitude ring or does not reach the grid's outermost rows is
+    refused by name.
+    """
+    lat = np.asarray(latitude_deg, dtype=np.float64).reshape(-1)
+    lon = np.asarray(longitude_deg, dtype=np.float64).reshape(-1)
+    field = np.asarray(values, dtype=np.float64)
+    if field.shape != (lat.size, lon.size):
+        raise ValueError(
+            f"terrain shape {field.shape} is not (latitude, longitude) = "
+            f"({lat.size}, {lon.size})")
+    if lat[0] > lat[-1]:
+        lat = lat[::-1]
+        field = field[::-1]
+    dlat = np.diff(lat)
+    dlon = np.diff(lon)
+    if (np.max(np.abs(dlat - dlat[0])) > 1.0e-6
+            or np.max(np.abs(dlon - dlon[0])) > 1.0e-6 or dlat[0] <= 0.0):
+        raise ValueError("terrain grid must be regular in latitude and longitude")
+    if abs(float(dlon[0]) * lon.size - 360.0) > 1.0e-3:
+        raise ValueError("terrain longitudes must close the globe")
+    target_lat = np.asarray(grid.latitude_deg, dtype=np.float64)
+    target_lon = np.asarray(grid.longitude_deg, dtype=np.float64)
+    if target_lat.min() < lat[0] - 1.0e-9 or target_lat.max() > lat[-1] + 1.0e-9:
+        raise ValueError("terrain latitudes do not reach the model grid's outer rows")
+    row = np.clip(np.searchsorted(lat, target_lat) - 1, 0, lat.size - 2)
+    wy = ((target_lat - lat[row]) / (lat[row + 1] - lat[row]))[:, None]
+    x = np.mod(target_lon - lon[0], 360.0) / float(dlon[0])
+    col = np.floor(x).astype(np.int64)
+    wx = (x - col)[None, :]
+    col = np.mod(col, lon.size)
+    col1 = np.mod(col + 1, lon.size)
+    lower = field[row][:, col] * (1.0 - wx) + field[row][:, col1] * wx
+    upper = field[row + 1][:, col] * (1.0 - wx) + field[row + 1][:, col1] * wx
+    return lower * (1.0 - wy) + upper * wy
+
+
+def rest_atmosphere_initial_state(cfg, transform, terrain_height_m):
+    """The resting atmosphere over ``terrain_height_m`` (metres, on the
+    model grid), in this model's own variables: ``(bundle,
+    surface_geopotential, provenance)``.
+
+    The terrain passes through the model's spectral truncation first, as
+    the analysis cold start's does, and the surface pressure is the
+    profile's at the truncated height, so the start is the model's own
+    best rest state and what it does next is the core's.
+    """
+    backend = transform.backend
+    xp = backend.xp
+    dtype = backend.float_dtype
+    grid = transform.grid
+    height = np.asarray(terrain_height_m, dtype=np.float64)
+    if height.shape != tuple(grid.shape):
+        raise ValueError(
+            f"terrain shape {height.shape} is not the model grid {grid.shape}")
+    surface_geopotential = np.asarray(backend.to_numpy(transform.inverse(
+        transform.forward(backend.asarray(GRAVITY_M_S2 * height, dtype=dtype))
+    )), dtype=np.float64)
+    ps = rest_atmosphere_surface_pressure(surface_geopotential / GRAVITY_M_S2)
+    pressure = cfg.vertical.pressure(ps, _HostBackend())
+    p_full = np.asarray(pressure["p_full"], dtype=np.float64)
+    temperature = rest_atmosphere_temperature(p_full)
+    theta = temperature / (p_full / REFERENCE_PRESSURE_PA) ** KAPPA
+
+    zeros_grid = xp.zeros((cfg.vertical.nlev, *grid.shape), dtype=dtype)
+    zeros_spectral = xp.zeros(
+        (cfg.vertical.nlev, *transform.spectral_shape),
+        dtype=backend.complex_dtype,
+    )
+    atmosphere = MoistHybridState(
+        vorticity=zeros_spectral.copy(),
+        divergence=zeros_spectral.copy(),
+        theta=transform.project(
+            transform.forward(backend.asarray(theta, dtype=dtype))
+        ),
+        log_surface_pressure=lnps_from_anomaly_coefficients(
+            transform, transform.project(transform.forward(backend.asarray(
+                np.log(ps) - LNPS_REFERENCE, dtype=dtype)))
+        ),
+        qv=zeros_spectral.copy(),
+        **{
+            name: zeros_grid.copy()
+            for name in ("qc", "qr", "qi", "qs", "qg",
+                         "nc", "nr", "ni", "ns", "ng")
+        },
+    )
+    surface = _dry_surface(transform, temperature[-1])
+    provenance = {
+        "mode": "rest_atmosphere",
+        "case": "rest-over-terrain",
+        "sea_level_pressure_pa": REST_SEA_LEVEL_PRESSURE_PA,
+        "terrain_max_m": float(np.max(surface_geopotential) / GRAVITY_M_S2),
+        "terrain_min_m": float(np.min(surface_geopotential) / GRAVITY_M_S2),
+    }
+    return (
+        ArwenGlobalState(atmosphere, surface, PhysicsState()),
+        backend.asarray(surface_geopotential, dtype=dtype),
+        provenance,
     )
 
 
@@ -369,9 +551,17 @@ __all__ = [
     "HS_SIGMA_B",
     "JW_SURFACE_PRESSURE_PA",
     "JW_U0",
+    "REST_LAPSE_K_M",
+    "REST_SEA_LEVEL_PRESSURE_PA",
+    "REST_SEA_LEVEL_TEMPERATURE_K",
+    "REST_TROPOPAUSE_K",
     "apply_held_suarez",
     "baroclinic_wave_initial_state",
     "held_suarez_equilibrium",
     "jablonowski_williamson_fields",
     "jablonowski_williamson_perturbation",
+    "rest_atmosphere_initial_state",
+    "rest_atmosphere_surface_pressure",
+    "rest_atmosphere_temperature",
+    "terrain_on_model_grid",
 ]

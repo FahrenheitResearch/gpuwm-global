@@ -292,6 +292,18 @@
       "size": 11714,
       "sha256": "eda0a2446f61a1986db273f60063bde54b22888c6f8b77a1ee5a23161bf93ec7",
       "reached": "update_diagnostics, imported inside carried npref's two reference-state builders.  Nothing in this package or its suite calls them, which is where all 26 differing lines live"
+    },
+    {
+      "path": "gpuwm/nvrtc_ptx_cache.py",
+      "size": 14299,
+      "sha256": "4246d1b1e1299b3f56711be94e3cb61f4b7b4bb6617856c5b5e1ce05f246911f",
+      "reached": "compile_using_nvrtc, the NVRTC route carried terrain_drag compiles gwdo_column through with -fmad=false and --ftz=false (CuPy's RawModule would append -ftz=true).  Reached only under orographic_drag = 'kim-gwdo'; it decides the compiled words of the drag kernel, which is why it is pinned and not measured by symbol"
+    },
+    {
+      "path": "gpuwm/kernel_compile_notice.py",
+      "size": 18394,
+      "sha256": "260d414bcbccb4b9ffde6d2037666a7f78bd6e9304981167fcb629c763663ca1",
+      "reached": "observe_module_compile, the context carried terrain_drag compiles its module inside, as the engine's own launcher does.  It prints and times a first compile and moves no number"
     }
   ]
 }

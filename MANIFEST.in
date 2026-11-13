@@ -59,6 +59,7 @@ include RELEASE-NOTES-0.1.6.md
 include RELEASE-NOTES-0.1.7.md
 include RELEASE-NOTES-0.1.8.md
 include RELEASE-NOTES-0.1.9.md
+include RELEASE-NOTES-0.2.0.md
 # Which revision of the model's source this package carries.  A reader
 # of an sdist has the code and no way to place it without this.
 include SOURCE.md
@@ -85,3 +86,7 @@ global-exclude *.nc
 # (checkpoints, analyses, ensemble members) and wrong about exactly this one,
 # so it is named back in after the exclusion rather than by weakening it.
 include src/arwen_global/data/static-covariance-v1.npz
+# The orographic drag's known answer: WRF v4.6.1's own gwdo words on 149
+# columns (tests/data/oracles/gwdo_kim/PROVENANCE.md).  Test input, not run
+# output, and the suite inside the sdist reads it.
+include tests/data/oracles/gwdo_kim/*.npz

@@ -380,6 +380,77 @@ not a whole number of steps fires on the first step past each bucket
 edge (3120 s at dt 50 alternates 3100 and 3150 s). The planes it returns
 are held and applied every step until the next bucket.
 
+#### What the radiation is forced with, by date
+
+Every forcing below is prescribed by a stated rule and needs no data later
+than the initial time. Each is dated by the call's valid time, the start
+plus the elapsed model time, so a restarted run dates every call exactly as
+the straight run did.
+
+- **CO2, CH4 and N2O.** The NOAA Global Monitoring Laboratory globally
+  averaged marine surface annual means (doi:10.15138/9N0H-ZH07), pinned in
+  `arwen_global.physics.greenhouse_gases` and named in every receipt's
+  `radiation_greenhouse_gases` record. NOAA makes them freely available
+  and asks for citation (`NOTICE`); the last year of each file is
+  provisional, and the file of 2026-10-09 revised 2025's CO2 from the
+  pinned 425.64 to 425.62 ppm, which this package has not re-pinned
+  because a re-pin moves every run dated 2025 or later. The year read is
+  the latest published year at or before the year asked for, because a
+  year's mean is published only after it ends, so a year past the table's
+  last row (2025:
+  CO2 425.64 ppm, CH4 1935.94 ppb, N2O 338.85 ppb) holds that row and the
+  record says so in its own line, `held_past_table`. Nothing is projected
+  forward. Which year is asked for is `[radiation] ghg_year`:
+  - `"start"` (the default, and every run before the key existed): the
+    start time's year for the whole run. A config that sets nothing, or
+    sets `"start"`, keeps its config hash.
+  - `"valid"`: re-selected at every radiation call from the call's valid
+    year, so a run that crosses 31 December radiates the next year's row
+    from its first call at or after 1 January 00:00 UTC. The record then
+    carries `by_valid_year`, one row per calendar year the run touches with
+    the instant it takes effect. The key joins the config identity, so a
+    checkpoint written under one rule refuses to resume under the other.
+    Inside one calendar year the two rules are bit-identical. The size is
+    small: from 2019 to 2025 the published CO2 means rose 2.26 to 3.44 ppm
+    a year, 0.029 to 0.044 W/m2 of forcing a year by the 5.35 ln(C/C0)
+    approximation; what the rule buys is a run whose radiation matches its
+    own calendar.
+  An explicit `trace_co2_ppm` still overrides CO2 under either rule. The
+  halocarbons and the other minor gases keep the RFMIP climatology the
+  radiation loads. The regional engine's RRTMGP uses the same NOAA CO2
+  table; its CAMtr SSP2-4.5 scenario table (WRF's `ghg_input = 1`) serves
+  only its older RRTMG wrappers and is not used here.
+- **Solar geometry.** WRF's `radconst` and `calc_coszen`: declination with
+  a 23.5 degree obliquity and an equation of time, on WRF's zero-based
+  fractional julian day over a **fixed 365-day orbit, in leap years too**.
+  So from 1 March of a leap year to 31 December, every date takes the
+  geometry one day later in the orbit than the same date in a common year
+  (29 February takes a common year's 1 March), and a leap year's
+  31 December repeats the geometry of the 1 January that follows; the slip
+  is at most one day and is recovered at the year end. Month ends are
+  ordinary days.
+- **Solar constant.** WRF's `1370 x ECCFAC` (Paltridge and Platt
+  eccentricity, the same 365-day julian): 1418.02 W/m2 at 1 January 00Z,
+  1418.06 at its largest two days later and 1324.23 at its smallest, at
+  julian day 184.5 (4 July in a common year). It is WRF's choice and is kept,
+  because changing it moves every run: 1370 W/m2 is about 0.7 percent
+  above the measured total solar irradiance near 1361 W/m2, about
+  2.25 W/m2 more global-mean incoming at the top ((1370 - 1361) / 4). There
+  is no solar-cycle variation.
+- **Ozone.** The CAM zonal-monthly climatology WRF and MPAS-A ship
+  (`ozone = "cam-zonal-monthly"`, the default), interpolated to the call's
+  date with WRF's `ozn_time_int` weights on the same 365-day julian, so a
+  leap year's 31 December reads 1 January's weights. It is a climatology:
+  there is no year-to-year ozone and no ozone-hole variation.
+- **Aerosols.** None. The radiation carries no aerosol optics, so there is
+  no aerosol direct effect and no volcanic forcing.
+
+`tests/test_greenhouse_gases_by_year.py` and
+`tests/test_greenhouse_gases_by_year_cuda.py` pin the values used on given
+dates across 31 December and 29 February, the geometry and ozone repeats
+above on the card, and a restart across both edges reproducing the
+straight run bit for bit.
+
 The cloud optics reads the grid tracers: WRF's `cal_cldfra1` cloud
 fraction from the checkpointed vapor, cloud water, ice and snow; in-cloud
 paths from the layer masses; Morrison's post-update effective radii
@@ -662,7 +733,9 @@ includes, as applicable:
   record (how many cloudy cells and columns carried a particle size
   outside the RRTMGP tables, last call and running sum);
 - SFCLAY in/out fields;
-- Noah soil, snow, canopy and diagnostic state;
+- Noah soil, snow, canopy and diagnostic state, including the snow age
+  (`noah_snotime`, WRF's SNOTIME: seconds since the column's last
+  snowfall);
 - Morrison number moments, radii and precipitation accumulators;
 - the cumulus `RAINC` accumulator and call count (neither cumulus scheme
   holds a state between calls: `RAINCV` is a per-call increment consumed
@@ -671,6 +744,53 @@ includes, as applicable:
 
 A resumed run therefore does not cold-start Noah, radiation or Morrison at a
 checkpoint boundary.
+
+#### Snow age
+
+Noah darkens a snowpack as it ages: with no new snow, the snow albedo is
+`snoalb1 * 0.94 ** ((age / 86400 s) ** 0.58)`, where
+`snoalb1 = snoalb + 0.5 * (0.85 - snoalb)` and 0.5 is GENPARM's LVCOEF. A
+snowfall sets the age back to zero (`core/kernels/noah.cu:155-170`, WRF's
+ALCALC). By that formula a pack one day old has 0.94 of its fresh snow
+albedo, and a pack ten days old has 0.79. By default, and in every release
+up to 0.1.8, the runtime gives Noah a new array of zero ages on every land
+call, so every snowpack is one land interval old for the whole run. At the
+default 60 s interval that is 0.999 of the fresh value, however long the
+snow has lain. With the native option `snow_ageing = true` the age is the
+persistent `noah_snotime`, carried between land calls and through
+checkpoints.
+
+What the model assumes about the age:
+
+- The analysed pack at a cold start is fresh snow, with age zero. The
+  model reads no snow age from an analysis.
+- Columns Noah does not integrate keep the age they had. These are open
+  water, sea ice and land ice.
+
+Carrying the age is the native option `snow_ageing` (default `false`; a
+long run sets it, `docs/ARWEN_GLOBAL_LONG_RUNS.md`). It changes the numbers
+of every run that has snow, so `true` is in the config identity: a config
+that sets it hashes apart from the same config without it, and a checkpoint
+written under the zero-age arithmetic is refused by the hash check rather
+than resumed with other physics. The default, `false`, is that arithmetic:
+it rebuilds the age as zeros on every land call, carries no age plane
+between calls, and leaves every shipped config's hash as it was
+(`tests/test_arwen_global_snow_age.py` holds the native smoke under the
+external scheme to its earlier hash, 367431fd..., and the shipped T255
+semi-Lagrangian day to 0.1.7's, c7a000d2...).
+
+A checkpoint written without the age has no `noah_snotime`. Its hash
+matches only `snow_ageing = false`, so a plain restart of it resumes with
+every pack at age zero, which is what that setting computes anyway, and
+nothing is reported. A run that carries the age and starts from such a
+checkpoint anyway (`--branch-from-other-config`), where Noah ran in the
+checkpoint's lineage, reports the array as missing in the receipt's
+`restart` row (`absent_carried_physics_arrays`) and in one line on standard
+error, and every pack starts at age zero. The tests are
+`tests/test_arwen_global_snow_age.py`, with the carry, the restart, the
+old-archive case and the float64 mirror's known answer, and
+`tests/test_arwen_global_snow_age_cuda.py`, with the CUDA kernel's known
+answer after 1 to 24 hourly calls.
 
 ### Cold-start surface seeding
 

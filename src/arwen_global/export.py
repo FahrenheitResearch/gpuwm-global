@@ -29,6 +29,9 @@ from .pins import KNOWN_PINS_HASHES, pins_hash
 from .runner import build_model_and_cold_state, build_transform
 from .transport import sample_grid_field
 
+#: The door's name in a refusal on another world.
+PARENT_EXPORT_DOOR = "export-parent (the regional bridge's parent export)"
+
 
 def _canonical(value: object) -> bytes:
     return json.dumps(
@@ -57,7 +60,25 @@ def export_parent(
     nlat: int,
     nlon: int,
 ) -> Path:
-    """Export complete moist/moment state plus diagnosed continuity carriers."""
+    """Export complete moist/moment state plus diagnosed continuity carriers.
+
+    A run on another world is refused by name before the model is built
+    (:data:`PARENT_EXPORT_DOOR`): the regional bridge lays the parent over
+    Earth's geography (:mod:`arwen_global.world.refusals`)."""
+    from .world.refusals import refuse_on_world
+
+    refuse_on_world(getattr(cfg, "world", None), door=PARENT_EXPORT_DOOR,
+                    family="regional",
+                    source=f"config {getattr(cfg, 'name', '')!r}")
+    if Path(checkpoint).is_file():
+        from .checkpoint import read_checkpoint_header
+
+        try:
+            header = read_checkpoint_header(checkpoint)
+        except Exception:
+            header = None  # read_checkpoint below refuses it in its own words
+        refuse_on_world(header, door=PARENT_EXPORT_DOOR, family="regional",
+                        source=f"checkpoint {checkpoint}")
     transform = build_transform(cfg)
     model, _cold = build_model_and_cold_state(
         cfg, transform, scratch_destination=Path(output))

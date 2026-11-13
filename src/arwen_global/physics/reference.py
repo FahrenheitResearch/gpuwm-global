@@ -968,6 +968,9 @@ class ReferencePhysics:
             "net_surface_radiation": net_surface_radiation,
             "outgoing_longwave": outgoing_longwave,
             "evaporation": evaporation,
+            # Taken back out by step() before the planes leave the suite:
+            # held only for the slab ocean (_HELD_NET_FLUX).
+            _NET_SURFACE_FLUX_PLANE: net_surface,
         }
 
     def _turbulence(self, exchange, u, v, theta, q, xp):
@@ -1489,6 +1492,7 @@ class ReferencePhysics:
         u, v, theta, q, surface, diagnostics, planes = self._surface_radiation_fluxes(
             exchange, u, v, theta, q, surface, xp
         )
+        net_surface_flux = planes.pop(_NET_SURFACE_FLUX_PLANE)
         self._observe("surface_radiation_fluxes", u, v, theta, q, band)
         u, v, theta, q = self._turbulence(exchange, u, v, theta, q, xp)
         self._observe("turbulence", u, v, theta, q, band)
@@ -1566,6 +1570,14 @@ class ReferencePhysics:
             exchange, u, v, theta, q, surface, xp
         ))
         physics_state.metadata[_SURFACE_DIAGNOSTICS_KEY] = _SURFACE_DIAGNOSTICS_SOURCE
+        if _HELD_NET_FLUX in physics_state.arrays:
+            # The slab ocean (or its calibration) put this plane in the state
+            # at its cold start and reads it before the next step: the net
+            # heat into the surface this step, positive down.  A run without
+            # it holds nothing more than it did.
+            physics_state.arrays[_HELD_NET_FLUX] = xp.asarray(
+                net_surface_flux, dtype=xp.float64)
+        del net_surface_flux
         result = PhysicsResult(
             u=u,
             v=v,
@@ -1634,6 +1646,11 @@ class ReferencePhysics:
 # SIMILARITY_SOURCE; the literal avoids a circular import).
 _SURFACE_DIAGNOSTICS_KEY = "surface_diagnostics"
 _SURFACE_DIAGNOSTICS_SOURCE = "reference-similarity"
+# The slab ocean's held net surface flux (ocean_coupler.HELD_NET_FLUX; the
+# literal avoids importing the coupler into the suite) and the private plane
+# name it travels under from the flux routine to step().
+_HELD_NET_FLUX = "ocean_held_net_surface_flux_w_m2"
+_NET_SURFACE_FLUX_PLANE = "_net_surface_flux"
 
 
 __all__ = [

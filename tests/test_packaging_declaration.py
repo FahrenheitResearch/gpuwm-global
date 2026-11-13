@@ -226,7 +226,7 @@ def _matches(relative: str, glob: str) -> bool:
 
 
 def test_the_configs_that_ship_are_the_ones_that_were_carved():
-    """57 experiments, and every one of them parses as TOML.
+    """59 experiments, and every one of them parses as TOML.
 
     Fifty-three came out of the engine's `configs/verify/` at the first cut;
     the fifty-fourth is the quickstart, which lived one directory up and was
@@ -236,11 +236,14 @@ def test_the_configs_that_ship_are_the_ones_that_were_carved():
     carried at the 857cb277c re-cut: the T255 record config with one table
     changed, which its own test holds against the record.  The fifty-sixth
     and fifty-seventh are the T63 and T127 coarse grids: the T255 record
-    config at a quarter and half of its resolution.
+    config at a quarter and half of its resolution.  The fifty-eighth and
+    fifty-ninth are the first two other worlds, no mountains and Earth on
+    its side: the T255 forecast-day config with a `[world]` table appended,
+    which is how a launcher that sets keys by pattern starts one.
     """
 
     configs = sorted((SRC / "configs").glob("*.toml"))
-    assert len(configs) == 57, [path.name for path in configs]
+    assert len(configs) == 59, [path.name for path in configs]
     families = {path.name.split("_")[0] for path in configs}
     assert families == {"arwen", "global"}, families
     for path in configs:
@@ -264,7 +267,7 @@ def test_every_kernel_source_ships(declaration):
                      for path in SRC.rglob("*.cu"))
     assert "semilag/kernels.cu" in sources
     carried = [name for name in sources if name.startswith("core/kernels/")]
-    assert len(carried) == 12, carried
+    assert len(carried) == 13, carried
     assert sources == sorted(["semilag/kernels.cu"] + carried)
     headers = sorted(path.relative_to(SRC).as_posix()
                      for path in SRC.rglob("*.cuh"))

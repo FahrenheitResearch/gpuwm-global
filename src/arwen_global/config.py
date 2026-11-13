@@ -302,7 +302,12 @@ def default_eulerian_step_s(truncation: int, maximum_cfl: float = 0.75,
         )
     return max(admitted)
 from .statics import STATICS_SOURCES, StaticsOptions, parse_utc
+from .boundary_options import (
+    OUTPUT_PRODUCT_KEYS, LandOptions, OceanOptions, OutputOptions, parse_land,
+    parse_ocean, parse_output,
+)
 from .vertical import HybridCoordinate
+from .world.spec import EARTH as EARTH_WORLD, WorldSpec, parse_world
 
 #: [vertical] coordinate names and the constructor each selects.
 VERTICAL_COORDINATES = {
@@ -652,6 +657,23 @@ class ArwenGlobalConfig:
     # M halving argument as above; carried when on.
     skip_unread_planes: bool = False
     divergence_only_mass_flux: bool = False
+    # [ocean] / [sea_ice] the ocean and sea-ice rule (arwen_global.
+    # boundary_options, arwen_global.ocean_rules): hold, anomaly,
+    # climatology or series.  Joins the identity only where it changes
+    # arithmetic (hold with held ice and the series leave every hash as it
+    # was), its files by content SHA-256.  [land] greenness joins only when
+    # it states something the mode would not do.  [output] (retention,
+    # mean-state and daily-summary products) is an instrument: never.
+    ocean: OceanOptions = OceanOptions()
+    land: LandOptions = LandOptions()
+    output: OutputOptions = OutputOptions()
+    # [world] the planet the run is on (arwen_global.world.spec).  Appended
+    # at the END with a default so no positional index moves.  Earth (no
+    # table, or a table whose every setting is Earth's) enters no identity,
+    # so every config hash written before the table existed -- and every
+    # checkpoint and receipt bound to one -- stays byte-identical; any
+    # other world joins the identity by its canonical settings.
+    world: WorldSpec = EARTH_WORLD
 
     @property
     def config_identity(self) -> dict[str, object]:
@@ -676,6 +698,17 @@ class ArwenGlobalConfig:
         del payload["insitu"]
         del payload["checkpoint_compression"]
         del payload["snapshot_buffer"]
+        del payload["output"]
+        ocean_identity = self.ocean.identity
+        if ocean_identity is None:
+            del payload["ocean"]
+        else:
+            payload["ocean"] = ocean_identity
+        land_identity = self.land.identity(self.ocean)
+        if land_identity is None:
+            del payload["land"]
+        else:
+            payload["land"] = land_identity
         del payload["surface_series"]
         if payload["surface_series_sha256"] is None:
             del payload["surface_series_sha256"]
@@ -800,6 +833,13 @@ class ArwenGlobalConfig:
                 "semi_implicit_off_centring_weight",
             ):
                 del payload[key]
+        # The world joins the identity only when it is not Earth's; its
+        # label is a name and never joins (WorldSpec.identity).
+        world_identity = self.world.identity
+        if world_identity is None:
+            del payload["world"]
+        else:
+            payload["world"] = world_identity
         return payload
 
     @property
@@ -880,7 +920,8 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         "arwen_global", "grid", "time", "vertical", "initial", "physics",
         "reference_physics", "sponge", "diffusion", "semi_implicit",
         "repair", "gates", "insitu", "statics", "semilag", "memory",
-        "surface_update", "output", "transforms",
+        "surface_update", "ocean", "sea_ice", "land", "output", "radiation",
+        "transforms", "world",
     }
     unknown_tables = sorted(set(raw) - allowed_tables)
     if unknown_tables:
@@ -1186,11 +1227,38 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         # exactly that (bit for bit the switched-on arm), as a config
         # spelling "wrf-layer" once ran "fixed".  So the config carries the
         # normalized defaults with the operator's own keys laid over them.
+        if "ghg_year" in options:
+            raise ValueError(
+                "ghg_year is spelled once, as [radiation] ghg_year; remove it "
+                "from physics.native_adapter_options")
         options = {**normalized, **dict(options)}
         if backend != "cupy" or precision != "float32":
             raise ValueError(
                 "Arwen native physics requires backend='cupy' and precision='float32'"
             )
+
+    # [radiation] ghg_year: which year's greenhouse gases RRTMGP radiates
+    # (arwen_global.physics.greenhouse_gases).  "start", the default, is the
+    # start time's year for the whole run; "valid" re-selects them at every
+    # radiation call from its valid year.  Carried as the native option
+    # ghg_year, whose identity drops "start", so a config that sets nothing
+    # (or sets "start") keeps its config hash and "valid" joins it.
+    radiation_table = _table(raw, "radiation")
+    _unknown(radiation_table, {"ghg_year"}, "radiation")
+    if "ghg_year" in radiation_table:
+        from .physics.greenhouse_gases import GHG_YEAR_RULES
+
+        ghg_year = radiation_table["ghg_year"]
+        if not isinstance(ghg_year, str) or ghg_year not in GHG_YEAR_RULES:
+            raise ValueError(
+                f"radiation.ghg_year must be one of {', '.join(GHG_YEAR_RULES)}, "
+                f"got {ghg_year!r}")
+        if physics_mode != "arwen-native":
+            raise ValueError(
+                "radiation.ghg_year is read by the native suite's RRTMGP; "
+                f"physics.mode = {physics_mode!r} radiates no greenhouse gas "
+                "by year, so the key would change nothing")
+        options["ghg_year"] = ghg_year
 
     reference = _table(raw, "reference_physics")
     # Retired in the v7 -> v8 suite bump: the top-of-model absorber moved
@@ -1451,8 +1519,10 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
 
     insitu = insitu_options_from_table(_table(raw, "insitu"))
     output_table = _table(raw, "output")
-    _unknown(output_table, {"checkpoint_compression", "snapshot_buffer"},
-             "output")
+    # One [output] table: the checkpoint writer's two keys, read here, and
+    # the long-run products' keys, read by parse_output below.
+    _unknown(output_table, {"checkpoint_compression", "snapshot_buffer",
+                            *OUTPUT_PRODUCT_KEYS}, "output")
     checkpoint_compression = str(output_table.get(
         "checkpoint_compression", DEFAULT_CHECKPOINT_COMPRESSION))
     if checkpoint_compression not in CHECKPOINT_COMPRESSIONS:
@@ -1488,6 +1558,16 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         with series_path.open("rb") as stream:
             surface_series_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
     statics = _statics_options(_table(raw, "statics"), initial_mode)
+    ocean = parse_ocean(
+        _table(raw, "ocean") if "ocean" in raw else None,
+        _table(raw, "sea_ice") if "sea_ice" in raw else None,
+        source_dir=source.parent, surface_series=surface_series,
+        duration_s=duration, initial_mode=initial_mode,
+        statics_source=statics.source)
+    land = parse_land(_table(raw, "land"))
+    output_options = parse_output({
+        key: value for key, value in output_table.items()
+        if key in OUTPUT_PRODUCT_KEYS})
 
     memory = _table(raw, "memory")
     _unknown(memory, {
@@ -1594,6 +1674,23 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
             "two_card_contractions_agree gate row (a timing device for unlike "
             "cards, never a run of record)"
         )
+    world = parse_world(raw.get("world"))
+    # Each gas in one place: the world's [world.air] or the native option
+    # (physics.native_options.WORLD_AIR_OPTIONS), never both.  The same
+    # rule is held again where the physics is built (world_air_options).
+    for key, option, gas in (("co2_ppm", "trace_co2_ppm", "CO2"),
+                             ("ch4_ppb", "trace_ch4_ppb", "CH4"),
+                             ("n2o_ppb", "trace_n2o_ppb", "N2O")):
+        if (not isinstance(getattr(world.air, key), str)
+                and options.get(option) is not None):
+            raise ValueError(
+                f"world.air.{key} and [physics] native_adapter_options "
+                f"{option} both set the {gas}: name it in one place")
+    if not world.is_earth:
+        # The world rides on the statics options so load_statics, the one
+        # seam every caller reads the statics through, applies its surface
+        # (arwen_global.statics, package 2.1).  Earth leaves them untouched.
+        statics = _statics_with_world(statics, world, source)
     latitude_bands = _integer(
         memory.get("latitude_bands", 0), "memory.latitude_bands")
     if latitude_bands < 0:
@@ -1679,7 +1776,31 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         closure_eddy_prandtl=closure_eddy_prandtl,
         closure_tail_degrees=closure_tail_degrees,
         **transforms,
+        ocean=ocean,
+        land=land,
+        output=output_options,
+        world=world,
     )
+
+
+def _statics_with_world(statics: StaticsOptions, world: WorldSpec,
+                        source: Path) -> StaticsOptions:
+    """``statics`` carrying ``world`` (never called for Earth).
+
+    An invented world's folder is resolved against the config file's
+    directory when relative, as ``surface_update.series`` is.  A world that
+    changes the coast on the synthetic planet is refused at its cold start
+    (statics.synthetic_provenance), not here: the config still loads and
+    hashes, as the world contract's own tests expect."""
+    from dataclasses import replace
+
+    folder = None
+    if world.is_invented:
+        path = Path(world.surface.folder).expanduser()
+        if not path.is_absolute():
+            path = source.parent / path
+        folder = str(path)
+    return replace(statics, world=world, world_folder=folder)
 
 
 def _statics_options(table: dict, initial_mode: str) -> StaticsOptions:

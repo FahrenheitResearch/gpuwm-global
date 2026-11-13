@@ -1,5 +1,641 @@
 # Changelog
 
+## 0.2.0
+
+Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.1.9 did;
+proven against `gpuwm 2.9.13`.  `tools/measure_boundary.py` reads 242
+symbols across 72 modules with no gap, and all 50 engine seam files are
+pinned at 2.9.13.  The companion bundle carries ten Rust doors, unchanged
+from 0.1.9.  Every shipped config keeps its 0.1.8 and 0.1.9 hash.
+Noah's snow age can now be carried (`snow_ageing = true`, off by default,
+which a long run sets).  The one array a shipped forecast writes
+differently is the open-water reservoir `surface_water_kg_m2`, which no
+native scheme reads (Measured together, below).  The long-run keys, the
+albedo options, the coupled ocean and other worlds are experimental and
+off unless a config names them.  A one-card run that runs out of card
+memory carries on from its newest checkpoint on a lighter plan (A run
+that runs out of memory, below).
+
+### Measured together
+
+- On the RTX 5090s of one host, the shipped
+  `arwen_global_gdas_t255_native_sl_si_24h` and
+  `arwen_global_gdas_t383_native_sl_si_24h` to 3 h, this tree against
+  0.1.7 (which 0.1.8 and 0.1.9 match array for array), checkpoints
+  compared with `tools/arwen_global_checkpoint_identity.py`, 2026-11-13.
+  With no
+  option named, the config hash is 0.1.7's at both truncations
+  (c7a000d28c206ace and a30d9e5284289755), and the step-0 checkpoint's
+  43 arrays are byte-identical.  At step 36, 132 of the 133 arrays 0.1.7
+  writes are byte-identical.  The one that differs is the surface
+  reservoir `surface_water_kg_m2` (largest difference 52.9 kg/m2 at T255
+  and 85.0 at T383).  It differs because on open-water columns the
+  exchange account now takes the water the physics moves, and the
+  reservoir there keeps its value.  No native scheme reads that
+  reservoir, so the atmosphere, the surface and the soil are
+  byte-identical.  The checkpoint also carries the account and the
+  open-water evaporation sum (`ocean_exchange_kg_m2`,
+  `ocean_evaporation_day_kg_m2`).  `tests/test_arwen_global_open_water_exchange_cuda.py`
+  holds the same on a card for one physics half-step of the native suite.
+  With `open_water_exchange = false` the step-0 and step-36 checkpoints
+  are byte-identical at both truncations, 43 and 133 arrays, archive hash
+  included.  Every shipped config hashes as in 0.1.8 and 0.1.9.
+- 0.1.7's step-0 checkpoint of the T255 day continued by this tree to
+  step 36 with `open_water_exchange = false` ends byte-identical to
+  0.1.7's straight run, all 133 arrays.  With no option named, the run is
+  given a zero account, its receipt says so, nothing is reported missing,
+  and it ends as above: one array differs, the reservoir.
+- The experimental pieces together, on one RTX 5090 each, 2026-11-13: one
+  T255 day of a long-run config (anomaly mode, the orographic drag, the
+  albedo pair, snow ageing, monthly means and retention) passed in
+  261 s; one coupled T255 day with the slab, the albedo pair, snow
+  ageing and `--tapes`, restarted at +12 h, ended with the +18 h and +24 h
+  checkpoints identical to the straight day's (143 of 143 arrays) and
+  both later tapes byte-identical; a world with no mountains at T127 ran
+  its day and passed in 83 s.
+- Experimental, each off unless a config names it: the long-run line's
+  `[ocean]`, `[land]` and `[output]` long-run keys, `[radiation] ghg_year =
+  "valid"` and the orographic drag; the three albedo options; the coupled
+  ocean (`[ocean] mode = "slab"`); and other worlds (`[world]`).
+
+### Added
+
+- Three native options for the sunlight the model reflects too much of,
+  each off by default and outside the config identity at its default, so
+  a config that names none of them keeps its hash and its arithmetic
+  (`docs/albedo-fixes.md`):
+  `morrison_droplet_number = "land_ocean"`, 300 cloud droplets per cm3
+  over land and 100 over ocean and sea ice in place of WRF's single 250,
+  a declared departure (`docs/morrison-droplet-number.md`);
+  `radiation_liquid_radius = "wrf_relcalc"`, the liquid radius WRF 4.7.1's
+  RRTMG radiates for Morrison cloud, 14 um over sea and ice and 8 um over
+  warm snow-free land; and `radiation_cloud_inhomogeneity = "tiedtke1996"`,
+  the in-cloud liquid and ice paths times 0.7 in both solvers, a declared
+  departure. The 0.7 enters the carried driver as `cloud_path_scale`,
+  ledger row `RRTMGP-28`.
+- A long run sets the first two (`docs/ARWEN_GLOBAL_LONG_RUNS.md`, "The
+  cloud options a long run sets"). Over three 48 h starts in November, July
+  and January they cut the reflected excess over CERES-EBAF by 57 to 59%,
+  moved OLR by under 0.5 W/m2 and left Z500 better in all six case-leads;
+  the 0.7 factor stays off because it worsened 2 m land temperature at
+  24 h by 0.05 to 0.09 K in every case. `tools/arwen_global_albedo_twins.py`
+  reads the twins. Over the ten-day anomaly run from GDAS 2026-11-10 18Z,
+  against a control beside it, the pair took the top-of-atmosphere net
+  from -21.33 to -4.85 W/m2 and the planetary albedo from 0.392 to 0.343
+  (CERES-EBAF November 0.303), with every receipt gate passed.
+- `gpuwm-global climatology fetch` and `gpuwm-global climatology build`
+  make a monthly sea-surface climatology on a config's Gaussian grid from
+  public data that needs no credential.  The sources are rows of
+  `arwen_global/data/surface_climatology_sources.json`: NOAA OISST v2.1's
+  1991-2020 monthly long-term mean of SST and sea-ice concentration
+  (two files, 76,949,346 bytes), and, with `--with-mld`, the NOAA WOA18
+  monthly mixed-layer depth (twelve files, 85,127,108 bytes, pinned as the
+  regional engine pins them and read from its ocean cache when it holds
+  them).  Every file is checked against its row's byte count and SHA-256
+  when it is installed and again before it is decoded, and a file with other
+  bytes is refused.  The build regrids each month with the cold start's
+  open-water rule over the statics ocean (NaN on land and on inland lakes,
+  whose skin follows its own energy budget; the mixed-layer depth is not
+  clamped), writes one `.npz` that is the same bytes from the same inputs,
+  and records in it, for every month, the area-mean SST, each hemisphere's
+  ice extent at 0.15 and 0.5 and its ice area, and the mean mixed-layer
+  depth, on the source grid and on the model grid, over each grid's own
+  water and over the intersection of the two masks.  The file is a
+  climatology, not any year's observation.
+  Measured at T255 and T383 from the pinned inputs: 43,131,694 and
+  96,957,814 bytes, each built in under 30 s on a host CPU, and two T255
+  builds gave the same SHA-256.  On the intersection (model ocean whose
+  source stencil is all water, and for the SST also off the coasts and the
+  ice) the model's mean SST is 0.030 to 0.041 K below OISST's at T255 and
+  0.015 to 0.020 K below at T383 in every month, and per hemisphere the ice
+  extent at 0.15 is within 0.8 %, the extent at 0.5 within 1.6 % and the ice
+  area within 0.4 % of OISST's.  Over each grid's own water the figures
+  differ more, and the difference is the coastline: the southern extent at
+  0.15 is 1.9 % to 4.7 % below OISST's (12 % below at 0.5 in February),
+  because about 0.48 million km2 of OISST water that is ice-covered in every
+  month lies under columns the T255 statics call land, almost all of it
+  between 63 and 79 S.  The built mixed-layer depth is under 10 m on 1.3 %
+  of the ocean column-months, the smallest 3e-12 m.
+- Long-run rows in `diagnostics.jsonl`, on every output step: area means
+  on the model's Gaussian quadrature of the radiation (the held top and
+  surface planes and the flux-times-dt accumulators), the sampled sensible
+  and latent heat fluxes, accumulated and frozen precipitation, the moist
+  total energy, precipitable water, the dry-mass surface pressure
+  (ps - g W), global-mean temperature at 850, 500, 200, 50 and 10 hPa,
+  polar-cap (60-90 deg) temperature at 10 and 50 hPa, zonal-mean wind at
+  10 hPa at 60 N and 60 S, the land reservoir minimum, land-mean soil
+  water, NH snow-covered area, the Nino-3.4 mean SST and the sea-ice
+  extent and area by hemisphere.  A row whose inputs a state does not carry
+  is left out, and a pressure level above the model top is written as
+  null.  The physics' per-call flat means (`mean_outgoing_longwave_w_m2`
+  and the rest) are unchanged.  No arithmetic of the forecast changed: the
+  rows read the state and write nothing back.
+- `arwen_global.longrun_gates` and `tools/arwen_global_longrun_report.py`:
+  gates LR-0 to LR-9 of a long run, read from one run folder or a chain of
+  segment folders, per 30-day window and over the whole run, with the
+  temperature trends' 95% intervals widened for lag-one autocorrelation.
+  The temperature gates are gated against another run or a table of
+  analysis means by date, which the tool's `analysis-table` mode writes
+  from isobaric analysis GRIBs through the cold start's mapping; a daily
+  long-term-mean file is reported beside them and never gated.  Every segment of a run longer than 384 h carries
+  the same table in its receipt as `longrun_gates`, outside the receipt's
+  `status`.  All thresholds but the restart and boundary identities are
+  engineering proposals, not standards.  A required gate passes only on
+  all of its evidence: LR-2 reads "not measured" until a run writes the
+  open-water E - P row its account identity needs, which no package writes
+  yet, even where the land reservoir minimum holds.
+  `tests/test_arwen_global_longrun_gates.py` holds the known answers (the
+  area mean of cos(lat) against pi/4, a planted 0.2 K per 30 days drift
+  read back to 1e-9, ps - g W on the smoke state, the Nino-3.4 mean of an
+  SST of 300 + latitude, an energy budget that closes and a planted leak
+  read back, an interval widened by the effective sample size under
+  lag-one correlated noise, a seasonal TOA swing reported per window while
+  its year passes); `tests/test_arwen_global_longrun_report_tool.py` holds
+  the tool's long-term-mean reader to a cycle written for it.  Read over the `diagnostics.jsonl` of the 10-day T383 GDAS
+  2026-10-15 forecast, the report gives that run receipt's mass and water
+  drifts, 4.359e-07 and 1.309e-08; that run predates these rows, so the
+  rest of its table reads "not measured".
+- Gate LR-10 and two rows on every diagnostics row,
+  `global_mean_relative_angular_momentum_kg_s` and
+  `global_mean_axial_angular_momentum_kg_s`; the gate reports the planet's
+  totals per day and their drift per 30-day window, with no threshold yet.
+- The daily summary gains the surface stress along the 10 m wind,
+  sea-level pressure (mean and minimum), 850 hPa relative vorticity (mean
+  and the day's cyclonic maximum), the sensible and latent heat fluxes,
+  the liquid and ice water paths, cloud cover, and the interval means of
+  the top-of-atmosphere and surface radiation, made on the host from the
+  checkpoint arrays (`docs/ARWEN_GLOBAL_LONG_RUNS.md`, "Daily summary").
+  Before retention deletes a checkpoint it writes its header, every
+  array's SHA-256 included, to `arwen_global_pruned_checkpoints.jsonl`,
+  and every receipt carries a `software_stack` block.  None of this adds an
+  array to the state or changes what the model integrates
+  (`tests/test_arwen_global_longrun_ops.py`).
+- `tools/arwen_global_longrun_chain.py` (source distribution) runs one long
+  forecast as a chain of restarted leases of a few model days each, so a
+  shared card is held one lease at a time: it resumes from the newest whole
+  checkpoint after a stop or a crash, refuses a second copy of itself,
+  stops when a receipt or a required long-run gate fails, prunes across
+  the leases by the config's retention rule, and writes a `STATUS` line per
+  lease with the lease's planetary albedo and net top-of-atmosphere flux.
+  `tests/test_arwen_global_longrun_chain.py`.
+
+- The ocean rule is a config choice: `[ocean] mode = "hold"`, `"anomaly"`,
+  `"climatology"` or `"series"`, with a matching `[sea_ice] mode` (`match`
+  by default).  Anomaly mode carries the starting SST anomaly on the
+  evolving OISST 1991-2020 climatology: its global open-ocean mean
+  persisted, the rest smoothed to T42 and damped at 90 days poleward of
+  30 degrees and persisted within 10 degrees of the equator in the
+  tropical Pacific; the ice anomaly damped at 60 days; no ice over water at
+  or above T_f + 2 K; new ice 1.0 m thick.  Climatology mode removes the
+  anomaly with a 3-day ramp.  Both are closed forms in time from the
+  climatology file and the cold state, so they read no surface record
+  later than the start, and lakes are never written.  `slab` and the
+  `thermodynamic` sea ice are the experimental coupled ocean below.  The
+  tables enter the config identity only where they change arithmetic, the
+  climatology and the reference series by content SHA-256; `mode = "hold"`
+  and the series keep every hash.  The receipt's `surface_boundary` block
+  and per-output rows in `diagnostics.jsonl` say which rule produced the
+  boundary, with its starting anomaly and the LR-8 rows
+  `boundary_max_abs_sst_departure_k` and
+  `boundary_ice_record_mismatch_columns`.  A checkpoint carries the rule's
+  identity block and a restart under another rule, climatology or
+  starting anomaly is refused before its arrays are used.
+  `docs/ARWEN_GLOBAL_LONG_RUNS.md`; `tests/test_arwen_global_ocean_rules.py`
+  (the closed forms at known points, the floor, the ice clip and warm-water
+  rule, the T42 projection of a degree-10 and a degree-50 harmonic, lakes,
+  identity, the long-run refusal, and a smoke run restarted at a
+  mid-month instant inside an ice record, bit for bit).
+- `gpuwm-global surface-series ... --anomaly-reference` builds the anomaly
+  reference: the 28 six-hourly analyses of the 7 days before `--cycle`,
+  read with the analysis sea ice as land in the open-water rule.
+- `[land] greenness = "daily" | "start"`: the vegetation fraction, leaf
+  area index and background albedo march with their monthly climatology
+  once a model day, by default under a rule or a series.
+- `[output]`: `keep_checkpoints = "newest:N"` or `"newest:N+month-ends"`
+  prunes during the segment; `mean_state = "monthly"`, `"daily"` or both
+  writes time-mean files in the checkpoint layout, refused as a restart and
+  labelled `ARWEN_TIME_MEAN` when exported, with the open windows' float64
+  sums in a sidecar so a restart writes the straight run's means;
+  `daily_summary = true` writes a daily file of 2 m temperature mean,
+  minimum and maximum, humidity, wind, outgoing longwave, skin, sea ice,
+  snow cover and the day's precipitation.  A run that states these or runs
+  longer than 384 h prints a disk estimate scaled from the measured T383
+  checkpoint and is refused when the estimate exceeds the free space less
+  `disk_reserve_gb` (20).  Outside the identity.
+  `tests/test_arwen_global_longrun_ops.py`.
+- Orographic gravity-wave drag, off by default: the native adapter option
+  `orographic_drag = "kim-gwdo"` runs WRF's `gwd_opt = 1`, the KIM
+  orographic drag with flow blocking, carried from the engine's
+  terrain-drag launcher and kernel (gpuwm 2.9.13) and cut to that one
+  option, and adds it to YSU's momentum tendencies from the column state YSU
+  read, where WRF's PBL driver adds it.  Before it the model had no
+  gravity-wave drag of any kind; non-orographic drag is still absent.  The
+  option joins the config identity only when on, so every config hash and
+  checkpoint of 0.1.5 is unchanged.
+- `gpuwm-global statics CONFIG --orographic` builds the ten sub-grid
+  orography planes the drag reads (VAR, CON, OA1-4, OL1-4) from WPS_GEOG's
+  `orogwd_10m`, as GEOGRID.TBL.ARW's rows do (`average_4pt`, 0 on the
+  land-surface statics' water columns), into a self-hashed cache beside the
+  land-surface one.  The engine's static-fields crate refuses the Gaussian
+  grid for these rows (`orographic WPS fields need a projected grid`, gpuwm
+  2.9.13), so the package reads the dataset itself.  A drag-on run without
+  the cache is refused before the card is touched, and the cache's identity
+  travels in the physics state, so a restart that would read different
+  statistics is refused.
+- The known answer: the package's float32 numpy transcription of the kernel
+  lands on every output word of WRF v4.6.1's own `gwdo` (the engine's oracle:
+  149 columns, two vertical grids, six grid lengths, copied with its hashes
+  into `tests/data/oracles/gwdo_kim`) without a card; on a card the carried
+  kernel does too under the engine's strict numerics, and it is the engine's
+  kernel word for word in either numerics mode.  Measured once at T255 (GDAS
+  2026-10-15 00Z, 72 h, RTX 4090): both arms stable, the drag slowing the
+  30-60N lowest-level zonal-mean wind from 0.98 to 0.84 m/s and the 60N
+  50 hPa zonal-mean wind from 10.74 to 10.35 m/s, 712 s against 696 s at
+  the same 8.64 GiB peak, and a restart at 24 h bit-identical to the
+  straight run at 48 h (`docs/ARWEN_GLOBAL.md`).
+- `[radiation] ghg_year = "valid"`: the native radiation re-selects CO2,
+  CH4 and N2O at every call from the call's valid year, so a run that
+  crosses 31 December radiates the next year's NOAA GML row from its first
+  call at or after 1 January 00:00 UTC. The default, `"start"`, is the
+  start year for the whole run, as before: a config that sets nothing, or
+  sets `"start"`, keeps its config hash, and `"valid"` joins it. Inside one
+  calendar year the two rules are bit-identical. The key is refused under
+  the reference suite, whose gray radiation carries no gas by year, and is
+  spelled only in `[radiation]`. The carried driver gains one public
+  method for it, `RRTMGPRadiation.select_trace_gases`, filed as
+  `RRTMGP-27` in `docs/CARRIED-PHYSICS-DIVERGENCE.md` and offered to the
+  engine line.
+- The receipt's `radiation_greenhouse_gases` record names its rule
+  (`ghg_year`), carries `by_valid_year` under `"valid"` (one row per
+  calendar year the run touches, with the instant it takes effect), and,
+  under either rule, a `held_past_table` line when a year read is past the
+  table's last published year. A run dated 2026 now says in that line that
+  it radiates 2025's means; the values it radiates are unchanged.
+- `docs/ARWEN_GLOBAL_LEVEL5.md` states what the radiation is forced with
+  by date: the gases and their year rule, WRF's 365-day solar orbit and
+  its one-day leap-year slip, the 1370 W/m2 solar constant, the CAM ozone
+  climatology, and no aerosols. `NOTICE` names the NOAA GML means and the
+  terms their files state.
+
+- Other worlds, experimental: the same forecast run on Earth changed. A
+  `[world]` table at the end of an analysis-start config lowers or removes
+  the mountains (`[world.terrain]`, the surface pressure moved through the
+  analysis's own air, Earth's amount of air kept by default), tilts the axis,
+  dims or brightens the sun, shortens the day or gives it another orbit
+  (`[world.sun]`), raises the sea, takes the land away or sets the sea's
+  temperature and ice by rule (`[world.sea]`), sets CO2, methane and nitrous
+  oxide (`[world.air]`, the last two new options of the native radiation
+  beside CO2), or reads an invented continent from a world folder built from
+  a map (`[world.surface]`; the PALEOMAP reader fetches the published maps
+  on request and ships none of them).  A world has its own config identity,
+  is checked on the CPU against the frame it starts from before any card
+  time (refused by name when its terrain is too tall, its start pressure is
+  over the radiation's ceiling or its warmed land skin is over 355 K), is
+  labelled science, illustration or not supported yet from the rows of
+  `data/world-limits.json`, and is named on its receipt, checkpoints and
+  tapes.  A restart under another world, the regional parent exports,
+  cycling, the assimilation door and the scorecards refuse a world run by
+  name, and so does the orographic drag under a world that changes its
+  terrain or its coast, because its sub-grid statistics are Earth's.  `gpuwm-global world` (`list`, `new`, `describe`, `twin`, `perturb`,
+  `diff`) lists the fourteen presets, writes a world config from an Earth
+  one, prints the world statement and runs a world beside its Earth control
+  and a perturbed control that sets the noise floor.  Two worlds ship as
+  experiments: `arwen_global_world_t255_no_mountains` and
+  `arwen_global_world_t255_on_its_side`, each the T255 forecast-day config
+  with one `[world]` table appended.  `docs/ARWEN_GLOBAL_WORLDS.md` is the
+  whole surface, its limits and its credits; NOTICE credits the PALEOMAP maps
+  and the Aqua-Planet Experiment profiles.  The `tests/test_arwen_global_world_*.py`
+  and `tests/test_arwen_global_worlds_*.py` files hold each part on the CPU.
+- With no `[world]` table, or an all-Earth one, nothing moves.  Measured on
+  the worlds line on its own: every shipped config hashed as in 0.1.7 with
+  and without an all-Earth table appended, and ten steps of the moist smoke config on the CPU write the
+  same checkpoint bytes as 0.1.7 with and without it.  On the card, 12
+  steps of `arwen_global_gdas_t255_native_sl_si_24h` from its GDAS
+  2026-09-01 00Z analysis (`duration_s` and `output_interval_s` set to
+  3600) on one RTX 5090, 0.1.7 and this tree back to back, and this tree
+  again with an all-Earth `[world]` table appended: the step-0 and step-12
+  checkpoints of all three are byte-identical
+  (`tools/arwen_global_checkpoint_identity.py`, 43 and 133 arrays, archive
+  hash and config hash included).
+- The two shipped worlds each ran their forecast day from the same analysis
+  on one RTX 5090, beside the plain experiment (2026-11-12, numbers from the
+  receipts and `diagnostics.jsonl`).  All three passed every gate, in 368 s
+  (no mountains), 364 s (on its side) and 376 s (the plain experiment).  No
+  mountains: the lowest surface pressure at step 0 is 92,401 Pa against the
+  plain experiment's 51,354 Pa; the global-mean surface pressure is
+  98,585.56 Pa against 98,584.67 Pa (Earth's amount of air, to 0.9 Pa), and
+  it drifts by 4.4e-7 over the day.  On its side (90 degree tilt): at 24 h
+  the mean land skin temperature is 4.48 K warmer than the plain
+  experiment's north of 60 N and 2.82 K warmer from 30 to 60 N, and 1.48 K
+  and 2.14 K colder from 0 to 30 S and 30 to 60 S (land columns, land
+  fraction over one half).  One day is a smoke of each world, not a result
+  about it.
+- The demo worlds ran at T127 on one RTX 5090 (2026-11-12 and 13; the T255
+  forecast-day config cut to truncation 127 at `dt_s = 600`, from GDAS
+  2026-09-01 00Z and 2026-11-10 18Z): no mountains for 10 days, on its side
+  for 5, the waterworld, a PALEOMAP 250 Ma continent at two soil wetnesses
+  and a 12-hour day for 20 each, the sea 70 m higher for 10, and one step
+  each at 190, 280, 560 and 1120 ppm CO2.  Every run finished and passed
+  every gate; the global-mean surface pressure moved by at most 1.2e-6 over
+  a run.  No mountains beside Earth and a perturbed Earth: the start's
+  3-hour surface-pressure change over hours 12 to 24 is 1.10 times Earth's,
+  and the 500 hPa height difference over 20 to 80 N stays above the
+  perturbed control's (ratio 5.1) until about hour 180.  CO2 at 560 and
+  1120 ppm adds 2.88 and 5.86 W m-2 of instantaneous net downward flux at
+  the top against 280 ppm.  The table, the labels and what each world
+  showed are on `docs/ARWEN_GLOBAL_WORLDS.md` under "The demo worlds at
+  T127".  The shipped on-its-side config's comment now gives the sun's
+  latitude for its own start date (about 19 N on 2026-09-01) as well as
+  for a mid-November one.
+
+- Experimental: `[ocean] mode = "slab"`, the coupled ocean of
+  `docs/ARWEN_GLOBAL_OCEAN.md`, is admitted by the parser with its keys
+  (`slab_qflux`, `slab_depth`, `slab_depth_bounds_m`,
+  `slab_relaxation_days`, `slab_target`), with `[sea_ice] mode =
+  "thermodynamic"` (which `match` resolves to under the slab, new ice
+  0.5 m), and so is `qflux_calibration` under `mode = "climatology"`, the
+  run its heat-flux correction is made from.  The slab is a provider of the
+  boundary service that advances the mixed layer and the ice mass before
+  every step from the fluxes the physics held, writes the ice at each
+  record and the mixed-layer temperature as the open-ocean skin; its seven
+  float64 arrays ride in the physics state, so a checkpoint carries them and
+  a restart resumes them, and its identity block refuses a restart under
+  another ocean.  The calibration deposits the same flux by month into two
+  arrays while the climatology rule writes the surface.  On the reference
+  suite the flux is a net surface flux plane the suite holds only when one
+  of them is on.  The render tape gains `SST`, `HML` and `ARWEN_QFLUX` only
+  when the checkpoint carries the slab.  `gpuwm-global climatology qflux`
+  is the command that writes the correction file from calibration
+  checkpoints.  The mixed layer and its heat-flux correction
+  (`ocean_slab.py`, `ocean_qflux.py`) and the zero-layer ice mass budget
+  (`sea_ice_thermo.py`) are the arithmetic the coupler calls.  Under ice,
+  the Q-flux leaves out the climatology's SST slope, because the mixed
+  layer there sits at the freezing point.  In the first coupled card run
+  that heat went to the pack instead, and the southern ice shrank at twice
+  the climatology's rate.  Measured on one RTX 5090: a ten-day calibration
+  and a ten-day slab run of the shipped T255 native semi-Lagrangian config
+  from GDAS 2026-11-10 18Z (the Q-flux is in sample).  Against the
+  climatology, the open-ocean SST moved -0.018 K in the area mean and
+  0.224 K rms.  The largest change on one column was 5.46 K, over the
+  page's 5 K bound.  The northern ice area grew 0.93 million km2 against
+  the climatology's 0.76; the southern grew 0.23 while the climatology's
+  shrank by 1.04, so gate OC-4 holds for the SST and not for the southern
+  ice.  On every ocean column the energy books agreed to 2.8e-3 J/m2 after
+  ten days.  The run restarted from +6, +12 and +24 h ends identical to
+  the straight run array for array and in `self_sha256`.  A step cost
+  1.1 % more than the calibration run's, and the measured device peak was
+  the same within 0.04 GiB.  With
+  no `[ocean]` table and under every rule, nothing changes: measured on a
+  host CPU, the T3 smoke with no table and under the anomaly, climatology
+  and hold rules wrote the same 12 checkpoint files byte for byte as the
+  commit before, and the same three tapes; on an RTX 5090, the T255 native
+  semi-Lagrangian config from GDAS 2026-09-01 00Z with no `[ocean]` table,
+  run for 1 h and for 6 h (12 and 72 steps of 300 s), wrote every
+  checkpoint (steps 0, 6, 12 and 0, 36, 72) identical array for array and
+  in `self_sha256` to the tree without the ocean packages, read with
+  `tools/arwen_global_checkpoint_identity.py`.
+  `tests/test_arwen_global_ocean_coupling.py` holds the coupler's known
+  answers, the parser's refusals and the slab and calibration smokes
+  restarted bit for bit in float64 and in float32;
+  `tests/test_arwen_global_ocean_slab.py`,
+  `tests/test_arwen_global_ocean_qflux.py` and
+  `tests/test_arwen_global_sea_ice_thermo.py` hold the parts' known
+  answers.
+
+### Changed
+
+- With native physics, open water is no longer a finite store of water.
+  Every physics call books the column water it moves against the explicit
+  surface reservoir, and the run refuses when a column's reservoir falls
+  below zero; an ocean column whose evaporation exceeds its rain empties
+  the 500 kg/m2 most shipped configurations seed in 100 days at 5 mm a day
+  of E - P.  On ocean, lake and sea-ice columns the movement, and the
+  global water fixer's correction, now go to a signed float64 account,
+  `ocean_exchange_kg_m2` in the physics namespace, and the reservoir there
+  keeps its value; land is unchanged.  Every water ledger counts the
+  account beside the runoff outflow account, so the conserved total is
+  held water plus outflow plus the account.  No native scheme reads the
+  reservoir, so the atmosphere is the same: one native physics half-step on
+  a card from the native T3 smoke cold state, with the account and on the
+  finite reservoir, has every prognostic array byte-identical
+  (`tests/test_arwen_global_open_water_exchange_cuda.py`, and on the CPU
+  with stand-in kernels `tests/test_arwen_global_open_water_exchange.py`).
+  The reference suite caps one call's evaporation by its reservoir, keeps
+  it, and is not a configuration for long runs.
+- In place of the reservoir refusal on open water, the native suite sums
+  each open-water column's evaporation over 24 h blocks of model time and
+  refuses the run, naming the column, when one passes the native option
+  `open_water_evaporation_ceiling_kg_m2_day` (default 60, a provisional
+  engineering value, not a measured one);
+  `open_water_evaporation_refusal = false` reports without refusing.
+  Neither option enters the config identity.
+- The native option `open_water_exchange = false` turns the account off
+  and keeps the finite reservoir on open water, the bookkeeping of 0.1.8;
+  the runaway watch runs only with the account.  It is outside the config
+  identity, and a run with it off refuses a checkpoint that carries an
+  account (`tests/test_arwen_global_open_water_exchange.py`).
+- New readings: the diagnostic `global_mean_ocean_exchange_kg_m2`, the
+  in-situ ledger row `water_ocean_exchange_kg_m2`, the receipt row
+  `open_water_exchange`, the step diagnostics
+  `maximum_open_water_evaporation_day_kg_m2`,
+  `maximum_open_water_evaporation_last_day_kg_m2` and
+  `open_water_evaporation_exceeds_ceiling`, and a reservoir term of
+  `python -m arwen_global.water_budget`.  The account moves no config
+  hash, and a checkpoint written without it resumes with a zero account
+  and a receipt that says so.
+  `docs/ARWEN_GLOBAL_FULL.md`, "Open water: the exchange account".
+- The native option `snow_ageing` (default `false`, below) joins the
+  config identity when it is on, so a config that sets it hashes apart
+  from the same config without it, and a checkpoint written without the
+  age is refused by it rather than resumed with other physics.  Off, a
+  config keeps its 0.1.8 hash, arithmetic and arrays (no age plane is
+  made), and a restart of a checkpoint without the plane reports nothing
+  missing; only a run that carries the age names the plane as absent.
+
+- A dated run from an analysis on real statics longer than 384 h with no
+  `[ocean]` table and no series is refused before it starts, with a message
+  naming the modes; `[ocean] mode = "hold"` runs it with the SST held.  It
+  used to hold the SST for the whole run without saying so.  Idealized and
+  undated runs are not refused.
+- The lower boundary is one service with two kinds of record provider, the
+  dated series and the rules (`surface_boundary.py`, `ocean_rules.py`), and
+  the greenness march is its own service (`land_climatology.py`).  The
+  series' arithmetic is unchanged: the reference-physics smoke with a
+  2-record series ends in the state 0.1.5 ends in, every array of its last
+  checkpoint byte-identical.
+
+### Fixed
+
+- Noah's snow age (WRF SNOTIME) can be carried between land calls and
+  checkpointed as `noah_snotime`, under the native option
+  `snow_ageing = true`, which the long-run recipe sets
+  (`docs/ARWEN_GLOBAL_LONG_RUNS.md`).  By default, as in every earlier
+  release, it is rebuilt as zeros on every land call, so every snowpack
+  keeps its fresh-snow albedo for the whole run (0.999 of it after any
+  number of days at a 60 s land interval; by Noah's formula a pack ten
+  days old has 0.79 of it).  On, it changes the numbers of every native
+  run with snow.
+  `docs/ARWEN_GLOBAL_LEVEL5.md`, "Snow age";
+  `tests/test_arwen_global_snow_age.py` and
+  `tests/test_arwen_global_snow_age_cuda.py`.
+- The greenness march reads the model day's start, not the instant of the
+  first step it runs on.  A run started at 06, 12 or 18 UTC and restarted
+  inside a model day took another UTC day's vegetation than the straight
+  run (on a field of ten times the month number from 2026-04-03 18 UTC:
+  26.452 restarted at 12 h against 26.129 straight).  Restarted series runs
+  from such starts change; straight runs whose steps land on each day
+  boundary do not.
+- A column that changes class at an ice record now leaves the native
+  runtime's frozen-surface step.  The masks the runtime keeps for the run
+  were meant to be dropped after every re-class, but the drop looked for
+  the runtime on the physics bridge instead of on its column suite, found
+  none and dropped nothing, so a melted column was still integrated as ice
+  and a frozen-over one as water; a series run with crossings had the same
+  fault.  Measured on a T255 anomaly-mode run from GDAS 2026-11-10 18Z
+  before the fix: a column off Antarctica melted at the first daily record
+  went from 273 K to 201 K in four days, and 211 open-ocean columns were
+  more than 1e-3 K off the rule at day 5.
+- On the numpy backend a series run's checkpoints held the next step's
+  skin: the series wrote the SST into the state's own array while the
+  checkpoint writer was still hashing it, so such an archive was refused by
+  its own hash check on read.  A boundary plane on the host is now
+  replaced, never written in place.  The forecast's state was not affected
+  (the smoke's last checkpoint is the same bytes before and after); card
+  runs copy every array to the host before writing and were not affected.
+
+### A run that runs out of memory
+
+A run that falls back carries on with a different band count and host
+tier.  Neither is in the config identity or changes the arithmetic, so
+no forecast bit moves, and a run that never runs out of memory runs as
+0.1.8 ran.  The card measurements below were taken on 0.1.7 with this
+change alone; this release runs the change's tests,
+`tests/test_arwen_global_oom_fallback.py`, on its own tree.
+
+- Measured: T383 L40 on the semi-Lagrangian core (the shipped
+  `arwen_global_gdas_t383_native_sl_si_24h` with a 50-day duration and
+  3-hourly checkpoints), from a GDAS 2026-11-12 00Z
+  analysis, on one RTX 5070 Ti 16 GB, 2026-11-13, each segment a new
+  process restarting from a checkpoint:
+  - The reference: one process from the analysis to 72 h with nothing
+    else on the card, one band with nothing parked, 864 steps at 1.854 s
+    a step.
+  - Nothing going wrong: 9 to 18 h from the reference's 9 h checkpoint,
+    0.1.7 then this release on the same card: 1.786 and 1.785 s a step,
+    241.8 and 241.5 s of run wall, both one band, the card at 1,104 and
+    1,108 MiB free at its tightest.
+  - Another process taking 2 GiB of the card 45 s after the start, three
+    segments from 36 h: in each the card refused the semi-Lagrangian
+    gather's 810 MiB (after steps 473, 439 and 439, with 177, 319 and
+    441 MiB free), and each run carried on from its newest checkpoint on
+    two bands with the host tier on (priced at 10.83 GiB against the
+    13.21 GiB the card then had free) and finished its segment, at 2.454,
+    2.480 and 2.565 s a step.
+  - Five bare CUDA contexts of other processes (222 MiB each) opening
+    45 s after the start, which on 0.1.7 killed one segment in eleven:
+    nine segments of 9 h (one of 12 h) from checkpoints between 27 and
+    54 h.  In one the card refused the gather's 810 MiB after step 420
+    with 481 MiB free; it carried on from step 396 on two bands with the
+    host tier on (priced at 10.83 GiB against 14.10 GiB free) and
+    finished at 2.561 s a step.  The other eight finished on one band
+    without needing the fallback, the card at 5 to 418 MiB free at their
+    tightest.
+  - Another process taking every byte the card frees, up to 6 GiB, from
+    45 s after the start: the card refused 202 MiB with 103 MiB free, no
+    lighter plan fitted the 9.02 GiB left (the lightest prices at
+    10.23 GiB), and the run stopped 53 s after its start with exit 4 and
+    the line naming the other process, the free memory and the
+    `--restart ... --latitude-bands 2 --host-spill on --until-s ...` to
+    resume with.
+  - A chain from the analysis to 72 h in eight 9 h segments, each a new
+    process from the last one's newest checkpoint, with another process
+    taking 1 GiB of the card 45 s after each start: all eight finished on
+    one band without needing the fallback, at 1.786 to 1.822 s a step,
+    the card at 18 to 658 MiB free at each segment's tightest.
+  - Bytes: all 74 checkpoints the runs above wrote, the 11 written after
+    a fallback and the chain's 25 among them, are byte-identical files
+    to the reference's at the same step.
+- The same shape on the same card, 2026-11-13, a chain of segments from
+  the analysis, each a new process, with the out-of-memory error forced
+  where the gather is not the one asking:
+  - In the radiation, after step 48 of a cold start: carried on from
+    step 36 on two bands with the host tier on.
+  - In the device-to-host copy of the 12 h checkpoint, after that step's
+    diagnostics row was written: carried on from the 9 h checkpoint the
+    segment started from, and the diagnostics file holds one row a step.
+  - Twice in a row, in the radiation after step 230 on one band and
+    after step 223 on the plan it fell to: carried on on two bands with
+    the tier, then on four bands with the tier (priced at 10.33 GiB).
+  - With `CUPY_GPU_MEMORY_LIMIT` set to 12 GiB, below the one-band
+    plan's pool: the limit refused a 101 MiB allocation at the segment's
+    first step with 3,172 MiB of the card free, and the run carried on on
+    two bands with the tier and finished.
+  - Another process taking 2 GiB of the card 45 s after the start: the
+    card refused the gather's 810 MiB after step 417 with 339 MiB free,
+    and the run carried on from step 396 on two bands with the tier.
+  - Bytes: all 15 checkpoints these runs wrote are byte-identical files
+    to the reference's at the same step.
+  - With `CUPY_GPU_MEMORY_LIMIT` set to 6 GiB, below every plan: before
+    the change below, the run rebuilt on two, four and eight bands, each
+    plan weighed against the card's 15.2 GiB and each refused by the
+    limit, and stopped (exit 4) after 81 s telling the user to free the
+    card of what else held it, with nothing else on it.  After it, the
+    same segment stopped (exit 4) after 23 s with no rebuild, the line
+    saying the 6.00 GiB limit had refused 101 MiB with 9,380 MiB of the
+    card free and to raise or unset the limit; and under the 12 GiB limit
+    a segment again carried on on two bands with the tier, its line
+    naming the limit, and its checkpoint is byte-identical to the
+    reference's.
+
+- A run the card runs out of memory under no longer dies if a lighter
+  plan fits.  When a one-card run on the card raises CuPy's
+  `OutOfMemoryError` (or a CUDA library's out-of-memory error) mid-run,
+  it gives its memory back, reads the card again, and carries on from
+  its newest checkpoint in the same process on the next plan the door
+  prices lower (more latitude bands and/or the pinned host tier; at
+  T383 L40 after one band that is two bands with the tier on, the plan
+  `--latitude-bands 2 --host-spill on` names).  It prints one line
+  naming what the card refused, with how much free, and what else holds
+  the card, and the receipt carries a `recovery` row and lists the
+  checkpoints written before the fallback beside those written after
+  it.  The time lost is the steps since that checkpoint and the
+  rebuild, and the rest of the segment runs at the lighter plan's
+  speed.  When no lighter plan fits, the run stops with a one-line
+  message (exit 4) that names the cause, the free memory, the other
+  processes on the card and the exact `--restart ... --latitude-bands
+  ... --host-spill ...` to resume with.  Before this, the out-of-memory
+  error ended the run as a traceback, and a fresh process from the same
+  checkpoint got through: measured 2026-11-12 on the RTX 5070 Ti, with five 222 MiB
+  CUDA contexts of another program opening after the door had read
+  15.24 GiB free, one T383 segment in eleven died that way on 0.1.7.
+- The door names the card's other tenants and leaves them 512 MiB.
+  When `nvidia-smi` shows other processes holding memory on the run's
+  card, or the card drives a display, the plan is chosen against the
+  free memory less 512 MiB, and the door's line lists the processes.
+  A plan that fits only without the margin is still started; the margin
+  never refuses a run.  On an empty headless card nothing changes (the
+  T383 day still takes one band at 15.24 GiB free).  The figure: with
+  512 MiB held by another process from before the start, the one-band
+  T383 run's tightest moment left 150 MiB of the card free (2026-11-12,
+  RTX 5070 Ti), so the margin is room for one more tenant that size, not
+  for five; the fallback above covers more.
+- A run whose pool limit the user set (`CUPY_GPU_MEMORY_LIMIT`) weighs
+  the plan it falls back to against that limit as well as the card, says
+  that it was the limit that refused the allocation when it was, and,
+  when no plan fits under the limit, stops at once with exit 4 saying to
+  raise or unset it.
+- The allocator hook records every allocation the card refuses (the
+  request, what the pool held and used, the card's free bytes) in the
+  receipt's `device_memory` row, and tries the allocation once more
+  after handing the pool's cached blocks back.
+
+### Engine seam
+
+- Two engine files are pinned for the carried launcher's compile route,
+  `gpuwm/nvrtc_ptx_cache.py` and `gpuwm/kernel_compile_notice.py`: 50 seam
+  files at gpuwm 2.9.13.  `tools/measure_boundary.py` reads 242 symbols
+  across 72 modules with no gap.
+
 ## 0.1.9
 
 0.1.8 was tagged but never reached PyPI: its publish workflow's test job
@@ -1857,7 +2493,7 @@ was previously reachable only from inside the engine's own checkout.
 
 ### New
 
-- `gpuwm-global`, one console script with 51 commands: the forecast door, the
+- `gpuwm-global`, one console script with fifty-one commands: the forecast door, the
   statics builder, the assimilation door and its five ensemble legs, the render
   tape export, the regional parent bridge, the radiance operators and every
   inspection and validation leg. The engine's `gpuwm global` reached eleven of

@@ -258,8 +258,11 @@ def _with_surface_series(args, cfg):
         raise FileNotFoundError(f"--surface-series {path} does not exist")
     with path.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    from .boundary_options import with_series
+
     return dataclasses.replace(cfg, surface_series=str(path),
-                               surface_series_sha256=digest)
+                               surface_series_sha256=digest,
+                               ocean=with_series(cfg.ocean))
 
 
 def _add_surface_series_arguments(parser) -> None:
@@ -270,10 +273,16 @@ def _add_surface_series_arguments(parser) -> None:
                              "(gdas-analysis: hindcast; gfs-forecast: one cycle's own SST)")
     parser.add_argument("--cycle", required=True, metavar="YYYYMMDDHH",
                         help="the first record's time (the forecast cycle)")
-    parser.add_argument("--hours", type=float, required=True,
-                        help="the span the records cover, at least the run's duration")
+    parser.add_argument("--hours", type=float, default=None,
+                        help="the span the records cover, at least the run's duration "
+                             "(required unless --anomaly-reference)")
     parser.add_argument("--interval-hours", type=float, default=24.0,
                         help="hours between records (default 24)")
+    parser.add_argument("--anomaly-reference", action="store_true",
+                        help="build the [ocean] anomaly reference instead: --cycle is the "
+                             "run's start and the records are the 28 six-hourly analyses "
+                             "of the 7 days before it, read with the analysis sea ice as "
+                             "land in the open-water rule (for anomaly_reference_series)")
     parser.add_argument("--out", type=Path, required=True, help="the series .npz to write")
     parser.add_argument("--table", type=Path, default=None,
                         help="another source table (default: the packaged one)")
@@ -283,11 +292,96 @@ def _surface_series(args) -> int:
     from .surface_series import build_surface_series
 
     cfg = load_config(args.config)
+    if args.anomaly_reference:
+        from datetime import timedelta
+
+        from .surface_series import _utc
+
+        first = _utc(args.cycle) - timedelta(days=7)
+        build_surface_series(cfg, source=args.source, cycle=first.strftime("%Y%m%d%H"),
+                             hours=162.0, interval_hours=6.0, out=args.out,
+                             table=args.table, source_water="land-and-ice")
+        print(f"surface-series: name it in the config's [ocean] table as  "
+              f"anomaly_reference_series = \"{Path(args.out).resolve()}\"")
+        return 0
+    if args.hours is None:
+        raise SystemExit("surface-series: --hours is required (or --anomaly-reference)")
     build_surface_series(cfg, source=args.source, cycle=args.cycle, hours=args.hours,
                          interval_hours=args.interval_hours, out=args.out,
                          table=args.table)
     print(f"surface-series: run it with  gpuwm-global run {args.config} "
           f"--surface-series {args.out}")
+    return 0
+
+
+_CLIMATOLOGY_HELP = (
+    "the monthly sea-surface climatology (SST and sea ice, optionally the "
+    "mixed-layer depth): fetch the public source files once, verified by size "
+    "and SHA-256, then build them onto a config's Gaussian grid")
+
+
+def _add_climatology_arguments(parser) -> None:
+    legs = parser.add_subparsers(dest="climatology_command", required=True)
+    fetch = legs.add_parser(
+        "fetch", help="stage the source files of the climatology rows, each verified "
+                      "against the byte count and SHA-256 its row pins")
+    build = legs.add_parser(
+        "build", help="regrid the staged rows onto a config's Gaussian grid over its "
+                      "statics ocean (water that is not an inland lake); one "
+                      "byte-reproducible .npz")
+    build.add_argument("config", type=config_argument,
+                       help="the experiment whose grid and real statics the climatology "
+                            "is built for")
+    for leg in (fetch, build):
+        leg.add_argument(
+            "--with-mld", action="store_true",
+            help="add the WOA18 monthly mixed-layer depth (row woa18-a5b7-mld, about "
+                 "85 MB, looked for first in the regional engine's ocean cache) to the "
+                 "default OISST 1991-2020 SST and sea-ice row (about 77 MB)")
+        leg.add_argument(
+            "--cache", type=Path, default=None, metavar="DIR",
+            help="where the source files are staged and the built file goes by default "
+                 "(default: $GPUWM_GLOBAL_CLIMATOLOGY, else arwen-global-climatology "
+                 "beside the case data)")
+        leg.add_argument("--table", type=Path, default=None,
+                         help="another source table (default: the packaged "
+                              "arwen_global/data/surface_climatology_sources.json)")
+    fetch.add_argument("--from", dest="source_dir", type=Path, default=None, metavar="DIR",
+                       help="copy the files from this folder instead of the network; "
+                            "they are verified the same way")
+    build.add_argument("--out", type=Path, default=None, metavar="NPZ",
+                       help="the climatology file to write (default: in the cache, named "
+                            "by truncation, grid and geography selection)")
+    qflux = legs.add_parser(
+        "qflux", help="write the slab ocean's heat-flux correction file from the last "
+                      "checkpoint of one or more calibration runs ([ocean] mode = "
+                      "\"climatology\" with qflux_calibration = true); one "
+                      "byte-reproducible .npz, docs/ARWEN_GLOBAL_OCEAN.md")
+    qflux.add_argument("qflux_args", nargs=argparse.REMAINDER, metavar="ARGS",
+                       help="CHECKPOINT [CHECKPOINT ...] --out NPZ "
+                            "[--smoothing-truncation N], read by "
+                            "arwen_global.ocean_qflux.main")
+
+
+def _climatology(args) -> int:
+    from . import surface_climatology
+
+    if args.climatology_command == "qflux":
+        from .ocean_qflux import main as qflux_main
+
+        return int(qflux_main(list(args.qflux_args)) or 0)
+    rows = surface_climatology.row_ids_for(args.with_mld, args.table)
+    if args.climatology_command == "fetch":
+        records = surface_climatology.fetch(rows, cache=args.cache,
+                                            source_dir=args.source_dir, table=args.table)
+        print(f"climatology fetch: {len(records)} files of {', '.join(rows)} staged and "
+              "verified")
+        return 0
+    result = surface_climatology.build_for_config(
+        load_config(args.config), with_mld=args.with_mld, cache=args.cache,
+        out=args.out, table=args.table)
+    print(json.dumps({key: result[key] for key in ("path", "sha256", "bytes")},
+                     indent=2, sort_keys=True))
     return 0
 
 
@@ -1493,6 +1587,16 @@ def _add_statics_arguments(parser: argparse.ArgumentParser) -> None:
              "pinning a machine path inside a shipped experiment is how a "
              "config stops working on the next machine",
     )
+    parser.add_argument(
+        "--orographic", action="store_true",
+        help="build the sub-grid orography statistics (VAR, CON, OA1-4, "
+             "OL1-4 from WPS_GEOG orogwd_10m) the orographic drag "
+             "orographic_drag = \"kim-gwdo\" reads, instead of the "
+             "land-surface statics; the land-surface cache for this grid must "
+             "exist already (its land mask zeroes the water columns).  "
+             "Written beside it as <stem>-orogwd_10m.npz; --out names another "
+             "file, as for the land-surface cache",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1579,6 +1683,7 @@ def build_parser() -> argparse.ArgumentParser:
         "surface-series",
         help="build a dated SST / sea-ice series on a config's Gaussian grid "
              "(table-driven sources; four GRIB2 messages per record by byte range)"))
+    _add_climatology_arguments(sub.add_parser("climatology", help=_CLIMATOLOGY_HELP))
     _add_assimilate_arguments(
         sub.add_parser("assimilate", help=_ASSIMILATE_HELP))
     _add_cycle_arguments(sub.add_parser("cycle", help=_CYCLE_HELP))
@@ -1692,6 +1797,11 @@ def build_parser() -> argparse.ArgumentParser:
     configs.add_argument(
         "--paths", action="store_true",
         help="print full paths instead of names")
+    # Other worlds: the presets, a world's config and description, and the
+    # twin with its own noise floor (arwen_global.world.twin).
+    from .world.twin import WORLD_HELP, add_world_arguments
+
+    add_world_arguments(sub.add_parser("world", help=WORLD_HELP))
     return parser
 
 
@@ -1974,6 +2084,10 @@ def _run(args: argparse.Namespace) -> int:
             tapes=_tape_request(args),
             **_forcing_arguments(args),
             branch_config=bool(getattr(args, "branch_from_other_config", False)),
+            # One line when the card runs out of memory and the run carries
+            # on on a lighter plan (runner.run).
+            notice=lambda sentence: print(
+                f"{_door_name(args)}: {sentence}", flush=True),
         )
     except BaseException:
         # The failure receipt carries the peak up to the death; an
@@ -2029,6 +2143,8 @@ def _statics(args: argparse.Namespace) -> int:
         cfg.truncation, nlat=cfg.nlat, nlon=cfg.nlon,
         dealias_factor=cfg.dealias_factor,
     )
+    if getattr(args, "orographic", False):
+        return _orographic_statics(args, cfg, grid, door)
     default_out, _ = cache_paths(cfg.statics, grid)
     out = default_out if args.out is None else Path(args.out)
     for path in (out, out.with_suffix(".json")):
@@ -2059,6 +2175,42 @@ def _statics(args: argparse.Namespace) -> int:
         "nlon": document["nlon"],
         "geog_root": document["geog_root"],
         "sectors": len(document["sectors"]),
+        "wall_seconds": document["wall_seconds"],
+        "arrays": len(document["arrays"]),
+    }, indent=2, sort_keys=True))
+    return 0
+
+
+def _orographic_statics(args, cfg, grid, door: str) -> int:
+    """``statics --orographic``: the drag's sub-grid orography cache."""
+    from .orographic_statics import build_orographic_statistics, cache_paths
+    from .statics import write_cache
+
+    default_out, _ = cache_paths(cfg.statics, grid)
+    out = default_out if args.out is None else Path(args.out)
+    for path in (out, out.with_suffix(".json")):
+        if path.exists() and not args.overwrite:
+            raise FileExistsError(
+                f"orographic statics cache {path} exists; pass --overwrite to "
+                "rebuild it")
+    print(f"{door}: orographic statics T{grid.truncation} {grid.nlat}x"
+          f"{grid.nlon} (orogwd_10m, average_4pt, water 0) -> {out}")
+    if out != default_out:
+        print(f"{door}: note: the run reads {default_out}; point [statics] "
+              "cache_dir at this --out directory for it to be found")
+    fields, provenance = build_orographic_statistics(grid, cfg.statics)
+    npz_path, sidecar = write_cache(out, fields, provenance,
+                                    overwrite=args.overwrite)
+    document = json.loads(sidecar.read_text(encoding="utf-8"))
+    print(json.dumps({
+        "cache": str(npz_path),
+        "sidecar": str(sidecar),
+        "self_sha256": document["self_sha256"],
+        "kind": document["kind"],
+        "truncation": document["truncation"],
+        "nlat": document["nlat"],
+        "nlon": document["nlon"],
+        "water_columns": document["water_mask"]["water_columns"],
         "wall_seconds": document["wall_seconds"],
         "arrays": len(document["arrays"]),
     }, indent=2, sort_keys=True))
@@ -2826,7 +2978,10 @@ _DOOR_REFUSALS = tuple(
 #:   3  a Rust door is missing or fails its pin; stderr names the binary and
 #:      the bundle it comes from
 #:   4  the device refused admission; stderr carries the measured free bytes
-#:      and the bytes the run needs
+#:      and the bytes the run needs.  Also a run the card ran out of memory
+#:      under mid-forecast when no lighter plan fits it: stderr names the
+#:      cause, the free memory, what else holds the card and the flags to
+#:      resume with
 #:
 #: 3 and 4 are split out of 1 because they are the two refusals a caller can
 #: ACT on without a human: stage a bundle, or ask for a smaller truncation.
@@ -2865,13 +3020,15 @@ def _door_is_missing(exc: BaseException) -> bool:
 
 
 def _device_refused(exc: BaseException) -> bool:
-    """Whether this refusal is the card declining the run."""
+    """Whether this refusal is the card declining the run: at the door, or
+    mid-run once no lighter plan fits it (``DeviceMemoryExhausted``)."""
 
     try:
+        from .device_memory import DeviceMemoryExhausted
         from .sizing import GlobalMemoryRefusal
     except Exception:  # pragma: no cover
         return False
-    return isinstance(exc, GlobalMemoryRefusal)
+    return isinstance(exc, (GlobalMemoryRefusal, DeviceMemoryExhausted))
 
 
 def exit_code_for(exc: BaseException) -> int:
@@ -3029,6 +3186,8 @@ def main(argv: list[str] | None = None) -> int:
             return _statics(args)
         if args.command == "surface-series":
             return _surface_series(args)
+        if args.command == "climatology":
+            return _climatology(args)
         if args.command == "assimilate":
             return _assimilate(args)
         if args.command == "cycle":
@@ -3081,6 +3240,10 @@ def main(argv: list[str] | None = None) -> int:
                       file=sys.stderr)
                 return 1
             return 0
+        if args.command == "world":
+            from .world.twin import world_main
+
+            return world_main(args)
         if args.command == "microwave":
             return _microwave(args)
         if args.command == "abi-score":

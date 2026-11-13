@@ -21,6 +21,7 @@ from arwen_global.spectral.vector import VorticityDivergenceOperator
 from gpuwm.io.wrfout import WrfoutWriter, wrfout_filename
 
 from .checkpoint import read_checkpoint, state_from_checkpoint
+from .longrun_ops import time_mean_attrs
 from .constants import (
     CONVECTIVE_RAIN_ACCUMULATOR,
     GRAVITY_M_S2,
@@ -61,6 +62,11 @@ MODEL_LABEL_ATTR = "GPUWM_MODEL_LABEL"
 #: published maps would have named the model differently from the WOOF
 #: assembly's (which rewrote the literal).
 MODEL_LABEL = "WOOF Global"
+#: The longest model name the renderer prints.  MEASURED 2026-11-13 with
+#: engine 2.9.13's rw_wrfbatch on a T127 world tape: a label of 32
+#: characters is printed, one of 33 is dropped and the map says "WRF"
+#: instead, and so is any label holding a parenthesis.
+RENDERER_MODEL_LABEL_MAX = 32
 EXPORT_FALLBACK_SOURCE = "export-similarity-fallback"
 SURFACE_DIAGNOSTICS_SOURCES = {
     NATIVE_SURFACE_DIAGNOSTICS_SOURCE: (
@@ -252,12 +258,322 @@ TAPE_SST_POLICY = (
     "WRF's real.exe fills SST from TSK when its input carries no SST of its "
     "own; mask with XLAND or SEAICE for open water only"
 )
+#: What ``SST`` is on a tape of a state that carries the slab ocean
+#: (``[ocean] mode = "slab"``): the coupler's plane replaces the skin copy
+#: (arwen_global.ocean_coupler.tape_fields), and the export receipt names
+#: this policy instead of :data:`TAPE_SST_POLICY` when any of its tapes
+#: carries the slab.
+TAPE_SST_SLAB_POLICY = (
+    "SST is the slab ocean's mixed-layer temperature on ocean columns and "
+    "the skin temperature (TSK) elsewhere, regridded as TSK is, so a coast "
+    "or ice-edge point carries a blend of the two; HML and ARWEN_QFLUX "
+    "beside it are the mixed-layer depth and the heat-flux correction"
+)
 #: The engine's writer class as imported.  ``WrfoutWriter`` is the name the
 #: export calls, and a test may rebind it to a stand-in that writes no file.
 _ENGINE_TAPE_WRITER = WrfoutWriter
 
+#: The tape's TITLE.  A world's tape names the world and its label in it
+#: (:func:`world_tape_title`); an Earth tape keeps exactly these words.
+TAPE_TITLE = "Arwen Global research model"
 
-def _state_variable_attributes(writer) -> None:
+# -- other worlds (plan section 4.10) ----------------------------------------
+#
+# A tape of a world that is not Earth's carries the world on it: its name,
+# its label (science or illustration), its identity and settings, the hash
+# of its world statement, whether its coast is its own, and the sun's true
+# position.  An Earth tape (no [world] table, or an all-Earth one) carries
+# none of these and is the same bytes as before worlds existed: no line
+# below runs for it.
+
+#: The world's name as the user wrote it (``[world] label``).
+WORLD_ATTR = "ARWEN_WORLD"
+#: The tape's label: "science" or "illustration" (plan section 2).  A world
+#: that is "not supported yet" is refused before it runs and has no tape.
+WORLD_CLASS_ATTR = "ARWEN_WORLD_CLASS"
+#: The limit that goes with the label, in words, for this tape's lead time.
+WORLD_LIMIT_ATTR = "ARWEN_WORLD_LIMIT"
+#: The world's identity: 64 hex, the sha256 of :data:`WORLD_SETTINGS_ATTR`.
+WORLD_IDENTITY_ATTR = "ARWEN_WORLD_IDENTITY"
+#: The world's canonical settings as compact JSON with sorted keys, the
+#: exact bytes the identity hashes.
+WORLD_SETTINGS_ATTR = "ARWEN_WORLD_SETTINGS"
+#: The dotted names of every setting that differs from Earth's.
+WORLD_CHANGED_ATTR = "ARWEN_WORLD_CHANGED"
+#: The sha256 of the world statement the run recorded, or
+#: :data:`WORLD_STATEMENT_UNRECORDED` when the run recorded none.
+WORLD_STATEMENT_ATTR = "ARWEN_WORLD_STATEMENT_SHA256"
+WORLD_STATEMENT_UNRECORDED = "not recorded"
+#: "own" when the world's land mask is not Earth's (a flood, a waterworld,
+#: an invented world): a picture must then draw the coast from this tape's
+#: LANDMASK and never Earth's map lines.  "earth" otherwise.
+WORLD_COAST_ATTR = "ARWEN_WORLD_COAST"
+#: The sentence every result of a world carries (plan section 1).
+WORLD_SENTENCE_ATTR = "ARWEN_WORLD_SENTENCE"
+#: Where the sun stands at the tape's valid time, in degrees north and
+#: east (-180 to 180), and how that was worked out.  The valid time keeps
+#: the ordinary calendar on every world (plan 4.6), so on a world with
+#: another day length these, not the clock, say where it is day.
+SUBSOLAR_LAT_ATTR = "ARWEN_SUBSOLAR_LAT"
+SUBSOLAR_LON_ATTR = "ARWEN_SUBSOLAR_LON"
+SUN_POSITION_ATTR = "ARWEN_SUN_POSITION"
+#: Every attribute a world's tape carries, in the order it is written.  The
+#: two sub-solar coordinates are left out (and :data:`SUN_POSITION_ATTR`
+#: says why) for an orbit whose timing this door does not have.
+WORLD_TAPE_ATTRS = (
+    WORLD_ATTR, WORLD_CLASS_ATTR, WORLD_LIMIT_ATTR, WORLD_IDENTITY_ATTR,
+    WORLD_SETTINGS_ATTR, WORLD_CHANGED_ATTR, WORLD_STATEMENT_ATTR,
+    WORLD_COAST_ATTR, WORLD_SENTENCE_ATTR, SUBSOLAR_LAT_ATTR,
+    SUBSOLAR_LON_ATTR, SUN_POSITION_ATTR,
+)
+#: The obliquity the model's own sun uses (WRF ``radconst``, clock.py).
+_EARTH_OBLIQUITY_DEG = 23.5
+_EARTH_DAY_S = 86_400.0
+#: The window in which Earth with its mountains lowered is science (plan
+#: section 2.1): days 2 to 6, near the lowered ranges.
+_SCIENCE_WINDOW_S = (2.0 * _EARTH_DAY_S, 6.0 * _EARTH_DAY_S)
+
+
+def world_settings_json(world) -> str:
+    """The world's canonical settings as the exact text its identity is the
+    sha256 of (``arwen_global.world.spec.WorldSpec.identity_hash``)."""
+    import json
+
+    return json.dumps(world.identity, sort_keys=True, separators=(",", ":"),
+                      allow_nan=False)
+
+
+def world_tape_class(world, seconds: float) -> tuple[str, str]:
+    """The label a world's tape carries at ``seconds`` of lead, and its
+    limit in words: plan section 2, read per tape.
+
+    Earth with its mountains lowered (and nothing else changed) is science
+    from day 2 to day 6 near the lowered ranges; every other world that runs
+    is an illustration, with the limit section 2.2 prints for what it
+    changes.  Package 3.5's limits table is the owner of these labels; this
+    is the same rule in code until that table exists.
+    """
+    if world.is_earth:
+        raise ValueError("Earth has no world label: its tapes carry none")
+    lowered_only = (
+        world.changes_terrain and not world.changes_sun
+        and not world.changes_sea and not world.changes_air
+        and not world.is_invented and world.terrain.scale <= 1.0)
+    if lowered_only:
+        if seconds < _SCIENCE_WINDOW_S[0]:
+            return "illustration", (
+                "days 0 to 2 of Earth with its mountains lowered are the air "
+                "falling into the space where rock was")
+        if seconds <= _SCIENCE_WINDOW_S[1]:
+            return "science", (
+                "days 2 to 6 of Earth with its mountains lowered, near the "
+                "lowered ranges only; anywhere else this tape is an "
+                "illustration, and a difference from the control is shown "
+                "only where it exceeds the noise floor")
+        return "illustration", (
+            "after day 6 the change is not separable from chaos without the "
+            "noise floor of a perturbed control")
+    limits: list[str] = []
+    if world.is_invented:
+        limits.append(
+            "sea temperature is Earth's zonal mean, land cover and soil are "
+            "invented by stated rules and the starting soil wetness decides "
+            "the continental interior for more than a month; Earth's air over "
+            "this map, not this world's past")
+    if world.sea.land == "none":
+        limits.append(
+            "the prescribed sea temperature largely decides the answer; no "
+            "ice can grow or melt")
+    elif world.sea.level_m != 0.0:
+        limits.append(
+            "new coastlines under today's weather; the ice sheets whose "
+            "melting would raise the sea are still there")
+    elif world.changes_sea and not world.is_invented:
+        limits.append("the prescribed sea temperature largely decides the answer")
+    if world.changes_terrain:
+        limits.append(
+            "taller mountains than Earth's: the bottom layer thins over them"
+            if world.terrain.scale > 1.0 else
+            "beyond day 6, or far from the ranges, not separable from chaos "
+            "without the noise floor")
+    if world.changes_rotation:
+        limits.append(
+            "an adjustment from a state balanced for Earth's rotation, not "
+            "comparable with published equilibrium results")
+    if world.sun.obliquity_deg != _EARTH_OBLIQUITY_DEG or world.sun.orbit != "earth":
+        limits.append(
+            "correct sun geometry; ozone and vegetation stay on Earth's "
+            "calendar")
+    if world.sun.brightness != 1.0 or world.changes_air:
+        limits.append(
+            "over a held ocean this is the land and atmosphere's fast "
+            "adjustment; a single twin's difference map is mostly chaos")
+    co2 = world.air.co2_ppm
+    if not isinstance(co2, str) and co2 > 1120.0:
+        limits.append("unvalidated above eight times pre-industrial CO2")
+    return "illustration", "; ".join(limits) or "an illustration of an altered Earth"
+
+
+def world_tape_title(world, world_class: str) -> str:
+    """The tape's TITLE: :data:`TAPE_TITLE` on Earth, and the world's name
+    and label after it on any other world."""
+    if world.is_earth:
+        return TAPE_TITLE
+    return f"{TAPE_TITLE}, world {world.label} ({world_class})"
+
+
+def world_model_label(world) -> str:
+    """The model name a world's tape gives the renderer: the world's name
+    after the model's, in a form the renderer prints.  The renderer drops a
+    name longer than :data:`RENDERER_MODEL_LABEL_MAX` or holding a
+    parenthesis and prints "WRF" in its place, so the tape's class is not
+    in it (the class reaches every panel title through ``render``) and a
+    long world name is shortened to the model's name alone."""
+    for label in (f"{MODEL_LABEL}, world {world.label}", f"{MODEL_LABEL}, {world.label}"):
+        if len(label) <= RENDERER_MODEL_LABEL_MAX:
+            return label
+    return MODEL_LABEL
+
+
+def world_sentence(world, seconds: float) -> str:
+    """Plan section 1's sentence for one tape: weather, not climate."""
+    days = f"{seconds / _EARTH_DAY_S:.4g}"
+    what = (f"of the invented world {world.label}" if world.is_invented
+            else f"after Earth was changed into the world {world.label}")
+    return (f"This is the weather of the first {days} days {what}, over a "
+            "sea surface that does not respond. It is not this world's climate.")
+
+
+def subsolar_point(world, clock, valid: datetime, seconds: float):
+    """Where the world's sun stands overhead at a tape's valid time:
+    ``(latitude_deg, longitude_deg, how)``, or ``(None, None, why)`` for an
+    orbit whose timing this door does not have.
+
+    Dated runs take the model's own sun (WRF ``radconst``, as
+    :func:`arwen_global.clock.solar_declination_and_equation_of_time` and
+    the radiation's cosine of the zenith angle): the sub-solar longitude is
+    where the hour angle is zero, ``180 - (60 hour + equation of time) / 4``
+    degrees.  An undated run takes the fixture's sun: model time zero at
+    00 UTC on an equinox.  The world then changes two things.  Its
+    obliquity scales the sine of the declination by sin(obliquity) over
+    sin(23.5 degrees), the same position on the same orbit with another
+    tilt; a perpetual equinox holds the declination at zero.  Its day length
+    turns the sun around the planet faster or slower from the start on:
+    ``360 x hours elapsed x (1 / day_length_h - 1 / 24)`` degrees further
+    west, so at Earth's day length the longitude is Earth's exactly.
+    """
+    sun = world.sun
+    if sun.orbit == "eccentric":
+        return None, None, (
+            "not written: the eccentric orbit's timing of the seasons is not "
+            "this door's, and a position from Earth's orbit "
+            "would be read as the world's")
+    if clock is not None and clock.dated:
+        from .clock import solar_declination_and_equation_of_time
+
+        instant = valid.replace(tzinfo=timezone.utc)
+        declination, equation_min = solar_declination_and_equation_of_time(instant)
+        midnight = instant.replace(hour=0, minute=0, second=0, microsecond=0)
+        hour = (instant - midnight).total_seconds() / 3600.0
+        longitude = 180.0 - (60.0 * hour + equation_min) / 4.0
+        how = ("the model's own sun (WRF radconst declination and equation of "
+               "time on its 365-day orbit) at the tape's valid time")
+    else:
+        declination = 0.0
+        longitude = 180.0 - 360.0 * (seconds % _EARTH_DAY_S) / _EARTH_DAY_S
+        how = ("the undated fixture's sun: model time zero at 00 UTC on an "
+               "equinox")
+    if sun.orbit == "perpetual-equinox":
+        declination = 0.0
+        how += ", held at a perpetual equinox"
+    elif sun.obliquity_deg != _EARTH_OBLIQUITY_DEG:
+        declination = math.asin(
+            math.sin(math.radians(sun.obliquity_deg)) * math.sin(declination)
+            / math.sin(math.radians(_EARTH_OBLIQUITY_DEG)))
+        how += f", tilted to {sun.obliquity_deg:g} degrees"
+    if sun.day_length_h != 24.0:
+        longitude -= 360.0 * (seconds / 3600.0) * (
+            1.0 / sun.day_length_h - 1.0 / 24.0)
+        how += (f", on a {sun.day_length_h:g}-hour day since the start; the "
+                "valid time keeps Earth's calendar and no longer says where "
+                "it is day")
+    longitude = (longitude + 180.0) % 360.0 - 180.0
+    return math.degrees(declination), longitude, how
+
+
+def world_tape_attributes(world, *, clock, valid: datetime, seconds: float,
+                          statement_sha256: str | None = None) -> dict[str, object]:
+    """The global attributes a world's tape carries (:data:`WORLD_TAPE_ATTRS`),
+    or an empty dict for Earth, whose tapes carry none."""
+    if world.is_earth:
+        return {}
+    world_class, limit = world_tape_class(world, seconds)
+    latitude, longitude, how = subsolar_point(world, clock, valid, seconds)
+    attrs: dict[str, object] = {
+        WORLD_ATTR: world.label,
+        WORLD_CLASS_ATTR: world_class,
+        WORLD_LIMIT_ATTR: limit,
+        WORLD_IDENTITY_ATTR: world.identity_hash,
+        WORLD_SETTINGS_ATTR: world_settings_json(world),
+        WORLD_CHANGED_ATTR: ", ".join(world.changed_settings()),
+        WORLD_STATEMENT_ATTR: statement_sha256 or WORLD_STATEMENT_UNRECORDED,
+        WORLD_COAST_ATTR: "own" if world.changes_coast else "earth",
+        WORLD_SENTENCE_ATTR: world_sentence(world, seconds),
+    }
+    if latitude is not None:
+        attrs[SUBSOLAR_LAT_ATTR] = np.float32(latitude)
+        attrs[SUBSOLAR_LON_ATTR] = np.float32(longitude)
+    attrs[SUN_POSITION_ATTR] = how
+    return attrs
+
+
+def _recorded_statement_sha256(metadata, given: str | None,
+                               provenance=None) -> str | None:
+    """The sha256 of the world statement: the text the caller gave, else the
+    one the cold start recorded in its provenance
+    (``provenance["world_statement"]["sha256"]``, package 1.6), else the
+    one the checkpoint's world record carries (``statement_sha256``, or the
+    ``statement`` text itself), else None."""
+    import hashlib
+
+    if given is not None:
+        return hashlib.sha256(given.encode("utf-8")).hexdigest()
+    stated = provenance.get("world_statement") if isinstance(provenance, dict) else None
+    if isinstance(stated, dict):
+        digest = stated.get("sha256")
+        if isinstance(digest, str) and digest:
+            return digest
+    record = metadata.get("world") if isinstance(metadata, dict) else None
+    if not isinstance(record, dict):
+        return None
+    digest = record.get("statement_sha256")
+    if isinstance(digest, str) and digest:
+        return digest
+    text = record.get("statement")
+    if isinstance(text, str) and text:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return None
+
+
+def _refuse_another_worlds_checkpoint(world, metadata, checkpoint) -> None:
+    """A checkpoint whose world record names another world is not written
+    onto this world's tape.  A checkpoint with no record (every Earth one,
+    and every one written before worlds) is left to the config hash, which
+    already carries a non-Earth world's identity."""
+    from .world import world_identity_of
+
+    if not isinstance(metadata, dict) or "world" not in metadata:
+        return
+    stored = world_identity_of(metadata["world"])
+    if stored != world.identity_hash:
+        raise ValueError(
+            f"checkpoint {checkpoint} was integrated in the world "
+            f"{stored!r} and this config is the world "
+            f"{world.identity_hash!r} ({world.label}); its tape would carry "
+            "the wrong world's name, so it is not written")
+
+
+def _state_variable_attributes(writer, ocean_fields=()) -> None:
     """Put :data:`TAPE_VARIABLE_ATTRS` on the tape's variables.
 
     A variable's attributes can be written only while the header is open,
@@ -272,7 +588,11 @@ def _state_variable_attributes(writer) -> None:
     """
     if not isinstance(writer, _ENGINE_TAPE_WRITER):
         return
-    for name, attrs in TAPE_VARIABLE_ATTRS.items():
+    from .ocean_coupler import TAPE_FIELD_ATTRS
+
+    stated = {**TAPE_VARIABLE_ATTRS,
+              **{name: TAPE_FIELD_ATTRS[name] for name in ocean_fields}}
+    for name, attrs in stated.items():
         try:
             variable = writer.ds.variables[name]
         except (AttributeError, KeyError) as exc:
@@ -613,12 +933,19 @@ class TapeGrid:
 
     def __init__(self, cfg, model, transform, *, nlat: int, nlon: int,
                  start_date: str | None = None,
-                 bbox: tuple[float, float, float, float] | None = None):
+                 bbox: tuple[float, float, float, float] | None = None,
+                 world_statement: str | None = None):
         from . import render_kernels
+        from .world import EARTH
 
         given = parse_start_date(start_date)
         render_kernels.library()
         self.cfg = cfg
+        # A config whose world is not Earth's stamps it on every tape and
+        # in the receipt (export_wrfout's docstring); an Earth config writes
+        # exactly the tapes it wrote before worlds existed.
+        self.world = getattr(cfg, "world", None) or EARTH
+        self.world_statement = world_statement
         self.model = model
         self.transform = transform
         self.render_kernels = render_kernels
@@ -722,11 +1049,15 @@ class TapeGrid:
         return out
 
     def write(self, bundle, fields, seconds: float, outdir: str | Path, *,
-              overwrite: bool = False, checkpoint=None, extra_planes=None):
+              overwrite: bool = False, checkpoint=None, extra_planes=None,
+              metadata=None):
         """The host half of a tape: one wrfout file for ``bundle`` at model
         time ``seconds`` into ``outdir``, the synthesized fields read from
         ``fields`` (:meth:`synthesize`'s dict, or :meth:`device_fields`).
-        Returns ``(path, row)``, the row the export receipt lists."""
+        ``metadata`` is the checkpoint's, which a world's tape reads its
+        statement hash from when neither the caller nor the cold start
+        gave one (:func:`_recorded_statement_sha256`).  Returns
+        ``(path, row)``, the row the export receipt lists."""
         seconds = float(seconds)
         if abs(seconds - round(seconds)) > 1.0e-6:
             raise ValueError(
@@ -780,6 +1111,7 @@ class TapeGrid:
         convective = _convective_rain(bundle, regrid, (ny_out, nx_out))
         land = regrid(surface.land_fraction)
         energy = _surface_energy_planes(bundle, regrid)
+        ocean = _slab_ocean_planes(bundle, regrid)
         land_use = land_use_planes(surface, nearest)
         skin = regrid(surface.temperature_k).astype(np.float32)
         table = landuse_table(bundle)
@@ -817,7 +1149,9 @@ class TapeGrid:
             "V10": screen["v10"].astype(np.float32),
             "PSFC": ps.astype(np.float32),
             "TSK": skin,
-            # The skin under WRF's SST name on every point (TAPE_SST_POLICY).
+            # The skin under WRF's SST name on every point (TAPE_SST_POLICY);
+            # a slab state's own SST replaces it below, in this position
+            # (TAPE_SST_SLAB_POLICY).
             "SST": skin.copy(),
             "HGT": self.terrain_m.astype(np.float32),
             "LANDMASK": (land >= 0.5).astype(np.float32),
@@ -847,6 +1181,10 @@ class TapeGrid:
             "SEAICE": regrid(surface.sea_ice_fraction).astype(np.float32),
             "ICEDEPTH": regrid(surface.sea_ice_thickness_m).astype(np.float32),
             **_snow_planes(bundle, regrid, (ny_out, nx_out)),
+            # The slab ocean's SST, mixed-layer depth and heat-flux
+            # correction: only on a state that carries the slab, so every
+            # other tape is the one written before, byte for byte.
+            **ocean,
         }
 
         _require_tape_writer()
@@ -855,6 +1193,46 @@ class TapeGrid:
             raise FileExistsError(
                 f"render tape {path} exists; pass --overwrite to replace it"
             )
+        tape_attrs = {
+            **self.global_attrs, SURFACE_DIAGNOSTICS_ATTR: screen_source,
+            # A time-mean file (arwen_global.longrun_ops) says so on
+            # its tape; an instantaneous state adds nothing here.
+            **time_mean_attrs(
+                {"physics_metadata": bundle.physics_state.metadata}),
+            WATER_CONVENTION_ATTR: TAPE_WATER_CONVENTION,
+            VERTICAL_VELOCITY_ATTR: TAPE_VERTICAL_VELOCITY_POLICY,
+            **{
+                name: (value if isinstance(value, str) else np.int32(value))
+                for name, value in (table or {}).items()
+            },
+        }
+        title = TAPE_TITLE
+        world_row = None
+        world = self.world
+        if not world.is_earth:
+            # The world on the tape: its attributes after every Earth one,
+            # its name and label in the TITLE and in the model name the
+            # renderer prints on every map.
+            world_attrs = world_tape_attributes(
+                world, clock=self.clock, valid=valid,
+                seconds=float(round(seconds)),
+                statement_sha256=_recorded_statement_sha256(
+                    metadata, self.world_statement,
+                    getattr(model, "initial_provenance", None)))
+            world_class = str(world_attrs[WORLD_CLASS_ATTR])
+            title = world_tape_title(world, world_class)
+            tape_attrs[MODEL_LABEL_ATTR] = world_model_label(world)
+            tape_attrs.update(world_attrs)
+            world_row = {
+                "class": world_class,
+                "statement_sha256": world_attrs[WORLD_STATEMENT_ATTR],
+                "subsolar_lat_deg": (
+                    float(world_attrs[SUBSOLAR_LAT_ATTR])
+                    if SUBSOLAR_LAT_ATTR in world_attrs else None),
+                "subsolar_lon_deg": (
+                    float(world_attrs[SUBSOLAR_LON_ATTR])
+                    if SUBSOLAR_LON_ATTR in world_attrs else None),
+            }
         writer = WrfoutWriter(
             path,
             nx=nx_out,
@@ -862,16 +1240,8 @@ class TapeGrid:
             nz=nz,
             dx=self.dx_m,
             dy=self.dx_m,
-            title="Arwen Global research model",
-            global_attrs={
-                **self.global_attrs, SURFACE_DIAGNOSTICS_ATTR: screen_source,
-                WATER_CONVENTION_ATTR: TAPE_WATER_CONVENTION,
-                VERTICAL_VELOCITY_ATTR: TAPE_VERTICAL_VELOCITY_POLICY,
-                **{
-                    name: (value if isinstance(value, str) else np.int32(value))
-                    for name, value in (table or {}).items()
-                },
-            },
+            title=title,
+            global_attrs=tape_attrs,
             soil_layers=_SOIL_LAYERS,
             # Every variable is declared as the tape is opened, so the
             # attributes this door states itself go on before the first
@@ -879,7 +1249,7 @@ class TapeGrid:
             field_schema=frame,
         )
         try:
-            _state_variable_attributes(writer)
+            _state_variable_attributes(writer, sorted(ocean))
             writer.write_frame(valid.strftime("%Y-%m-%d_%H:%M:%S"), frame)
             writer.close()
         except BaseException:
@@ -891,15 +1261,18 @@ class TapeGrid:
             "valid": valid.strftime("%Y-%m-%d_%H:%M:%S"),
             "surface_diagnostics": screen_source,
             "surface_energy_fields": sorted(energy),
+            **({"slab_ocean_fields": sorted(ocean)} if ocean else {}),
             "extra_planes": sorted(extras),
             "landuse_table": table,
         }
+        if world_row is not None:
+            row["world"] = world_row
         return path, row
 
     def receipt(self, tapes) -> dict[str, object]:
         """The export receipt for ``tapes`` (the rows :meth:`write` returned)."""
         cfg, clock, start = self.cfg, self.clock, self.start
-        return {
+        receipt = {
             "name": cfg.name,
             "config_hash": cfg.config_hash,
             "pins_hash": pins_hash(cfg.semi_implicit_scheme, cfg.integrator),
@@ -917,9 +1290,22 @@ class TapeGrid:
             # and what its W is.
             "derivation_fields": [name for name, _units, _text in DERIVATION_FIELDS],
             "vertical_velocity": TAPE_VERTICAL_VELOCITY_POLICY,
-            "sea_surface_temperature": TAPE_SST_POLICY,
+            "sea_surface_temperature": (
+                TAPE_SST_SLAB_POLICY
+                if any(row.get("slab_ocean_fields") for row in tapes)
+                else TAPE_SST_POLICY),
             "tapes": list(tapes),
         }
+        world = self.world
+        if not world.is_earth:
+            # Only a world's receipt gains the key: an Earth receipt is the
+            # one written before worlds existed.
+            receipt["world"] = {
+                **world.record(),
+                "coast": "own" if world.changes_coast else "earth",
+                "tape_attributes": list(WORLD_TAPE_ATTRS),
+            }
+        return receipt
 
 
 def _host_array(backend, values) -> np.ndarray:
@@ -941,6 +1327,7 @@ def export_wrfout(
     overwrite: bool = False,
     bbox: tuple[float, float, float, float] | None = None,
     extra_planes=None,
+    world_statement: str | None = None,
 ) -> list[Path]:
     """Write one wrfout tape per checkpoint on a regular ``nlat`` x ``nlon``
     grid (or its ``bbox`` window).  ``extra_planes(checkpoint, bundle,
@@ -952,7 +1339,19 @@ def export_wrfout(
 
     The tapes' valid times are the run's forecast clock plus each
     checkpoint's model time (:func:`tape_start`): ``start_date`` may be
-    left out of a dated run and is refused when it disagrees."""
+    left out of a dated run and is refused when it disagrees.
+
+    A config whose world is not Earth's (``cfg.world``) stamps the world on
+    every tape (:func:`world_tape_attributes`), in its TITLE and in the
+    model name the renderer prints, and records it in the export receipt.
+    ``world_statement`` is the world statement's text when the caller has
+    it; otherwise its hash is taken from the cold start's provenance or the
+    checkpoint's world record (:func:`_recorded_statement_sha256`).  An
+    Earth config writes exactly the tapes and the receipt it wrote before
+    worlds existed."""
+    from .world import EARTH
+
+    world = getattr(cfg, "world", None) or EARTH
     parse_start_date(start_date)
     # The render kernels before anything else: a machine without them
     # refuses here, with the missing-door exit and the command that stages
@@ -964,7 +1363,8 @@ def export_wrfout(
     model, _cold = build_model_and_cold_state(
         cfg, transform, scratch_destination=Path(outdir))
     tape_grid = TapeGrid(cfg, model, transform, nlat=nlat, nlon=nlon,
-                         start_date=start_date, bbox=bbox)
+                         start_date=start_date, bbox=bbox,
+                         world_statement=world_statement)
     backend = transform.backend
 
     output = Path(outdir)
@@ -978,6 +1378,8 @@ def export_wrfout(
             semi_implicit_scheme=cfg.semi_implicit_scheme,
             integrator=cfg.integrator,
         )
+        if not world.is_earth:
+            _refuse_another_worlds_checkpoint(world, metadata, checkpoint)
         bundle = state_from_checkpoint(metadata, arrays, backend)
         # A checkpoint integrated from another start than this config's
         # clock is refused by name rather than stamped with the wrong
@@ -988,11 +1390,25 @@ def export_wrfout(
             bundle, tape_grid.device_fields(bundle.atmosphere),
             float(metadata["time_s"]), output, overwrite=overwrite,
             checkpoint=checkpoint, extra_planes=extra_planes,
+            metadata=metadata,
         )
         written.append(path)
         tapes.append(row)
     write_receipt(output / EXPORT_RECEIPT_NAME, tape_grid.receipt(tapes))
     return written
+
+
+def _slab_ocean_planes(bundle, regrid) -> dict[str, np.ndarray]:
+    """SST, HML and ARWEN_QFLUX on the tape when the state carries the
+    slab ocean (arwen_global.ocean_coupler.tape_fields), else nothing.
+
+    SST is regridded from the mixed-layer temperature on the ocean columns
+    and the skin elsewhere, so a coast's bilinear sample blends the two as
+    TSK's does."""
+    from .ocean_coupler import tape_fields
+
+    fields = tape_fields(bundle.physics_state.arrays, bundle.surface.temperature_k, None)
+    return {name: regrid(value).astype(np.float32) for name, value in fields.items()}
 
 
 def _snow_planes(bundle, regrid, shape):
@@ -1055,11 +1471,13 @@ def _screen_level_fields(cfg, bundle, backend, regrid, temperature, species, u, 
 
 __all__ = [
     "DERIVATION_FIELDS", "EXPORT_RECEIPT_NAME", "LANDUSE_TABLE_ATTRS",
-    "SURFACE_ENERGY_FIELDS", "TAPE_ISLAKE", "TAPE_SST_POLICY", "TAPE_VARIABLE_ATTRS",
+    "SURFACE_ENERGY_FIELDS", "TAPE_ISLAKE", "TAPE_SST_POLICY",
+    "TAPE_SST_SLAB_POLICY", "TAPE_VARIABLE_ATTRS",
     "TAPE_VERTICAL_VELOCITY_POLICY", "TAPE_WATER_CONVENTION",
-    "SYNTHESIZED_FIELDS", "TAPE_W_DESCRIPTION", "TapeGrid",
-    "VERTICAL_VELOCITY_ATTR", "WATER_CONVENTION_ATTR",
+    "SYNTHESIZED_FIELDS", "TAPE_TITLE", "TAPE_W_DESCRIPTION", "TapeGrid",
+    "VERTICAL_VELOCITY_ATTR", "WATER_CONVENTION_ATTR", "WORLD_TAPE_ATTRS",
     "diagnose_ground_relative_w", "export_wrfout", "grid_metric_planes",
-    "land_use_planes", "landuse_table", "parse_start_date", "tape_start",
-    "tape_water_fields",
+    "land_use_planes", "landuse_table", "parse_start_date", "subsolar_point",
+    "tape_start", "tape_water_fields", "world_tape_attributes",
+    "world_tape_class", "world_tape_title",
 ]

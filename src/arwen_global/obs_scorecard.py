@@ -112,6 +112,9 @@ from .upper_air_scorecard import (
 )
 
 SCHEMA = "gpuwm.arwen-global-obs-scorecard/v1"
+#: The door's name in a refusal on another world (the receipt reader,
+#: :func:`arwen_global.upper_air_scorecard.read_receipt`, refuses).
+OBS_SCORECARD_DOOR = "the observation scorecard"
 
 #: The scored surface variables, the seam names the station record uses.
 SURFACE_VARIABLES: tuple[str, ...] = ("temperature_2m", "dewpoint_2m", "wind_speed_10m", "mslp")
@@ -448,7 +451,7 @@ def model_surface_fields(run_dir: str | Path, checkpoint: str | Path, *, surface
     """One checkpoint's surface reading through the run's own (streaming)
     transform.  Only the surface arrays are loaded; a checkpoint lacking one
     is refused by name before anything is read."""
-    receipt = read_receipt(Path(run_dir))
+    receipt = read_receipt(Path(run_dir), door=OBS_SCORECARD_DOOR)
     transform = build_streaming_transform(receipt)
     with np.load(checkpoint, allow_pickle=False) as archive:
         if "__metadata__" not in archive:
@@ -896,7 +899,7 @@ def model_level_fields(run_dir: str | Path, checkpoint: str | Path, *, surface_g
     """The run's pressure-level fields at the upper-air scorecard's levels,
     through its ModelReader (or that instrument's cache when the checkpoint
     and surface geopotential digests match)."""
-    receipt = read_receipt(Path(run_dir))
+    receipt = read_receipt(Path(run_dir), door=OBS_SCORECARD_DOOR)
     cache = None
     if cache_dir is not None and phi_digest:
         cache = model_cache_path(cache_dir, checkpoint, phi_digest)
@@ -1437,7 +1440,7 @@ def _phi_for(run_dir: Path, mapping: str | None, cache_dir: Path | None, initial
     """The run's surface geopotential: the upper-air scorecard's cache when
     it holds the rebuild for this initial analysis and grid (no resident
     transform is built), else that instrument's own rebuild."""
-    receipt = read_receipt(run_dir)
+    receipt = read_receipt(run_dir, door=OBS_SCORECARD_DOOR)
     mapping_path = resolve_mapping(mapping, receipt)
     if cache_dir is not None:
         _mapping, inputs, _sha = receipt_initial_analysis(receipt)

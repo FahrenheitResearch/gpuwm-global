@@ -216,7 +216,7 @@ def test_the_loader_row_carries_a_digest_of_the_device_sources():
 
     provenance.note(kernels)
     row = provenance.integrated_physics_modules()["arwen_global.core.kernels"]
-    assert row["kernels"] == "15"
+    assert row["kernels"] == "16"
     assert len(row["kernels_sha256"]) == 64
     assert row["kernels_sha256"] != row["sha256"]
 

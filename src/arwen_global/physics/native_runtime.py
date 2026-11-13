@@ -28,8 +28,8 @@ from ..water import SOIL_LAYER_THICKNESS_M
 from . import frozen_surface
 from .native_state import (
     CUMULUS_DYNAMICS_QV_LANE, CUMULUS_DYNAMICS_THETA_LANE, CUMULUS_EXIT_QV,
-    CUMULUS_EXIT_THETA, CUMULUS_EXIT_TIME_KEY, PersistentNativeState,
-    RADIATION_ACCUMULATORS,
+    CUMULUS_EXIT_THETA, CUMULUS_EXIT_TIME_KEY, NOAH_SNOW_AGE,
+    PersistentNativeState, RADIATION_ACCUMULATORS,
 )
 from . import provenance
 from .surface_diagnostics import SOURCE_METADATA_KEY
@@ -131,6 +131,14 @@ class NativePhysicsRuntime:
     # Step profiler slot (arwen_global.profile): every scheme call
     # in run() is one named section.  None is the no-op.
     profiler = None
+    # The whole grid's sub-grid orography (physics.orographic_drag.
+    # OrographicStatistics), forwarded by the suite; read only under
+    # orographic_drag = "kim-gwdo", which refuses by name without it.
+    orographic_statistics = None
+    # A world's sun (arwen_global.world.sun.WorldSun), set by the run door
+    # (arwen_global.world.radiation.attach_sun) before the first step.  None
+    # is the model's own sun and the radiation it always built.
+    world_sun = None
 
     def __init__(self, options, *, modules: dict[str, object] | None = None):
         self.options = options
@@ -337,7 +345,14 @@ class NativePhysicsRuntime:
                 # (rrtmgp.load_gas_tables, GasTables.to_device), so a
                 # second band's driver costs its geometry planes and the
                 # trace-gas read, not a second set of tables.
-                self._radiation = module.RRTMGPRadiation(
+                radiation_class, world_sun = module.RRTMGPRadiation, {}
+                if self.world_sun is not None:
+                    # Another world's sun: the same radiation with its two
+                    # sun methods overridden (arwen_global.world.radiation).
+                    from ..world.radiation import world_radiation_class
+                    radiation_class = world_radiation_class(radiation_class)
+                    world_sun = {"world_sun": self.world_sun}
+                self._radiation = radiation_class(
                     start_time=self.options.start_time,
                     latitude_deg=batch.arrays["latitude_deg"],
                     longitude_deg=batch.arrays["longitude_deg"],
@@ -346,7 +361,21 @@ class NativePhysicsRuntime:
                     trace_gas_overrides=self.options.greenhouse_gas_overrides(),
                     column_size_bounding=True,
                     ozone_climatology=self.options.ozone,
+                    **self._cloud_inhomogeneity_kwargs(),
+                    **world_sun,
                 )
+            if self.options.ghg_year == "valid":
+                # [radiation] ghg_year = "valid": the gases of THIS call's
+                # valid year, the instant the driver dates its ozone and
+                # solar geometry by (start + the state's elapsed seconds).
+                # A function of that instant alone, so a restarted run's
+                # fresh driver re-selects exactly what the straight run's
+                # did, and inside one year it hands RRTMGP the start-year
+                # values the constructor already holds.
+                valid = self.options.start_time + timedelta(
+                    seconds=float(batch.time_s))
+                self._radiation.select_trace_gases(
+                    valid, self.options.greenhouse_gas_overrides(valid))
             atmosphere = {
                 "pressure": batch.arrays["p_full"],
                 "p_interface": batch.arrays["p_half"],
@@ -364,7 +393,7 @@ class NativePhysicsRuntime:
             result = self._radiation(
                 atmosphere=atmosphere,
                 fields=fields,
-                state=persistent.fake_radiation_state(),
+                state=self._radiation_state(batch, persistent),
                 cfg=cfg,
             )
             persistent.arrays["rad_rthratenlw"][...] = result.rthratenlw
@@ -436,6 +465,45 @@ class NativePhysicsRuntime:
         )
         self._accumulate_radiation(batch, persistent)
         return due
+
+    def _cloud_inhomogeneity_kwargs(self) -> dict:
+        """The driver keyword for radiation_cloud_inhomogeneity: nothing
+        under "none", so the driver is built as it always was."""
+        from .cloud_radiation_options import CLOUD_INHOMOGENEITY_FACTORS
+
+        factor = CLOUD_INHOMOGENEITY_FACTORS[
+            self.options.radiation_cloud_inhomogeneity]
+        return {} if factor is None else {"cloud_path_scale": float(factor)}
+
+    def _radiation_state(self, batch, persistent):
+        """The state the radiation reads.  Under radiation_liquid_radius
+        "wrf_relcalc" its effc is WRF's relcalc radius for Morrison cloud
+        (cloud_radiation_options.wrf_relcalc on the layer temperatures,
+        landm = 2 - xland on this runtime's own xland, the analysed sea-ice
+        fraction and Noah's snow water equivalent); the persistent effc
+        that Morrison writes is not touched.  As before the option, the
+        driver reads the scheme radii only once Morrison has run, so the
+        first call of a cold start still sizes its cloud from the moments.
+        """
+        state = persistent.fake_radiation_state()
+        if self.options.radiation_liquid_radius == "scheme":
+            return state
+        from .cloud_radiation_options import wrf_relcalc
+
+        xp = batch.xp
+        ice = batch.surface.sea_ice_fraction
+        if ice is None:
+            ice = xp.zeros(batch.surface_shape, dtype=xp.float32)
+        # relcalc never returns Morrison's 25 um no-mass sentinel (its range
+        # is 8 to 14 um), so every liquid cell radiates the relcalc radius.
+        state.effc = wrf_relcalc(
+            batch.arrays["temperature"],
+            xp.float32(2.0) - self._xland(batch),
+            ice,
+            persistent.arrays["noah_snow"],
+            xp=xp,
+        )
+        return state
 
     @staticmethod
     def _accumulate_radiation(batch, persistent) -> None:
@@ -812,7 +880,15 @@ class NativePhysicsRuntime:
             "albbck": surface.background_albedo,
             "emiss": surface.emissivity,
             "znt": surface.roughness_m, "z0": surface.roughness_m.copy(),
-            "snotime": xp.zeros(s, dtype=xp.float32),
+            # The carried snow age: the kernel reads it, ages or zeroes it
+            # in ALCALC and writes it back (noah.cu:1033, 1497), and the
+            # write-back below keeps it for the next call.
+            # With snow_ageing off it is rebuilt as zeros on every call, the
+            # arithmetic of 0.1.5 and earlier, and nothing is written back.
+            "snotime": (
+                f[NOAH_SNOW_AGE] if self.options.snow_ageing
+                else xp.zeros(s, dtype=xp.float32)
+            ),
             "lai": surface.leaf_area_index,
             "smstav": xp.zeros(s, dtype=xp.float32),
             "smstot": xp.zeros(s, dtype=xp.float32),
@@ -1011,10 +1087,13 @@ class NativePhysicsRuntime:
             ("noah_lh", "lh"), ("noah_grdflx", "grdflx"),
             ("noah_canwat", "canwat"), ("noah_snow", "snow"),
             ("noah_snowc", "snowc"), ("noah_snowh", "snowh"),
+            (NOAH_SNOW_AGE, "snotime"),
             ("noah_smois", "smois"), ("noah_tslb", "tslb"),
             ("noah_sh2o", "sh2o"), ("noah_smcrel", "smcrel"),
             ("noah_sfcrunoff", "sfcrunoff"), ("noah_udrunoff", "udrunoff"),
         ):
+            if name == NOAH_SNOW_AGE and not self.options.snow_ageing:
+                continue
             persistent.arrays[name][...] = dev[key]
         # Every kg/m2 Noah moved into its stores this call is water the
         # surface reservoir already holds: _microphysics_step credits the
@@ -1424,6 +1503,20 @@ class NativePhysicsRuntime:
             free_atmosphere_mixing_length=(
                 self.options.ysu_free_atmosphere_mixing_length),
         )
+        if self.options.orographic_drag_enabled:
+            # WRF's PBL driver adds gwd_opt's drag to RUBLTEN/RVBLTEN after
+            # the PBL scheme, from the same column state the PBL scheme read
+            # (module_pbl_driver.F:2129-2185), so it is added here, before
+            # either rate is applied.
+            from .orographic_drag import apply_orographic_drag
+
+            with profiler_of(self).section("orographic_drag"):
+                apply_orographic_drag(
+                    self.orographic_statistics, batch, out,
+                    launch=self._module(
+                        "arwen_global.core.terrain_drag").launch_gwdo,
+                    dz=dz, dx_m=self.options.dx_m,
+                    metadata=persistent.metadata)
         step = batch.xp.float32(batch.dt_s)
         column_before = self._water_before(batch)
         for target, source in (
@@ -1898,6 +1991,33 @@ class NativePhysicsRuntime:
             getattr(self._cumulus, "last_column_diagnostics", None) or {}
         )
 
+    def _droplet_number_plane(self, batch):
+        """Morrison's fixed droplet number per column in m-3, or None.
+
+        None under morrison_droplet_number="fixed": the launcher then runs
+        the WRF kernels with their single NDCNST and nothing here is read.
+        Under "land_ocean" (a declared departure from WRF) a column takes
+        the land value where the model calls it land, xland below 1.5 on
+        the ice-free :func:`xland_plane` (land_fraction above one half, the
+        split every other scheme in this runtime uses), and the ocean value
+        everywhere else.  Sea ice takes the ocean value: the air over a
+        pack is marine air, and the prescriptions this follows key on the
+        land mask alone (MPAS-Thompson's landmask, CCPP-Thompson's
+        ``lsm == 1``), which carries no ice.  Lakes follow land_fraction.
+        """
+        if self.options.morrison_droplet_number == "fixed":
+            return None
+        xp = batch.xp
+        land = xland_plane(batch.surface.land_fraction, None, xp) < xp.float32(1.5)
+        plane = xp.where(
+            land,
+            xp.float32(float(self.options.morrison_droplet_number_land_cm3) * 1.0e6),
+            xp.float32(float(self.options.morrison_droplet_number_ocean_cm3) * 1.0e6),
+        )
+        return xp.ascontiguousarray(
+            plane.astype(xp.float32).reshape(batch.surface_shape)
+        )
+
     def _microphysics_step(self, batch, persistent):
         column_before = self._water_before(batch)
         self._microphysics_kernel(batch, persistent)
@@ -1916,6 +2036,11 @@ class NativePhysicsRuntime:
         shape = batch.shape
         dz = self._dz(batch)
         rho = xp.empty(shape, dtype=xp.float32)
+        # The keyword travels only under the departure, so the call WRF's
+        # single droplet number makes is the call it always made.
+        droplet_plane = self._droplet_number_plane(batch)
+        droplet = ({} if droplet_plane is None
+                   else {"droplet_number_m3": droplet_plane})
         module.launch_morrison(
             batch.arrays["theta"], batch.arrays["qv"], batch.arrays["qc"],
             batch.arrays["qr"], batch.arrays["qi"], batch.arrays["qs"],
@@ -1926,6 +2051,7 @@ class NativePhysicsRuntime:
             f["graupelnc"], f["graupelncv"], f["sr"], batch.dt_s,
             effc=f["effc"], effr=f["effr"], effi=f["effi"], effs=f["effs"],
             morr_rimed_ice=self.options.morr_rimed_ice,
+            **droplet,
             _rhoa_scratch=rho,
             _ice_to_snow_scratch=xp.empty(shape, dtype=xp.float32),
         )

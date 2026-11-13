@@ -466,12 +466,26 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def read_receipt(run_dir: Path) -> dict:
+#: The door's name in a refusal on another world.
+UPPER_AIR_DOOR = "the upper-air scorecard"
+
+
+def read_receipt(run_dir: Path, *, door: str = UPPER_AIR_DOOR) -> dict:
+    """The run receipt every scorecard reads first.  A run on another world
+    is refused here by name (``door`` names the scorecard asking): a
+    scorecard scores a forecast of Earth, and a world's receipt carries its
+    world record (:mod:`arwen_global.world.refusals`).  An Earth receipt
+    carries none and is returned unchanged."""
+    from .world.refusals import refuse_on_world
+
     path = Path(run_dir) / RECEIPT_NAME
     if not path.exists():
         raise FileNotFoundError(f"{path}: the run receipt is needed for the grid, the vertical tables and the run start")
     with path.open("r", encoding="utf-8") as stream:
-        return json.load(stream)
+        receipt = json.load(stream)
+    refuse_on_world(receipt, door=door, family="scorecard",
+                    source=f"run receipt {path}")
+    return receipt
 
 
 def receipt_start_utc(receipt: dict) -> datetime:

@@ -51,6 +51,8 @@ SUPPLEMENT_ROLE = "arwen_global_in_band_surface"
 PROVENANCE_ROLE = "arwen_global_in_band_surface_provenance"
 PROVENANCE_SCHEMA = "arwen-global-parent-in-band-terrain-provenance-v1"
 FRAME_CONVENTION = "arwen-global-mapped-parent-frame/v1"
+#: The door's name in a refusal on another world.
+REGIONAL_DOOR = "export-mapped-parent (the regional parent export)"
 
 TIME_UNITS = "seconds since 1970-01-01 00:00:00"
 TIME_CALENDAR = "standard"
@@ -675,13 +677,20 @@ def plan_parent_frames(checkpoints, start: datetime, outdir: str | Path, *,
     one is refused with ``overwrite`` too: the documents and the receipt
     describe exactly the frames of one export, and a stale frame beside them
     is picked up by any reader that lists the folder.
+
+    A checkpoint integrated on another world is refused by name with
+    nothing written (:data:`REGIONAL_DOOR`): the regional engine would lay
+    it over Earth's geography.
     """
     from .checkpoint import read_checkpoint_header
+    from .world.refusals import refuse_on_world
 
     output = Path(outdir)
     plan: list[dict[str, object]] = []
     for checkpoint in checkpoints:
         header = read_checkpoint_header(checkpoint)
+        refuse_on_world(header, door=REGIONAL_DOOR, family="regional",
+                        source=f"checkpoint {checkpoint}")
         seconds = float(header["time_s"])
         if abs(seconds - round(seconds)) > 1.0e-6:
             raise ValueError(f"checkpoint time {seconds} s is not a whole second")
@@ -747,7 +756,17 @@ def export_mapped_parent(
     already exist, and frames in the folder that are not part of this
     export.  On the card a refusal found at the ninth frame used to cost the
     eight before it, and left them in the folder with no receipt.
+
+    A run on another world is refused by name before anything is built
+    (:data:`REGIONAL_DOOR`; :func:`arwen_global.world.refusals.
+    refuse_on_world`): the config's world here, each checkpoint's world in
+    :func:`plan_parent_frames`.
     """
+    from .world.refusals import refuse_on_world
+
+    refuse_on_world(getattr(cfg, "world", None), door=REGIONAL_DOOR,
+                    family="regional",
+                    source=f"config {getattr(cfg, 'name', '')!r}")
     from . import render_kernels
     from .pins import pins_hash
     from .receipt import write_receipt
