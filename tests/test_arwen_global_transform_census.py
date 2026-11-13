@@ -12,9 +12,26 @@ per step are pinned, for the shipped step and for the dieted one, and the
 test fails if either rises.
 
 The second half is the bits.  Both switches keep every row of every call
-and only narrow the stack (the GEMM's M): their ten-step checkpoint is
-compared byte for byte with the shipped run's, and the dieted run is held
-to a restart-to-the-bit gate.  A third cut, the assemble analysis of theta
+and only narrow the stack (the GEMM's M), and whether a narrower M returns
+the same bits is the BLAS library's choice on the CPU it runs on, not a
+property of the switch.  `skip_unread_planes`' ten-step checkpoint is
+compared byte for byte with the shipped run's: it held on every CPU
+measured, GitHub's hosted runners included.  `divergence_only_mass_flux`'s
+is compared to rounding: byte-identical on the hosts measured (AVX2
+OpenBLAS kernels, numpy 2.4.6 and 2.5.4), it was NOT on GitHub's hosted
+runners, where 0.1.8's publish failed on this gate (and three of its four
+push-test jobs, ubuntu and Windows): 19 or 20 of the ten-step checkpoint's
+52 arrays moved, alone and in the dieted run, and the float64 operator
+test below found the divergence-only analysis not equal to the full one.
+What it is held to is the guaranteed part, the same products and the same
+subtraction in a narrower call: every float array of the ten-step
+checkpoint within ROUNDING_TOLERANCE of its own largest value, and every
+other array byte-identical.  Emulated on a host by moving every element of
+every divergence-only analysis by up to one ulp, the ten-step checkpoint
+moved the same 20 arrays the runner reported, by at most 7.0e-11 of their largest
+value (the trajectory's ln ps tendency; 2.8e-12 for the divergence).  The
+dieted run is still held to a restart-to-the-bit gate, which is a property
+of one CPU and holds on every one.  A third cut, the assemble analysis of theta
 and vapour in one call of 2 x nlev planes instead of fourteen six-plane
 calls, moved M outside the measured bit-exact widths and moved bits on the
 card, so it is not built.
@@ -275,11 +292,47 @@ def test_the_one_subset_a_cached_stack_could_serve_follows_an_output_step(arms):
 
 # -- the bits ---------------------------------------------------------------
 
-@pytest.mark.parametrize("arm", ["unread", "divergence", "diet"])
-def test_the_narrowing_switches_keep_every_checkpoint_byte(arms, arm):
+#: How far a divergence-only checkpoint array may sit from the shipped one,
+#: as a fraction of the shipped array's largest magnitude: fourteen times
+#: the 7.0e-11 the one-ulp emulation measured (module docstring).
+ROUNDING_TOLERANCE = 1e-9
+
+
+def test_skip_unread_planes_keeps_every_checkpoint_byte(arms):
     shipped = _hashes(arms["shipped"][0], 10)
     assert len(shipped) > 10
-    assert _hashes(arms[arm][0], 10) == shipped
+    assert _hashes(arms["unread"][0], 10) == shipped
+
+
+@pytest.mark.parametrize("arm", ["divergence", "diet"])
+def test_divergence_only_mass_flux_agrees_with_every_checkpoint_array_to_rounding(arms, arm):
+    """Byte-identical on the hosts measured; to rounding on every CPU.
+
+    0.1.8 asserted the bytes here and its publish failed on GitHub's
+    hosted runner, whose BLAS kernel returns different bits for the
+    narrower M.  An array that matches its hash is equal; one that does
+    not is held to ROUNDING_TOLERANCE of its own largest value, and an
+    integer or boolean array is always held to equality."""
+    shipped_hashes = _hashes(arms["shipped"][0], 10)
+    arm_hashes = _hashes(arms[arm][0], 10)
+    assert len(shipped_hashes) > 10
+    assert arm_hashes.keys() == shipped_hashes.keys()
+    shipped = read_checkpoint(arms["shipped"][0] / "arwen_global_step00000010.npz")[1]
+    dieted = read_checkpoint(arms[arm][0] / "arwen_global_step00000010.npz")[1]
+    assert shipped.keys() == dieted.keys()
+    for name in shipped:
+        a = np.asarray(shipped[name])
+        b = np.asarray(dieted[name])
+        assert a.shape == b.shape and a.dtype == b.dtype, name
+        if np.array_equal(a, b):
+            continue
+        assert a.dtype.kind in "fc", f"{name}: a {a.dtype} array moved"
+        assert np.all(np.isfinite(b)), name
+        scale = float(np.max(np.abs(a)))
+        assert scale > 0.0, name
+        moved = float(np.max(np.abs(a - b)))
+        assert moved <= ROUNDING_TOLERANCE * scale, (
+            f"{name}: moved {moved:.3e}, {moved / scale:.3e} of its largest value")
 
 
 def test_the_ledger_is_still_bit_neutral(arms):
@@ -313,8 +366,16 @@ def test_the_dieted_banded_step_is_the_dieted_resident_step(arms, tmp_path):
 
 # -- the operator and the door ---------------------------------------------
 
-@pytest.mark.parametrize("precision,tolerance", [("float64", 0.0), ("float32", 1e-6)])
+@pytest.mark.parametrize("precision,tolerance", [("float64", 1e-13), ("float32", 1e-6)])
 def test_divergence_from_fourier_is_the_full_analysis_divergence(precision, tolerance):
+    """The narrower call against the full analysis, to rounding.
+
+    Equal in float64 on the hosts measured and not on GitHub's hosted
+    runners (0.1.8's publish and push tests).  In float32 the AVX2 OpenBLAS kernels move
+    2,519 of the 19,360 coefficients by at most 2.3e-07 of the largest
+    (1.9 float32 epsilons).  The float64 bound, about 450 float64
+    epsilons, is a margin over that kind of difference and not a runner
+    measurement: the failing assertion reported no size."""
     transform = SphericalHarmonicTransform.create(21, backend="numpy", precision=precision)
     vector = VorticityDivergenceOperator(transform)
     rng = np.random.default_rng(7)
@@ -326,11 +387,9 @@ def test_divergence_from_fourier_is_the_full_analysis_divergence(precision, tole
     _zeta, full = vector._vordiv_from_fourier(waist)
     alone = vector.divergence_from_fourier(waist)
     assert alone.dtype == full.dtype and alone.shape == full.shape
-    if tolerance == 0.0:
-        assert np.array_equal(alone, full)
-    else:
-        scale = float(np.max(np.abs(full)))
-        assert float(np.max(np.abs(alone - full))) <= tolerance * scale
+    scale = float(np.max(np.abs(full)))
+    assert scale > 0.0
+    assert float(np.max(np.abs(alone - full))) <= tolerance * scale
     with pytest.raises(ValueError, match="leading length"):
         vector.divergence_from_fourier(waist.values[:1])
 

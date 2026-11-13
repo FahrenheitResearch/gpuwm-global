@@ -80,8 +80,10 @@ Experimental, each off unless named. A run that names none of them is
   (`stratospheric_noise_limit`).
 - **Two transform-diet switches** in a `[transforms]` table,
   `skip_unread_planes` and `divergence_only_mass_flux`, that stop the
-  semi-Lagrangian step making planes it never reads. Every array is
-  unchanged with them on; no speed is claimed.
+  semi-Lagrangian step making planes it never reads. On the cards
+  measured every array is unchanged with them on; on a CPU
+  `divergence_only_mass_flux` agrees to rounding (0.1.9's notes); no
+  speed is claimed.
 
 `CHANGELOG.md` has each change with its own measurements.
 

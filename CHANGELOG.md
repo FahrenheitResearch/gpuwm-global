@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.1.9
+
+0.1.8 was tagged but never reached PyPI: its publish workflow's test job
+failed on GitHub's ubuntu runner, so nothing was uploaded. 0.1.9 is that
+release with the failing gate corrected, and carries everything listed
+under 0.1.8 below. Needs `gpuwm>=2.9.13,<2.10` and
+`gpuwm-data>=2.9.13,<2.10`, as 0.1.8 did; proven against `gpuwm 2.9.13`.
+The companion bundle carries ten Rust doors, unchanged from 0.1.7. No
+forecast bit moves and no code path changes: every config hash is 0.1.8's,
+and a run that names neither `[transforms]` switch is 0.1.8's run.
+
+- The experimental `[transforms]` switch `divergence_only_mass_flux` agrees
+  with the shipped step to rounding on a CPU, not byte for byte everywhere.
+  Its ten-step numpy checkpoint is byte-identical to the shipped one on the
+  hosts measured, but not on GitHub's hosted runners: the publish job's
+  ubuntu runner and three of the four push-test jobs on 0.1.8's tree (one
+  ubuntu, both Windows) failed it. There the BLAS returns different bits
+  for the narrower Legendre call, 19 or 20 of the checkpoint's 52 arrays
+  moved, and the float64 operator test found the divergence-only analysis
+  unequal to the full one. `tests/test_arwen_global_transform_census.py` now holds
+  that switch to what is guaranteed: every float array of the ten-step
+  checkpoint within 1e-9 of its own largest value and every other array
+  equal, and the operator within 1e-13 of the full analysis in float64
+  (1e-6 in float32, as before). Emulated by moving every element of every
+  divergence-only analysis by up to one ulp, the checkpoint moved the same
+  20 arrays by at most 7.0e-11 of their largest value. `skip_unread_planes`
+  keeps its byte-for-byte gate: it held on every CPU measured, GitHub's
+  hosted runners included. The card measurements under 0.1.8 stand: the T255 day
+  with both switches on wrote every array byte-identical on an RTX 5070 Ti
+  and on an RTX 5090. `docs/ARWEN_GLOBAL_LEVEL5.md` and 0.1.8's notes say
+  the same.
+
 ## 0.1.8
 
 Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.1.7 did;

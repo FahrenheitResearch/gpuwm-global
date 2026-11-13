@@ -145,7 +145,8 @@ class VorticityDivergenceOperator:
         so the same two calls run at half the M.  The weights, the
         products and the subtraction are the full analysis's own, row for
         row; the narrower M is the only change, and whether it moves a
-        bit is the library's and is measured (tests).
+        bit is the library's: equal on the hosts measured, to rounding on
+        GitHub's hosted runners (tests/test_arwen_global_transform_census.py).
         """
         t = self.transform
         raw = fourier.values if isinstance(fourier, FourierWaist) else fourier

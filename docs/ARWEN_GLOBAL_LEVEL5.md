@@ -507,8 +507,13 @@ keeps are the same rows of a narrower call. `tools/arwen_global_transform_census
 CONFIG OUTDIR` counts the transforms a step makes: on the numpy T21 40-level
 census an ordinary step goes from 2,573 level-planes to 2,253 in the same 61
 contractions, and `tests/test_arwen_global_transform_census.py` pins both
-counts and holds the dieted ten-step checkpoint to the shipped one byte for
-byte. On the card, the T255 semi-Lagrangian day
+counts. On a CPU it holds the ten-step checkpoint with `skip_unread_planes`
+to the shipped one byte for byte, and with `divergence_only_mass_flux` to
+rounding: every array within 1e-9 of its own largest value. That one is
+byte-identical on the hosts measured but not on GitHub's hosted runners
+(ubuntu and Windows), whose BLAS returns different bits for the narrower call; a one-ulp
+emulation moves the ten-step checkpoint by at most 7.0e-11 of an array's
+largest value. On the card, the T255 semi-Lagrangian day
 (`arwen_global_gdas_t255_native_sl_si_24h`) with both switches on wrote
 every array of its nine checkpoints byte-identical to the day without them,
 on an RTX 5070 Ti and on an RTX 5090 (MEASURED 2026-11-12; the config hash
