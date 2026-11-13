@@ -523,6 +523,35 @@ def scheme_has_snow_species(scheme: str) -> bool:
 # floor before computing dry-column amounts (the same adaptation formerly
 # applied directly to gpuwm's model top).
 RRTMGP_TOA_PRESSURE_PA = 1.005183574463
+#: The deepest layer pressure the radiation accepts.  RRTMGP v1.9's tables
+#: end at 109,663.316 Pa of layer pressure, and a truncated orography that
+#: undershoots sea level under a winter high goes deeper: the T127 year run
+#: of 2026-11-13 stopped at day 192.8 with a 109,701.9 Pa layer at 37.9 N
+#: 53.4 E, where the T127 terrain rings down to -101 m on the south-east
+#: Caspian shore.  A layer between the tables' deepest pressure and this
+#: ceiling is looked up AT the deepest pressure (rrtmgp_gas.cu
+#: rrtmgp_interpolation_prepass), the way the UFS/CCPP RRTMGP interface
+#: bounds p_lay to get_press_max() (GFS_rrtmgp_pre.F90); WRF's RRTMG
+#: extrapolates its 1050 hPa table in ln p instead (module_ra_rrtmg_lw.F setcoef, fp =
+#: 5*(preflog(jp)-plog)).  Only the lookup coordinate moves: the absorber
+#: columns come from the true interfaces, the minor-gas density scaling,
+#: the troposphere test and the cloud fraction from the true layer
+#: pressure, and the model state is never touched.  1,150 hPa is 50 hPa
+#: past the deepest layer any run has carried; deeper than that is not
+#: weather and still refuses through the range gate, as air under 120 K
+#: does on the cold side.  Every layer inside the tables reads exactly the
+#: value it always read.
+RRTMGP_PLAY_CEILING_PA = 115_000.0
+
+
+def _play_bounds(*tables) -> tuple[float, float]:
+    """The layer-pressure range the radiation accepts: the gas tables'
+    common floor, and the deeper of their deepest pressure and
+    :data:`RRTMGP_PLAY_CEILING_PA`."""
+    lower = max(float(np.min(t.press_ref)) for t in tables)
+    upper = max(min(float(np.max(t.press_ref)) for t in tables),
+                RRTMGP_PLAY_CEILING_PA)
+    return lower, upper
 WRF_LW_UPPER_DELTA_P_PA = 400.0
 MAX_RADIATION_LAYERS = 128
 
@@ -1791,7 +1820,8 @@ RRTMGP_WORKSPACE_LIFETIME_AUDIT = {
 
 
 _VALIDATION_MESSAGES = (
-    (1 << 0, "play is non-finite or outside the gas-table pressure range"),
+    (1 << 0, "play is non-finite or outside the accepted pressure range "
+             "(the gas-table floor to RRTMGP_PLAY_CEILING_PA)"),
     (1 << 1, "plev is non-finite or negative"),
     (1 << 2, "tlay is non-finite or outside the gas-table temperature range"),
     (1 << 3, "tlev is non-finite or outside the LW temperature range"),
@@ -3105,10 +3135,7 @@ def _launch_validation_kernel(flags, *, play, plev, tlay, tlev, tsfc, exner,
 
     n = max(play.size, plev.size, emiss.size)
     threads = 256
-    play_lower = max(float(np.min(tables_lw.press_ref)),
-                     float(np.min(tables_sw.press_ref)))
-    play_upper = min(float(np.max(tables_lw.press_ref)),
-                     float(np.max(tables_sw.press_ref)))
+    play_lower, play_upper = _play_bounds(tables_lw, tables_sw)
     temp_lower = max(float(np.min(tables_lw.temp_ref)),
                      float(np.min(tables_sw.temp_ref)))
     temp_upper = min(float(np.max(tables_lw.temp_ref)),
@@ -3208,9 +3235,7 @@ def _raise_full_call_validation_error(*, play, plev, tlay, tlev, tsfc,
         raise ValueError("surface emissivity must be finite and within [0, 1]")
     def replay_gas_chunk(tables, sl, *, planck):
         _require_finite_nonnegative(qv=qv[sl])
-        _validate_host_range(
-            "play", play[sl], float(np.min(tables.press_ref)),
-            float(np.max(tables.press_ref)), "Pa")
+        _validate_host_range("play", play[sl], *_play_bounds(tables), "Pa")
         _validate_host_range("plev", plev[sl], 0.0, None, "Pa")
         _validate_host_range(
             "tlay", tlay[sl], float(np.min(tables.temp_ref)),
@@ -4752,8 +4777,7 @@ def _interpolation_metadata(tables: GasTables, play, tlay, *,
         raise ValueError("play must be a 2-D (ncol,nlay) array")
     tlay = _device_profile(tlay, play.shape, "tlay")
     if validate:
-        _validate_host_range("play", play, float(np.min(tables.press_ref)),
-                             float(np.max(tables.press_ref)), "Pa")
+        _validate_host_range("play", play, *_play_bounds(tables), "Pa")
         _validate_host_range("tlay", tlay, float(np.min(tables.temp_ref)),
                              float(np.max(tables.temp_ref)), "K")
     d = tables.to_device()
@@ -4829,8 +4853,7 @@ def _gas_optics(tables: GasTables, play, plev, tlay, vmr, *, metadata,
     tlay = _device_profile(tlay, (ncol, nlay), "tlay")
     vmr = _device_profile(vmr, (ncol, nlay, tables.ngas + 1), "vmr")
     if validate:
-        _validate_host_range("play", play, float(np.min(tables.press_ref)),
-                             float(np.max(tables.press_ref)), "Pa")
+        _validate_host_range("play", play, *_play_bounds(tables), "Pa")
         _validate_host_range("plev", plev, 0.0, None, "Pa")
         _validate_host_range("tlay", tlay, float(np.min(tables.temp_ref)),
                              float(np.max(tables.temp_ref)), "K")
@@ -5449,8 +5472,7 @@ def _planck_sources(tables: GasTables, play, plev, tlay, tlev, tsfc,
     tsfc = _device_profile(tsfc, (ncol,), "tsfc")
     vmr = _device_profile(vmr, (ncol, nlay, tables.ngas + 1), "vmr")
     if validate:
-        _validate_host_range("play", play, float(np.min(tables.press_ref)),
-                             float(np.max(tables.press_ref)), "Pa")
+        _validate_host_range("play", play, *_play_bounds(tables), "Pa")
         _validate_host_range("plev", plev, 0.0, None, "Pa")
         for name, value in (("tlay", tlay), ("tlev", tlev), ("tsfc", tsfc)):
             _validate_host_range(name, value, float(np.min(tables.temp_ref)),

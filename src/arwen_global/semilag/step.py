@@ -22,6 +22,8 @@ departure-side bundle and the arrival point adds the time-n one::
 and the trajectory interpolates ``2 V^n - V^{n-1}`` at the departure point
 while reading ``V^n`` at the arrival point.  No new state and no new
 gather; the shipped form keeps its arithmetic operation for operation.
+``"settls_residual_departure"`` takes the residual half of that form only
+(``Q'_X`` and ``N^n_A`` above) and keeps the shipped trajectory.
 
 For theta the material tendency ``A`` is zero (adiabatic flow), so
 ``N = -L theta`` and the WHOLE variable is gathered: a parcel's reference
@@ -68,7 +70,9 @@ import numpy as np
 from ..lnps_reference import lnps_from_anomaly_coefficients
 from .halo import default_halo_rows
 from .interpolate import Stencil, gather_batch
-from .options import HORIZONTAL_ORDER, PHYSICS_ARRIVAL_WEIGHT
+from .options import (
+    HORIZONTAL_ORDER, PHYSICS_ARRIVAL_WEIGHT, RESIDUAL_DEPARTURE_FORMS,
+)
 from .rhs import ReferenceProfile, advective_tendencies, linear_spectral_rows
 from .state import (
     TRAJECTORY_FIELDS, TRAJECTORY_SURFACE_FIELDS, RowTrajectory, TrajectoryState,
@@ -323,6 +327,11 @@ def _semilag_step_resident(model, atmosphere: MoistHybridState, dt_s: float,
     # non-extrapolated step under every form.
     departure_form = bool(
         options.extrapolation == "settls_departure" and not startup)
+    # Where the extrapolated nonlinear residual is read: at the departure
+    # point under both departure forms ("settls_residual_departure" moves
+    # only the residual and keeps the shipped trajectory).
+    departure_residual = bool(
+        options.extrapolation in RESIDUAL_DEPARTURE_FORMS and not startup)
     prof = profiler_of(model)
     # How much of the first physics half's increment is moved from the
     # departure point to the arrival point (semilag.options): zero under
@@ -414,7 +423,7 @@ def _semilag_step_resident(model, atmosphere: MoistHybridState, dt_s: float,
         n_lnps = tendencies["a_lnps"] - tendencies["l_lnps"]
         half = scalar(0.5 * dt)
         lead = scalar((1.0 - alpha) * dt)
-        if departure_form:
+        if departure_residual:
             # Hortal's SETTLS: the residual extrapolated to t^{n+1} rides
             # the departure-side bundle, and the arrival point adds the
             # time-n residual (the assemble section below).
@@ -578,7 +587,8 @@ def _semilag_step_resident(model, atmosphere: MoistHybridState, dt_s: float,
         stencil = None
 
     with prof.section("assemble"):
-        if startup or options.extrapolation == "none" or departure_form:
+        if (startup or options.extrapolation == "none"
+                or departure_residual):
             arrival_u = arrival_u + half * n_u
             arrival_v = arrival_v + half * n_v
             departure_theta = departure_theta + half * n_theta
@@ -927,14 +937,18 @@ def _band_pass(model, atmosphere, sources, mass_grid, window, *, tables,
                options, previous, previous_wind, extrapolate, gradient_waists,
                lnps_gradient_waists, linear_waist, increment, riding,
                limiter, want_deficit, keep_stencil, iterations, order, batch,
-               dt, scalar):
+               dt, scalar, departure=False, departure_residual=False):
     """One latitude band of the banded step, behind ``window``'s halo.
 
     Every expression below is :func:`_semilag_step_resident`'s, evaluated
     on the band's held rows (``window.source``) where it feeds the gather
     and on the band's own rows (``window.arrival``) where it is read at the
     arrival point.  Raises :class:`HaloEscape` when a departure point
-    leaves the held rows.
+    leaves the held rows.  ``departure`` is Hortal's trajectory
+    (``extrapolation = "settls_departure"`` past the start-up step) and
+    ``departure_residual`` his residual (that form and
+    ``"settls_residual_departure"``); each reads the previous time level
+    on every held row: one card only, where that level is held whole.
     """
     from ..dynamics import band_view
 
@@ -960,7 +974,40 @@ def _band_pass(model, atmosphere, sources, mass_grid, window, *, tables,
     u_own = mine(g["u"])
     v_own = mine(g["v"])
     s_own = mine(level_rate)
-    if extrapolate:
+    # The wind the search interpolates at the departure point, on every row
+    # the band holds: the time-n wind under the shipped form.
+    search_wind = wind
+    if extrapolate and departure:
+        # Hortal's form swaps the two roles (the resident step's statement):
+        # the extrapolated wind is interpolated at the departure point, so
+        # the band builds it on every row it holds, and the time-n wind is
+        # read at the arrival point, on the band's rows for the search and
+        # one row either side for the fold gate's meridional derivative.
+        nlat = int(tables.nlat)
+        ext = slice(max(rows.start - 1, 0), min(rows.stop + 1, nlat))
+        if ext.start < held.start or ext.stop > held.stop:
+            raise HaloEscape(window, "time-n wind")
+        ext_local = slice(ext.start - held.start, ext.stop - held.start)
+        ex_window = tables.window(ext, rows)
+        ex_u = 2.0 * g["u"] - _previous(previous, "u_prev", held, xp)
+        ex_v = 2.0 * g["v"] - _previous(previous, "v_prev", held, xp)
+        ex_x, ex_y, ex_z = cartesian_wind(ex_u, ex_v, tables, rows=held)
+        del ex_u, ex_v
+        search_wind = CartesianWind(
+            vx=ex_x, vy=ex_y, vz=ex_z,
+            level_rate=extrapolated_level_rate(
+                level_rate, _previous(previous, "s_prev", held, xp), xp=xp,
+                limited=bool(options.level_rate_limiter)),
+        )
+        del ex_x, ex_y, ex_z
+        extrapolated_ext = CartesianWind(*(
+            xp.ascontiguousarray(field[:, ext_local])
+            for field in wind.arrays()
+        ))
+        extrapolated = CartesianWind(*(
+            xp.ascontiguousarray(field[:, own]) for field in wind.arrays()
+        ))
+    elif extrapolate:
         # The extrapolated wind on the band's rows and one row either side:
         # the search reads it at the arrival point (the band's rows), and
         # the fold gate's meridional derivative reads the neighbour rows
@@ -992,7 +1039,7 @@ def _band_pass(model, atmosphere, sources, mass_grid, window, *, tables,
         extrapolated_ext = ex_window = extrapolated = None
     # The gate reads the fold of the map the search solves, so it reads
     # the same two winds the search reads (the resident step's statement).
-    deformation = lipschitz(wind, tables, dt, window=window,
+    deformation = lipschitz(search_wind, tables, dt, window=window,
                             extrapolated=extrapolated_ext,
                             extrapolated_window=ex_window)
     del extrapolated_ext
@@ -1000,11 +1047,11 @@ def _band_pass(model, atmosphere, sources, mass_grid, window, *, tables,
     # a read-back per launch stalls the stream four times a band.
     window.clear_escape()
     stencil, trajectory = departure_points(
-        wind, tables, dt,
+        search_wind, tables, dt,
         iterations=int(iterations),
         extrapolated=extrapolated, window=window, defer_escape=True,
     )
-    del extrapolated, wind, vx, vy, vz
+    del extrapolated, search_wind, wind, vx, vy, vz
     surface = _surface_stencil(stencil, tables)
 
     # The tendencies, on the held rows: the gradient and the linear rows
@@ -1042,10 +1089,25 @@ def _band_pass(model, atmosphere, sources, mass_grid, window, *, tables,
     half = scalar(0.5 * dt)
     alpha = float(model.semi_implicit.off_centring_weight)
     lead = scalar((1.0 - alpha) * dt)
-    bundle_u = g["u"] + lead * l_u + half * n_u
-    bundle_v = g["v"] + lead * l_v + half * n_v
-    bundle_theta = g["theta"] + lead * l_theta + half * n_theta
-    bundle_lnps = g["logps_anomaly"] + lead * l_lnps + half * n_lnps
+    if extrapolate and departure_residual:
+        # Hortal's SETTLS: the residual extrapolated to t^{n+1} rides the
+        # departure-side bundle on every held row, and the arrival point
+        # adds the time-n residual (the assembly below).
+        bundle_u = g["u"] + lead * l_u + half * (
+            2.0 * n_u - _previous(previous, "n_u", held, xp))
+        bundle_v = g["v"] + lead * l_v + half * (
+            2.0 * n_v - _previous(previous, "n_v", held, xp))
+        bundle_theta = g["theta"] + lead * l_theta + half * (
+            2.0 * n_theta - _previous(previous, "n_theta", held, xp))
+        bundle_lnps = (
+            g["logps_anomaly"] + lead * l_lnps
+            + half * (2.0 * n_lnps - _previous(previous, "n_lnps", held, xp))
+        )
+    else:
+        bundle_u = g["u"] + lead * l_u + half * n_u
+        bundle_v = g["v"] + lead * l_v + half * n_v
+        bundle_theta = g["theta"] + lead * l_theta + half * n_theta
+        bundle_lnps = g["logps_anomaly"] + lead * l_lnps + half * n_lnps
     del a_u, a_v, a_lnps, l_u, l_v, l_theta, l_lnps
     bundle_x, bundle_y, bundle_z = cartesian_wind(
         bundle_u, bundle_v, tables, rows=held)
@@ -1140,7 +1202,7 @@ def _band_pass(model, atmosphere, sources, mass_grid, window, *, tables,
     n_theta_own = mine(n_theta)
     n_lnps_own = mine(n_lnps)
     del n_u, n_v, n_theta, n_lnps
-    if not extrapolate:
+    if not extrapolate or departure_residual:
         arrival_u = arrival_u + half * n_u_own
         arrival_v = arrival_v + half * n_v_own
         departure_theta = departure_theta + half * n_theta_own
@@ -1216,15 +1278,18 @@ def _semilag_step_banded(model, atmosphere: MoistHybridState, dt_s: float,
     wide, up to the whole grid, which cannot escape.
     """
     options = model.semilag
-    if options.extrapolation == "settls_departure":
+    exchange = model.pipeline.exchange
+    if (options.extrapolation in RESIDUAL_DEPARTURE_FORMS
+            and exchange is not None
+            and int(getattr(exchange, "world", 1)) > 1):
         # Refused at every step, the start-up step included, so a run that
         # cannot take the form stops at step 1 and not at step 2.
         raise ValueError(
-            "semilag.extrapolation = 'settls_departure' runs on the resident "
-            "step only: the banded step reads the extrapolated wind on a "
-            "band's own rows, and the departure-side form interpolates it "
-            "across the band's halo, which this step does not build.  Run "
-            "one band on one card, or extrapolation = 'settls'."
+            f"semilag.extrapolation = {options.extrapolation!r} runs on one "
+            "card: the departure-side form interpolates the previous time "
+            "level's residual across a band's halo, and on several cards "
+            "each card holds only its own rows of that level.  Run on one "
+            "card (any band count), or extrapolation = 'settls'."
         )
     transform = model.transform
     backend = transform.backend
@@ -1262,6 +1327,10 @@ def _semilag_step_banded(model, atmosphere: MoistHybridState, dt_s: float,
     )
     batch = int(options.gather_batch)
     extrapolate = not (startup or options.extrapolation == "none")
+    departure = bool(
+        extrapolate and options.extrapolation == "settls_departure")
+    departure_residual = bool(
+        extrapolate and options.extrapolation in RESIDUAL_DEPARTURE_FORMS)
     half = scalar(0.5 * dt)
 
     with prof.section("grid_state"):
@@ -1372,7 +1441,8 @@ def _semilag_step_banded(model, atmosphere: MoistHybridState, dt_s: float,
                         riding=riding, limiter=limiter,
                         want_deficit=want_deficit, keep_stencil=keep_stencil,
                         iterations=iterations, order=order, batch=batch,
-                        dt=dt, scalar=scalar,
+                        dt=dt, scalar=scalar, departure=departure,
+                        departure_residual=departure_residual,
                     )
                     break
                 except HaloEscape:

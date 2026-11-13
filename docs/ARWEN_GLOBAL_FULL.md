@@ -238,8 +238,8 @@ the gathered bundle, with no new state and no new gather, so a restart stays
 bit-exact. `[semilag] level_rate_limiter = true` keeps the time-n vertical
 rate wherever it changed sign between the two levels, the limit ECMWF puts
 on the vertical SETTLS term. Neither is a default, both give the run its own
-config identity, and the departure form runs on the one-band resident step
-only (the banded step refuses it by name). The CPU gates are in
+config identity, and the departure form runs on one card at any band count
+(a run on several cards refuses it by name). The CPU gates are in
 `tests/test_arwen_global_semilag_settls_departure.py`. Both keys are
 experimental. With both set at 600 s, four 48 h T255 forecasts
 (`arwen_global_gdas_t255_native_sl_si_24h_dt600` from the GDAS 2026-01-15,
@@ -253,6 +253,21 @@ and at 48 h the tropical 250 hPa wind was 6.662 m/s against 6.635. The
 largest 10 to 100 hPa top-decile share of kinetic energy
 (`[insitu] stratospheric_noise_limit`) was lower in all four cases, by 7
 to 29 percent. The departure form without the limiter was not scored.
+`[semilag] extrapolation = "settls_residual_departure"` takes only the
+residual half of that form (the extrapolated residual rides the gathered
+bundle, the trajectory is the shipped one); it is experimental, has its own
+config identity and runs on one card at any band count. At T383 and 300 s
+the shipped form puts divergent waves of 4 to 6 grid lengths across the
+fastest jets: the RMS of the divergent wind of degrees above 280 at about
+240 hPa inside winds over 50 m/s was 1.21 m/s at 96 h from the GDAS
+2026-11-12 12Z analysis (0.30 in the analysis), and 0.26 m/s under this form
+and under `settls_departure` (RTX 5090). It is not free at that truncation:
+over four 48 h forecasts from the GDAS 2026-11-09 and 11-10 12Z and 18Z
+analyses, the northern extratropical 500 hPa height RMSE was 21.20 m against
+20.38 (higher in all four), the tropical one 7.38 against 7.46, and the
+northern 250 hPa vector wind error 7.76 m/s against 7.60. At T255 and 300 s,
+on the 11-10 12Z and 18Z cases, the 48 h scores moved by less than 0.08 m and
+0.04 m/s.
 
 The gates, and what each refuses. The advective CFL becomes a MEASUREMENT on
 this path and the fold of the trajectory map becomes the refusal. The search

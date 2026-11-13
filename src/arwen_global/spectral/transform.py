@@ -619,6 +619,10 @@ class SphericalHarmonicTransform:
     #: identity -- it changes who contracts an order, never what the order
     #: is.  ``None`` on a single-card or band-axis run.
     order_exchange = None
+    #: Where the analysis table came from (spectral.legendre_cache): "off",
+    #: "hit", or a build that was "written" or "unwritten" to the cache.
+    #: NOT a field and in no identity: a hit holds the bits a build makes.
+    legendre_cache = "off"
 
     grid: GaussianGrid
     backend: Backend
@@ -831,7 +835,23 @@ class SphericalHarmonicTransform:
         analysis = BandedLegendreTable(xp, dtype, t, grid.nlat, "jn", self.legendre_band)
         weights = grid.quadrature_weights
         owned = set(self._owned_order_bounds)
-        for m0, m1, block in legendre_bands(t, grid.sin_lat, band=self.legendre_band):
+        # The Gram solves are the build's only BLAS work and the part a busy
+        # host stalls on; a whole table's solved rows are kept per machine
+        # (legendre_cache) as the very arrays the asarray below makes.
+        cache = cached = fresh = None
+        if not owned:
+            from .legendre import band_bounds
+            from .legendre_cache import AnalysisTableCache
+
+            cache = AnalysisTableCache.for_tables(
+                t, grid.nlat, self.legendre_band, dtype, grid.sin_lat, weights,
+                band_bounds(t, self.legendre_band))
+            if cache is not None:
+                cached = cache.load()
+                fresh = [] if cached is None else None
+        self.legendre_cache = "off" if cache is None else cache.status
+        for index, (m0, m1, block) in enumerate(
+                legendre_bands(t, grid.sin_lat, band=self.legendre_band)):
             # The recurrence is sequential across bands, so every band is
             # computed; only the OWNED bands are cast and kept resident.
             # That is the order axis's capacity win: a partitioned transform
@@ -839,9 +859,17 @@ class SphericalHarmonicTransform:
             # brings a truncation past the whole-table wall onto a card.
             if owned and (m0, m1) not in owned:
                 continue
-            table = analysis_band(block, m0, weights, t)
+            if cached is not None:
+                table = cached[index]
+            else:
+                table = analysis_band(block, m0, weights, t)
+                if fresh is not None:
+                    fresh.append(np.asarray(table, dtype=dtype))
             basis.append(m0, m1, self.backend.asarray(block, dtype=dtype))
             analysis.append(m0, m1, self.backend.asarray(table, dtype=dtype))
+        if fresh is not None:
+            cache.store(fresh)
+            self.legendre_cache = cache.status
         return basis, analysis
 
     @property

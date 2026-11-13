@@ -284,6 +284,46 @@ def test_band_sl_3_the_physics_coupling_arms_band_the_same(coupling):
     assert t1 == t4
 
 
+@pytest.mark.parametrize("bands", (2, 4))
+@pytest.mark.parametrize("limited", (False, True))
+@pytest.mark.parametrize("form", ("settls_departure",
+                                  "settls_residual_departure"))
+def test_band_sl_3_the_departure_form_bands_the_same(bands, limited, form):
+    """Hortal's form, whole or its residual half, on one card: the band
+    builds what it extrapolates on its whole halo and gets the resident
+    step's bits, over steps that read a previous level, at several band
+    counts."""
+    options = SemiLagrangianOptions(extrapolation=form,
+                                    level_rate_limiter=limited)
+    m1, resident, t1 = _run(1, 3, options=options)
+    mb, banded, tb = _run(bands, 3, options=options)
+    assert m1.pipeline.resident and not mb.pipeline.resident
+    want = _inventory(m1, resident)
+    got = _inventory(mb, banded)
+    differing = sorted(k for k in want if want[k] != got[k])
+    assert not differing, f"bands={bands} moved {differing}"
+    assert t1 == tb
+    # And it is the departure form that ran: the shipped form's bands
+    # give another answer from the same state.
+    ms, shipped, _ts = _run(bands, 3)
+    assert _inventory(ms, shipped) != got
+
+
+@pytest.mark.parametrize("form", ("settls_departure",
+                                  "settls_residual_departure"))
+def test_the_departure_form_is_refused_on_several_cards_by_name(form):
+    options = SemiLagrangianOptions(extrapolation=form)
+    nlat = _transform().grid.nlat
+
+    def body(rank, transport):
+        session = cards.CardSession(transport, nlat, 4, weights=(1.0, 1.0))
+        exchange = cards.RowExchange(session)
+        _run(4, 1, exchange=exchange, options=options)
+
+    with pytest.raises(ValueError, match="runs on one card"):
+        _loopback(body, 2)
+
+
 def test_band_sl_3_the_additive_fixer_bands_the_same():
     options = SemiLagrangianOptions(tracer_fixer="bermejo_conde_additive")
     m1, resident, t1 = _run(1, 2, options=options)

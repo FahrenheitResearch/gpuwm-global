@@ -35,7 +35,17 @@ extern "C" __global__ void rrtmgp_interpolation_prepass(
   int jt = (int)((t - (temp_ref[0] - dtemp)) / dtemp);
   jt = max(1, min(ntemp - 1, jt)) - 1;
   const float ftemp = (t - temp_ref[jt]) / dtemp;
-  const float locpress = 1.0f + (logf(p) - logf(press_ref[0])) / dpress;
+  // A layer deeper than the tables' deepest pressure (press_ref[0]: the
+  // table descends from the surface) is looked up AT that pressure
+  // (rrtmgp.py RRTMGP_PLAY_CEILING_PA), where locpress is 1, jp1 is 1 and
+  // the weight sits wholly on the deepest level instead of extrapolating
+  // past it.  Only this lookup coordinate moves.  The ternary, not fminf,
+  // so a NaN stays a NaN, and an in-table layer reads the very value it
+  // always read.
+  const float p_deepest = press_ref[0];
+  const float p_lookup = p > p_deepest ? p_deepest : p;
+  const float locpress =
+      1.0f + (logf(p_lookup) - logf(press_ref[0])) / dpress;
   int jp1 = (int)truncf(locpress);
   jp1 = max(1, min(npres - 1, jp1));
   iatm_out[cell] = iatm;

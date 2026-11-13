@@ -43,11 +43,22 @@ VERTICAL_INTERPOLATIONS = ("cubic",)
 #:     the extrapolated wind and residual are interpolated at the DEPARTURE
 #:     point and the time-n ones read at the arrival point.  It needs no new
 #:     state and no new gather: the two winds swap roles in the search and
-#:     the extrapolated residual moves into the gathered bundle.  Resident
-#:     step only; the banded step refuses it by name.
+#:     the extrapolated residual moves into the gathered bundle.  One card
+#:     only, at any band count; a run on several cards refuses it by name.
+#: ``settls_residual_departure``
+#:     Half of Hortal's form: the extrapolated nonlinear residual is read
+#:     at the DEPARTURE point (it rides the gathered bundle and the arrival
+#:     point adds the time-n one), and the trajectory is the shipped
+#:     ``settls`` one (extrapolated wind at the arrival point).  The
+#:     arrival-point extrapolation of the residual is what puts 4-6 grid
+#:     length divergent ripples across fast jets at T383 and 300 s.  One
+#:     card only, at any band count, as ``settls_departure``.
 #: ``none``
 #:     Time-n wind and residual on both ends (the start-up arithmetic).
-EXTRAPOLATIONS = ("settls", "settls_departure", "none")
+EXTRAPOLATIONS = ("settls", "settls_departure", "settls_residual_departure",
+                  "none")
+#: The forms that read the extrapolated residual at the departure point.
+RESIDUAL_DEPARTURE_FORMS = ("settls_departure", "settls_residual_departure")
 TRACER_SCHEMES = ("semi_lagrangian", "flux_form")
 
 #: Where the FIRST physics half's increment is applied.  The physics is
@@ -259,6 +270,7 @@ __all__ = [
     "HORIZONTAL_INTERPOLATIONS",
     "HORIZONTAL_ORDER",
     "PHYSICS_COUPLINGS",
+    "RESIDUAL_DEPARTURE_FORMS",
     "SemiLagrangianOptions",
     "TRACER_FIXERS",
     "TRACER_SCHEMES",

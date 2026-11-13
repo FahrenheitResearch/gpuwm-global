@@ -7145,6 +7145,14 @@ def _np_rrtmgp_validate_range(name, value, lower, upper, unit):
             f"is outside allowed range {bound} {unit}")
 
 
+def _np_rrtmgp_play_bounds(tables):
+    """Mirror of rrtmgp.py ``_play_bounds`` for one table."""
+    from arwen_global.core.rrtmgp import RRTMGP_PLAY_CEILING_PA
+
+    return (float(np.min(tables.press_ref)),
+            max(float(np.max(tables.press_ref)), RRTMGP_PLAY_CEILING_PA))
+
+
 class _RRTMGPGasOptics:
     def __init__(self, tau, ssa=None, g=None, col_dry=None):
         self.tau = tau
@@ -7165,7 +7173,12 @@ def _rrtmgp_interpolation(tables, play, tlay, col_gas):
 
     press_log = np.log(tables.press_ref)
     dpress = (press_log[-1] - press_log[0]) / (tables.npres - 1)
-    locpress = 1.0 + (np.log(play) - press_log[0]) / dpress
+    # A layer deeper than the tables' deepest pressure (press_ref[0]; the
+    # table descends) is looked up at it (rrtmgp.py RRTMGP_PLAY_CEILING_PA);
+    # the troposphere test below keeps the true pressure.
+    play_lookup = np.where(play > tables.press_ref[0],
+                           tables.press_ref[0], play)
+    locpress = 1.0 + (np.log(play_lookup) - press_log[0]) / dpress
     jpress_1 = np.clip(np.trunc(locpress), 1,
                        tables.npres - 1).astype(np.int32)
     jpress = jpress_1 - 1
@@ -7255,8 +7268,8 @@ def np_rrtmgp_gas_optics(tables, play, plev, tlay, vmr):
         raise ValueError("inconsistent play/plev/tlay shapes")
     if vmr.shape != (*play.shape, tables.ngas + 1):
         raise ValueError("vmr must have shape (ncol,nlay,ngas+1)")
-    _np_rrtmgp_validate_range("play", play, float(np.min(tables.press_ref)),
-                              float(np.max(tables.press_ref)), "Pa")
+    _np_rrtmgp_validate_range("play", play, *_np_rrtmgp_play_bounds(tables),
+                              "Pa")
     _np_rrtmgp_validate_range("plev", plev, 0.0, None, "Pa")
     _np_rrtmgp_validate_range("tlay", tlay, float(np.min(tables.temp_ref)),
                               float(np.max(tables.temp_ref)), "K")
@@ -7677,8 +7690,8 @@ def np_rrtmgp_planck_sources(tables, play, plev, tlay, tlev, tsfc, vmr):
         raise ValueError("Planck sources require LW tables")
     if tlev.shape != (ncol, nlay + 1) or tsfc.shape != (ncol,):
         raise ValueError("inconsistent Planck temperature shapes")
-    _np_rrtmgp_validate_range("play", play, float(np.min(tables.press_ref)),
-                              float(np.max(tables.press_ref)), "Pa")
+    _np_rrtmgp_validate_range("play", play, *_np_rrtmgp_play_bounds(tables),
+                              "Pa")
     _np_rrtmgp_validate_range("plev", plev, 0.0, None, "Pa")
     for name, value in (("tlay", tlay), ("tlev", tlev), ("tsfc", tsfc)):
         _np_rrtmgp_validate_range(

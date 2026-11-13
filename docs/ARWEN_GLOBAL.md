@@ -422,6 +422,15 @@ forecast it ran before under the config hash it had.
   reading in all four cases; 850 hPa temperature at 24 h and the tropics
   at 48 h were slightly worse. The CHANGELOG's 0.1.8 section has the
   numbers and [ARWEN_GLOBAL_FULL.md](ARWEN_GLOBAL_FULL.md) has the scheme.
+  Since 0.2.1 it runs on one card at any latitude-band count.
+- `[semilag] extrapolation = "settls_residual_departure"` (experimental,
+  0.2.1) takes only the residual half of that form and keeps the shipped
+  trajectory. It removes the jet ripples the shipped form leaves at T383
+  and 300 s (0.26 m/s against 1.21 m/s at 96 h, on the ripple measure
+  [ARWEN_GLOBAL_FULL.md](ARWEN_GLOBAL_FULL.md) defines) and costs skill
+  there: over four 48 h T383 forecasts the northern-hemisphere 500 hPa
+  height RMSE was 21.20 m against 20.38 m. At T255 it is neutral. The
+  default stays `settls`; the CHANGELOG's 0.2.1 section has the numbers.
 
 Nothing in `[insitu]` enters the config hash.
 `tests/test_arwen_global_insitu_cadence_seconds.py` and
@@ -1233,6 +1242,25 @@ A terminal run receipt carries the transform controls, start and final
 measurements, all gates, inherited trackers, checkpoint identities,
 physics identity and a self-hash. A numerical exception after output setup
 writes a self-hashed `status = "error"` receipt and then re-raises.
+
+### The Legendre table cache
+
+Every process that builds the transform (a run, a restarted segment, an
+export) needs the Gram-solved Legendre analysis table, one small linear
+solve per order. On a busy host a multi-threaded BLAS can stall on those
+solves for ten seconds or more. Since 0.2.1 the first process on a
+machine writes the table to `~/.gpuwm/cache/arwen-global-legendre` and
+later processes read it: one file per truncation, grid, band and dtype,
+54 MiB at T255 and 176 MiB at T383 in float32. The file holds exactly the
+arrays a build hands to the card, so a run that reads it holds the same
+bits as one that builds the table. It is used only when the grid, band,
+dtype, Gaussian nodes and weights, the source of the modules involved,
+numpy and its BLAS build, the machine, the CPU model and the BLAS
+environment variables all match; anything else, or a damaged file, is
+built as before and written again. `ARWEN_GLOBAL_LEGENDRE_CACHE` names
+another folder, or `off` turns the cache off. Truncations below 127,
+tables over 1 GiB, a transform split over several cards and a streaming
+transform are never cached. The folder can be deleted at any time.
 
 ## Sizing
 

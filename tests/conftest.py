@@ -231,6 +231,12 @@ if NO_LOCAL_GPU:
     # call instead of quietly succeeding, and subprocesses inherit it.
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
+# The suite builds its Legendre tables as a fresh process always did and
+# writes nothing under the user's home (spectral.legendre_cache); the
+# cache's own tests point it at a temporary folder.  Subprocesses inherit
+# this.  An operator who sets the variable keeps it.
+os.environ.setdefault("ARWEN_GLOBAL_LEGENDRE_CACHE", "off")
+
 
 @pytest.fixture(autouse=True)
 def _cpu_only_marked_tests(request, monkeypatch):

@@ -1,5 +1,133 @@
 # Changelog
 
+## 0.2.1
+
+Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.2.0 did;
+proven against `gpuwm 2.9.13`.  `tools/measure_boundary.py` reads 242
+symbols across 72 modules with no gap, and all 50 engine seam files are
+pinned at 2.9.13.  The companion bundle carries ten Rust doors, unchanged
+from 0.2.0.  Every shipped config keeps its 0.2.0 hash, and a forecast
+that names no new option writes 0.2.0's checkpoints byte for byte
+(Measured, below).  One experimental option, off by default, takes the
+jet ripples out of T383 runs and costs northern-hemisphere skill there.
+A run, a restarted segment or an export no longer repeats the Legendre
+analysis table's solves when an earlier process on the same machine has
+already made that table.  A run whose air gets deeper than the radiation's
+gas tables (1,096.6 hPa) no longer stops (Fixed, below).
+
+### Fixed
+
+- Radiation: a model layer deeper than the RRTMGP gas tables' 1,096.6 hPa
+  is now looked up at the tables' deepest pressure instead of stopping the
+  run.  A T127 year run stopped at day 193 on a 1,097 hPa layer on the
+  Caspian shore, where the truncated terrain dips to -101 m; resumed under
+  this fix it ran through that step.  Layers up to 1,150 hPa are accepted
+  and deeper ones are still refused.  Only the gas-optics lookup moves
+  (the UFS/CCPP RRTMGP interface bounds the pressure the same way); runs
+  that stay inside the tables are bit-for-bit unchanged: a 12 h winter
+  T255 run from GDAS 2025-12-16 00Z wrote five checkpoints, 589 arrays,
+  byte-identical to 0.2.0's (RTX 5090).
+  `tests/test_rrtmgp_pressure_ceiling.py` and
+  `tests/test_rrtmgp_pressure_ceiling_cuda.py` hold both halves.
+
+### Measured
+
+- On an RTX 5070 Ti (16 GB), the shipped
+  `arwen_global_gdas_t255_native_sl_si_24h` from its GDAS 2026-09-01 00Z
+  analysis, this tree and 0.2.0 in one card lease, checkpoints compared
+  with `tools/arwen_global_checkpoint_identity.py`, 2026-11-13.  The
+  config hash is 0.2.0's (c7a000d28c206ace).  A cold start to 3 h wrote
+  step-0 and step-36 checkpoints byte-identical to 0.2.0's (44 and 135
+  arrays, archive hash included), both when this tree built the Legendre
+  table and wrote it to the cache and when it read the table back.  A
+  restart to 6 h wrote a step-72 checkpoint byte-identical to 0.2.0's
+  restart (135 arrays, archive hash included): from 0.2.0's step-36
+  checkpoint with the cache read and with it off, and from this tree's
+  own step 36.  The cache file the card run wrote is byte-identical to
+  the one a CPU-only build on the same host wrote.
+- Every shipped config hashes as in 0.2.0: the same 55 hashes, and the
+  same four fixtures that do not load as configs.
+- Start-up.  On that card with the host otherwise quiet (two leases,
+  2026-11-13), the table took 0.29 to 0.36 s to build under 0.2.0 and
+  0.19 to 0.23 s to read, and a restarted segment reached its first step
+  in 9.10 to 9.32 s against 9.19 to 9.60 s under 0.2.0.  On a quiet host
+  the saving is about a tenth of a second, inside the run-to-run spread.
+  Most of the rest is the cold state rebuilt from the analysis (5.7 to
+  5.8 s), which this release does not change.  On a busy host the build
+  is what stalls.  On the same host's CPU, with other jobs loading it
+  (load average up to 33), building the table in a fresh process took
+  0.20 to 20.3 s at T255 and 0.87 to 158.7 s at T383 over three tries
+  each; reading it took 0.09 to 0.48 s and 0.24 to 1.50 s.
+- The CPU tier (`pytest -m "not gpu"`) passed: 3420 passed, 86 skipped,
+  0 failed, with the cache off (the suite's default).  With the cache on,
+  the suite passed on this tree before the radiation fix was merged
+  (3417 passed, 86 skipped); the fix does not touch the transform.
+
+### Added
+
+- `[semilag] extrapolation = "settls_residual_departure"` (experimental,
+  off by default; it enters the config hash when set).  It reads the
+  extrapolated nonlinear residual at the departure point and keeps the
+  shipped trajectory: the residual half of `settls_departure`.
+  - It removes the jet ripples.  At T383 and 300 s from the GDAS
+    2026-11-12 12Z analysis, the RMS of the divergent wind above degree
+    280 near 240 hPa, inside winds over 50 m/s, was 0.26 m/s at 96 h,
+    against 1.21 m/s with the shipped `settls` (0.30 m/s in the analysis),
+    on an RTX 5090.
+  - It costs skill at T383.  Over four 48 h forecasts at 300 s (GDAS
+    2026-11-09 and 2026-11-10, 12Z and 18Z), the northern-hemisphere
+    500 hPa height RMSE was 21.20 m, against 20.38 m with `settls`; it was
+    higher in all four.
+  - At T255 it is neutral.  On two 48 h forecasts (2026-11-10 12Z and
+    18Z) every score moved by less than 0.08 m or 0.04 m/s.
+  - So the default stays `settls`.  The option is for runs where clean
+    jets matter more than that skill, for example pictures.  It runs on
+    one card at any latitude-band count; a run on several cards refuses
+    it by name.  `tests/test_arwen_global_semilag_settls_departure.py`
+    reads it off the step: the departure points are the shipped ones bit
+    for bit, and the gathered bundle carries (dt/2)(N^n - N^{n-1}) more
+    than the shipped one.
+
+### Changed
+
+- `[semilag] extrapolation = "settls_departure"` (0.1.8, experimental)
+  now runs on one card at any latitude-band count, as the new option
+  does.  It used to be refused on the banded step, so the T383 configs
+  sized to latitude bands on a 12 or 16 GB card could not take it.  On
+  the CPU, two and four bands give the one-band result with and without
+  `level_rate_limiter` (`tests/test_arwen_global_semilag_bands.py`); on a
+  card, the residual form on four bands wrote the one-band run's 6 h
+  checkpoint, all 135 arrays, byte for byte.
+- The Legendre analysis table is kept on disk per machine and reused
+  (`arwen_global/spectral/legendre_cache.py`).  Building it means one small
+  linear solve per order, and those solves are the only BLAS work in the
+  table build.  A multi-threaded BLAS on a busy host stalls on them:
+  measured on a 24-core host with other jobs running, the T255 solves took
+  10.9 s where they take 0.12 s on an idle host, and the T383 ones 10.7 s
+  where they take 0.6 s.  Every run, restarted segment and export paid
+  that again.  Now the first process writes the table, and later ones on
+  the same machine read it.
+  - The file holds exactly the arrays the build hands to the card.  A run
+    that reads it holds the same bits as a run that builds the table
+    (Measured, above).
+  - A file is used only when everything the solves depend on matches:
+    the grid, the band, the dtype, the Gaussian nodes and weights, the
+    source of the three modules involved, the numpy version and its BLAS
+    build, the machine and CPU model, and the BLAS environment variables.
+    Anything else, or a torn or unreadable file, is a miss: the table is
+    built as in 0.2.0 and the file is written again.
+  - Where: `~/.gpuwm/cache/arwen-global-legendre`, or the folder named by
+    `ARWEN_GLOBAL_LEGENDRE_CACHE`; set it to `off` to turn the cache off.
+    One file per truncation, grid, band and dtype: 54 MiB at T255 and
+    176 MiB at T383 in float32.  Truncations below 127, tables over 1 GiB,
+    a transform split over several cards and a streaming transform are
+    never cached.  The folder can be deleted at any time.
+  - `tests/test_global_spectral_legendre_cache.py` holds the cached table
+    to the built one bit for bit in float32 and float64, along with an
+    analysis and a synthesis through it, and checks that a torn, corrupted
+    or foreign file and an unwritable folder each fall back to the build.
+    The test suite runs with the cache off.
+
 ## 0.2.0
 
 Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.1.9 did;
