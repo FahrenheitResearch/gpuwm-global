@@ -1,5 +1,460 @@
 # Changelog
 
+## 0.1.8
+
+Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.1.7 did;
+proven against `gpuwm 2.9.13`.  `tools/measure_boundary.py` reads 240
+symbols across 71 modules with no gap, and all 48 engine seam files are
+pinned at 2.9.13.  The companion bundle carries ten Rust doors, unchanged
+from 0.1.7.  No forecast bit moves: a run that names none of the new
+flags, tables and options writes 0.1.7's checkpoints array for array,
+archive hash included, and the tapes, the stored checkpoints, the pinned
+snapshot buffer and the T255 price change when and how bytes are written,
+not what they are.  Every config hash is 0.1.7's except
+`arwen_global_gdas_t383_native_24h`'s, whose radiation chunk moved; the T63
+and T127 configs are new.  Everything marked experimental below is off
+unless it is named.
+
+### Measured together
+
+- On one RTX 5070 Ti 16 GB with nothing else on it, the shipped configs
+  with no edit, from the analyses they name, this tree on 2026-11-13 and
+  0.1.7 on the same card on 2026-11-12 (wall from the receipt, card from
+  nvidia-smi every 250 ms against the run's own process):
+  - `arwen_global_gdas_t383_native_24h` to 3 h: the door chose one band
+    with nothing parked at 15.24 GiB free; 1.832 s a step, 74.0 s, 14,072
+    MiB of card, 11.50 GiB live, the pool held from 11.50 GiB and raised 7
+    times to 13.34.  0.1.7's door ran it at two bands with every slice
+    parked (2.27 GiB in host memory): 2.535 s a step, 152.2 s, 12,984 MiB.
+  - `arwen_global_gdas_t255_native_sl_si_24h`, 24 h: one band both; 0.737
+    s a step, 218.2 s, 9,150 MiB, 6.70 GiB live, the pool held from 6.70
+    GiB and raised 4 times to 8.53, against 0.736 s, 238.7 s and 9,110
+    MiB for 0.1.7.  The same day with `--tapes`: 0.741 s a step, 219.8 s,
+    9,154 MiB; nine tapes, the worker's half 17.8 s and the synthesis on
+    the model thread 0.9 s over the day; all nine checkpoints
+    byte-identical to the day without the flag, archive hash included,
+    and `SST` equal to `TSK` bit for bit on the tapes.
+- On RTX 5090s, the shipped `arwen_global_gdas_t255_native_sl_si_24h` and
+  `arwen_global_gdas_t383_native_sl_si_24h` to 3 h, this tree and 0.1.7:
+  every array of the step-0 and step-36 checkpoints is byte-identical,
+  archive hash included (43 and 133 arrays at each truncation).  The files
+  differ because this tree stores their members: 1,452,926,392 bytes at
+  T255 step 36 against 639,811,011 deflated, and 3,268,930,432 against
+  1,437,283,140 at T383.  A T255 day with `--tapes` against the day
+  without: all nine checkpoints byte-equal file for file, and all nine
+  tapes byte-identical to `export` of the plain day's checkpoints, which
+  took 87.0 s as its own process.  That day's receipt wall was 332.2 s
+  against 254.4 s without the flag, its tape worker's half 154.6 s over
+  nine tapes, on a host running other jobs at a load of 20 to 30: the
+  worker shares the host's processors with everything else on them.
+
+### Added
+
+- `gpuwm-global run --tapes DIR [--tape-nlat N --tape-nlon M]` writes the
+  wrfout tape of every checkpoint the run writes (step 0 of a cold start
+  included; a restart's own starting checkpoint is the earlier run's) into
+  `DIR`, from the run's own state, so a forecast no longer has to stop for
+  an `export` process to have the card.  The tape is split in two halves
+  that `export` now runs too (`wrfout_export.TapeGrid`): the six fields
+  synthesized from the spectral state, made on the model thread one at a
+  time and copied off the device, and everything else (the regrid, the
+  render kernels, the frame, the netCDF write) on one worker thread beside
+  the forecast, from the same host arrays the checkpoint of that time is
+  written from.  Both are the same functions on the same values as
+  `export` of that checkpoint.  A tape that fails prints `tape failed
+  step=N: ...` and is listed in the receipt's `tapes` block, and the
+  forecast goes on (its checkpoint is on disk for `export`); a run whose
+  state is parked in the pinned host tier or spread over cards prints
+  `tapes off: ...` and writes none.  Each tape is published under its
+  final name only when whole.  The flags are outside the config identity.
+  At most one tape is in flight: a tape slower than the forecast holds the
+  model at the next output time, before that checkpoint is copied off the
+  card, so a later checkpoint never overwrites the arrays a tape is still
+  reading.  `tests/test_arwen_global_run_tapes.py` holds on the smoke
+  configuration (CPU): every tape the run writes is byte-identical to
+  `export` of the same checkpoint, also when every tape is slower than the
+  forecast and the checkpoint writer reuses one host buffer; the
+  checkpoints of a run with tapes are byte-identical to those of a run
+  without; a restart with tapes reproduces the straight run's last
+  checkpoint and tape byte for byte; and a failing tape leaves a finished
+  forecast.
+  Measured on the card on 2026-11-12: the shipped
+  `arwen_global_gdas_t255_native_sl_si_24h` and
+  `arwen_global_gdas_t383_native_sl_si_24h` days from their GDAS
+  2026-09-01 00Z analysis, every run on an RTX 5090 32 GB (one run per
+  card, the machine's processors shared with other jobs), checkpoints
+  compared with `tools/arwen_global_checkpoint_identity.py` and tapes byte
+  for byte, at the default 360 x 720 grid:
+  - Without `--tapes`, every checkpoint of this tree is byte-identical to
+    0.1.7's, archive hash included: nine at T255 and five at T383.  With
+    `--tapes`, every checkpoint is byte-identical to the run without.
+  - Every tape the run wrote, nine at T255 and five at T383, is
+    byte-identical to `export` of the same checkpoints.  `export` as its
+    own process took 191.8 s for the T255 day's nine and 152.9 s for the
+    T383 day's five (the shell's wall around the command); the runs that
+    wrote them took 4.0 and 28.0 s more than the run without at T255 and
+    5.0 s more at T383 (the receipt's wall), so `--tapes` saved 164 to
+    188 s of the T255 day and 148 s of the T383 day against
+    run-then-export.
+  - A run stopped at 12 h (`--until-s 43200`) and restarted from its step
+    144 checkpoint, both halves with `--tapes`, writes the straight run's
+    checkpoints and tapes byte for byte, at T255 and at T383.
+  - The card: the pool's live peak is 6.698 GiB at T255 with and without
+    tapes, and 12.305 GiB at T383 against 12.303 without.  The pool held
+    to the door's figure (10.35 GiB at T255, 11.50 GiB at T383) was
+    raised by the run as often with tapes as without: never at T255 and
+    seven times at T383.  The card's maximum read by `nvidia-smi` every
+    250 ms was 10,339 MiB with tapes and 10,363 without at T255, and
+    15,303 and 15,449 at T383.
+  - The time: the synthesis on the model thread took 1.7 to 2.0 s of a
+    T255 day (about 0.2 s a tape) and 2.1 s of a T383 day; the worker's
+    half, beside the forecast, 38 s and 27 s.  The receipt's step time
+    was 0.644 s without tapes and 0.669 and 0.725 s in two runs with them
+    at T255, and 1.328 s against 1.331 s at T383; the T255 spread is the
+    shared machine's as much as the tapes', and 0.1.7's own run beside
+    them took 0.652 s.
+  - A T255 day whose step-72 tape was held 90 s and whose step-108 tape
+    raised: the forecast waited for the held tape at the next output
+    time and went on, the failure printed `tape failed step=108` and is
+    the receipt's one row under `failures`, every checkpoint is
+    byte-identical to the run without tapes, and the other eight tapes
+    to those of the run that wrote all nine.  Its receipt wall was 404.6
+    s against 340.2 and 364.2 s for the two runs with nothing held.
+- Every render tape carries `SST` (K), the name a reader of WRF files asks
+  for a sea-surface map by. It is the skin temperature, `TSK`, on every
+  point: over open water and lakes the water temperature the model ran
+  with, and over land and sea ice the land or ice skin, which is what WRF's
+  real.exe writes there when its input carries no SST of its own (WPS's GFS
+  table carries none). Mask with `XLAND` or `SEAICE` for open water. The
+  export receipt states the rule under `sea_surface_temperature`, and
+  `tests/test_arwen_global_tape_sst.py` holds `SST` to `TSK` and to the
+  model's own skin. No forecast bit moves; the tape gains one variable.
+  On the card, the 3 h tape of `arwen_global_gdas_t255_native_sl_si_24h`
+  carries `SST` equal to `TSK` bit for bit, and its other 61 variables are
+  byte-identical to 0.1.7's tape of the same checkpoint.
+- An experimental `[transforms]` table with two switches, both off by
+  default, that stop the semi-Lagrangian step paying for transforms it does
+  not use: `skip_unread_planes` (no grid vorticity or divergence synthesis)
+  and `divergence_only_mass_flux` (the mass-flux analyses contract only the
+  divergence half). Each is carried in the config identity when it is on,
+  and a config that does not name the table keeps its hash.
+  `tools/arwen_global_transform_census.py` counts what a step makes: on the
+  numpy T21 40-level census an ordinary step goes from 2,573 level-planes
+  to 2,253 in the same 61 contractions, and
+  `tests/test_arwen_global_transform_census.py` pins both counts. On the
+  card, `arwen_global_gdas_t255_native_sl_si_24h` with both switches on
+  wrote every array of its nine checkpoints byte-identical to the day
+  without them, on an RTX 5070 Ti and on an RTX 5090 (133 of 133 arrays at
+  each of steps 36 to 288; the config hash differs, by design). No speed
+  is claimed for it: the day ran 0.728 s a step against 0.736 on the RTX
+  5070 Ti with the card to itself, and 0.676 and 0.751 against 0.642, 0.646 and
+  0.688 on RTX 5090s shared with other jobs.
+- Two coarse grids of the forecast day of record ship as experiments,
+  EXPERIMENTAL and not forecast configurations:
+  `arwen_global_gdas_t63_native_sl_si_24h` (96 x 192, 208.5 km at the
+  equator) and `arwen_global_gdas_t127_native_sl_si_24h` (192 x 384, 104.2
+  km).  Each is `arwen_global_gdas_t255_native_sl_si_24h` with its
+  truncation and `dx_m` changed and nothing else, which
+  `tests/test_arwen_global_coarse_grids.py` holds by key.  Fifty-seven
+  experiments now ship.  Measured with no flag from the GDAS 2026-09-01 00Z
+  analysis on one RTX 5090 with no other job on the card, 2026-11-12, every
+  gate passed: the T63 day 108.0 s (0.363 s a step), 2.50 GiB live and
+  3,508 MiB on the card; the T127 day 171.8 s (0.514 s a step), 3.32 GiB
+  and 5,180 MiB.  Building their statics took 121 s and 17.8 GB of host
+  memory at T63 and 134 s and 18.6 GB at T127.  Nobody has scored either
+  against an analysis.  `docs/arwen-global-coarse-grids.md` says what they
+  are for and what they are not.
+- `tools/arwen_global_scm_cases.py`, EXPERIMENTAL, runs the native
+  physics suite, as a forecast calls it, on published single-column cases:
+  DYCOMS-II RF01 (transcribed from Stevens et al. 2005) and BOMEX, RICO,
+  FIRE, ARM SGP, TRMM-LBA and GABLS1 read from the DEPHY-SCM community
+  files, which `fetch` downloads at a pinned commit and checks against
+  their sha256.  It lays each case on the shipped 40-level stack, steps it
+  with the forecast's 300 s Strang split, applies the case's large-scale
+  forcing between the two physics half-steps and the case's surface
+  through the suite's `modules` door, and ends every run on a table of its
+  readings against the LES ranges the cases' papers give.  A case runs in
+  seconds on a card; `--option KEY=VALUE` scores a scheme change.  What
+  the shipped suite does on them, as read on 0.1.7: Grell-Freitas rains
+  0.34 mm/day in BOMEX, a case that does not rain, and BOMEX makes no
+  cloud; RICO keeps 1.0 g/m2 of cloud water in its last four hours against
+  the LES's 4.8 to 47.7; and RRTMGP cools the DYCOMS-II RF01 boundary layer
+  by 108 W/m2 where the case's formula, on the same column, gives 84.
+  `docs/arwen-global-scm-cases.md` has the method and every reading; the
+  CPU known answers are in `tests/test_arwen_global_scm_cases.py`.
+- `tools/arwen_global_twin_scan.py`, EXPERIMENTAL, writes exact-twin
+  starts and reads their differences: `perturb` plants one seeded
+  potential-temperature pattern, the same at every truncation, in a step-0
+  checkpoint the restart door admits; `bitflip` writes the one-bit twin;
+  `measure` reads arm minus control in a mass-weighted dry energy norm, by
+  degree band, with a plus and minus pair's nonlinearity and two arms'
+  correlation.  On the T63 day, six hours on one RTX 5090: the
+  zero-amplitude restart is byte-identical to the control, archive hash
+  included (133 of 133 arrays); the one-bit twin reads 0.019 m/s against
+  0.119 m/s for a 0.1 K pattern.  `docs/arwen-global-twin-scan.md`;
+  `tests/test_arwen_global_twin_scan_tool.py`.
+- Experimental: one forcing operator, `arwen_global.forcing`: before every
+  step it pulls the chosen spectral fields toward a stored record of large
+  scales, `x <- x + a L (x_rec - x)` with `a = 1 - exp(-dt/tau)` on the
+  degrees the low-pass keeps (1 to 42 by default), and keeps the pull per
+  field, level, degree and hour in `forcing_ledger.json` as a measurement
+  of model error.  `gpuwm-global run --forcing RECORD[:options]` turns it
+  on; `tau_h=inf` observes without pulling.  `--write-forcing-record`
+  writes a run's own record; `tools/arwen_global_forcing_record.py` cuts
+  one from a finished run's checkpoints; `tools/arwen_global_forcing_table.py`
+  reads a forced and a free twin against their reference and prints a
+  ledger's table.  Off by default, outside the config identity, recorded in
+  the receipt and in the checkpoints' `forcing_history`.
+  `docs/ARWEN_GLOBAL_FORCING.md` has the operator, its tests and the one
+  twin pair measured with it.
+- Experimental: forecast members outside the assimilation path
+  (`arwen_global.members`, driver `tools/arwen_global_members.py`).  A
+  member is one analysis plus a weighted sum of the filter's own
+  perturbation draws, stepped through one shared model; no draw is the
+  control and one draw of weight 1 is the filter's member of the same
+  index, array for array.  Each member carries a recipe of a few
+  kilobytes (config hash, base-state digest, options, draws and weights,
+  conservation targets, digests at recorded steps, software stack and
+  card), and `replay` rebuilds the member from it and refuses any digest
+  that differs.  One member's failed step marks that member dead and the
+  others go on.  `MemberSet.branch` starts an exact twin from a member
+  checkpoint with one deliberate change.  `docs/arwen-global-members.md`
+  has the interface, the recipe format and what was measured.
+- `gpuwm-global run --restart PARENT --branch-from-other-config`: a run
+  may resume from a checkpoint written under another config hash, an
+  exact twin that differs from its parent by a config change, only with
+  this flag, and its receipt records both hashes under `branch`.  Without
+  the flag such a restart is refused, as before.
+- Experimental: `tools/arwen_global_airliner_heights.py` reads the two altitudes every
+  ADS-B transponder broadcasts, pressure altitude and GNSS height, as one
+  observation: the geopotential height of the pressure the aircraft flies
+  at.  `extract` streams one day of an open trace archive (adsb.lol's
+  daily releases, ODbL) into a row file with every rejected point counted
+  by cause, keeping no registration, owner or flight number; `score` runs
+  the operator (ICAO standard-atmosphere inversion, EGM96 geoid, WGS84
+  normal gravity to geopotential height) against hourly reference products
+  and a longer-lead forecast through a numpy GRIB2 reader of its own, and
+  against IGRA2 radiosondes, reads the layer-mean temperature of climbs and
+  descents from the same reports, and writes the statistics and the
+  coverage map.  Nothing is assimilated and the package is unchanged:
+  `docs/arwen-global-airliner-heights.md` has the operator, the one day
+  measured (2026-11-10) and its limits.
+- Experimental: the scheme transplant, `python -m arwen_global.transplant`.
+  The native runtime's cumulus call is split at the scheme's output
+  (`_cumulus_result`, `_apply_cumulus_result`) and its Morrison call at the
+  launch (`_microphysics_kernel`, `_book_microphysics`); the default path
+  calls the halves in sequence, the arithmetic it ran before.  A donor run
+  records one scheme's output and a receiver applies it in place of its
+  own, cumulus by its rates and microphysics by copy-where-equal, with the
+  receiver keeping its own books.  The driver runs a control, a perturbed
+  twin, each with the other's scheme output, and a self-substitution twin
+  that must equal the control at every report hour.
+  `docs/arwen-global-transplant.md` has the seams, the experiment and one
+  T63 case on one RTX 4090: the self-substitution twin equal to the
+  control at every report hour, and the control's cumulus output given to
+  the perturbed twin removing none of their difference over 48 h.
+- Experimental: the composition replay (`arwen_global.composition`,
+  `tools/arwen_global_replay_tracers.py`).  Extra transported fields (a
+  constant, latitude and pressure tags, an origin map, point releases, a
+  field from a file) ride a finished run's checkpoints, read for their wind
+  and surface pressure only, through the model's departure search,
+  quasi-monotone gather and Bermejo-Conde fixer, and land in sidecars keyed
+  by the weather's `self_sha256` and the spec's hash.  The weather
+  checkpoints are read only.  `tools/arwen_global_ozone_field.py` puts the
+  GDAS analysis's ozone on the model's grid and levels and checks its
+  column against the analysis's total ozone;
+  `tools/arwen_global_ozone_change_score.py` scores a carried column's
+  change against the analysis's; `tools/arwen_global_tracer_plume_chart.py`
+  maps a row's burden.  `docs/arwen-global-composition-replay.md` has the
+  rows, the route and what was measured: sixteen rows over a five-day T255
+  run kept every six hours in 448 s on one RTX 4090, the 21 weather files
+  unchanged by hash, and the carried ozone column's 24 h change at a
+  pattern correlation of 0.77 with the analysis's.
+- Experimental: `radiation_between` in the native suite's
+  `native_adapter_options`, what the shortwave does between two radiation
+  calls.  `"hold"` (the default) applies the call's planes unchanged, as
+  before, adds no array and stays out of the identity.  `"surface"` is
+  WRF's `swint_opt = 1` fit of the surface downward shortwave, evaluated at
+  the sun of every physics call; `"column"` also scales the shortwave
+  heating and the top-of-atmosphere shortwave by the cosine ratio.  Both
+  join the config identity.  On one T127 case over 48 h on one RTX 4090,
+  against a run that calls radiation every step, `"surface"` and
+  `"column"` took the land 2 m temperature RMS from 0.306 K to 0.272 and
+  0.275 K on the first day and from 0.453 K to 0.434 and 0.432 K on the
+  second.  `docs/arwen-global-radiation-between.md` has the
+  modes, the tests and the measurement.
+
+### Changed
+
+- A run's checkpoints no longer hold the card while one thread deflates
+  them.  `run` and `cycle` write a checkpoint's members stored
+  (`np.savez`) instead of deflated, read a stored checkpoint back member
+  by member at its offset in the file and verify its hashes on four
+  threads, and copy the state off the card into one page-locked host
+  buffer kept for the run instead of a fresh pageable array per
+  checkpoint.  A run also prices its memory once, from the card reading
+  the door already took, where it used to probe the card three times
+  (the receipt's `sizing_model_device_peak_bytes` is that one figure).
+  The new `[output]` table chooses: `checkpoint_compression = "none"`
+  (the default) or `"deflate"`, and `snapshot_buffer = "pinned"` (the
+  default) or `"pageable"`.  Neither is in the config hash, and neither
+  moves a byte of any array, a per-array SHA-256 or `self_sha256`: a
+  stored checkpoint resumes a deflated lineage and the other way round,
+  and 0.1.7 reads a stored checkpoint.  The other commands that write a
+  checkpoint (assimilation, migration, the in-situ ledger) write it
+  deflated, as before.
+  Measured on one RTX 5090 on 2026-11-12, the shipped
+  `arwen_global_gdas_t255_native_sl_si_24h` and
+  `arwen_global_gdas_t383_native_sl_si_24h` configs with the output
+  interval set to one hour, three hours from their GDAS 2026-09-01 00Z
+  analysis (36 steps, checkpoints at steps 0, 12, 24 and 36), 0.1.7 and
+  this tree alternated on the same card, three samples each, on a host
+  running other jobs:
+  - Every array of the four checkpoints of a cold start is byte-equal to
+    0.1.7's at both truncations, with the defaults and with `"deflate"` /
+    `"pageable"` (43 arrays at step 0, 133 after;
+    `tools/arwen_global_checkpoint_identity.py`, `self_sha256` equal).
+    A restart from the step-12 checkpoint ends at a step-36 checkpoint
+    byte-equal to the uninterrupted 0.1.7 run's whichever tree wrote the
+    step-12 checkpoint and whichever restarted from it.  0.1.7's `export`
+    of its own step-36 checkpoint, this tree's `export` of its own, and
+    0.1.7's `export` of this tree's stored one write byte-identical
+    `wrfout` files.
+  - A cold start to 3 h took 154.7, 176.4 and 156.4 s at T255 under
+    0.1.7 and 68.1, 58.8 and 67.2 s with the defaults; 317.1, 351.9 and
+    318.3 s at T383 against 115.6, 107.1 and 122.4 s.  With `"deflate"`
+    and `"pageable"` it took 151.7 s and 327.9 s.  A restart from 1 h to
+    3 h took 121.9, 118.4 and 124.6 s at T255 against 60.6, 61.8 and
+    85.4 s, and 244.3, 259.8 and 251.8 s at T383 against 129.2, 104.6
+    and 112.1 s.
+  - The end of a run waited for its last checkpoint 37.1 to 53.2 s at
+    T255 and 83.0 to 96.0 s at T383 under 0.1.7 (six runs each), and 4.6
+    to 32.9 s and 11.9 to 26.5 s with the defaults.  The model thread
+    spent 62.5 to 64.0 s (T255) and 136.8 to 166.7 s (T383) of a cold
+    start at its three output times waiting for the previous deflate and
+    copying the state off the card, and 1.7 to 1.8 s and 3.4 to 4.5 s
+    with the defaults.  The step-0 checkpoint of a cold start took 5.2
+    to 5.8 s and 11.8 to 12.1 s to write, and 2.4 to 4.7 s and 4.6 to
+    5.4 s stored.  The two predictions a run no longer makes, each with
+    its own card probe, took 2.4 to 3.0 s together.
+  - `read_checkpoint` of the step-36 checkpoint on the host took 6.6 s
+    (T255) and 18.6 s (T383) deflated under 0.1.7, and 0.8 s and 1.9 s
+    stored with this tree; `export` of it took 36.6 s and 66.2 s against
+    28.9 s and 45.0 s.
+  - The card is untouched: the receipts' peak used device bytes are
+    7,191,504,896 at T255 and 13,210,467,328 at T383 in all fifteen runs
+    of each truncation, either tree, with the same predicted peak.
+  The price is disk.  A stored checkpoint is its arrays' own size: 1,452.9
+  MB at T255 against 626.6 to 639.8 MB deflated, 3,268.9 MB at T383
+  against 1,404.0 to 1,437.3 MB (2.3 times); a cold start's step-0
+  checkpoint 596.4 MB against 48.6 MB and 1,341.9 MB against 108.0 MB.  A
+  run that keeps its checkpoints, such as a 90-day T383 run keeping one
+  every six hours (about 1.18 TB stored, 0.52 TB deflated), sets
+  `checkpoint_compression = "deflate"`.  The pinned buffer is one
+  checkpoint's size of page-locked host memory for the life of the run.
+  `tests/test_arwen_global_checkpoint_stored.py` holds both containers to
+  one record and one set of arrays, refuses a flipped byte, a truncated
+  file and a member whose size disagrees with its header, reads a member
+  past 4 GiB at its zip64 offset, resumes a stored run from a stored and
+  from a deflated midpoint to the same arrays, and holds a run to one
+  memory prediction.
+- The door prices the T255 semi-Lagrangian day
+  (`arwen_global_gdas_t255_native_sl_si_24h`) at what its held runs took
+  rather than at its model: 9,178 MiB of card where it read 11.09 GiB, so
+  a 16 GB card with 9 to 11 GiB free runs it at one band instead of in
+  latitude bands. The pool starts held to the day's 6.70 GiB live peak and
+  rises as allocations need. MEASURED 2026-11-12 on an RTX 5070 Ti, the
+  card to itself: two held days took 9,178 and 9,056 MiB at 0.736 s a step,
+  against 9,110 MiB and 0.736 s for 0.1.7's day, and every array of all
+  nine checkpoints was byte-identical to 0.1.7's. The row and the door's
+  choice at the measured figure are held by
+  `tests/test_arwen_global_completed_plans.py`.
+- `arwen_global_gdas_t383_native_24h`, the T383 config of record on the
+  default core, carries the 5,000-column radiation chunk the T383
+  semi-Lagrangian config moved to in 0.1.7, where it still carried 12,500.
+  On an empty 16 GB card the door now runs it at one band with nothing
+  parked. MEASURED 2026-11-12 on an RTX 5070 Ti with nothing else on it,
+  3 h from its GDAS 2026-08-30 18Z analysis: at 12,500 the door took two
+  latitude bands with every slice parked, 2.535 s a step and 12,984 MiB of
+  card; at 5,000 one band, 1.831 s a step and 14,254 MiB, and the 24 h day
+  1.907 s a step and 14,316 MiB, under the 14,608 MiB the door prices the
+  plan at. Every array of the step-0 and step-36 checkpoints is
+  byte-identical at the two chunks (133 of 133 at step 36), and on an RTX
+  5090, where both chunks run at one band, every array of all nine
+  checkpoints of the 24 h day is (1.578 s a step at 12,500 and 1.590 at
+  5,000 there, with other jobs on the machine's other cards).
+  The chunk is in the config hash (`6f32b3255085ce4e` where it was
+  `d00cc42c95d1e452`), so a checkpoint this config wrote under 0.1.7 is
+  refused on restart; restart it under a copy that says
+  `radiation_column_chunk = 12500`. Measured on an RTX 5090: 0.1.7's step
+  36 of this day is refused under the new config ("checkpoint config
+  identity does not match this run"), and under a copy that says 12500
+  this tree continues it to step 72 byte-identical to 0.1.7's straight day,
+  archive hash included.
+
+### Stepping options
+
+No default moved: a config that sets none of the keys below runs 0.1.7's
+forecast under 0.1.7's config hash.  Ten steps of three shipped configs
+with no edit (`arwen_global_gdas_t255_native_sl_si_24h` at 300 s,
+`arwen_global_gdas_t255_native_sl_si_24h_dt600` at 600 s and
+`arwen_global_gdas_t255_native_imex_24h` at 90 s), this tree and 0.1.7 on
+the same card model (RTX 5090), give byte-identical step-0 and step-10
+checkpoints, archive hash included (`tools/arwen_global_checkpoint_identity.py`:
+43 and 133 arrays on the semi-Lagrangian configs, 43 and 126 on the
+Eulerian one).  The 600 s config with `[insitu] spectra_every_s = 3600.0`
+and a `stratospheric_noise_limit` set is byte-identical to the same
+config without them at step 10, under the same config hash.
+
+- `[semilag] extrapolation = "settls_departure"` (experimental, off by
+  default) reads the time extrapolation at the departure point, Hortal's
+  form of SETTLS, where the shipped `"settls"` reads it at the arrival
+  point.  `[semilag] level_rate_limiter = true` (experimental, off by
+  default) keeps the time-n vertical rate wherever it changed sign between
+  the two time levels.  Both enter the config hash when set; the departure
+  form runs on the one-band resident step only and the banded step
+  refuses it by name.  Measured with both keys set against the shipped
+  scheme on `arwen_global_gdas_t255_native_sl_si_24h_dt600` run 48 h from
+  four GDAS analyses (2026-01-15, 04-15, 07-15 and 10-15 00Z), scored by
+  `python -m arwen_global.upper_air_scorecard` against the verifying GDAS
+  analyses, on an RTX 5090.  Global four-case means, shipped then
+  departure form:
+  - 48 h: 500 hPa height RMSE 17.40 to 17.12 m, 850 hPa temperature RMSE
+    1.582 to 1.576 K, 250 hPa vector wind RMSE 7.35 to 7.29 m/s, 850 hPa
+    4.59 to 4.56 m/s, 700 hPa relative humidity RMSE 19.20 to 19.12
+    percent, 500 hPa anomaly correlation 0.9816 to 0.9821; no case is
+    worse on any of them except one of four on the 250 hPa wind.
+  - 24 h: the means are equal or better except 850 hPa temperature RMSE,
+    1.2236 to 1.2252 K, higher in all four cases; 500 hPa height RMSE is
+    lower in the mean (9.298 to 9.280 m) and higher in three of the four
+    cases.
+  - The tropics at 48 h are slightly worse: 250 hPa vector wind RMSE 6.635
+    to 6.662 m/s (all four cases), 700 hPa relative humidity RMSE 15.84 to
+    15.90 percent, 500 hPa anomaly correlation 0.9378 to 0.9370.
+  - The stratospheric reading below, largest top-decile share of kinetic
+    energy between 10 and 100 hPa over the 48 h, is lower in all four
+    cases: 2.42e-4 to 2.01e-4, 3.01e-4 to 2.55e-4, 1.09e-4 to 1.01e-4 and
+    2.03e-4 to 1.45e-4.
+  The form alone, without the limiter, was not scored, and nothing was
+  measured at any other step or truncation.
+  `tests/test_arwen_global_semilag_settls_departure.py` holds both keys to
+  their contracts on the CPU.
+- `[insitu] spectra_every_s`, `flush_every_s` and `energy_every_s` give the
+  in-situ ledger's cadences in seconds of forecast time instead of steps,
+  so a run at a longer step samples the same forecast times.  Each must be
+  a whole number of steps or the config is refused at load, and a cadence
+  given both ways is refused.  The 48 h runs above took 48 spectra samples
+  each at `spectra_every_s = 3600.0` and a 600 s step.
+- `[insitu] stratospheric_noise_limit` (experimental, off unless set)
+  reports the run's largest top-decile share of kinetic energy on the
+  levels between 10 and 100 hPa (`stratospheric_noise_band_hpa`), read from
+  the spectra the ledger already samples, in the receipt's in-situ block
+  and never in the run's status.  No limit has been calibrated for it.
+  `tools/arwen_global_strat_noise_replay.py` replays written ledgers
+  through the same code.  Nothing in `[insitu]` enters the config hash;
+  `tests/test_arwen_global_insitu_cadence_seconds.py` holds the cadences and
+  the reading to their contracts on the CPU.
+
 ## 0.1.7
 
 Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.1.6 did;
@@ -1478,8 +1933,8 @@ was previously reachable only from inside the engine's own checkout.
   fast model.
 - One-way regional parent bridge: a global run exports a parent series that
   drives a regional ArWen forecast, with a validation leg on every artefact.
-- 55 configured experiments ship inside the package, from a four-step T3 numpy
-  smoke to the 25 km forecast day.
+- Fifty-five configured experiments ship inside the package, from a four-step
+  T3 numpy smoke to the 25 km forecast day.
 - `tools/build_cli_reference.py` writes the command reference from the parser
   itself and `--check` fails when the committed page falls behind it.
 - `tools/measure_boundary.py` measures which engine symbols this package uses

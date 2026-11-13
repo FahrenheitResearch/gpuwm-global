@@ -233,6 +233,25 @@ TAPE_ISLAKE = -1
 #: variable's description from WRF's Registry, where W is "z-wind
 #: component" and nothing says which parts of it a tape carries.
 TAPE_VARIABLE_ATTRS = {"W": {"description": TAPE_W_DESCRIPTION}}
+#: What the tape's ``SST`` is.  WRF writes SST in every history file and its
+#: readers ask for it by name; a tape without it is refused by the reader
+#: or drawn from another field.  The model's open water has no ocean model:
+#: its skin is the water temperature, held at the analysis's or followed
+#: along a dated series (``[surface_update]``), and an inland lake's skin
+#: is that lake's water.  So SST is the skin temperature, ``TSK``, on every
+#: point.  Over land and under sea ice that is what WRF's real.exe writes
+#: when its input carries no SST of its own, as the GFS and GDAS tables of
+#: WPS do not: it fills SST from TSK on every point, land and ice included.
+#: A reader that wants open water only masks with ``XLAND`` or ``SEAICE``,
+#: as it must on a WRF file.
+TAPE_SST_POLICY = (
+    "SST is the skin temperature (TSK) on every point. Over open water and "
+    "lakes the skin is the water temperature the model ran with: the "
+    "analysis's sea surface held for the run, or a dated series the run "
+    "followed. Over land and under sea ice it is the land or ice skin, as "
+    "WRF's real.exe fills SST from TSK when its input carries no SST of its "
+    "own; mask with XLAND or SEAICE for open water only"
+)
 #: The engine's writer class as imported.  ``WrfoutWriter`` is the name the
 #: export calls, and a test may rebind it to a stand-in that writes no file.
 _ENGINE_TAPE_WRITER = WrfoutWriter
@@ -532,6 +551,385 @@ def tape_start(clock, given: datetime | None) -> datetime:
     return given.replace(tzinfo=None)
 
 
+#: The six fields a tape synthesizes from the spectral state on the model's
+#: own device; every other value on a tape is a copy of a state array the
+#: checkpoint carries, regridded on the host.
+SYNTHESIZED_FIELDS = ("theta", "log_surface_pressure", "u", "v", "qv", "w")
+
+
+class _DeviceFields:
+    """The synthesized fields of one state, made on the device when asked.
+
+    The export's own road: each field is synthesized where the state lives
+    and copied to the host by the regrid that reads it, in the order the
+    frame asks for them, so no more than one synthesized field (two for
+    the wind) is on the device at a time, as before the frame was split.
+    """
+
+    def __init__(self, tape_grid, atmosphere):
+        self._grid = tape_grid
+        self._atmosphere = atmosphere
+        self._wind = None
+
+    def __getitem__(self, name):
+        grid, atmosphere = self._grid, self._atmosphere
+        if name == "theta":
+            return grid.transform.inverse(atmosphere.theta)
+        if name == "log_surface_pressure":
+            return grid.transform.inverse(atmosphere.log_surface_pressure)
+        if name in ("u", "v"):
+            if self._wind is None:
+                self._wind = grid.vector.wind_from_vordiv(
+                    atmosphere.vorticity, atmosphere.divergence)
+            u_grid, v_grid = self._wind
+            if name == "v":
+                self._wind = None
+            return u_grid if name == "u" else v_grid
+        if name == "qv":
+            return grid.transform.inverse(atmosphere.qv)
+        if name == "w":
+            return diagnose_ground_relative_w(grid.model, grid.transform, atmosphere)
+        raise KeyError(name)
+
+
+class TapeGrid:
+    """What every tape of one export, or of one run, shares: the regular
+    grid, its sampler and nearest-column pick, the metric planes, the
+    terrain, the global attributes and the valid-time origin.
+
+    A tape is then two halves.  :meth:`synthesize` is the device half: the
+    six fields the spectral state has to be synthesized for
+    (:data:`SYNTHESIZED_FIELDS`), on the device that holds the state, copied
+    to the host.  :meth:`write` is the host half: the regrid of those and of
+    every state array the checkpoint carries, the Rust column kernels, the
+    frame and the netCDF write, all on host arrays.  ``export`` runs both
+    halves in one thread from a checkpoint it reads; a run given ``--tapes``
+    runs the device half on the model thread at an output time and the
+    host half on a worker beside the forecast, from the same arrays its
+    checkpoint is written from.  Both call the same functions on the same
+    values, so a tape the run wrote and the export of the checkpoint the
+    run wrote at that time are the same bytes.
+    """
+
+    def __init__(self, cfg, model, transform, *, nlat: int, nlon: int,
+                 start_date: str | None = None,
+                 bbox: tuple[float, float, float, float] | None = None):
+        from . import render_kernels
+
+        given = parse_start_date(start_date)
+        render_kernels.library()
+        self.cfg = cfg
+        self.model = model
+        self.transform = transform
+        self.render_kernels = render_kernels
+        self.clock = model.forecast_clock
+        self.start = tape_start(self.clock, given)
+        self.backend = backend = transform.backend
+        self.vector = VorticityDivergenceOperator(transform)
+        self.nlat, self.nlon, self.bbox = int(nlat), int(nlon), bbox
+
+        lat, lon = regular_latlon_coordinates(nlat, nlon, include_poles=False)
+        # The renderer's proven global frames run -180..180-dlon like the MPAS
+        # bridge; roll the ring so the wrap column is not duplicated.
+        lon_signed = np.where(lon >= 180.0, lon - 360.0, lon)
+        order = np.argsort(lon_signed)
+        lon_out = lon_signed[order]
+        # Each tape column is sampled at its own unsigned longitude, in the
+        # tape's rolled order, and a bbox window samples only its own rows and
+        # columns: every value depends on its own row and column alone, so this
+        # is the whole-ring sample rolled and cut, without the whole ring.
+        lon_sample = lon[order]
+
+        lat_sel = lon_sel = None
+        if bbox is not None:
+            lat_min, lat_max, lon_min, lon_max = (float(v) for v in bbox)
+            if not (lat_min < lat_max and lon_min < lon_max):
+                raise ValueError(
+                    "bbox must be (lat_min, lat_max, lon_min, lon_max) with "
+                    "min < max on both axes"
+                )
+            lat_sel = np.where((lat >= lat_min) & (lat <= lat_max))[0]
+            lon_sel = np.where((lon_out >= lon_min) & (lon_out <= lon_max))[0]
+            if lat_sel.size < 2 or lon_sel.size < 2:
+                raise ValueError(
+                    f"bbox {bbox} selects {lat_sel.size}x{lon_sel.size} points; "
+                    "a render tape needs at least 2x2"
+                )
+            lat = lat[lat_sel]
+            lon_out = lon_out[lon_sel]
+            lon_sample = lon_sample[lon_sel]
+        sampler = _gaussian_to_regular(transform.grid, lat, lon_sample)
+
+        def regrid(values, post: str = "none") -> np.ndarray:
+            return sampler(_host_array(backend, values), post)
+
+        nearest_pick = _nearest_column(transform.grid, lat, lon_sample)
+
+        def nearest(values) -> np.ndarray:
+            return nearest_pick(_host_array(backend, values))
+
+        self.regrid, self.nearest = regrid, nearest
+        xlong, xlat = np.meshgrid(lon_out, lat)
+        self.xlong, self.xlat = xlong, xlat
+        self.ny_out, self.nx_out = xlat.shape
+        # The same in every tape of this export: they are the grid's, not the
+        # state's.
+        self.metric = grid_metric_planes(
+            xlat, rotation_rate_s=model.rotation_rate_s,
+            row_spacing_deg=180.0 / nlat, column_spacing_deg=360.0 / nlon)
+        self.stagger_x = _stagger_x_periodic if bbox is None else _stagger_x_clamped
+        self.dx_m = (360.0 / nlon) * math.pi / 180.0 * _EARTH_RADIUS_RENDER_M
+        self.a_half = np.asarray(cfg.a_half_pa, dtype=np.float64)
+        self.b_half = np.asarray(cfg.b_half, dtype=np.float64)
+        self.nz = self.a_half.size - 1
+        self.phi_surface = regrid(model.surface_geopotential)
+        self.terrain_m = self.phi_surface / GRAVITY_M_S2
+        start = self.start
+        self.global_attrs = {
+            "START_DATE": start.strftime("%Y-%m-%d_%H:%M:%S"),
+            "SIMULATION_START_DATE": start.strftime("%Y-%m-%d_%H:%M:%S"),
+            "MAP_PROJ": np.int32(6),
+            "MAP_PROJ_CHAR": "Cylindrical Equidistant",
+            "POLE_LAT": np.float32(90.0),
+            "POLE_LON": np.float32(0.0),
+            "TRUELAT1": np.float32(0.0),
+            "TRUELAT2": np.float32(0.0),
+            "STAND_LON": np.float32(0.0),
+            "CEN_LON": np.float32(float(lon_out.mean())),
+            "CEN_LAT": np.float32(float(lat.mean()) if bbox is not None else 0.0),
+            "GRID_ID": np.int32(1),
+            "PARENT_ID": np.int32(0),
+            "DT": np.float32(cfg.dt_s),
+            MODEL_LABEL_ATTR: MODEL_LABEL,
+        }
+
+    def device_fields(self, atmosphere) -> _DeviceFields:
+        """The synthesized fields of ``atmosphere``, made when read (the
+        export's road)."""
+        return _DeviceFields(self, atmosphere)
+
+    def synthesize(self, atmosphere) -> dict[str, np.ndarray]:
+        """The device half of a tape: the six synthesized fields of
+        ``atmosphere`` on the host, made one at a time on the device and
+        copied off it before the next is made.  The state is only read."""
+        lazy = self.device_fields(atmosphere)
+        to_numpy = self.backend.to_numpy
+        out = {}
+        for name in SYNTHESIZED_FIELDS:
+            value = lazy[name]
+            out[name] = np.asarray(to_numpy(value))
+            del value
+        return out
+
+    def write(self, bundle, fields, seconds: float, outdir: str | Path, *,
+              overwrite: bool = False, checkpoint=None, extra_planes=None):
+        """The host half of a tape: one wrfout file for ``bundle`` at model
+        time ``seconds`` into ``outdir``, the synthesized fields read from
+        ``fields`` (:meth:`synthesize`'s dict, or :meth:`device_fields`).
+        Returns ``(path, row)``, the row the export receipt lists."""
+        seconds = float(seconds)
+        if abs(seconds - round(seconds)) > 1.0e-6:
+            raise ValueError(
+                f"checkpoint time {seconds} s is not a whole second"
+            )
+        valid = self.start + timedelta(seconds=round(seconds))
+        cfg, model = self.cfg, self.model
+        regrid, nearest = self.regrid, self.nearest
+        render_kernels = self.render_kernels
+        a_half, b_half, nz = self.a_half, self.b_half, self.nz
+        ny_out, nx_out = self.ny_out, self.nx_out
+        atmosphere = bundle.atmosphere
+
+        theta = regrid(fields["theta"])
+        ps = regrid(fields["log_surface_pressure"], "exp")
+        u = regrid(fields["u"])
+        v = regrid(fields["v"])
+        # Vapor is synthesized from its coefficients; the condensate
+        # species are grid fields already.
+        species = {
+            name: regrid(
+                fields["qv"] if name == "qv" else getattr(atmosphere, name),
+                "floor_zero",
+            )
+            for name in WATER_SPECIES
+        }
+
+        # The tape's column: hybrid pressure, temperature and virtual
+        # temperature, and the hydrostatic geopotential integrated up from
+        # the terrain, all in the Rust render kernels.
+        p_half, p_full = render_kernels.hybrid_pressure(a_half, b_half, ps)
+        temperature, virtual = render_kernels.virtual_temperature(
+            theta, species, p_full,
+            reference_pressure_pa=REFERENCE_PRESSURE_PA, kappa=KAPPA)
+        phi_half = render_kernels.hydrostatic(
+            virtual, p_half, self.phi_surface, gas_constant=model.gas_constant)
+
+        def up(field: np.ndarray) -> np.ndarray:
+            return np.ascontiguousarray(field[::-1]).astype(np.float32)
+
+        surface = bundle.surface
+        screen, screen_source = _screen_level_fields(
+            cfg, bundle, self.backend, regrid, temperature, species, u, v, p_half, p_full
+        )
+        # WRF's moisture names carry WRF's convention (GI-5); the virtual
+        # temperature and the screen fallback above use the model's q.
+        tape_species, tape_q2 = tape_water_fields(species, screen["q2"])
+        rain = regrid(surface.accumulated_rain_kg_m2)
+        snow = regrid(surface.accumulated_snow_kg_m2)
+        graupel = regrid(surface.accumulated_graupel_kg_m2)
+        convective = _convective_rain(bundle, regrid, (ny_out, nx_out))
+        land = regrid(surface.land_fraction)
+        energy = _surface_energy_planes(bundle, regrid)
+        land_use = land_use_planes(surface, nearest)
+        skin = regrid(surface.temperature_k).astype(np.float32)
+        table = landuse_table(bundle)
+        extras = {}
+        if extra_planes is not None:
+            for name, value in (extra_planes(checkpoint, bundle, regrid) or {}).items():
+                plane = np.asarray(value, dtype=np.float64)
+                if plane.shape != (ny_out, nx_out):
+                    plane = regrid(plane)
+                extras[str(name)] = plane.astype(np.float32)
+        frame = {
+            "XLAT": self.xlat.astype(np.float32),
+            "XLONG": self.xlong.astype(np.float32),
+            "T": up(theta - _THETA_OFFSET_K),
+            "P": np.zeros((nz, ny_out, nx_out), dtype=np.float32),
+            "PB": up(p_full),
+            "PH": np.zeros((nz + 1, ny_out, nx_out), dtype=np.float32),
+            "PHB": up(phi_half),
+            "QVAPOR": up(tape_species["qv"]),
+            "QCLOUD": up(tape_species["qc"]),
+            "QRAIN": up(tape_species["qr"]),
+            "QICE": up(tape_species["qi"]),
+            "QSNOW": up(tape_species["qs"]),
+            "QGRAUP": up(tape_species["qg"]),
+            "U": self.stagger_x(up(u)),
+            "V": _stagger_y(up(v)),
+            # Screen-level diagnostics: the physics suite's own 2 m / 10 m
+            # fields when the checkpoint carries them, else the similarity
+            # diagnostic from the skin and the lowest level; never the
+            # lowest level itself (audit 2026-09-01, task 1b).  The source
+            # is stamped on the tape and in the export receipt.
+            "T2": screen["t2"].astype(np.float32),
+            "Q2": tape_q2.astype(np.float32),
+            "U10": screen["u10"].astype(np.float32),
+            "V10": screen["v10"].astype(np.float32),
+            "PSFC": ps.astype(np.float32),
+            "TSK": skin,
+            # The skin under WRF's SST name on every point (TAPE_SST_POLICY).
+            "SST": skin.copy(),
+            "HGT": self.terrain_m.astype(np.float32),
+            "LANDMASK": (land >= 0.5).astype(np.float32),
+            "SINALPHA": np.zeros((ny_out, nx_out), dtype=np.float32),
+            "COSALPHA": np.ones((ny_out, nx_out), dtype=np.float32),
+            # What a post-processor derives its own fields from
+            # (DERIVATION_FIELDS).  W is the regional parent frames' W plus
+            # the wind's climb along the coordinate surfaces, and its
+            # description on the tape says so (TAPE_VARIABLE_ATTRS).
+            **self.metric,
+            **land_use,
+            "W": up(regrid(fields["w"])),
+            # WRF's split: RAINC is the cumulus scheme's accumulator, RAINNC
+            # the microphysics accumulators.
+            "RAINC": convective.astype(np.float32),
+            "RAINNC": (rain + snow + graupel).astype(np.float32),
+            "SNOWNC": snow.astype(np.float32),
+            "GRAUPELNC": graupel.astype(np.float32),
+            "TSLB": regrid(surface.soil_temperature_k)[:_SOIL_LAYERS].astype(np.float32),
+            "SMOIS": regrid(surface.soil_water_fraction)[:_SOIL_LAYERS].astype(np.float32),
+            **energy,
+            **extras,
+            # The seeded surface under WRF's names: SEAICE and ICEDEPTH from
+            # the surface state, SNOW (kg/m2), SNOWH (m) and SNOWC from
+            # Noah's store when the checkpoint carries it (zero planes on a
+            # state without a native physics namespace).
+            "SEAICE": regrid(surface.sea_ice_fraction).astype(np.float32),
+            "ICEDEPTH": regrid(surface.sea_ice_thickness_m).astype(np.float32),
+            **_snow_planes(bundle, regrid, (ny_out, nx_out)),
+        }
+
+        _require_tape_writer()
+        path = Path(outdir) / wrfout_filename(valid)
+        if path.exists() and not overwrite:
+            raise FileExistsError(
+                f"render tape {path} exists; pass --overwrite to replace it"
+            )
+        writer = WrfoutWriter(
+            path,
+            nx=nx_out,
+            ny=ny_out,
+            nz=nz,
+            dx=self.dx_m,
+            dy=self.dx_m,
+            title="Arwen Global research model",
+            global_attrs={
+                **self.global_attrs, SURFACE_DIAGNOSTICS_ATTR: screen_source,
+                WATER_CONVENTION_ATTR: TAPE_WATER_CONVENTION,
+                VERTICAL_VELOCITY_ATTR: TAPE_VERTICAL_VELOCITY_POLICY,
+                **{
+                    name: (value if isinstance(value, str) else np.int32(value))
+                    for name, value in (table or {}).items()
+                },
+            },
+            soil_layers=_SOIL_LAYERS,
+            # Every variable is declared as the tape is opened, so the
+            # attributes this door states itself go on before the first
+            # frame closes the header (_state_variable_attributes).
+            field_schema=frame,
+        )
+        try:
+            _state_variable_attributes(writer)
+            writer.write_frame(valid.strftime("%Y-%m-%d_%H:%M:%S"), frame)
+            writer.close()
+        except BaseException:
+            writer.abort()
+            raise
+        row = {
+            "tape": str(path),
+            "checkpoint": str(checkpoint),
+            "valid": valid.strftime("%Y-%m-%d_%H:%M:%S"),
+            "surface_diagnostics": screen_source,
+            "surface_energy_fields": sorted(energy),
+            "extra_planes": sorted(extras),
+            "landuse_table": table,
+        }
+        return path, row
+
+    def receipt(self, tapes) -> dict[str, object]:
+        """The export receipt for ``tapes`` (the rows :meth:`write` returned)."""
+        cfg, clock, start = self.cfg, self.clock, self.start
+        return {
+            "name": cfg.name,
+            "config_hash": cfg.config_hash,
+            "pins_hash": pins_hash(cfg.semi_implicit_scheme, cfg.integrator),
+            "physics_mode": cfg.physics_mode,
+            "vertical": {"coordinate": cfg.vertical_coordinate, **cfg.vertical.describe()},
+            "screen_level_sources": SURFACE_DIAGNOSTICS_SOURCES,
+            # Where every tape's valid time came from (arwen_global.clock).
+            "start_date": start.strftime("%Y-%m-%d_%H:%M:%S"),
+            "start_date_source": (
+                clock.source if clock is not None and clock.dated
+                else "start-date argument"
+            ),
+            "water_convention": TAPE_WATER_CONVENTION,
+            # What every tape carries beside the state for a post-processor,
+            # and what its W is.
+            "derivation_fields": [name for name, _units, _text in DERIVATION_FIELDS],
+            "vertical_velocity": TAPE_VERTICAL_VELOCITY_POLICY,
+            "sea_surface_temperature": TAPE_SST_POLICY,
+            "tapes": list(tapes),
+        }
+
+
+def _host_array(backend, values) -> np.ndarray:
+    """``values`` on the host: a host array as it is, a device array (or a
+    pinned host-tier slot) through the backend's own copy."""
+    if isinstance(values, np.ndarray):
+        return values
+    return backend.to_numpy(values)
+
+
 def export_wrfout(
     cfg,
     checkpoints,
@@ -555,7 +953,7 @@ def export_wrfout(
     The tapes' valid times are the run's forecast clock plus each
     checkpoint's model time (:func:`tape_start`): ``start_date`` may be
     left out of a dated run and is refused when it disagrees."""
-    given = parse_start_date(start_date)
+    parse_start_date(start_date)
     # The render kernels before anything else: a machine without them
     # refuses here, with the missing-door exit and the command that stages
     # them, rather than after the model is built.
@@ -565,83 +963,9 @@ def export_wrfout(
     transform = build_transform(cfg)
     model, _cold = build_model_and_cold_state(
         cfg, transform, scratch_destination=Path(outdir))
-    clock = model.forecast_clock
-    start = tape_start(clock, given)
+    tape_grid = TapeGrid(cfg, model, transform, nlat=nlat, nlon=nlon,
+                         start_date=start_date, bbox=bbox)
     backend = transform.backend
-    vector = VorticityDivergenceOperator(transform)
-
-    lat, lon = regular_latlon_coordinates(nlat, nlon, include_poles=False)
-    # The renderer's proven global frames run -180..180-dlon like the MPAS
-    # bridge; roll the ring so the wrap column is not duplicated.
-    lon_signed = np.where(lon >= 180.0, lon - 360.0, lon)
-    order = np.argsort(lon_signed)
-    lon_out = lon_signed[order]
-    # Each tape column is sampled at its own unsigned longitude, in the
-    # tape's rolled order, and a bbox window samples only its own rows and
-    # columns: every value depends on its own row and column alone, so this
-    # is the whole-ring sample rolled and cut, without the whole ring.
-    lon_sample = lon[order]
-
-    lat_sel = lon_sel = None
-    if bbox is not None:
-        lat_min, lat_max, lon_min, lon_max = (float(v) for v in bbox)
-        if not (lat_min < lat_max and lon_min < lon_max):
-            raise ValueError(
-                "bbox must be (lat_min, lat_max, lon_min, lon_max) with "
-                "min < max on both axes"
-            )
-        lat_sel = np.where((lat >= lat_min) & (lat <= lat_max))[0]
-        lon_sel = np.where((lon_out >= lon_min) & (lon_out <= lon_max))[0]
-        if lat_sel.size < 2 or lon_sel.size < 2:
-            raise ValueError(
-                f"bbox {bbox} selects {lat_sel.size}x{lon_sel.size} points; "
-                "a render tape needs at least 2x2"
-            )
-        lat = lat[lat_sel]
-        lon_out = lon_out[lon_sel]
-        lon_sample = lon_sample[lon_sel]
-    sampler = _gaussian_to_regular(transform.grid, lat, lon_sample)
-
-    def regrid(values, post: str = "none") -> np.ndarray:
-        return sampler(backend.to_numpy(values), post)
-
-    nearest_pick = _nearest_column(transform.grid, lat, lon_sample)
-
-    def nearest(values) -> np.ndarray:
-        return nearest_pick(backend.to_numpy(values))
-
-    xlong, xlat = np.meshgrid(lon_out, lat)
-    ny_out, nx_out = xlat.shape
-    # The same in every tape of this export: they are the grid's, not the
-    # state's.
-    metric = grid_metric_planes(
-        xlat, rotation_rate_s=model.rotation_rate_s,
-        row_spacing_deg=180.0 / nlat, column_spacing_deg=360.0 / nlon)
-    stagger_x = _stagger_x_periodic if bbox is None else _stagger_x_clamped
-    dx_m = (360.0 / nlon) * math.pi / 180.0 * _EARTH_RADIUS_RENDER_M
-    a_half = np.asarray(cfg.a_half_pa, dtype=np.float64)
-    b_half = np.asarray(cfg.b_half, dtype=np.float64)
-    nz = a_half.size - 1
-    phi_surface = regrid(model.surface_geopotential)
-    terrain_m = phi_surface / GRAVITY_M_S2
-
-    global_attrs = {
-        "START_DATE": start.strftime("%Y-%m-%d_%H:%M:%S"),
-        "SIMULATION_START_DATE": start.strftime("%Y-%m-%d_%H:%M:%S"),
-        "MAP_PROJ": np.int32(6),
-        "MAP_PROJ_CHAR": "Cylindrical Equidistant",
-        "POLE_LAT": np.float32(90.0),
-        "POLE_LON": np.float32(0.0),
-        "TRUELAT1": np.float32(0.0),
-        "TRUELAT2": np.float32(0.0),
-        "STAND_LON": np.float32(0.0),
-        "CEN_LON": np.float32(float(lon_out.mean())),
-        "CEN_LAT": np.float32(float(lat.mean()) if bbox is not None else 0.0),
-        "GRID_ID": np.int32(1),
-        "PARENT_ID": np.int32(0),
-        "DT": np.float32(cfg.dt_s),
-        MODEL_LABEL_ATTR: MODEL_LABEL,
-    }
 
     output = Path(outdir)
     output.mkdir(parents=True, exist_ok=True)
@@ -660,190 +984,14 @@ def export_wrfout(
         # valid times.
         adopt_checkpoint_clock(model, bundle, f"checkpoint {checkpoint}")
         model.enforce(bundle)
-        atmosphere = bundle.atmosphere
-        seconds = float(metadata["time_s"])
-        if abs(seconds - round(seconds)) > 1.0e-6:
-            raise ValueError(
-                f"checkpoint time {seconds} s is not a whole second"
-            )
-        valid = start + timedelta(seconds=round(seconds))
-
-        theta = regrid(transform.inverse(atmosphere.theta))
-        ps = regrid(transform.inverse(atmosphere.log_surface_pressure), "exp")
-        u_grid, v_grid = vector.wind_from_vordiv(
-            atmosphere.vorticity, atmosphere.divergence
+        path, row = tape_grid.write(
+            bundle, tape_grid.device_fields(bundle.atmosphere),
+            float(metadata["time_s"]), output, overwrite=overwrite,
+            checkpoint=checkpoint, extra_planes=extra_planes,
         )
-        u = regrid(u_grid)
-        v = regrid(v_grid)
-        # Vapor is synthesized from its coefficients; the condensate
-        # species are grid fields already.
-        species = {
-            name: regrid(
-                transform.inverse(atmosphere.qv) if name == "qv"
-                else getattr(atmosphere, name),
-                "floor_zero",
-            )
-            for name in WATER_SPECIES
-        }
-
-        # The tape's column: hybrid pressure, temperature and virtual
-        # temperature, and the hydrostatic geopotential integrated up from
-        # the terrain, all in the Rust render kernels.
-        p_half, p_full = render_kernels.hybrid_pressure(a_half, b_half, ps)
-        temperature, virtual = render_kernels.virtual_temperature(
-            theta, species, p_full,
-            reference_pressure_pa=REFERENCE_PRESSURE_PA, kappa=KAPPA)
-        phi_half = render_kernels.hydrostatic(
-            virtual, p_half, phi_surface, gas_constant=model.gas_constant)
-
-        def up(field: np.ndarray) -> np.ndarray:
-            return np.ascontiguousarray(field[::-1]).astype(np.float32)
-
-        surface = bundle.surface
-        screen, screen_source = _screen_level_fields(
-            cfg, bundle, backend, regrid, temperature, species, u, v, p_half, p_full
-        )
-        # WRF's moisture names carry WRF's convention (GI-5); the virtual
-        # temperature and the screen fallback above use the model's q.
-        tape_species, tape_q2 = tape_water_fields(species, screen["q2"])
-        rain = regrid(surface.accumulated_rain_kg_m2)
-        snow = regrid(surface.accumulated_snow_kg_m2)
-        graupel = regrid(surface.accumulated_graupel_kg_m2)
-        convective = _convective_rain(bundle, regrid, (ny_out, nx_out))
-        land = regrid(surface.land_fraction)
-        energy = _surface_energy_planes(bundle, regrid)
-        land_use = land_use_planes(surface, nearest)
-        table = landuse_table(bundle)
-        extras = {}
-        if extra_planes is not None:
-            for name, value in (extra_planes(checkpoint, bundle, regrid) or {}).items():
-                plane = np.asarray(value, dtype=np.float64)
-                if plane.shape != (ny_out, nx_out):
-                    plane = regrid(plane)
-                extras[str(name)] = plane.astype(np.float32)
-        frame = {
-            "XLAT": xlat.astype(np.float32),
-            "XLONG": xlong.astype(np.float32),
-            "T": up(theta - _THETA_OFFSET_K),
-            "P": np.zeros((nz, ny_out, nx_out), dtype=np.float32),
-            "PB": up(p_full),
-            "PH": np.zeros((nz + 1, ny_out, nx_out), dtype=np.float32),
-            "PHB": up(phi_half),
-            "QVAPOR": up(tape_species["qv"]),
-            "QCLOUD": up(tape_species["qc"]),
-            "QRAIN": up(tape_species["qr"]),
-            "QICE": up(tape_species["qi"]),
-            "QSNOW": up(tape_species["qs"]),
-            "QGRAUP": up(tape_species["qg"]),
-            "U": stagger_x(up(u)),
-            "V": _stagger_y(up(v)),
-            # Screen-level diagnostics: the physics suite's own 2 m / 10 m
-            # fields when the checkpoint carries them, else the similarity
-            # diagnostic from the skin and the lowest level; never the
-            # lowest level itself (audit 2026-09-01, task 1b).  The source
-            # is stamped on the tape and in the export receipt.
-            "T2": screen["t2"].astype(np.float32),
-            "Q2": tape_q2.astype(np.float32),
-            "U10": screen["u10"].astype(np.float32),
-            "V10": screen["v10"].astype(np.float32),
-            "PSFC": ps.astype(np.float32),
-            "TSK": regrid(surface.temperature_k).astype(np.float32),
-            "HGT": terrain_m.astype(np.float32),
-            "LANDMASK": (land >= 0.5).astype(np.float32),
-            "SINALPHA": np.zeros((ny_out, nx_out), dtype=np.float32),
-            "COSALPHA": np.ones((ny_out, nx_out), dtype=np.float32),
-            # What a post-processor derives its own fields from
-            # (DERIVATION_FIELDS).  W is the regional parent frames' W plus
-            # the wind's climb along the coordinate surfaces, and its
-            # description on the tape says so (TAPE_VARIABLE_ATTRS).
-            **metric,
-            **land_use,
-            "W": up(regrid(diagnose_ground_relative_w(model, transform, atmosphere))),
-            # WRF's split: RAINC is the cumulus scheme's accumulator, RAINNC
-            # the microphysics accumulators.
-            "RAINC": convective.astype(np.float32),
-            "RAINNC": (rain + snow + graupel).astype(np.float32),
-            "SNOWNC": snow.astype(np.float32),
-            "GRAUPELNC": graupel.astype(np.float32),
-            "TSLB": regrid(surface.soil_temperature_k)[:_SOIL_LAYERS].astype(np.float32),
-            "SMOIS": regrid(surface.soil_water_fraction)[:_SOIL_LAYERS].astype(np.float32),
-            **energy,
-            **extras,
-            # The seeded surface under WRF's names: SEAICE and ICEDEPTH from
-            # the surface state, SNOW (kg/m2), SNOWH (m) and SNOWC from
-            # Noah's store when the checkpoint carries it (zero planes on a
-            # state without a native physics namespace).
-            "SEAICE": regrid(surface.sea_ice_fraction).astype(np.float32),
-            "ICEDEPTH": regrid(surface.sea_ice_thickness_m).astype(np.float32),
-            **_snow_planes(bundle, regrid, (ny_out, nx_out)),
-        }
-
-        _require_tape_writer()
-        path = output / wrfout_filename(valid)
-        if path.exists() and not overwrite:
-            raise FileExistsError(
-                f"render tape {path} exists; pass --overwrite to replace it"
-            )
-        writer = WrfoutWriter(
-            path,
-            nx=nx_out,
-            ny=ny_out,
-            nz=nz,
-            dx=dx_m,
-            dy=dx_m,
-            title="Arwen Global research model",
-            global_attrs={
-                **global_attrs, SURFACE_DIAGNOSTICS_ATTR: screen_source,
-                WATER_CONVENTION_ATTR: TAPE_WATER_CONVENTION,
-                VERTICAL_VELOCITY_ATTR: TAPE_VERTICAL_VELOCITY_POLICY,
-                **{
-                    name: (value if isinstance(value, str) else np.int32(value))
-                    for name, value in (table or {}).items()
-                },
-            },
-            soil_layers=_SOIL_LAYERS,
-            # Every variable is declared as the tape is opened, so the
-            # attributes this door states itself go on before the first
-            # frame closes the header (_state_variable_attributes).
-            field_schema=frame,
-        )
-        try:
-            _state_variable_attributes(writer)
-            writer.write_frame(valid.strftime("%Y-%m-%d_%H:%M:%S"), frame)
-            writer.close()
-        except BaseException:
-            writer.abort()
-            raise
         written.append(path)
-        tapes.append({
-            "tape": str(path),
-            "checkpoint": str(checkpoint),
-            "valid": valid.strftime("%Y-%m-%d_%H:%M:%S"),
-            "surface_diagnostics": screen_source,
-            "surface_energy_fields": sorted(energy),
-            "extra_planes": sorted(extras),
-            "landuse_table": table,
-        })
-    write_receipt(output / EXPORT_RECEIPT_NAME, {
-        "name": cfg.name,
-        "config_hash": cfg.config_hash,
-        "pins_hash": pins_hash(cfg.semi_implicit_scheme, cfg.integrator),
-        "physics_mode": cfg.physics_mode,
-        "vertical": {"coordinate": cfg.vertical_coordinate, **cfg.vertical.describe()},
-        "screen_level_sources": SURFACE_DIAGNOSTICS_SOURCES,
-        # Where every tape's valid time came from (arwen_global.clock).
-        "start_date": start.strftime("%Y-%m-%d_%H:%M:%S"),
-        "start_date_source": (
-            clock.source if clock is not None and clock.dated
-            else "start-date argument"
-        ),
-        "water_convention": TAPE_WATER_CONVENTION,
-        # What every tape carries beside the state for a post-processor,
-        # and what its W is.
-        "derivation_fields": [name for name, _units, _text in DERIVATION_FIELDS],
-        "vertical_velocity": TAPE_VERTICAL_VELOCITY_POLICY,
-        "tapes": tapes,
-    })
+        tapes.append(row)
+    write_receipt(output / EXPORT_RECEIPT_NAME, tape_grid.receipt(tapes))
     return written
 
 
@@ -907,9 +1055,10 @@ def _screen_level_fields(cfg, bundle, backend, regrid, temperature, species, u, 
 
 __all__ = [
     "DERIVATION_FIELDS", "EXPORT_RECEIPT_NAME", "LANDUSE_TABLE_ATTRS",
-    "SURFACE_ENERGY_FIELDS", "TAPE_ISLAKE", "TAPE_VARIABLE_ATTRS",
+    "SURFACE_ENERGY_FIELDS", "TAPE_ISLAKE", "TAPE_SST_POLICY", "TAPE_VARIABLE_ATTRS",
     "TAPE_VERTICAL_VELOCITY_POLICY", "TAPE_WATER_CONVENTION",
-    "TAPE_W_DESCRIPTION", "VERTICAL_VELOCITY_ATTR", "WATER_CONVENTION_ATTR",
+    "SYNTHESIZED_FIELDS", "TAPE_W_DESCRIPTION", "TapeGrid",
+    "VERTICAL_VELOCITY_ATTR", "WATER_CONVENTION_ATTR",
     "diagnose_ground_relative_w", "export_wrfout", "grid_metric_planes",
     "land_use_planes", "landuse_table", "parse_start_date", "tape_start",
     "tape_water_fields",

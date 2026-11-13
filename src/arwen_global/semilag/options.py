@@ -30,7 +30,24 @@ HORIZONTAL_INTERPOLATIONS = ("cubic_lagrange", "quintic_lagrange")
 #: The gather order (interpolate.ORDERS) each name selects.
 HORIZONTAL_ORDER = {"cubic_lagrange": 4, "quintic_lagrange": 6}
 VERTICAL_INTERPOLATIONS = ("cubic",)
-EXTRAPOLATIONS = ("settls", "none")
+#: Where the time extrapolation ``2 X^n - X^{n-1}`` of the advecting wind
+#: and of the nonlinear residual is read.
+#:
+#: ``settls``
+#:     The shipped arithmetic, kept under its shipped name so every pinned
+#:     identity holds: the extrapolated wind and residual are read at the
+#:     ARRIVAL point and the time-n ones are interpolated at the departure
+#:     point.  It is the mirror image of Hortal's SETTLS.
+#: ``settls_departure``
+#:     Hortal's form (Hortal 2002, QJRMS 128):
+#:     the extrapolated wind and residual are interpolated at the DEPARTURE
+#:     point and the time-n ones read at the arrival point.  It needs no new
+#:     state and no new gather: the two winds swap roles in the search and
+#:     the extrapolated residual moves into the gathered bundle.  Resident
+#:     step only; the banded step refuses it by name.
+#: ``none``
+#:     Time-n wind and residual on both ends (the start-up arithmetic).
+EXTRAPOLATIONS = ("settls", "settls_departure", "none")
 TRACER_SCHEMES = ("semi_lagrangian", "flux_form")
 
 #: Where the FIRST physics half's increment is applied.  The physics is
@@ -93,6 +110,14 @@ class SemiLagrangianOptions:
     trajectory_iterations: int = 3
     trajectory_convergence_cells: float = 0.01
     extrapolation: str = "settls"
+    #: Per-point limiter on the extrapolated vertical rate: where the level
+    #: rate changed sign between t^{n-1} and t^n the extrapolation
+    #: ``2 s^n - s^{n-1}`` is replaced by ``s^n`` at that point, which is
+    #: the limit ECMWF applies to the vertical SETTLS term against
+    #: stratospheric noise.  Off by default, and then absent from the
+    #: identity, so every shipped hash holds; it needs an extrapolation to
+    #: limit and is refused under ``extrapolation = "none"``.
+    level_rate_limiter: bool = False
     tracer_scheme: str = "semi_lagrangian"
     tracer_fixer: str = "bermejo_conde"
     physics_coupling: str = "advected"
@@ -135,10 +160,17 @@ class SemiLagrangianOptions:
                     + ", ".join(repr(item) for item in allowed)
                     + f", got {value!r}"
                 )
-        for name in ("quasi_monotone", "quasi_monotone_dynamics"):
+        for name in ("quasi_monotone", "quasi_monotone_dynamics",
+                     "level_rate_limiter"):
             value = getattr(self, name)
             if isinstance(value, str) or not isinstance(value, (bool, int)):
                 raise ValueError(f"semilag.{name} must be a boolean")
+        if bool(self.level_rate_limiter) and self.extrapolation == "none":
+            raise ValueError(
+                "semilag.level_rate_limiter limits the extrapolated vertical "
+                "rate, and extrapolation = 'none' extrapolates nothing: the "
+                "flag would be parsed and change nothing"
+            )
         iterations = int(self.trajectory_iterations)
         if iterations < 1 or iterations > 8:
             raise ValueError(
@@ -182,6 +214,12 @@ class SemiLagrangianOptions:
         # identity so a T533 run that needs a smaller transient shares its
         # checkpoint lineage with the T255 run it was sized from.
         del payload["gather_batch"]
+        # The limiter joins the identity only when it is on, so a config
+        # that leaves it off keeps the hash it had before the key existed.
+        if bool(self.level_rate_limiter):
+            payload["level_rate_limiter"] = True
+        else:
+            del payload["level_rate_limiter"]
         return payload
 
 

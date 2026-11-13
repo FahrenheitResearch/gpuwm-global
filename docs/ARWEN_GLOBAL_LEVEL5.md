@@ -483,6 +483,43 @@ A checkpoint written under a lever that is carried will not restart under a
 different value of it, by name, which is the point: the two runs computed
 different states.
 
+### The transform diet: `[transforms]` (experimental)
+
+Two switches stop the semi-Lagrangian step paying for spherical transforms
+it does not use. Both are off by default; a config that does not name the
+table is the step as it was, call for call, and keeps its config hash.
+
+```toml
+[transforms]
+skip_unread_planes = true          # no grid vorticity or divergence synthesis
+divergence_only_mass_flux = true   # contract only the divergence half
+```
+
+| Switch | What it stops | Identity |
+|---|---|---|
+| `skip_unread_planes` | the step's grid view synthesizing the vorticity and divergence planes nothing in the semi-Lagrangian step reads (two planes a level a step) | carried when on |
+| `divergence_only_mass_flux` | the vorticity half of the vector analysis in the three mass-flux analyses a step, whose vorticity was thrown away | carried when on |
+
+Each switch is carried in the config identity when it is on, because it
+narrows a stack the Legendre GEMM sees as its M dimension and the bit-exact
+set of widths is a property of the library, not of the switch. The rows it
+keeps are the same rows of a narrower call. `tools/arwen_global_transform_census.py
+CONFIG OUTDIR` counts the transforms a step makes: on the numpy T21 40-level
+census an ordinary step goes from 2,573 level-planes to 2,253 in the same 61
+contractions, and `tests/test_arwen_global_transform_census.py` pins both
+counts and holds the dieted ten-step checkpoint to the shipped one byte for
+byte. On the card, the T255 semi-Lagrangian day
+(`arwen_global_gdas_t255_native_sl_si_24h`) with both switches on wrote
+every array of its nine checkpoints byte-identical to the day without them,
+on an RTX 5070 Ti and on an RTX 5090 (MEASURED 2026-11-12; the config hash
+differs, by design).
+
+The table is experimental, and it is not a speed setting: the dieted day
+ran 0.728 s a step against 0.736 on the RTX 5070 Ti with the card to
+itself, and 0.676 and 0.751 against 0.642, 0.646 and 0.688 on RTX 5090s shared
+with other jobs. A third switch the same work measured, analysing theta and
+vapour a field at a time, moved bits on the card and is not offered.
+
 Measured table floor at float32, the part of the card that never divides with
 any decomposition (RTX 5070 Ti, all three tables resident, 2026-09-06):
 0.158 GiB at T255, 0.514 at T383, 1.352 at T533 and 4.463 at T799.

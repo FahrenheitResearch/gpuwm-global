@@ -36,6 +36,7 @@ from .budgets import (
 from .capture import CAPTURE_NAMES, ComponentCapture, attach_capture
 from .energy import ENERGY_COMPONENTS, OperatorEnergyLedger
 from .spectra import SpectralKineticEnergy
+from .stratosphere import StratosphericNoiseGate
 from .tripwires import TripwireSet
 
 INSITU_SCHEMA = "gpuwm.arwen-global-insitu/v1"
@@ -100,7 +101,10 @@ class InsituLedger:
         *,
         tripwire_overrides: dict[str, float | None] | None = None,
     ):
-        self.options = cfg.insitu
+        # A cadence given in seconds is counted in this run's steps here,
+        # from the step the config carries now (options.resolved_for_step);
+        # with none given these are cfg.insitu itself.
+        self.options = cfg.insitu.resolved_for_step(cfg.dt_s)
         self.model = model
         self.transform = model.transform
         self.backend = model.transform.backend
@@ -119,6 +123,15 @@ class InsituLedger:
             exchange=getattr(model.pipeline, "exchange", None),
         )
         self.energy = OperatorEnergyLedger(model)
+        # The stratospheric noise gate reads the spectra samples below and
+        # exists only when a limit is set (insitu.stratosphere).
+        self.stratosphere = (
+            None if self.options.stratospheric_noise_limit is None
+            else StratosphericNoiseGate(
+                model.vertical, self.options.stratospheric_noise_limit,
+                self.options.stratospheric_noise_band_hpa,
+            )
+        )
         self.tripwires = TripwireSet(
             precision=cfg.precision,
             maximum_cfl=cfg.maximum_cfl,
@@ -294,6 +307,8 @@ class InsituLedger:
                     **self.spectra.unpack(host[cursor:cursor + width], self.nlev),
                 }
                 cursor += width
+                if self.stratosphere is not None:
+                    self.stratosphere.evaluate(sample)
             else:
                 sample = None
             if entry["energy"] is not None:
@@ -559,6 +574,10 @@ class InsituLedger:
             "tripwires": self.tripwires.describe(),
             "observer_wall_seconds": float(self.observer_wall_s),
             "capture_wall_seconds": float(self.capture.wall_s),
+            # Only a run that sets the stratospheric noise gate carries its
+            # row, so every other receipt keeps the in-situ block it had.
+            **({} if self.stratosphere is None
+               else {"stratospheric_noise": self.stratosphere.summary()}),
         }
 
 

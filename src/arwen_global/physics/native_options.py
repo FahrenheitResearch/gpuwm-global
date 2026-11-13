@@ -27,6 +27,16 @@ class NativePhysicsOptions:
     radiation_interval_s: float = 1800.0
     radiation_column_chunk: int = 12_500
     radiation_validation_mode: str = "fused"
+    # What the shortwave does between two radiation calls
+    # (arwen_global.physics.radiation_between): "hold" (default) applies
+    # the call's planes unchanged until the next call, as every run before
+    # the option did; "surface" is WRF's swint_opt = 1 on the surface
+    # downward shortwave, as the regional engine runs it (the surface
+    # follows the sun every physics call); "column" adds the shortwave
+    # heating rate and the top-of-atmosphere shortwave scaled by the
+    # cosine ratio.  Joins the identity only when not "hold", so every
+    # config hash and checkpoint written without it keeps its bytes.
+    radiation_between: str = "hold"
     # The ozone the radiation reads (core.rrtmgp.OZONE_CLIMATOLOGIES):
     # "cam-zonal-monthly" (default, 2026-11-06), the CAM climatology WRF
     # and MPAS-A ship, by date, latitude and pressure; "rfmip-median", the
@@ -289,6 +299,10 @@ class NativePhysicsOptions:
             del payload["gf_resolved_convergence_closure"]
         if self.sfclay_iz0tlnd == 0:
             del payload["sfclay_iz0tlnd"]
+        if self.radiation_between == "hold":
+            # The held planes are the arithmetic every checkpoint before
+            # the option carried.
+            del payload["radiation_between"]
         if self.ozone == "rfmip-median":
             # The arithmetic every checkpoint before the option carried.
             del payload["ozone"]
@@ -397,6 +411,9 @@ class NativePhysicsOptions:
             raise ValueError("gf_resolved_convergence_closure must be true or false")
         if self.ozone not in {"cam-zonal-monthly", "rfmip-median"}:
             raise ValueError("ozone must be 'cam-zonal-monthly' or 'rfmip-median'")
+        from .radiation_between import validate_mode
+
+        validate_mode(self.radiation_between)
         if self.radiation_validation_mode not in {"fused", "full"}:
             raise ValueError("radiation_validation_mode must be 'fused' or 'full'")
         if self.sfclay_option not in {1, 91}:

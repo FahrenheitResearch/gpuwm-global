@@ -3234,6 +3234,41 @@ COMPLETED_PLAN_PEAKS = (
                "held and 15,624 MiB over the day, and 11.71 GiB live and "
                "14.18 held over eight steps (2026-11-06)",
     },
+    {
+        # THE T255 DAY, HELD TO A LIMIT AS THE T383 ONE-BAND ROW IS.  Before
+        # this row the model priced the plan at 11.09 GiB of card (8.89 GiB
+        # live at x1.0872 and the out-of-pool bytes) and held the pool to
+        # 10.35 GiB, while 0.1.7's own day of it took 9,110 MiB of the same
+        # card: with 9 to 11 GiB free the door sent a run that fits at one
+        # band to latitude bands.  The pool starts held to the day's live
+        # peak, which every run of the plan reads to the byte, and the row
+        # is the heaviest of the plan's held days on the 16 GB card.
+        "label": "T255 L40 on the semi-Lagrangian core, one band, nothing parked, 12,500-column chunk, the 16 GB card",
+        "truncation": 255, "nlat": 384, "nlon": 768, "nlev": 40,
+        "precision": "float32", "core": "semilag",
+        "radiation_column_chunk": 12_500,
+        "bands": 1, "spill_slices": (),
+        "peak_used_bytes": 7_191_547_904, "held_bytes": 9_155_531_776,
+        "pool_limit_bytes": 7_191_547_904,
+        "pool_limit_end_bytes": 9_189_086_208,
+        "card_bytes_measured": 9_178 * 1024 * 1024,
+        "step_s": 0.736,
+        "measured_on": "2026-11-12", "device": "NVIDIA GeForce RTX 5070 Ti",
+        "run": "the 24 h T255 GDAS 2026-09-01 00Z semi-Lagrangian day "
+               "(arwen_global_gdas_t255_native_sl_si_24h) at one band with "
+               "nothing parked, the card to itself, the pool held from "
+               "6.70 GiB and lifted 3 times to 8.56 GiB: 288 steps, 0.736 s "
+               "a step, status pass, 6.70 GiB live, 8.53 held, 9,178 MiB on "
+               "the card (nvidia-smi every 250 ms), all nine checkpoints "
+               "byte-identical to 0.1.7's day of the same config on the "
+               "same card, which held its pool under the model's 10.35 GiB "
+               "and read 9,110 MiB and 0.736 s a step.  A second held day "
+               "read 9,056 MiB (lifted 3 times to 8.44 GiB), and the day cut "
+               "into a 1.5 h segment and a restart to 3 h read 7,846 and "
+               "8,362 MiB, its 3 h checkpoint byte-identical to the "
+               "straight day's.  On an RTX 5090 two held days read "
+               "9,967 and 10,285 MiB of card against 10,339 for 0.1.7's",
+    },
     # THE 16 GB DESKTOP PLANS OF THE 34.7 km DAY, MEASURED 2026-11-11 on the
     # RTX 5070 Ti, the card otherwise empty, nvidia-smi sampled every 250 ms.
     # The one-band day held 14.89 GiB of pool and 15,624 MiB of card on that

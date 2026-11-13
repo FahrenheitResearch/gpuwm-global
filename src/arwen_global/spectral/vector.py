@@ -133,5 +133,36 @@ class VorticityDivergenceOperator:
         zeta = rotational[1] + sheared[0]
         return t.project(zeta), t.project(divergence)
 
+    def divergence_from_fourier(self, fourier):
+        """The divergence half of :meth:`_vordiv_from_fourier`, alone.
+
+        ``D = rotational[0] - sheared[1]``: the zonal component against
+        the basis and the meridional one against the derivative basis.
+        The full analysis contracts BOTH components against BOTH tables
+        and a caller that keeps only the divergence (the mass-flux pass)
+        throws ``rotational[1]`` and ``sheared[0]`` away, half the GEMM
+        rows.  Here each of the two contractions carries one component,
+        so the same two calls run at half the M.  The weights, the
+        products and the subtraction are the full analysis's own, row for
+        row; the narrower M is the only change, and whether it moves a
+        bit is the library's and is measured (tests).
+        """
+        t = self.transform
+        raw = fourier.values if isinstance(fourier, FourierWaist) else fourier
+        fm = raw[..., : t.grid.truncation + 1]
+        if fm.shape[0] != 2:
+            raise ValueError(
+                "divergence_from_fourier reads a stacked (u, v) waist with "
+                f"the pair on the leading axis, got leading length {fm.shape[0]}"
+            )
+        with t._contraction_scope():
+            rotational = t._batched_contract(
+                fm[0] * self._rotation_weight, t._basis, transposed=True
+            )
+            sheared = t._batched_contract(
+                fm[1] * self._shear_weight, t._derivative_basis, transposed=True
+            )
+        return t.project(rotational - sheared)
+
     def flux_curl_divergence(self, eastward_flux, northward_flux):
         return self.vordiv_from_wind(eastward_flux, northward_flux)

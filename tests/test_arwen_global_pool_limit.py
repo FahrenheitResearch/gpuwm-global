@@ -27,6 +27,7 @@ GIB = 2 ** 30
 MIB = 2 ** 20
 T383_DAY = str(_shipped_configs() / "arwen_global_gdas_t383_native_sl_si_24h.toml")
 T255_DAY = str(_shipped_configs() / "arwen_global_gdas_t255_native_sl_si_24h.toml")
+T255_EULERIAN_DAY = str(_shipped_configs() / "arwen_global_gdas_t255_native_imex_24h.toml")
 
 
 @pytest.fixture(autouse=True)
@@ -328,7 +329,9 @@ def _estimate(config, **changes):
 
 
 def test_a_plan_the_model_priced_is_held_to_the_pool_part_of_its_price():
-    cfg, estimate = _estimate(T255_DAY)
+    # The Eulerian T255 day: no run of its plan is on record, so the model
+    # prices it (the semi-Lagrangian T255 day is priced at its held runs).
+    cfg, estimate = _estimate(T255_EULERIAN_DAY)
     plan = sizing.plan_run_memory(cfg, 15 * GIB, estimate)
     assert plan.fits
     assert sizing.measured_card_row(estimate, plan.bands, plan.spill_slices) is None

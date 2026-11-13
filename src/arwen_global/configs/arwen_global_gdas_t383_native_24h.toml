@@ -59,11 +59,19 @@ surface_water_kg_m2 = 500.0
 # interval.  dx_m feeds sfclay its grid-spacing-dependent branches and the
 # Grell-Freitas cumulus scheme its scale-aware closure; cumulus = "gf" is
 # the adapter default (shallow arm on), so it is not repeated below.
-# radiation_column_chunk is the tree's own sizing for this truncation.
+# radiation_column_chunk is 5,000 columns, as on the T383 semi-Lagrangian
+# config.  MEASURED 2026-11-12 on an RTX 5070 Ti 16 GB with nothing else on
+# it: at the 12,500 this config carried before, the door took two latitude
+# bands with every slice parked and 3 h ran 2.535 s a step in 12,984 MiB;
+# at 5,000 it took one band with nothing parked and 3 h ran 1.831 s a step
+# in 14,254 MiB (the day 1.907 s and 14,316 MiB), every checkpoint array
+# byte-identical at both chunks there and over the day on an RTX 5090.
+# The chunk is in the config hash, so a checkpoint written under 12,500
+# restarts under a config that says 12500.
 [physics]
 mode = "arwen-native"
 native_adapter_name = "arwen-cuda-column-suite-v1"
-native_adapter_options = { acknowledgement = "device-pending-arwen-native-physics-v1", start_time_utc = "2026-08-30T18:00:00Z", radiation = "rrtmgp", radiation_interval_s = 2100, radiation_column_chunk = 12500, radiation_validation_mode = "fused", surface_layer = "sfclay", sfclay_option = 1, land_surface = "noah", land_surface_interval_s = 300.0, pbl = "ysu", ysu_topdown_pblmix = 1, microphysics = "morrison", morr_rimed_ice = 1, dx_m = 34700 }
+native_adapter_options = { acknowledgement = "device-pending-arwen-native-physics-v1", start_time_utc = "2026-08-30T18:00:00Z", radiation = "rrtmgp", radiation_interval_s = 2100, radiation_column_chunk = 5000, radiation_validation_mode = "fused", surface_layer = "sfclay", sfclay_option = 1, land_surface = "noah", land_surface_interval_s = 300.0, pbl = "ysu", ysu_topdown_pblmix = 1, microphysics = "morrison", morr_rimed_ice = 1, dx_m = 34700 }
 
 # No order and no e-folding time: under the semi-Lagrangian core an omitted
 # drain reads the core's own, order 16 at 720 s at the truncation

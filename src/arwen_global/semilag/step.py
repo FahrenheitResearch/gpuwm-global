@@ -12,6 +12,17 @@ tendency.  This is the trapezoidal two-time-level scheme with the
 arrival-side nonlinear term extrapolated to ``t^{n+1}`` (SETTLS-type) and
 off-centred by ``alpha``.
 
+``[semilag] extrapolation = "settls_departure"`` is Hortal's form, the
+mirror image of the one above: the extrapolated residual rides the
+departure-side bundle and the arrival point adds the time-n one::
+
+    X^{n+1}_A - alpha dt (L X)^{n+1}_A = Q'_X(D) + (dt/2) N^n_A
+    Q'_X = X^n + dt [ (1 - alpha) (L X)^n + (1/2) (2 N^n - N^{n-1}) ]
+
+and the trajectory interpolates ``2 V^n - V^{n-1}`` at the departure point
+while reading ``V^n`` at the arrival point.  No new state and no new
+gather; the shipped form keeps its arithmetic operation for operation.
+
 For theta the material tendency ``A`` is zero (adiabatic flow), so
 ``N = -L theta`` and the WHOLE variable is gathered: a parcel's reference
 change is then whatever the vertical stencil reads between its departure
@@ -255,6 +266,22 @@ def _tracer_increment(atmosphere, pre) -> dict:
     }
 
 
+def extrapolated_level_rate(level_rate, previous_rate, *, xp, limited: bool):
+    """``2 s^n - s^{n-1}``, the vertical rate extrapolated to t^{n+1}.
+
+    With ``limited`` ([semilag] level_rate_limiter) a point whose rate
+    changed sign between the two levels keeps ``s^n`` instead: there the
+    linear extrapolation overshoots a reversing vertical motion, which is
+    the term ECMWF limits against stratospheric noise.  Unlimited, the
+    expression is the shipped one, operation for operation.
+    """
+    extrapolated = 2.0 * level_rate - previous_rate
+    if not limited:
+        return extrapolated
+    return xp.where(level_rate * previous_rate < 0.0, level_rate,
+                    extrapolated)
+
+
 def semilag_step(model, atmosphere: MoistHybridState, dt_s: float, mark=None):
     """One two-time-level semi-Lagrangian semi-implicit step of the
     adiabatic core, tracers included.
@@ -291,6 +318,11 @@ def _semilag_step_resident(model, atmosphere: MoistHybridState, dt_s: float,
     reference = reference_profile(model)
     previous = model.trajectory_state()
     startup = previous is None
+    # Hortal's departure-side form (options.EXTRAPOLATIONS), live only
+    # once a previous time level exists; the start-up step is the same
+    # non-extrapolated step under every form.
+    departure_form = bool(
+        options.extrapolation == "settls_departure" and not startup)
     prof = profiler_of(model)
     # How much of the first physics half's increment is moved from the
     # departure point to the arrival point (semilag.options): zero under
@@ -314,7 +346,10 @@ def _semilag_step_resident(model, atmosphere: MoistHybridState, dt_s: float,
         # One set of sources feeds both the grid view and the mass-flux
         # pass, because the band loop keys its memo and its per-band
         # syntheses off the sources object rather than off a grid dict.
-        sources = model.grid_sources(atmosphere)
+        # Under [transforms] skip_unread_planes the view carries only what
+        # this step reads: no vorticity or divergence synthesis.
+        sources = model.grid_sources(
+            atmosphere, only=model.semilag_grid_keys())
         g, _stack, _names = model.grid_band(sources, model.whole_rows)
         _spec, _div_mass, ps_t, omega_half = model._mass_flux_and_omega(sources)
 
@@ -333,23 +368,35 @@ def _semilag_step_resident(model, atmosphere: MoistHybridState, dt_s: float,
             del ex_u, ex_v
             extrapolated = CartesianWind(
                 vx=ex_x, vy=ex_y, vz=ex_z,
-                level_rate=2.0 * level_rate - previous.s_prev,
+                level_rate=extrapolated_level_rate(
+                    level_rate, previous.s_prev, xp=xp,
+                    limited=bool(options.level_rate_limiter)),
             )
+        # Which wind the search interpolates at the departure point and
+        # which it reads at the arrival point (options.EXTRAPOLATIONS):
+        # the shipped "settls" reads the extrapolated one at the arrival,
+        # "settls_departure" swaps the two roles and nothing else.
+        if departure_form and extrapolated is not wind:
+            departure_wind, arrival_wind = extrapolated, wind
+        else:
+            departure_wind, arrival_wind = wind, extrapolated
+        del extrapolated
         # The gate reads the fold of the map the search below solves, so it
-        # reads the same two winds: the extrapolated one at the arrival
-        # point and the current one at the departure point.
+        # reads the same two winds: the arrival-side one on the arrival
+        # side and the departure-side one on the departure side.
         deformation = lipschitz(
-            wind, tables, dt,
-            extrapolated=None if extrapolated is wind else extrapolated,
+            departure_wind, tables, dt,
+            extrapolated=(None if arrival_wind is departure_wind
+                          else arrival_wind),
         )
         refuse_trajectory_fold(deformation, model.minimum_fold_determinant)
         stencil, trajectory = converged_departure_points(
-            wind, tables, dt,
+            departure_wind, tables, dt,
             iterations=int(options.trajectory_iterations),
             limit_cells=options.trajectory_convergence_cells,
-            extrapolated=extrapolated,
+            extrapolated=arrival_wind,
         )
-        del extrapolated
+        del departure_wind, arrival_wind
         surface = _surface_stencil(stencil, tables)
 
     with prof.section("tendencies"):
@@ -367,13 +414,29 @@ def _semilag_step_resident(model, atmosphere: MoistHybridState, dt_s: float,
         n_lnps = tendencies["a_lnps"] - tendencies["l_lnps"]
         half = scalar(0.5 * dt)
         lead = scalar((1.0 - alpha) * dt)
-        bundle_u = g["u"] + lead * tendencies["l_u"] + half * n_u
-        bundle_v = g["v"] + lead * tendencies["l_v"] + half * n_v
-        bundle_theta = g["theta"] + lead * tendencies["l_theta"] + half * n_theta
-        # About ln(p_ref): arwen_global.lnps_reference says why.
-        bundle_lnps = (
-            g["logps_anomaly"] + lead * tendencies["l_lnps"] + half * n_lnps
-        )
+        if departure_form:
+            # Hortal's SETTLS: the residual extrapolated to t^{n+1} rides
+            # the departure-side bundle, and the arrival point adds the
+            # time-n residual (the assemble section below).
+            bundle_u = g["u"] + lead * tendencies["l_u"] + half * (
+                2.0 * n_u - previous.n_u)
+            bundle_v = g["v"] + lead * tendencies["l_v"] + half * (
+                2.0 * n_v - previous.n_v)
+            bundle_theta = g["theta"] + lead * tendencies["l_theta"] + half * (
+                2.0 * n_theta - previous.n_theta)
+            bundle_lnps = (
+                g["logps_anomaly"] + lead * tendencies["l_lnps"]
+                + half * (2.0 * n_lnps - previous.n_lnps)
+            )
+        else:
+            bundle_u = g["u"] + lead * tendencies["l_u"] + half * n_u
+            bundle_v = g["v"] + lead * tendencies["l_v"] + half * n_v
+            bundle_theta = (
+                g["theta"] + lead * tendencies["l_theta"] + half * n_theta)
+            # About ln(p_ref): arwen_global.lnps_reference says why.
+            bundle_lnps = (
+                g["logps_anomaly"] + lead * tendencies["l_lnps"] + half * n_lnps
+            )
         del tendencies
         bundle_x, bundle_y, bundle_z = cartesian_wind(
             bundle_u, bundle_v, tables
@@ -515,7 +578,7 @@ def _semilag_step_resident(model, atmosphere: MoistHybridState, dt_s: float,
         stencil = None
 
     with prof.section("assemble"):
-        if startup or options.extrapolation == "none":
+        if startup or options.extrapolation == "none" or departure_form:
             arrival_u = arrival_u + half * n_u
             arrival_v = arrival_v + half * n_v
             departure_theta = departure_theta + half * n_theta
@@ -914,8 +977,10 @@ def _band_pass(model, atmosphere, sources, mass_grid, window, *, tables,
                 - _previous(previous_wind, "v_prev", ext, xp))
         ex_x, ex_y, ex_z = cartesian_wind(ex_u, ex_v, tables, rows=ext)
         del ex_u, ex_v
-        ex_rate = (2.0 * xp.ascontiguousarray(level_rate[:, ext_local])
-                   - _previous(previous_wind, "s_prev", ext, xp))
+        ex_rate = extrapolated_level_rate(
+            xp.ascontiguousarray(level_rate[:, ext_local]),
+            _previous(previous_wind, "s_prev", ext, xp), xp=xp,
+            limited=bool(options.level_rate_limiter))
         extrapolated_ext = CartesianWind(
             vx=ex_x, vy=ex_y, vz=ex_z, level_rate=ex_rate)
         del ex_x, ex_y, ex_z, ex_rate
@@ -1151,6 +1216,16 @@ def _semilag_step_banded(model, atmosphere: MoistHybridState, dt_s: float,
     wide, up to the whole grid, which cannot escape.
     """
     options = model.semilag
+    if options.extrapolation == "settls_departure":
+        # Refused at every step, the start-up step included, so a run that
+        # cannot take the form stops at step 1 and not at step 2.
+        raise ValueError(
+            "semilag.extrapolation = 'settls_departure' runs on the resident "
+            "step only: the banded step reads the extrapolated wind on a "
+            "band's own rows, and the departure-side form interpolates it "
+            "across the band's halo, which this step does not build.  Run "
+            "one band on one card, or extrapolation = 'settls'."
+        )
     transform = model.transform
     backend = transform.backend
     xp = backend.xp
@@ -1190,7 +1265,8 @@ def _semilag_step_banded(model, atmosphere: MoistHybridState, dt_s: float,
     half = scalar(0.5 * dt)
 
     with prof.section("grid_state"):
-        sources = model.grid_sources(atmosphere)
+        sources = model.grid_sources(
+            atmosphere, only=model.semilag_grid_keys())
         _spectral_mass, mass_grid = model._mass_flux_sources(sources)
 
     with prof.section("tendencies"):

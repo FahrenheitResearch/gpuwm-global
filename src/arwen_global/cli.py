@@ -173,6 +173,14 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
              "config hash it carries has to be this config's",
     )
     parser.add_argument(
+        "--branch-from-other-config", action="store_true",
+        dest="branch_from_other_config",
+        help="with --restart: admit a checkpoint written under another "
+             "config hash, an exact twin that differs from its parent run "
+             "by a deliberate config change; the receipt records both "
+             "hashes under branch (default off: such a restart is refused)",
+    )
+    parser.add_argument(
         "--overwrite", action="store_true",
         help="replace this run's own files in --outdir; without it an "
              "existing output is refused rather than half-rewritten",
@@ -184,6 +192,23 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
              "segment: the next segment restarts from the checkpoint this "
              "one ends on); the config identity is unchanged and the "
              "receipt records the segment end",
+    )
+    parser.add_argument(
+        "--tapes", type=Path, default=None, metavar="DIR",
+        help="also write the wrfout tape of every checkpoint this run writes "
+             "into DIR, from the run's own state and beside the forecast: "
+             "the same file `export` writes from that checkpoint, without "
+             "a second process; a tape that fails is reported and left to "
+             "`export`, and a run whose state is parked in host memory or "
+             "spread over cards writes none; outside the config identity",
+    )
+    parser.add_argument(
+        "--tape-nlat", type=int, default=360,
+        help="latitude points of the --tapes grid (default 360, as export's --nlat)",
+    )
+    parser.add_argument(
+        "--tape-nlon", type=int, default=720,
+        help="longitude points of the --tapes grid (default 720, as export's --nlon)",
     )
     parser.add_argument(
         "--profile-steps", type=int, default=0,
@@ -204,6 +229,21 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
              "surface-series`): the SST every step, the sea ice at each "
              "record, the greenness daily; overrides [surface_update] series. "
              "Without one the surface holds its cold-start values")
+    parser.add_argument(
+        "--forcing", default=None, metavar="RECORD[:OPTIONS]",
+        help="pull the run toward this stored record of large scales before "
+             "every step, x <- x + a L (x_rec - x) with a = 1 - exp(-dt/tau), "
+             "and write the pull per field and level to forcing_ledger.json "
+             "(options key=value;...: tau_h (6; inf observes without pulling), "
+             "full_degree (42), zero_degree (43), fields (vorticity,divergence,"
+             "theta), start_h, end_h, offset_h, level_weights, window_h); off "
+             "by default, outside the config identity, recorded in the receipt "
+             "and in the checkpoints' forcing_history")
+    parser.add_argument(
+        "--write-forcing-record", default=None, metavar="OUT.npz[:OPTIONS]",
+        help="write a record of this run's own low degrees for --forcing "
+             "(options: degree (42), every_h (the output interval), fields "
+             "(all five), dtype (complex128 or complex64)); off by default")
     _add_memory_lever_arguments(parser)
 
 
@@ -1851,6 +1891,37 @@ def read_run_sidecar(outdir):
     return copy if copy.is_file() else None
 
 
+def _tape_request(args: argparse.Namespace):
+    """``--tapes DIR --tape-nlat N --tape-nlon M`` as the runner takes it,
+    or None (a door that builds its own arguments has no such flag)."""
+    outdir = getattr(args, "tapes", None)
+    if outdir is None:
+        return None
+    from .runner import TapeRequest
+
+    nlat, nlon = int(args.tape_nlat), int(args.tape_nlon)
+    if nlat < 2 or nlon < 2:
+        raise ValueError("--tape-nlat and --tape-nlon must be at least 2")
+    return TapeRequest(outdir=Path(outdir), nlat=nlat, nlon=nlon)
+
+
+def _forcing_arguments(args) -> dict[str, object]:
+    """``run``'s keyword arguments for --forcing and --write-forcing-record
+    (empty when neither is named, so the call is the shipped one)."""
+    out: dict[str, object] = {}
+    spec = getattr(args, "forcing", None)
+    if spec:
+        from .forcing import parse_forcing_spec
+
+        out["forcing"] = parse_forcing_spec(spec)
+    spec = getattr(args, "write_forcing_record", None)
+    if spec:
+        from .forcing import parse_record_spec
+
+        out["forcing_record"] = parse_record_spec(spec)
+    return out
+
+
 def _run(args: argparse.Namespace) -> int:
     cfg, plan = _size_the_run(
         args, _with_surface_series(args, load_config(args.config)), _door_name(args))
@@ -1900,6 +1971,9 @@ def _run(args: argparse.Namespace) -> int:
             profile_steps=int(getattr(args, "profile_steps", 0) or 0),
             profile_warmup=int(getattr(args, "profile_warmup", 2)),
             door_plan=plan,
+            tapes=_tape_request(args),
+            **_forcing_arguments(args),
+            branch_config=bool(getattr(args, "branch_from_other_config", False)),
         )
     except BaseException:
         # The failure receipt carries the peak up to the death; an

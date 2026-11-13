@@ -162,6 +162,27 @@ prints the catalogue for a tape and says which entries the tape can actually
 fill; `--products all` draws every renderable one, which over nine tapes is
 a large number of files.
 
+## Tapes written by the run
+
+The run can write the tapes of step 4 itself, beside the forecast, so
+nothing waits for the run to end and a second process to take the card:
+
+```bash
+gpuwm-global run arwen_global_t255_quickstart \
+  --outdir out/arwen-global-24h --tapes out/arwen-global-tapes
+```
+
+Each tape is the file `export` writes from that checkpoint, byte for byte,
+and appears under its final name only when whole, so a tape in the folder
+is never a partial one while the run goes on. A tape that fails is printed
+and listed in the run receipt's `tapes` block, the forecast goes on, and
+`export` writes that one from its checkpoint. A run whose state is parked
+in host memory or spread over several cards writes none and says so.
+`--tape-nlat`/`--tape-nlon` are `export`'s `--nlat`/`--nlon`. On a shipped
+T255 day on an RTX 5090 the run with tapes took 4 to 28 s longer than the
+run without, where `export` of its nine checkpoints afterwards took 192 s
+(`CHANGELOG.md` has the measurement).
+
 ## Moving to a current cycle
 
 Exactly two spellings travel together, and they are the same instant:

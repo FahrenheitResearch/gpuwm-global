@@ -133,6 +133,19 @@ class PersistentNativeState:
             ("rad_rthratenlw", 0.0), ("rad_rthratensw", 0.0),
         ):
             self._array(name, v, fill)
+        # The references the shortwave update between radiation calls
+        # reads (physics.radiation_between): none under the default
+        # "hold", so a held run's namespace and checkpoint keep their
+        # arrays; zero until the first radiation call writes them, which
+        # is WRF's start for its fit planes (Bx..gg zeroed at step one).
+        between = getattr(self.options, "radiation_between", "hold")
+        if between != "hold":
+            from .radiation_between import surface_arrays, volume_arrays
+
+            for name in surface_arrays(between):
+                self._array(name, s, 0.0)
+            for name in volume_arrays(between):
+                self._array(name, v, 0.0)
         if self.options.cumulus_enabled:
             for name in (*CUMULUS_DYNAMICS_LANES, *CUMULUS_EXIT_ARRAYS):
                 self._array(name, v, 0.0)

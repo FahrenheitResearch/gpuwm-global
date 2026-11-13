@@ -228,6 +228,32 @@ not on the dynamical bundle, which is a state plus a tendency whose physical
 bounds are not its neighbours' values; `[semilag] quasi_monotone_dynamics`
 reaches the other arm.
 
+Where the time extrapolation is read. The shipped `[semilag] extrapolation =
+"settls"` reads the extrapolated wind `2 V(n) - V(n-1)` and the extrapolated
+nonlinear residual at the ARRIVAL point and interpolates the time-n ones at
+the departure point, which is the mirror image of Hortal's SETTLS (QJRMS 128,
+2002). `extrapolation = "settls_departure"` is Hortal's form: the two winds
+swap roles in the departure-point search and the extrapolated residual rides
+the gathered bundle, with no new state and no new gather, so a restart stays
+bit-exact. `[semilag] level_rate_limiter = true` keeps the time-n vertical
+rate wherever it changed sign between the two levels, the limit ECMWF puts
+on the vertical SETTLS term. Neither is a default, both give the run its own
+config identity, and the departure form runs on the one-band resident step
+only (the banded step refuses it by name). The CPU gates are in
+`tests/test_arwen_global_semilag_settls_departure.py`. Both keys are
+experimental. With both set at 600 s, four 48 h T255 forecasts
+(`arwen_global_gdas_t255_native_sl_si_24h_dt600` from the GDAS 2026-01-15,
+04-15, 07-15 and 10-15 00Z analyses, RTX 5090), scored against the
+verifying analyses by `python -m arwen_global.upper_air_scorecard`, had
+global four-case means at 48 h no worse than the shipped form's: 500 hPa
+height RMSE 17.12 m against 17.40, 850 hPa temperature 1.576 K against
+1.582, 250 hPa vector wind 7.29 m/s against 7.35. At 24 h the 850 hPa
+temperature RMSE was 1.2252 K against 1.2236, higher in all four cases,
+and at 48 h the tropical 250 hPa wind was 6.662 m/s against 6.635. The
+largest 10 to 100 hPa top-decile share of kinetic energy
+(`[insitu] stratospheric_noise_limit`) was lower in all four cases, by 7
+to 29 percent. The departure form without the limiter was not scored.
+
 The gates, and what each refuses. The advective CFL becomes a MEASUREMENT on
 this path and the fold of the trajectory map becomes the refusal. The search
 solves `r_D = r_A - (dt/2) [V_ex(r_A) + V(r_D)]`, so the departure point's

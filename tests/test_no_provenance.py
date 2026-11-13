@@ -175,7 +175,7 @@ def shipped_scope() -> list[Path]:
     reads the rest of the source, and a glob naming one extension is not a
     scope.
 
-    `src/**/*.toml` is the fifty-five shipped experiments.  They travel as
+    `src/**/*.toml` is the fifty-seven shipped experiments.  They travel as
     package data and carry comments a reader of `gpuwm-global configs`
     opens, and they were outside every glob in this file until the tally
     below was measured both ways and read four lines higher over the tree
@@ -902,6 +902,11 @@ def test_no_published_link_names_a_repository_a_reader_cannot_open() -> None:
         # where Arm published the logf/expf/exp2f/powf cores, which MIT
         # requires this distribution to identify and attribute.
         "ARM-software/optimized-routines",
+        # docs/arwen-global-scm-cases.md, "The cases and where they come
+        # from": the DEPHY-SCM community repository of published
+        # single-column cases, public, whose case files the bench's `fetch`
+        # downloads at a pinned commit; the page has to say where they are.
+        "GdR-DEPHY/DEPHY-SCM",
     }
     link = re.compile(r"github[.]com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
     hits = []
@@ -961,7 +966,7 @@ def test_both_scopes_actually_resolve_to_files() -> None:
                    if path.suffix == ".toml" and "src" in path.parts]
     assert len(experiments) >= 50, (
         f"the shipped scope resolved to {len(experiments)} experiment files "
-        "under src/; the package ships fifty-five")
+        "under src/; the package ships fifty-seven")
     # THE ARCHIVE IS OPENED, and this is the assertion that says so.  A
     # scope that lists an npz and a reader that hands back nothing report
     # exactly what a clean table reports, which is the state this widening

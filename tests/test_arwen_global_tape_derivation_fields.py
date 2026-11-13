@@ -394,9 +394,9 @@ def test_every_tape_carries_the_eight_fields_beside_everything_it_carried(smoke)
     assert len(smoke.tapes) == len(smoke.checkpoints)
     for tape in smoke.tapes:
         with Dataset(tape) as ds:
-            # Nothing a 0.1.4 tape carried is gone, and the eight are all
-            # that is new.
-            assert set(ds.variables) == TAPE_014 | set(EIGHT)
+            # Nothing a 0.1.4 tape carried is gone, and the eight and SST
+            # are all that is new.
+            assert set(ds.variables) == TAPE_014 | set(EIGHT) | {"SST"}
             for name, units, _text in we.DERIVATION_FIELDS:
                 variable = ds.variables[name]
                 assert variable.dimensions == ("Time", *expected[name]), name

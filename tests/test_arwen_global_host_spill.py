@@ -251,8 +251,8 @@ def test_a_bare_run_parks_the_tier_exactly_where_the_card_needs_it():
     slices together, priced with the measured fragmentation of the plan's
     allocation pattern) or it is not reached at all.  The rows below are
     the design's own capacity table read through that plan on each card:
-    T383 fits a 32 GiB card and parks nothing, does not fit a 16 GiB one
-    and parks all three slices; T533 fits a 32 GiB card at more than one
+    T383 parks nothing on a 32 GiB card and, at the 5,000-column radiation
+    chunk it ships, nothing on an empty 16 GiB one either; T533 fits a 32 GiB card at more than one
     band with nothing parked, and on a 16 GiB card parks all three
     slices.  MEASURED beside it: T383 at eight bands runs on the 16 GB
     card with the tier on and dies with ``OutOfMemoryError`` with it off
@@ -286,8 +286,12 @@ def test_a_bare_run_parks_the_tier_exactly_where_the_card_needs_it():
     # is judged by the RULE below on both cards -- which is the thing a bare
     # run relies on anyway.
     for name, expected in (
+        # At the 5,000-column chunk the T383 day is priced at its held
+        # one-band run (14,608 MiB) and fits the empty 16 GB card at one
+        # band with nothing parked; at its former 12,500 it parked all three
+        # slices at two bands there.
         ("arwen_global_gdas_t383_native_24h.toml",
-         {15880: (True, SPILL_SLICES), 32146: (None, ())}),
+         {15880: (False, ()), 32146: (None, ())}),
         ("arwen_global_gdas_t533_native_24h.toml", {}),
     ):
         config = str(_shipped_configs() / name)

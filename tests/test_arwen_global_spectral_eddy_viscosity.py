@@ -45,10 +45,12 @@ T = 31
 #: it was before the closure was written.  Re-pinned 2026-10-05 for the
 #: native physics defaults that moved (dated greenhouse gases, the
 #: stratospheric floor's reach and then its retirement from the default).
+#: The T383 config re-pinned 2026-11-12 for its radiation chunk, 12,500 to
+#: 5,000 columns (d00cc42c95d1e452 before).
 PINNED_HASHES = {
     "configs/verify/arwen_global_gdas_t255_native_24h.toml": "8725961055eb6147",
     "configs/verify/arwen_global_gdas_t255_native_imex_24h.toml": "dac0455626f723ed",
-    "configs/verify/arwen_global_gdas_t383_native_24h.toml": "d00cc42c95d1e452",
+    "configs/verify/arwen_global_gdas_t383_native_24h.toml": "6f32b3255085ce4e",
 }
 
 

@@ -82,8 +82,8 @@ gpuwm-global go arwen_global_gdas_t255_native_sl_si_24h --outdir out/day
   ships selectable, not default.
 - The LETKF analysis runs on the card by default; the numpy reference path
   stays selectable for comparison.
-- 55 configured experiments in the package, from a four-step numpy smoke to the
-  25 km forecast day.
+- Fifty-five configured experiments in the package, from a four-step numpy smoke
+  to the 25 km forecast day.
 - A command reference generated from the parser, and a boundary measurement
   tool that re-measures the engine dependency at every bump and names the
   symbols it could not check rather than counting them clean.

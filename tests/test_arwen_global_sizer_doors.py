@@ -317,7 +317,11 @@ def test_the_gate_weighs_card_bytes_and_says_so():
     """A live peak that fits the free VRAM but whose card requirement does
     not is refused.  This is the 2026-09-06 defect in one assertion."""
 
-    cfg = _native_cfg(truncation=255, nlat=None, nlon=None, host_spill="off")
+    # The Eulerian core: the semi-Lagrangian T255 day at one band is priced
+    # at its held runs (sizing.COMPLETED_PLAN_PEAKS), so the model's figure
+    # is only the plan's figure where no run of the plan is on record.
+    cfg = _native_cfg(truncation=255, nlat=None, nlon=None, host_spill="off",
+                      integrator="imex_ssp3")
     live = sizing.estimate_global_memory(cfg).device_peak_bytes
     card = sizing.card_required_bytes(live)
     assert card > live

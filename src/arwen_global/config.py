@@ -15,6 +15,10 @@ from arwen_global.spectral.legendre import DEFAULT_BAND
 from .device_memory import DEVICE_ALLOCATORS
 
 from .constants import (
+    CHECKPOINT_COMPRESSIONS,
+    DEFAULT_CHECKPOINT_COMPRESSION,
+    DEFAULT_SNAPSHOT_BUFFER,
+    SNAPSHOT_BUFFERS,
     DEFAULT_EULERIAN_STEP_RULE_FRACTION,
     EARTH_RADIUS_M,
     RESEARCH_ACKNOWLEDGEMENT,
@@ -432,6 +436,14 @@ class ArwenGlobalConfig:
     # checkpoint lineage), which is exactly the bit-identity the ledger
     # proves about itself.
     insitu: InsituOptions = InsituOptions()
+    # [output] checkpoint_compression and snapshot_buffer: how a run's
+    # checkpoints are copied off the card and laid into their .npz.  Neither
+    # moves a stored byte of any array, a per-array hash or self_sha256
+    # (checkpoint.write_checkpoint_arrays, checkpoint.PinnedSnapshot), so
+    # both are outside the identity at EVERY value: a stored checkpoint
+    # resumes a deflated lineage and the other way round.
+    checkpoint_compression: str = DEFAULT_CHECKPOINT_COMPRESSION
+    snapshot_buffer: str = DEFAULT_SNAPSHOT_BUFFER
     # [surface_update] series: a dated SST / sea-ice series on this grid
     # (arwen_global.surface_series, ``gpuwm-global surface-series``).  Set,
     # the SST follows it every step, the sea ice at each record and the
@@ -618,6 +630,28 @@ class ArwenGlobalConfig:
     closure_cusp_decay: float = 3.03
     closure_eddy_prandtl: float = 0.6
     closure_tail_degrees: int = 5
+    # [transforms] the transform diet: two switches that cut spherical
+    # transform work the semi-Lagrangian step pays for and does not need.
+    # Each is off by default, and each joins the identity only when it is
+    # on, so every config hash written before the table existed (and every
+    # checkpoint and receipt bound to one) is byte-identical.  A third
+    # switch the diet measured, analysing theta and vapour by field rather
+    # than six planes a call, moved bits and is not here.
+    #
+    # skip_unread_planes: the semi-Lagrangian step asks the grid view only
+    # for what it reads, so the vorticity and divergence planes nobody in
+    # that step reads are not synthesized (nlev x 2 planes a step).  The
+    # rows it keeps are the same rows of a narrower call; carried when on
+    # anyway, on the spectral_chunk precedent, because a stack width is
+    # the GEMM's M and the bit-exact set is measured per library.
+    #
+    # divergence_only_mass_flux: the mass-flux analysis contracts only the
+    # half of the vector analysis whose divergence it keeps (u against
+    # the basis, v against its derivative), where it contracted both
+    # components against both tables and threw the vorticity away.  Same
+    # M halving argument as above; carried when on.
+    skip_unread_planes: bool = False
+    divergence_only_mass_flux: bool = False
 
     @property
     def config_identity(self) -> dict[str, object]:
@@ -640,6 +674,8 @@ class ArwenGlobalConfig:
             )
         del payload["vertical_coordinate"]
         del payload["insitu"]
+        del payload["checkpoint_compression"]
+        del payload["snapshot_buffer"]
         del payload["surface_series"]
         if payload["surface_series_sha256"] is None:
             del payload["surface_series_sha256"]
@@ -734,6 +770,10 @@ class ArwenGlobalConfig:
             del payload["cards"]
         if payload["spectral_chunk"] == DEFAULT_SPECTRAL_CHUNK:
             del payload["spectral_chunk"]
+        # The transform diet: each switch is carried only when it is on.
+        for key in ("skip_unread_planes", "divergence_only_mass_flux"):
+            if not payload[key]:
+                del payload[key]
         if payload["legendre_band"] == DEFAULT_BAND:
             del payload["legendre_band"]
         if payload["analysis_fill_grib"] is None:
@@ -817,6 +857,21 @@ def _multiple(total: float, step: float, name: str) -> None:
         raise ValueError(f"{name} must be a whole multiple of dt_s")
 
 
+#: The [transforms] keys, each off by default (the transform diet).
+TRANSFORM_DIET_KEYS = ("skip_unread_planes", "divergence_only_mass_flux")
+
+
+def _transform_diet_options(table: dict) -> dict[str, bool]:
+    """``[transforms]``: the two transform-diet switches, each a boolean
+    that is off unless the config names it (ArwenGlobalConfig says what
+    each one changes and why each joins the identity when it is on)."""
+    _unknown(table, set(TRANSFORM_DIET_KEYS), "transforms")
+    return {
+        key: _boolean(table.get(key, False), f"transforms.{key}")
+        for key in TRANSFORM_DIET_KEYS
+    }
+
+
 def load_config(path: str | Path) -> ArwenGlobalConfig:
     source = Path(path)
     with source.open("rb") as stream:
@@ -825,7 +880,7 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         "arwen_global", "grid", "time", "vertical", "initial", "physics",
         "reference_physics", "sponge", "diffusion", "semi_implicit",
         "repair", "gates", "insitu", "statics", "semilag", "memory",
-        "surface_update",
+        "surface_update", "output", "transforms",
     }
     unknown_tables = sorted(set(raw) - allowed_tables)
     if unknown_tables:
@@ -1395,6 +1450,25 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         raise ValueError("all gates must be positive")
 
     insitu = insitu_options_from_table(_table(raw, "insitu"))
+    output_table = _table(raw, "output")
+    _unknown(output_table, {"checkpoint_compression", "snapshot_buffer"},
+             "output")
+    checkpoint_compression = str(output_table.get(
+        "checkpoint_compression", DEFAULT_CHECKPOINT_COMPRESSION))
+    if checkpoint_compression not in CHECKPOINT_COMPRESSIONS:
+        raise ValueError(
+            f"output.checkpoint_compression must be one of "
+            f"{list(CHECKPOINT_COMPRESSIONS)}, got "
+            f"{output_table.get('checkpoint_compression')!r}")
+    snapshot_buffer = str(output_table.get(
+        "snapshot_buffer", DEFAULT_SNAPSHOT_BUFFER))
+    if snapshot_buffer not in SNAPSHOT_BUFFERS:
+        raise ValueError(
+            f"output.snapshot_buffer must be one of {list(SNAPSHOT_BUFFERS)}, "
+            f"got {output_table.get('snapshot_buffer')!r}")
+    # A cadence in seconds that is not a whole number of steps is refused
+    # here, at load, rather than at the ledger's first step.
+    insitu.resolved_for_step(dt)
     surface_table = _table(raw, "surface_update")
     _unknown(surface_table, {"series"}, "surface_update")
     surface_series = surface_table.get("series")
@@ -1528,6 +1602,7 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
             "choose the count, one is the resident run, and a negative "
             "count is not a streaming granularity"
         )
+    transforms = _transform_diet_options(_table(raw, "transforms"))
 
     return ArwenGlobalConfig(
         name=name, acknowledgement=acknowledgement, backend=backend,
@@ -1577,6 +1652,8 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         analysis_fill_grib=analysis_fill_grib,
         analysis_fill_mapping=analysis_fill_mapping,
         insitu=insitu,
+        checkpoint_compression=checkpoint_compression,
+        snapshot_buffer=snapshot_buffer,
         surface_series=surface_series,
         surface_series_sha256=surface_series_sha256,
         statics=statics,
@@ -1601,6 +1678,7 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         closure_cusp_decay=closure_cusp_decay,
         closure_eddy_prandtl=closure_eddy_prandtl,
         closure_tail_degrees=closure_tail_degrees,
+        **transforms,
     )
 
 

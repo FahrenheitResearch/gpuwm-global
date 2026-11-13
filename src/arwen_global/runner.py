@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 import json
 import os
 import struct
@@ -14,6 +15,7 @@ from arwen_global.spectral.transform import SphericalHarmonicTransform
 
 from .checkpoint import (
     TRACKER_KEYS,
+    PinnedSnapshot,
     bundle_arrays,
     checkpoint_metadata,
     normalize_trackers,
@@ -527,6 +529,8 @@ def build_model_and_cold_state(cfg: ArwenGlobalConfig, transform=None, *,
         initial_provenance=initial_provenance,
         spectral_chunk=cfg.spectral_chunk,
         synthesis_memo=cfg.synthesis_memo,
+        skip_unread_planes=cfg.skip_unread_planes,
+        divergence_only_mass_flux=cfg.divergence_only_mass_flux,
         latitude_bands=bands,
         cards=None if session is None else _row_exchange(session),
         card_halo_rows=int(getattr(cfg, "card_halo_rows", 16)),
@@ -1152,10 +1156,20 @@ class _CheckpointWriter:
     at :meth:`close`, never silently.  Why: a checkpoint's zlib and
     SHA-256 passes held the card idle on the model thread (the step
     profiler's ``checkpoint`` section, 2026-09-04).
+
+    ``snapshot`` (``checkpoint.PinnedSnapshot``, ``[output] snapshot_buffer
+    = "pinned"`` on the card) is the one page-locked buffer the copy lands
+    in.  The join at the top of :meth:`submit` is what makes one buffer
+    safe: the previous write has finished reading its views before the
+    next copy overwrites them.  ``[output] checkpoint_compression`` picks
+    stored or deflated members; the arrays and their hashes are the same.
     """
 
-    def __init__(self, cfg, to_numpy, trajectory=None, card_gather=None):
+    def __init__(self, cfg, to_numpy, trajectory=None, card_gather=None,
+                 snapshot=None):
         self.cfg = cfg
+        self.snapshot = snapshot
+        self.compression = str(getattr(cfg, "checkpoint_compression", "deflate"))
         self.to_numpy = to_numpy
         # A callable, read at submit time: the second time level of a
         # two-time-level integrator is replaced every step, and the
@@ -1168,6 +1182,7 @@ class _CheckpointWriter:
         self.card_gather = card_gather
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._pending = None
+        self.last_arrays = None
 
     def submit(self, path: Path, state, trackers: dict, *, want_metadata: bool = False):
         """Publish ``state`` to ``path`` off the model thread; returns the
@@ -1180,7 +1195,7 @@ class _CheckpointWriter:
         arrays = bundle_arrays(
             state, self.to_numpy,
             None if self.trajectory is None else self.trajectory(),
-            card_gather=self.card_gather,
+            card_gather=self.card_gather, snapshot=self.snapshot,
         )
         cfg = self.cfg
         record = dict(
@@ -1195,8 +1210,12 @@ class _CheckpointWriter:
         )
         metadata = checkpoint_metadata(arrays, **record) if want_metadata else None
         self._pending = self._executor.submit(
-            write_checkpoint_arrays, path, arrays, metadata=metadata, **record,
+            write_checkpoint_arrays, path, arrays, metadata=metadata,
+            compression=self.compression, **record,
         )
+        # The host arrays this checkpoint is written from, for a tape of the
+        # same time (_TapeWriter): read only, by both workers.
+        self.last_arrays = arrays
         return (path, metadata) if want_metadata else path
 
     def join(self) -> None:
@@ -1209,6 +1228,175 @@ class _CheckpointWriter:
             self.join()
         finally:
             self._executor.shutdown(wait=True)
+
+
+@dataclass(frozen=True)
+class TapeRequest:
+    """``run --tapes DIR --tape-nlat N --tape-nlon M``: the wrfout tape of
+    every output time, written by the run itself beside the forecast.
+    Outside the config identity, like ``--until-s``."""
+
+    outdir: Path
+    nlat: int = 360
+    nlon: int = 720
+
+
+def tape_refusal(cfg, model) -> str | None:
+    """Why this run cannot write its own tapes, or None.
+
+    The device half of a tape synthesizes from the state where it lives;
+    a state parked in the pinned host tier, or spread over several cards,
+    is not where that synthesis reads it, so such a run leaves its tapes
+    to ``export`` as before.
+    """
+    if getattr(model, "host_tier", None) is not None:
+        return ("this run parks state in the pinned host tier "
+                f"(slices {list(getattr(model, 'spill_slices', ()))})")
+    exchange = getattr(model.pipeline, "exchange", None)
+    if exchange is not None and int(getattr(exchange, "world", 1)) > 1:
+        return "this run spans more than one card"
+    return None
+
+
+class _TapeWriter:
+    """The run's own wrfout tapes (``run --tapes``), written off the model
+    thread.
+
+    At an output time the model thread synthesizes the six spectral fields
+    a tape needs (``TapeGrid.synthesize``: on the device, copied off it one
+    at a time; the state is only read) and hands them, with the host
+    arrays the checkpoint of that time is written from, to one worker.
+    The worker rebuilds the checkpoint's bundle from those arrays on the
+    host and runs the export's own host half (``TapeGrid.write``): the
+    same function on the same values as ``export`` of that checkpoint, so
+    the same bytes, and nothing of the export's own process (no second
+    model, no cold state, no checkpoint read, no second card context).
+
+    At most one tape is in flight.  A tape that fails is a printed line and
+    a receipt row, never the forecast's failure: its checkpoint is on disk
+    and ``export`` writes it.  The tape is published under a temporary
+    name and renamed (``WrfoutWriter``), so a folder watcher sees only
+    whole files.
+    """
+
+    def __init__(self, cfg, model, transform, request: TapeRequest):
+        import numpy as np
+
+        from .spectral.backend import Backend
+        from .wrfout_export import TapeGrid, _require_tape_writer
+
+        # Refused here, before the first step, rather than at the first
+        # output time: no tape writer, no render kernels, or an undated run
+        # (tape_start asks for the date the export would be given).
+        _require_tape_writer()
+        self.grid = TapeGrid(cfg, model, transform,
+                             nlat=int(request.nlat), nlon=int(request.nlon))
+        self.outdir = Path(request.outdir)
+        self.outdir.mkdir(parents=True, exist_ok=True)
+        self.request = request
+        backend = transform.backend
+        self.host_backend = Backend(
+            "numpy", np, backend.float_dtype, backend.complex_dtype)
+        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._pending = None
+        self.rows: list[dict] = []
+        self.failures: list[dict] = []
+        self.synthesis_seconds = 0.0
+
+    def submit(self, state, arrays, checkpoint) -> None:
+        """Synthesize ``state``'s fields here, and queue its tape."""
+        self.join()
+        started = time.perf_counter()
+        step = int(state.step)
+        try:
+            fields = self.grid.synthesize(state.atmosphere)
+            record = {
+                "time_s": float(state.time_s),
+                "step": step,
+                "physics_state_schema": state.physics_state.schema,
+                # The checkpoint's own record of it (_CheckpointWriter).
+                "physics_metadata": json.loads(json.dumps(
+                    state.physics_state.metadata, sort_keys=True,
+                    allow_nan=False)),
+            }
+        except Exception as exc:  # noqa: BLE001 - a tape never ends the forecast
+            self._failed(step, checkpoint, exc)
+            return
+        synthesis = time.perf_counter() - started
+        self.synthesis_seconds += synthesis
+        self._pending = self._executor.submit(
+            self._write, record, arrays, fields, checkpoint, synthesis)
+
+    def _write(self, record, arrays, fields, checkpoint, synthesis):
+        started = time.perf_counter()
+        step = int(record["step"])
+        try:
+            bundle = state_from_checkpoint(record, arrays, self.host_backend)
+            path, row = self.grid.write(
+                bundle, fields, record["time_s"], self.outdir,
+                overwrite=True, checkpoint=checkpoint)
+        except Exception as exc:  # noqa: BLE001 - a tape never ends the forecast
+            self._failed(step, checkpoint, exc)
+            return
+        wall = time.perf_counter() - started
+        row = {**row, "step": step,
+               "synthesis_s": round(synthesis, 4), "host_s": round(wall, 4)}
+        self.rows.append(row)
+        # The export's receipt, rewritten after every tape so the folder
+        # always describes the tapes it holds.
+        try:
+            write_receipt(self.outdir / _export_receipt_name(),
+                          self.grid.receipt(self.rows))
+        except Exception as exc:  # noqa: BLE001
+            self._failed(step, checkpoint, exc)
+            return
+        print(f"tape={Path(row['tape']).name} step={step} "
+              f"synthesis={synthesis:.2f}s host={wall:.2f}s", flush=True)
+
+    def _failed(self, step, checkpoint, exc) -> None:
+        row = {"step": int(step), "checkpoint": str(checkpoint),
+               "error_type": type(exc).__name__, "error_message": str(exc)}
+        self.failures.append(row)
+        print(f"tape failed step={int(step)}: {type(exc).__name__}: {exc} "
+              f"(its checkpoint {checkpoint} is kept for export)", flush=True)
+
+    def join(self) -> None:
+        pending, self._pending = self._pending, None
+        if pending is not None:
+            pending.result()
+
+    def close(self) -> None:
+        try:
+            self.join()
+        finally:
+            self._executor.shutdown(wait=True)
+
+    def receipt(self) -> dict[str, object]:
+        return {
+            "outdir": str(self.outdir),
+            "nlat": int(self.request.nlat),
+            "nlon": int(self.request.nlon),
+            "written": [row["tape"] for row in self.rows],
+            "synthesis_seconds": round(self.synthesis_seconds, 4),
+            "host_seconds": round(sum(row["host_s"] for row in self.rows), 4),
+            "failures": list(self.failures),
+        }
+
+
+def _export_receipt_name() -> str:
+    from .wrfout_export import EXPORT_RECEIPT_NAME
+
+    return EXPORT_RECEIPT_NAME
+
+
+def _snapshot_for(cfg, backend):
+    """The run's pinned checkpoint buffer, or None (numpy backend, or
+    ``[output] snapshot_buffer = "pageable"``)."""
+    if getattr(backend, "name", "numpy") != "cupy":
+        return None
+    if str(getattr(cfg, "snapshot_buffer", "pageable")) != "pinned":
+        return None
+    return PinnedSnapshot(backend.xp)
 
 
 def _surface_update_for(cfg, model, state):
@@ -1298,9 +1486,21 @@ def hold_pool_to_plan(tracker, door_plan, allocator=None
     return tracker.hold_pool_to(getattr(door_plan, "pool_limit_bytes", None))
 
 
-def _sizing_model_peak_bytes(cfg: ArwenGlobalConfig) -> int | None:
+#: ``_run_tracked``'s default for a prediction its caller did not make
+#: (None is a real answer: no prediction could be made).
+_NOT_PREDICTED = object()
+
+
+def _sizing_model_peak_bytes(cfg: ArwenGlobalConfig,
+                             free_bytes: int | None = None) -> int | None:
     """The pre-run prediction, for the receipt's device_memory row and the
     slab's first reservation.
+
+    ``free_bytes`` is a reading of the card the caller already holds (the
+    door's, taken before anything was allocated); without one the card is
+    probed here.  Each probe is a short-lived subprocess, MEASURED 0.4 to
+    0.9 s beside an RTX 5070 Ti (2026-11-12), and a run used to take three: the door's,
+    this one at run start and this one again for the receipt.
 
     Priced at the PLAN the run will take, band count and pinned tier
     together: a prediction made for a resident run would size the slab's
@@ -1324,7 +1524,9 @@ def _sizing_model_peak_bytes(cfg: ArwenGlobalConfig) -> int | None:
     if estimate.backend != "cupy":
         return None
     try:
-        plan = plan_run_memory(cfg, _free_device_bytes(), estimate)
+        if free_bytes is None:
+            free_bytes = _free_device_bytes()
+        plan = plan_run_memory(cfg, free_bytes, estimate)
         if plan.bands is not None:
             return int(plan.live_peak_bytes)
     except Exception:  # noqa: BLE001 - the run's own refusal, not the prediction's
@@ -1348,8 +1550,32 @@ def run(
     profile_warmup: int = 2,
     sized_by_door: bool = False,
     door_plan=None,
+    tapes: TapeRequest | None = None,
+    forcing=None,
+    forcing_record=None,
+    branch_config: bool = False,
 ) -> dict[str, object]:
     """Integrate ``cfg`` into ``outdir``.
+
+    ``tapes`` (:class:`TapeRequest`) has the run write the wrfout tape of
+    every checkpoint it writes, from its own state and beside the forecast
+    (:class:`_TapeWriter`): the bytes ``export`` writes from that
+    checkpoint.  Outside the config identity; the forecast's arithmetic
+    is the same with and without it.
+
+    ``forcing`` (opt-in, default None) is ``(record_path, ForcingOptions)``:
+    the run is pulled toward that stored record of large scales before
+    every step (arwen_global.forcing) and writes the pull's ledger beside
+    the receipt.  ``forcing_record`` (opt-in) is ``(out_path, options)``:
+    the run writes a record of its own low degrees at a cadence.  Neither
+    is part of the config identity; both are recorded in the receipt, and
+    a run that names neither is the shipped run.
+
+    ``branch_config`` (default False) admits a ``restart`` checkpoint
+    written under ANOTHER config hash: an exact twin that differs from its
+    parent run by a deliberate config change.  It is an explicit opt-in
+    and the receipt records it under ``branch`` with both hashes; without
+    it a restart whose hash is not this config's is refused as before.
 
     ``until_s`` ends the integration at that model time (seconds from the
     run's start) instead of ``cfg.duration_s``: a cycling segment, whose
@@ -1369,12 +1595,19 @@ def run(
     # multi-card run narrows CUDA_VISIBLE_DEVICES to its own card.  The
     # door has already done it; this is for a caller that came in here.
     place_rank_for(cfg)
+    # ONE prediction per run, priced against the door's own reading of the
+    # card when the door took one: the door read it before anything was
+    # allocated, which is the instant a pre-run prediction is defined at.
+    # Both receipts carry this figure; they used to probe the card again
+    # after the run, when this process held the run's own memory.
+    predicted_peak_bytes = _sizing_model_peak_bytes(
+        cfg, free_bytes=getattr(door_plan, "free_bytes", None))
     # The run's allocator is chosen and installed before the first device
     # byte, because the slab's arena has to be the first thing on the card
     # for the run's bytes to come out of it rather than beside it.
     allocator = select_device_allocator(
         cfg.device_allocator, cfg.backend,
-        predicted_peak_bytes=_sizing_model_peak_bytes(cfg),
+        predicted_peak_bytes=predicted_peak_bytes,
     )
     # The allocator hook goes in before the first device byte (the
     # Legendre tables are the first and, at T533, among the largest) and
@@ -1399,6 +1632,11 @@ def run(
                 door_plan is not None
                 and getattr(door_plan, "bands_chosen_by", None) == "sizer"),
             door_plan=door_plan,
+            tapes=tapes,
+            predicted_peak_bytes=predicted_peak_bytes,
+            forcing=forcing,
+            forcing_record=forcing_record,
+            branch_config=bool(branch_config),
         )
     finally:
         restore_plan_cache()
@@ -1451,6 +1689,47 @@ def _release_cached_device_blocks(backend) -> None:
             release()
 
 
+def _forcing_setup(cfg, model, transform, forcing, forcing_record):
+    """The run's forcing operator and record writer (arwen_global.forcing),
+    each None unless asked for.  Refused where the pull would touch state
+    the operator does not see whole: a multi-card run, or a host tier that
+    parks spectral fields."""
+    from .forcing import (
+        ForcingOperator,
+        ForcingOptions,
+        ForcingRecord,
+        ForcingRecordWriter,
+        level_reference_pressure_pa,
+    )
+
+    if getattr(model.pipeline, "exchange", None) is not None:
+        raise ValueError("the forcing operator and the forcing record run on one card only")
+    if getattr(model, "host_tier", None) is not None:
+        raise ValueError(
+            "the forcing operator and the forcing record need the spectral state resident; "
+            "this run parks it on a host tier (set host_spill = \"off\" or a smaller truncation)")
+    forcing_op = None
+    if forcing is not None:
+        record_path, options = forcing
+        if options is None:
+            options = ForcingOptions()
+        record = ForcingRecord.read(record_path)
+        forcing_op = ForcingOperator(
+            record, options, transform=transform, dt_s=cfg.dt_s, nlev=cfg.vertical.nlev,
+            level_pressure_pa=level_reference_pressure_pa(cfg))
+    record_writer = None
+    record_out = None
+    if forcing_record is not None:
+        record_out, writer_options = forcing_record
+        writer_options = dict(writer_options or {})
+        writer_options.setdefault("every_s", float(cfg.output_interval_s))
+        record_writer = ForcingRecordWriter(
+            source={"run": cfg.name, "config_hash": cfg.config_hash,
+                    "truncation": int(cfg.truncation), "nlev": int(cfg.vertical.nlev)},
+            **writer_options)
+    return forcing_op, record_writer, record_out
+
+
 def _run_tracked(
     cfg: ArwenGlobalConfig,
     outdir: str | Path,
@@ -1465,8 +1744,21 @@ def _run_tracked(
     allocator=None,
     sized_by_door: bool = False,
     door_plan=None,
+    tapes: TapeRequest | None = None,
+    predicted_peak_bytes=_NOT_PREDICTED,
+    forcing=None,
+    forcing_record=None,
+    branch_config: bool = False,
 ) -> dict[str, object]:
+    if predicted_peak_bytes is _NOT_PREDICTED:
+        predicted_peak_bytes = _sizing_model_peak_bytes(
+            cfg, free_bytes=getattr(door_plan, "free_bytes", None))
     output = Path(outdir)
+    if branch_config and restart is None:
+        raise ValueError(
+            "--branch-from-other-config names a branch from a parent "
+            "checkpoint; give that checkpoint with --restart"
+        )
     if until_s is not None:
         until_s = float(until_s)
         if not math.isfinite(until_s) or until_s <= 0.0:
@@ -1496,9 +1788,12 @@ def _run_tracked(
         # scheme = "external" (its pin is that era's, and the arithmetic is
         # shipped bit-identical), and a checkpoint of either scheme never
         # resumes under the other.
+        # A branch under another config (the explicit opt-in) reads the
+        # parent with every other check intact and the hash comparison
+        # left to the receipt, which names both.
         restart_metadata, restart_arrays = read_checkpoint(
             restart,
-            expected_config_hash=cfg.config_hash,
+            expected_config_hash=None if branch_config else cfg.config_hash,
             semi_implicit_scheme=cfg.semi_implicit_scheme,
             integrator=cfg.integrator,
         )
@@ -1611,7 +1906,26 @@ def _run_tracked(
         cfg, transform.backend.to_numpy,
         trajectory=model.trajectory_state if model.semi_lagrangian else None,
         card_gather=card_gather,
+        snapshot=_snapshot_for(cfg, transform.backend),
     )
+    tape_writer = None
+    tapes_refused = None
+    if tapes is not None:
+        tapes_refused = tape_refusal(cfg, model)
+        if tapes_refused is None:
+            try:
+                tape_writer = _TapeWriter(cfg, model, transform, tapes)
+            except Exception as exc:  # noqa: BLE001 - no tape writer is not the forecast's failure
+                # No tape writer or render kernels on this machine, an
+                # undated run (no instant to stamp a tape with), a grid
+                # the sampler refuses: the forecast runs and export says
+                # the same thing in its own words if it is asked.
+                tapes_refused = f"{type(exc).__name__}: {exc}"
+        if tapes_refused is not None:
+            # Not the forecast's failure: the checkpoints are written as
+            # always and ``export`` writes their tapes.
+            print(f"tapes off: {tapes_refused}; export writes this run's "
+                  "tapes from its checkpoints", flush=True)
     output_every = int(round(cfg.output_interval_s / cfg.dt_s))
     total_steps = int(round(cfg.duration_s / cfg.dt_s))
     if until_s is not None:
@@ -1631,8 +1945,12 @@ def _run_tracked(
             integrator=cfg.integrator,
             trajectory=model.trajectory_state(),
             card_gather=card_gather,
+            compression=str(getattr(cfg, "checkpoint_compression", "deflate")),
         )
         checkpoints.append(str(path))
+        if tape_writer is not None:
+            tape_writer.submit(
+                state, bundle_arrays(state, transform.backend.to_numpy), path)
 
     # The wall the STEPS took, separate from the run's: gate OVERLAP-1
     # divides the tier's measured transfer time by it, and a build, a
@@ -1643,6 +1961,17 @@ def _run_tracked(
     # may drop its input namespace mid-step (memory only, same bits).
     model.release_input_namespace = True
     surface_update = _surface_update_for(cfg, model, state)
+    # The forcing operator and the record writer exist only when the run
+    # asks for them (arwen_global.forcing); a run that names neither
+    # takes none of the branches below.
+    forcing_op = None
+    record_writer = None
+    record_out = None
+    if forcing is not None or forcing_record is not None:
+        forcing_op, record_writer, record_out = _forcing_setup(
+            cfg, model, transform, forcing, forcing_record)
+        if record_writer is not None:
+            record_writer.offer(state, transform.backend.to_numpy)
     try:
         while state.step < total_steps:
             if profiler is not None:
@@ -1652,7 +1981,12 @@ def _run_tracked(
             if surface_update is not None:
                 with _section(profiler, "surface_update"):
                     surface_update.apply(state, model=model)
+            if forcing_op is not None:
+                with _section(profiler, "forcing"):
+                    state = forcing_op.apply(state, model)
             state, metrics = model.step(state, cfg.dt_s)
+            if record_writer is not None:
+                record_writer.offer(state, transform.backend.to_numpy)
             step_wall_seconds += time.perf_counter() - step_started
             step_count += 1
             if model.pipeline.exchange is not None:
@@ -1669,11 +2003,22 @@ def _run_tracked(
                 diag["positivity_fixer_ledger"] = fixer_ledger.record()
                 diag["stratospheric_floor_ledger"] = floor_ledger.record()
                 _append_diagnostics(diagnostics_path, diag)
+                if tape_writer is not None:
+                    # The previous tape reads the host arrays its checkpoint
+                    # was copied into; it finishes before this checkpoint's
+                    # copy, so a checkpoint writer that reuses one host
+                    # buffer for every copy never overwrites a tape's input.
+                    with _section(profiler, "tape"):
+                        tape_writer.join()
                 with _section(profiler, "checkpoint"):
                     checkpoint = writer.submit(
                         _checkpoint_path(output, state.step), state, trackers,
                     )
                 checkpoints.append(str(checkpoint))
+                if tape_writer is not None:
+                    with _section(profiler, "tape"):
+                        tape_writer.submit(state, writer.last_arrays, checkpoint)
+                writer.last_arrays = None
                 if progress is not None:
                     progress(diag)
             if profiler is not None:
@@ -1688,6 +2033,13 @@ def _run_tracked(
             writer.close()
         except Exception as writer_exc:  # noqa: BLE001 - recorded beside the model's own failure
             exc.__context__ = writer_exc
+        if tape_writer is not None:
+            # The tape in flight finishes (it fails softly by itself) so
+            # the folder holds whole tapes only.
+            try:
+                tape_writer.close()
+            except Exception:  # noqa: BLE001 - never above the model's own failure
+                pass
         failure = {
             "name": cfg.name,
             "status": "error",
@@ -1734,11 +2086,14 @@ def _run_tracked(
             "radiation_greenhouse_gases": _greenhouse_gas_receipt(
                 cfg, getattr(model, "forecast_clock", None)),
             "checkpoints": checkpoints,
+            **({} if tapes is None else {"tapes": (
+                tape_writer.receipt() if tape_writer is not None
+                else {"outdir": str(tapes.outdir), "refused": tapes_refused})}),
             # The peak up to the failure: an out-of-memory death is
             # exactly when this number is wanted.
             "device_memory": device_memory_receipt(
                 tracker, cfg.backend,
-                sizing_model_peak_bytes=_sizing_model_peak_bytes(cfg),
+                sizing_model_peak_bytes=predicted_peak_bytes,
                 allocator=allocator,
             ),
             "restart": None if restart_metadata is None else {
@@ -1763,6 +2118,14 @@ def _run_tracked(
 
     # Every checkpoint is on disk before the receipt that lists it.
     writer.close()
+    # And every tape.
+    if tape_writer is not None:
+        tape_writer.close()
+    forcing_rows: dict[str, object] = {}
+    if forcing_op is not None:
+        forcing_rows["forcing"] = forcing_op.finish(output, end_s=state.time_s)
+    if record_writer is not None:
+        forcing_rows["forcing_record"] = record_writer.write(record_out)
     final_diag = model.diagnostics(state)
     # The cards block is built BEFORE the gates, because gate WIRE-1 is
     # one of them and it reads the achieved rate out of this block.
@@ -1884,7 +2247,20 @@ def _run_tracked(
         "positivity_fixer_ledger": fixer_ledger.record(),
         "stratospheric_floor_ledger": floor_ledger.record(),
         "checkpoints": checkpoints,
+        # The run's own tapes (run --tapes), in no identity: where they
+        # went, which were written, what each cost, which failed (left to
+        # export), or why the run wrote none.
+        **({} if tapes is None else {"tapes": (
+            tape_writer.receipt() if tape_writer is not None
+            else {"outdir": str(tapes.outdir), "refused": tapes_refused})}),
         "segment_until_s": until_s,
+        **({"branch": {
+            "opt_in": "branch_config (--branch-from-other-config)",
+            "parent_config_hash": restart_metadata["config_hash"],
+            "config_hash": cfg.config_hash,
+            "config_differs": restart_metadata["config_hash"] != cfg.config_hash,
+            "parent_checkpoint_self_sha256": restart_metadata["self_sha256"],
+        }} if branch_config else {}),
         "restart_targets": restart_targets,
         "restart": None if restart_metadata is None else {
             "path": str(restart),
@@ -1898,9 +2274,13 @@ def _run_tracked(
         # beside it under its own name.  See device_memory.py.
         "device_memory": device_memory_receipt(
             tracker, cfg.backend,
-            sizing_model_peak_bytes=_sizing_model_peak_bytes(cfg),
+            sizing_model_peak_bytes=predicted_peak_bytes,
             allocator=allocator,
         ),
+        # Present only on a run that asked for the forcing operator or a
+        # record of itself (arwen_global.forcing); a run that did not
+        # carries neither key.
+        **forcing_rows,
     }
     write_receipt(receipt_path, receipt)
     checked = json.loads(receipt_path.read_text(encoding="utf-8"))

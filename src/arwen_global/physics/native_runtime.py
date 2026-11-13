@@ -415,6 +415,18 @@ class NativePhysicsRuntime:
                 persistent.metadata.get("radiation_calls", 0)
             ) + 1
             persistent.metadata["last_radiation_bucket"] = bucket
+        between = self.options.radiation_between
+        if between != "hold":
+            # The shortwave planes at the current sun, before the heating
+            # is applied and the integrals advance, so every reader of the
+            # planes and the accumulators see what this call applied
+            # (physics.radiation_between).
+            from . import radiation_between
+
+            with profiler_of(self).section("radiation_between"):
+                radiation_between.apply(
+                    batch, persistent, mode=between,
+                    start_time=self.options.start_time, due=due)
         heating = persistent.arrays["rad_rthratenlw"] + persistent.arrays[
             "rad_rthratensw"
         ]
@@ -1709,9 +1721,29 @@ class NativePhysicsRuntime:
         accumulators alone, WRF's own split.  Momentum rates, when the
         scheme carries them, integrate into u and v like the others.
         """
-        scheme = self.options.cumulus_scheme
-        if scheme is None:
+        if self.options.cumulus_scheme is None:
             return False
+        result = self._cumulus_result(batch, persistent, cfg, entry, pbl_out)
+        self._apply_cumulus_result(
+            batch, persistent, result, reuse_water=entry is not None
+        )
+        return True
+
+    def _cumulus_result(self, batch, persistent, cfg, entry, pbl_out):
+        """The scheme's output for this call, applied to nothing yet.
+
+        THE SCHEME-OUTPUT SEAM.  Everything the cumulus scheme decides is
+        in the object returned here (its four rates, the momentum pair
+        when it carries one, its RAINCV and its own diagnostics); what
+        the runtime does with them -- the integration into the column,
+        the reservoir credit measured in the model's metric, the rain cap
+        and the accumulators -- is :meth:`_apply_cumulus_result`.  The
+        default path calls the two in sequence, which is the arithmetic
+        it always ran; the scheme transplant (:mod:`arwen_global.transplant`)
+        records this object in one run and hands it to another run's
+        application in place of that run's own.
+        """
+        scheme = self.options.cumulus_scheme
         if self._cumulus is None:
             # cumulus_column_chunk bounds every scheme's per-pass column
             # packing (arwen_global.core.gf GF_COLUMN_CHUNK; arwen_global.core.ntiedtke
@@ -1731,16 +1763,25 @@ class NativePhysicsRuntime:
             self._cumulus = getattr(module, class_name)(
                 column_chunk=self.options.cumulus_column_chunk, **extra
             )
-        xp = batch.xp
-        f = persistent.arrays
-        shape = batch.shape
         atmosphere, fields, state, driver = self._cumulus_inputs(
             batch, persistent, entry, pbl_out
         )
         self._cumulus.bind_driver(driver)
-        result = self._cumulus(
+        return self._cumulus(
             atmosphere=atmosphere, fields=fields, state=state, cfg=cfg
         )
+
+    def _apply_cumulus_result(
+        self, batch, persistent, result, *, reuse_water: bool = False
+    ):
+        """Integrate one cumulus result into ``batch`` and book its rain.
+
+        ``reuse_water`` lets the column-water reading before the rates take
+        the PBL step's after-reading (true only under Grell-Freitas, whose
+        seam does not touch the batch's water arrays; see below)."""
+        xp = batch.xp
+        f = persistent.arrays
+        shape = batch.shape
         for name in REQUIRED_CUMULUS_RATES:
             if getattr(result, name, None) is None:
                 raise ValueError(
@@ -1753,7 +1794,7 @@ class NativePhysicsRuntime:
         # temperature and vapor and does not read (or write) qc and qi;
         # the other schemes are handed the batch's own water arrays, so
         # their before is read fresh.
-        column_before = self._water_before(batch, reuse=entry is not None)
+        column_before = self._water_before(batch, reuse=reuse_water)
         for name, target in CUMULUS_RATE_FIELDS:
             rate = getattr(result, name, None)
             if rate is None:
@@ -1856,16 +1897,25 @@ class NativePhysicsRuntime:
         self._cumulus_column_diagnostics = dict(
             getattr(self._cumulus, "last_column_diagnostics", None) or {}
         )
-        return True
 
     def _microphysics_step(self, batch, persistent):
+        column_before = self._water_before(batch)
+        self._microphysics_kernel(batch, persistent)
+        self._book_microphysics(batch, persistent, column_before)
+
+    def _microphysics_kernel(self, batch, persistent):
+        """The Morrison launch alone: the batch's theta, water species and
+        number concentrations, and the namespace's per-call precipitation
+        (``*ncv``), accumulators (``*nc``), ``sr`` and effective radii,
+        updated in place.  The scheme-output seam of the microphysics slot
+        (:mod:`arwen_global.transplant`); the books are
+        :meth:`_book_microphysics`."""
         module = self._module("arwen_global.core.morrison")
         xp = batch.xp
         f = persistent.arrays
         shape = batch.shape
         dz = self._dz(batch)
         rho = xp.empty(shape, dtype=xp.float32)
-        column_before = self._water_before(batch)
         module.launch_morrison(
             batch.arrays["theta"], batch.arrays["qv"], batch.arrays["qc"],
             batch.arrays["qr"], batch.arrays["qi"], batch.arrays["qs"],
@@ -1879,6 +1929,11 @@ class NativePhysicsRuntime:
             _rhoa_scratch=rho,
             _ice_to_snow_scratch=xp.empty(shape, dtype=xp.float32),
         )
+
+    def _book_microphysics(self, batch, persistent, column_before):
+        """The books of one Morrison call: reservoir, buckets, counter."""
+        xp = batch.xp
+        f = persistent.arrays
         # Morrison follows WRF: rainncv is the TOTAL precipitation reaching the
         # ground and snowncv/graupelncv are the frozen parts of that total.
         # The Arwen Global surface accumulators are disjoint species buckets,

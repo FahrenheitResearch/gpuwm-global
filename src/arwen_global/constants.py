@@ -26,6 +26,16 @@ RUN_SCHEMA = "gpuwm.arwen-global-run/v1"
 #: v3: the ten condensate and number-moment fields are real grid arrays
 #: (nlev, nlat, nlon); v2 carried all fifteen as spectral coefficients.
 CHECKPOINT_SCHEMA = "gpuwm.arwen-global-checkpoint/v3"
+#: [output] checkpoint_compression: how a checkpoint's members sit in its
+#: ``.npz`` container (checkpoint.write_checkpoint_arrays).  "none" stores
+#: them, "deflate" is zlib level 6.  The arrays and every hash are the same.
+CHECKPOINT_COMPRESSIONS = ("none", "deflate")
+DEFAULT_CHECKPOINT_COMPRESSION = "none"
+#: [output] snapshot_buffer: where a run's checkpoint is copied to on the
+#: host (checkpoint.PinnedSnapshot): one page-locked buffer kept for the
+#: run, or a fresh pageable array per checkpoint as before the option.
+SNAPSHOT_BUFFERS = ("pinned", "pageable")
+DEFAULT_SNAPSHOT_BUFFER = "pinned"
 #: v4: a two-time-level integrator carries a second time level, and a
 #: restart that rebuilt it from a start-up step would not be the
 #: continuation of the uninterrupted run -- which is the property the

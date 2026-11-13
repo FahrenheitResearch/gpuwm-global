@@ -128,7 +128,7 @@ That builds the static surface fields, integrates the forecast, exports
 render-ready tapes and draws the product pictures, naming the stage it is in
 while the detail goes to the run's log.
 
-Fifty-five experiments ship inside the package and resolve by bare name from
+Fifty-seven experiments ship inside the package and resolve by bare name from
 any directory (`gpuwm-global configs` lists them); a path that exists always
 wins over a shipped name, so an edited copy runs.
 
@@ -290,6 +290,8 @@ drag, the dated surface series).
 
 | Truncation | Gaussian grid | Equator spacing | Card | A forecast day | Device peak | Measured |
 |---|---|---|---|---|---|---|
+| T63 | 96 x 192 | 208.5 km | RTX 5090, 32 GB, alone | **1.8 min** (108.0 s; 0.363 s a step), `arwen_global_gdas_t63_native_sl_si_24h` (experimental, [not a forecast](docs/arwen-global-coarse-grids.md)) with no flag | 2.50 GiB live, 3,508 MiB on the card | 2026-11-12 |
+| T127 | 192 x 384 | 104.2 km | RTX 5090, 32 GB, alone | **2.9 min** (171.8 s; 0.514 s a step), `arwen_global_gdas_t127_native_sl_si_24h` (experimental, not a forecast) with no flag | 3.32 GiB live, 5,180 MiB on the card | 2026-11-12 |
 | T255 | 384 x 768 | 52.1 km | RTX 5070 Ti, 16 GB, alone | **4.28 min** (256.7 s) | 8.70 GiB | 2026-09-06 |
 | T255 | 384 x 768 | 52.1 km | RTX 5070 Ti, bare from the door | 245.8 and 246.0 s | 8.70 GiB | 2026-09-07 |
 | T255 | 384 x 768 | 52.1 km | RTX 5090, shared | 186.8 and 228.9 s | 8.70 GiB | 2026-09-07 |
@@ -304,6 +306,7 @@ drag, the dated surface series).
 | T383 | 576 x 1152 | 34.7 km | RTX 5070 Ti, 16 GB, alone | **14.1 min** (2.933 s a step; 15.1 min with the cold start), `--latitude-bands 4 --host-spill on`, the pool held under 10.0 GiB | 7.29 GiB live, 10,582 MiB on the card | 2026-11-11 |
 | T383 | 576 x 1152 | 34.7 km | RTX 5070 Ti, 16 GB, alone | **14.9 min** (3.098 s a step), `--latitude-bands 4 --host-spill on --device-allocator async` | 7.23 GiB live, 9,676 MiB on the card | 2026-11-12 |
 | T383 | 576 x 1152 | 34.7 km | RTX 5070 Ti, 16 GB, alone | **9.6 min** (578.5 s; 1.805 s a step), the shipped day with no flag, from the GDAS 2026-09-01 00Z analysis: one band, nothing parked, chosen by the door at 15.24 GiB free, the pool held from 11.50 GiB and raised to 13.66; 0.1.6 on the same card the same day 15.3 min (2.981 s a step) at two bands with every slice parked, byte-identical | 11.94 GiB live, 14,392 MiB on the card (0.1.6: 12.00 GiB, 15,142 MiB) | 2026-11-12 |
+| T383 | 576 x 1152 | 34.7 km | RTX 5070 Ti, 16 GB, alone | **10.2 min** (610.7 s; 1.907 s a step), `arwen_global_gdas_t383_native_24h`, the config of record on the default core, with no flag, from the GDAS 2026-08-30 18Z analysis: one band, nothing parked (the day on the chunk change's own tree, before the stored checkpoints joined it); over 3 h 1.832 s a step where 0.1.7, at the 12,500-column radiation chunk it carried, took 2.535 at two bands with every slice parked, byte-identical | 11.84 GiB live, 14,316 MiB on the card | 2026-11-12 |
 | T533 | 801 x 1602 | 25 km | RTX 5090, 32 GB, alone | **15.9 min** (953 s; 2.98 s a step) | 23.23 GiB live, 28.11 held | 2026-09-07 |
 | T533 | 801 x 1602 | 25 km | RTX 5070 Ti, 16 GB, alone | **34.0 min** (6.67 s a step) with `--streaming on --device-allocator async`: four bands, every slice parked | 12.81 GiB live, 15,756 MiB on the card | 2026-11-06 on `gpuwm 2.8.9`; admitted by the door and its first hour rerun on `2.9.13`, 2026-11-07 |
 | T799 | 1200 x 2400 | 17 km | either card | **refused at the door**, before a byte is allocated, with the figure that refuses it | priced 30.31 GiB live | 2026-09-07 |
@@ -345,7 +348,10 @@ carries the 5,000-column radiation chunk these rows were measured at; at the
 12,500 it carried before, the step peaked 0.99 GiB higher live and took 2.42
 to 2.45 s against 2.28 to 2.29 over 3 h, byte-identical (MEASURED
 2026-11-12), and a config that still says 12,500 is pointed at
-`radiation_column_chunk = 5000` by the door's refusal.
+`radiation_column_chunk = 5000` by the door's refusal. From 0.1.8 so does
+`arwen_global_gdas_t383_native_24h`, the config of record on the default
+core, and the door runs it at one band on an empty 16 GB card (the row
+above).
 
 **A 12 GB card.** No 12 GB card was measured; the 16 GB card stood in for
 one, with another process holding all but what a 12 GB card leaves free.
@@ -512,12 +518,21 @@ on a different day through a different export and a different render call
 | [ARWEN_GLOBAL_DA.md](docs/ARWEN_GLOBAL_DA.md) | the assimilation door, its gates and its grade |
 | [ARWEN_GLOBAL_LEVEL5.md](docs/ARWEN_GLOBAL_LEVEL5.md) | the native CUDA physics suite and its device-admission battery |
 | [ARWEN_GLOBAL_REGIONAL_PARENT.md](docs/ARWEN_GLOBAL_REGIONAL_PARENT.md) | the global forecast as initial and lateral boundary data of a regional run: the command, the file contract, what is and is not carried |
+| [ARWEN_GLOBAL_FORCING.md](docs/ARWEN_GLOBAL_FORCING.md) | experimental: the forcing operator, a run pulled toward a stored record of large scales, and the pull read as model error |
 | [LEVEL3_GLOBAL_SPECTRAL_DYCORE.md](docs/LEVEL3_GLOBAL_SPECTRAL_DYCORE.md) | the spectral dynamical core |
 | [arwen-global-effective-resolution.md](docs/arwen-global-effective-resolution.md) | what the model resolves, as against what its grid spacing says |
+| [arwen-global-coarse-grids.md](docs/arwen-global-coarse-grids.md) | the T63 and T127 days (experimental): what they cost on a card and what they are for |
+| [arwen-global-scm-cases.md](docs/arwen-global-scm-cases.md) | the physics suite on seven published single-column cases, scored against their LES ranges (experimental) |
+| [arwen-global-twin-scan.md](docs/arwen-global-twin-scan.md) | exact-twin starts and the energy-norm reading of their differences (experimental) |
 | [arwen-global-ensemble-da.md](docs/arwen-global-ensemble-da.md) | the ensemble filter, its localisation and its inflation |
+| [arwen-global-members.md](docs/arwen-global-members.md) | experimental: forecast members from one analysis, their replay recipes and exact twins |
+| [arwen-global-transplant.md](docs/arwen-global-transplant.md) | experimental: one physics scheme's output carried between twins, and how much of their difference it carried |
+| [arwen-global-composition-replay.md](docs/arwen-global-composition-replay.md) | experimental: extra transported fields (tags, plumes, ozone) carried over a finished run's checkpoints |
+| [arwen-global-radiation-between.md](docs/arwen-global-radiation-between.md) | experimental: the shortwave between two radiation calls following the sun |
 | [arwen-global-observations.md](docs/arwen-global-observations.md) | the observation streams, their decoders and their error models |
 | [arwen-global-abi-operator.md](docs/arwen-global-abi-operator.md) | the GOES ABI clear-sky infrared operator |
 | [arwen-global-microwave-operator.md](docs/arwen-global-microwave-operator.md) | the ATMS clear-sky over-ocean operator |
+| [arwen-global-airliner-heights.md](docs/arwen-global-airliner-heights.md) | experimental: the ADS-B altitude pair as an upper-air height observation, and one day measured |
 | [ARWEN_GLOBAL_CLIENT.md](docs/ARWEN_GLOBAL_CLIENT.md) | driving this model from a program: the versioned documents, the plan envelope, the durable run files, and what is not offered |
 | [CLI-REFERENCE.md](docs/CLI-REFERENCE.md) | every command and every option, generated from the parser |
 

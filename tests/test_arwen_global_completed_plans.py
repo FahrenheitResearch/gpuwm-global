@@ -288,6 +288,49 @@ def test_the_day_at_the_former_chunk_is_pointed_at_the_measured_chunk():
     assert "2 latitude bands with every slice parked" in gate["verdict"]
 
 
+T255_DAY = str(_shipped_configs() / "arwen_global_gdas_t255_native_sl_si_24h.toml")
+
+
+def _t255_row():
+    rows = [row for row in sizing.COMPLETED_PLAN_PEAKS
+            if row["truncation"] == 255 and row["bands"] == 1
+            and not row["spill_slices"]]
+    assert len(rows) == 1
+    return rows[0]
+
+
+def test_the_t255_day_is_priced_at_its_held_runs_not_at_the_model():
+    # MEASURED: 0.1.7's own runs of this plan took 8,438 to 9,374 MiB of the
+    # card while the door priced it at 11.09 GiB from its model, so a card
+    # with 9 to 11 GiB free sent a run that fits at one band to bands.
+    row = _t255_row()
+    cfg = load_config(T255_DAY)
+    estimate = dataclasses.replace(sizing.estimate_global_memory(cfg), backend="cupy")
+    assert estimate.radiation_column_chunk == row["radiation_column_chunk"]
+    card = int(row["card_bytes_measured"])
+    assert card < int(11.09 * GIB) - GIB
+    plan = sizing.plan_run_memory(cfg, card, estimate)
+    assert plan.fits and plan.bands == 1 and plan.spill_slices == ()
+    assert plan.card_bytes == card
+    assert plan.live_peak_bytes == row["peak_used_bytes"]
+    assert plan.pool_limit_bytes == row["pool_limit_bytes"]
+    # One MiB less and the plan is not one band with nothing parked.
+    below = sizing.plan_run_memory(cfg, card - MIB, estimate)
+    assert (below.bands, below.spill_slices) != (1, ())
+    gate = sizing.run_memory_gate(cfg, probe={"free_bytes": card})
+    assert gate["refuse"] is False
+    assert (f"priced at the {card / GIB:.2f} GiB of card a completed run of "
+            "exactly this plan took" in gate["verdict"])
+
+
+def test_the_t255_row_is_a_held_run_and_the_heaviest_one():
+    row = _t255_row()
+    assert row["pool_limit_bytes"] <= row["peak_used_bytes"]
+    assert row["pool_limit_end_bytes"] >= row["held_bytes"] >= row["peak_used_bytes"]
+    assert row["card_bytes_measured"] > row["held_bytes"]
+    assert "status pass" in row["run"] and row["step_s"] > 0
+
+
 def test_the_shipped_day_on_an_empty_16_gb_card_runs_one_band_with_no_flag():
     # The 16 GB card reads 15,880 MiB free with nothing else on it
     # (tests/test_arwen_global_host_spill.py).  At its former 12,500-column

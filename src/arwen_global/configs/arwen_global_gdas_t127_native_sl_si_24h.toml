@@ -1,0 +1,91 @@
+# T127 L40 with the FULL native physics suite on the semi-Lagrangian core
+# at dt = 300 s, for a whole forecast day: the T255 config of record
+# (arwen_global_gdas_t255_native_sl_si_24h) at half its resolution and
+# nothing else changed but the grid length the physics reads.
+# EXPERIMENTAL: a coarse grid for checking a change of the model end to
+# end with every scheme on, for long runs on a small card and for
+# ensemble-sized experiments.  It is not a forecast configuration: its
+# scores are not those of the T255 day and nobody should read its weather
+# as a forecast.
+#
+# T127 at dealias 1.5 quadrature is 384 x 192: grid spacing
+# 2*pi*6371.22 km / 384 = 104.2 km at the equator, so dx_m below is
+# 104,200 m (sfclay's grid-spacing branches and the Grell-Freitas
+# closure's scale awareness read it).  Everything else -- the step, the
+# radiation and land intervals, the drain, the off-centring and the gates
+# -- is the T255 config's, so a T127 day and a T255 day differ in the grid
+# and in nothing a reader has to diff.
+#
+# The case is the GDAS 2026-09-01 00Z analysis the T255 config reads,
+# at the same relative path.  The statics are built once for this
+# truncation: gpuwm-global statics arwen_global_gdas_t127_native_sl_si_24h
+[arwen_global]
+schema = "gpuwm.arwen-global-run/v1"
+name = "arwen-global-gdas-t127-native-sl-si-24h"
+acknowledgement = "research-only-arwen-global-v1"
+backend = "cupy"
+precision = "float32"
+
+[grid]
+truncation = 127
+dealias_factor = 1.5
+
+# 86400/300 = 288 whole steps; 10800/300 = 36-step output cadence.
+[time]
+dt_s = 300.0
+duration_s = 86400.0
+output_interval_s = 10800.0
+integrator = "sl_si"
+minimum_fold_determinant = 0.2
+
+[semilag]
+quasi_monotone = true
+trajectory_iterations = 3
+
+[vertical]
+coordinate = "surface_stretched"
+nlev = 40
+p_top_pa = 100.0
+
+# analysis_mapping is the packaged authority's BARE ID, not a path, as in
+# the T255 config.
+[initial]
+mode = "analysis"
+analysis_grib = "cases/baseline-2026090100/gdas.t00z.pgrb2.0p25.f000"
+analysis_mapping = "gdas-global"
+surface_water_kg_m2 = 500.0
+
+# The T255 config's options with dx_m at the T127 equatorial spacing.
+# radiation_interval_s stays 3000 s (ten whole steps) and Noah runs every
+# step, as at T255.
+[physics]
+mode = "arwen-native"
+native_adapter_name = "arwen-cuda-column-suite-v1"
+native_adapter_options = { acknowledgement = "device-pending-arwen-native-physics-v1", start_time_utc = "2026-09-01T00:00:00Z", radiation = "rrtmgp", radiation_interval_s = 3000.0, radiation_column_chunk = 12500, radiation_validation_mode = "fused", surface_layer = "sfclay", sfclay_option = 1, land_surface = "noah", land_surface_interval_s = 300.0, pbl = "ysu", ysu_topdown_pblmix = 1, microphysics = "morrison", morr_rimed_ice = 1, dx_m = 104200.0 }
+
+# The semi-Lagrangian core's own drain, as at T255: order 16, 12 min at
+# the truncation.
+[diffusion]
+enabled = true
+order = 16
+e_folding_time_s_at_truncation = 720.0
+preserve_degree = 1
+
+[semi_implicit]
+enabled = true
+weight = 1.0
+off_centring_weight = 0.55
+
+[repair]
+mass_fixer = true
+water_fixer = true
+positivity_repair = true
+
+# The T255 config's gates, the native-suite water repair sizing included
+# (its derivation is in the T255 config's comments).
+[gates]
+transform_roundtrip_relative_linf = 1.0e-6
+transform_parseval_relative_error = 5.0e-7
+mass_relative_drift = 1.0e-4
+total_water_relative_drift = 1.0e-3
+physics_water_repair_max_step_kg_m2 = 0.010498046875

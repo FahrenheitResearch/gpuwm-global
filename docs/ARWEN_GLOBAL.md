@@ -389,6 +389,45 @@ the RTX 5070 Ti the semi-Lagrangian T383 arm does not fit (15.9 GiB of
 16.3). The sizing door prices `sl_si` at 8.60, 15.01, 24.45 and 53.78 GiB
 at T255, T383, T533 and T799; T383 measured 5.6 percent above it.
 
+**Steps longer than 300 s: cadences in seconds, a stratospheric reading
+and Hortal's SETTLS.**
+None of these is a default, and a config that sets none of them runs the
+forecast it ran before under the config hash it had.
+
+- The in-situ ledger samples its spectra, flushes and energy marks every
+  so many steps, so a run at a longer step samples less of its forecast
+  and the spectral tripwire's six-sample trailing mean covers a longer
+  stretch of it. `[insitu] spectra_every_s`, `flush_every_s` and
+  `energy_every_s` give these cadences in seconds of forecast time
+  instead. Each must be a whole number of steps, or the config is refused
+  at load; a cadence given both in steps and in seconds is refused. The
+  steps are counted from the forecast start, so a restarted segment
+  samples the steps a straight run samples.
+- `[insitu] stratospheric_noise_limit` (experimental, off unless set)
+  reports the run's largest top-decile share of kinetic energy on the
+  levels between 10 and 100 hPa (`stratospheric_noise_band_hpa`), read
+  from the spectra the ledger already samples. It is a reading: it sits in
+  the receipt's in-situ block, never in the run's status, and no limit has
+  been calibrated for it. `tools/arwen_global_strat_noise_replay.py`
+  replays written ledgers through the same code.
+- `[semilag] extrapolation = "settls_departure"` (experimental) reads the
+  time extrapolation at the departure point, Hortal's form, where the
+  shipped `"settls"` reads it at the arrival point, and
+  `level_rate_limiter = true` (experimental) keeps the time-n vertical
+  rate where it changed sign. With both set, the shipped T255 600 s
+  config run 48 h from four GDAS analyses on an RTX 5090 had four-case
+  means no worse than the shipped scheme's at 48 h on six global scores
+  (500 hPa height, 850 hPa temperature, 250 and 850 hPa wind and 700 hPa
+  humidity RMSE, 500 hPa anomaly correlation), and a lower 10 to 100 hPa
+  reading in all four cases; 850 hPa temperature at 24 h and the tropics
+  at 48 h were slightly worse. The CHANGELOG's 0.1.8 section has the
+  numbers and [ARWEN_GLOBAL_FULL.md](ARWEN_GLOBAL_FULL.md) has the scheme.
+
+Nothing in `[insitu]` enters the config hash.
+`tests/test_arwen_global_insitu_cadence_seconds.py` and
+`tests/test_arwen_global_semilag_settls_departure.py` hold them to their
+contracts on the CPU.
+
 ## Two drains at the truncation, and which one is the default
 
 Both cores remove the energy that piles up at the truncation, and there are
@@ -1033,6 +1072,30 @@ The export receipt lists the eight under `derivation_fields` and each
 tape's table under `landuse_table`. A tape written by 0.1.4 or earlier
 carries none of the eight, and its receipt has neither entry.
 
+### Sea surface temperature
+
+Every tape carries `SST` (K), as every WRF history file does. `SST` is the
+skin temperature, `TSK`, on every point. The model has no ocean model: the
+skin of its open water is the water temperature it ran with, the analysis's
+sea surface held for the run or a dated series the run followed
+(`--surface-series`), and an inland lake's skin is that lake's water. Over
+land and under sea ice `SST` is the land or ice skin. That is what WRF's
+real.exe writes there when its input carries no SST of its own, as WPS's
+GFS table does not: it fills `SST` from `TSK` on every point, land and ice
+included. A reader that wants open water only masks with `XLAND` (2 on open
+water) or `SEAICE`, as it must on a WRF file. The export receipt states the
+rule under `sea_surface_temperature`. A tape written by 0.1.7 or earlier
+carries no `SST`. `tests/test_arwen_global_tape_sst.py` holds `SST` to
+`TSK` and to the model's own skin.
+
+The skin reaches the tape's regular grid the way every surface field does,
+so a point at a coast or an ice edge carries a blend of its neighbours'
+skins. MEASURED 2026-11-12 on the 3 h tape of
+`arwen_global_gdas_t255_native_sl_si_24h` (360 x 720): `SST` equals `TSK`
+bit for bit, every other variable is byte-identical to 0.1.7's tape of the
+same checkpoint, and of the 139,415 points with `XLAND` 2 and `SEAICE` 0,
+72 read below 271 K, 67 of them beside land (the coldest 235.3 K).
+
 ## Checkpoints and restart
 
 A checkpoint binds the resolved config hash, the model pins, the step and
@@ -1047,6 +1110,65 @@ checkpoint whose config hash is not this configuration's. Restart is
 bit-exact at a midpoint: that equality, over the complete checkpoint array
 inventory including run trackers, is what the target-device qualification
 battery measures.
+
+How a checkpoint is laid on disk is the `[output]` table's. Neither of its
+two settings is in the config hash or moves a byte of any array:
+
+```toml
+[output]
+checkpoint_compression = "none"   # or "deflate"
+snapshot_buffer = "pinned"        # or "pageable"
+```
+
+`checkpoint_compression = "none"` (the default) writes the members stored,
+with `np.savez`; `"deflate"` is `np.savez_compressed`, which is how every
+checkpoint was written before 0.1.8. The file is an ordinary `.npz` either
+way, with the same member names, the same per-array SHA-256 and the same
+`self_sha256`, so a stored checkpoint resumes a deflated lineage and the
+other way round, and an earlier release reads a stored checkpoint. A stored
+checkpoint is read member by member at its offset in the file and verified
+on four threads; a deflated one is read as before. `snapshot_buffer =
+"pinned"` copies the state off the card into one page-locked host buffer
+kept for the run (the size of one checkpoint), instead of a fresh pageable
+array per checkpoint; the writer keeps one write in flight and joins it
+before the next copy, which is what makes one buffer safe. Both settings
+apply to `run` and to `cycle`; the other commands that write a checkpoint
+write it deflated, as before.
+
+What it buys is the time the card sat idle waiting for one thread to
+deflate. Measured on one RTX 5090 on 2026-11-12, the shipped
+`arwen_global_gdas_t255_native_sl_si_24h` and
+`arwen_global_gdas_t383_native_sl_si_24h` configs with the output interval
+set to one hour, three hours from their GDAS 2026-09-01 00Z analysis
+(36 steps, checkpoints at steps 0, 12, 24 and 36), 0.1.7 and this release
+alternated on the same card, three samples each (the host was running
+other jobs beside them):
+
+| | T255, 0.1.7 | T255, defaults | T383, 0.1.7 | T383, defaults |
+|---|---|---|---|---|
+| cold start to 3 h, process wall | 154.7, 176.4, 156.4 s | 68.1, 58.8, 67.2 s | 317.1, 351.9, 318.3 s | 115.6, 107.1, 122.4 s |
+| restart at 1 h to 3 h, process wall | 121.9, 118.4, 124.6 s | 60.6, 61.8, 85.4 s | 244.3, 259.8, 251.8 s | 129.2, 104.6, 112.1 s |
+| waiting for the last checkpoint at the end of a run | 37.1 to 53.2 s | 4.6 to 32.9 s | 83.0 to 96.0 s | 11.9 to 26.5 s |
+| `read_checkpoint` of the step-36 checkpoint, on the host | 6.6 s | 0.8 s | 18.6 s | 1.9 s |
+
+The same configs with `checkpoint_compression = "deflate"` and
+`snapshot_buffer = "pageable"` took 151.7 s (T255) and 327.9 s (T383) for
+the cold start, as 0.1.7 does.
+
+The price is disk. A stored checkpoint is its arrays' own size: 1,452.9 MB
+at T255 against 626.6 to 639.8 MB deflated, 3,268.9 MB at T383 against
+1,404.0 to 1,437.3 MB (2.3 times), and the step-0 checkpoint of a cold
+start, which deflates far better, 596.4 MB against 48.6 MB at T255 and
+1,341.9 MB against 108.0 MB at T383. A run that keeps its checkpoints adds
+up: a 90-day T383 run that keeps one every six hours holds 361 of them,
+about 1.18 TB stored against about 0.52 TB deflated. Such a run, or a disk
+that is short, sets `checkpoint_compression = "deflate"`.
+
+`tests/test_arwen_global_checkpoint_stored.py` holds both containers to one
+record and one set of arrays, refuses a flipped byte, a truncated file and
+a member whose size disagrees with its header, reads a member past 4 GiB at
+its zip64 offset, and resumes a stored run from a stored and from a
+deflated midpoint to the same arrays.
 
 A terminal run receipt carries the transform controls, start and final
 measurements, all gates, inherited trackers, checkpoint identities,
@@ -1153,7 +1275,11 @@ set by how its blocks were cut rather than by the forecast: at T383 every
 raise after the first steps is the semi-Lagrangian gather's 810 MiB stack
 finding no whole free block while 9.33 GiB is live, and two held days of the
 same plan ended at 13,880 and 14,608 MiB of card (MEASURED 2026-11-12, RTX
-5070 Ti), so the door prices a held plan at the heaviest of its runs.
+5070 Ti), so the door prices a held plan at the heaviest of its runs. The
+T255 semi-Lagrangian day at one band is priced the same way: its model read
+11.09 GiB of card, two held days on the same card took 9,178 and 9,056 MiB
+(MEASURED 2026-11-12), and the door prices it at 9,178, so a 16 GB card
+with 9 to 11 GiB free runs it at one band.
 `tests/test_arwen_global_pool_limit.py` holds the rules on the CPU.
 
 Charging neither is what the door used to do, and the concrete breakage is

@@ -1,16 +1,20 @@
 """Hash-bound Level-5 checkpoints for atmosphere, surface, and physics state."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 from types import SimpleNamespace
 import json
 import math
 import os
 from pathlib import Path
+import struct
+import zipfile
 
 import numpy as np
 
 from .constants import (
+    CHECKPOINT_COMPRESSIONS,
     CHECKPOINT_SCHEMA,
     GRID_TRACERS,
     LEVEL4_CHECKPOINT_SCHEMA,
@@ -53,6 +57,16 @@ TRACKER_KEYS = (
     "maximum_native_water_residual_kg_m2",
     "maximum_native_energy_residual_j_m2",
 )
+
+#: How a checkpoint's members are stored in its ``.npz`` container
+#: (constants.CHECKPOINT_COMPRESSIONS).  The arrays, their names, their
+#: per-array SHA-256 and ``self_sha256`` are the same either way: the
+#: hashes are taken of the arrays, never of the file.  ``"none"`` is
+#: ``np.savez`` (zip STORED members), ``"deflate"`` is
+#: ``np.savez_compressed`` (zlib level 6, one thread).  MEASURED 2026-11-12
+#: on the CPU of a 24-core Linux host, one T255 checkpoint of 133 arrays
+#: and 1386 MiB: deflate 19.3 s for a 638 MiB file, stored 0.84 to 0.98 s
+#: for 1386 MiB.  Both are ordinary ``.npz`` archives any numpy reads.
 
 # The surface inventory is the state's own table: a SurfaceState member
 # added there (the 2026-09-01 static fields) is checkpointed here without
@@ -118,9 +132,101 @@ def _checkpoint_array(value, to_numpy) -> np.ndarray:
     return np.asarray(to_numpy(value))
 
 
+#: Offsets of the arrays inside a :class:`PinnedSnapshot` buffer are rounded
+#: up to this many bytes, so every view starts on a cache-line and DMA
+#: friendly boundary.
+_SNAPSHOT_ALIGN = 256
+
+
+class PinnedSnapshot:
+    """One page-locked host buffer the run's checkpoints are copied into.
+
+    ``bundle_arrays`` brings the state to the host with one pageable
+    ``asnumpy`` per array, which stages every byte through the driver's
+    bounce buffer: MEASURED 2026-11-12 on an RTX 5070 Ti, 0.50 s for the 1386 MiB of
+    a T255 checkpoint (2.8 GiB/s) and 1.09 s for 3117 MiB at T383, on the
+    model thread with the card idle.  Copied into page-locked memory the
+    same bytes cross the link at the rate the host tier measured for its
+    own pinned transfers (36 GiB/s outbound).
+
+    ONE buffer, kept for the run and reused by every checkpoint.  That is
+    safe only because the checkpoint writer keeps at most one write in
+    flight and joins it before the next snapshot is taken
+    (``runner._CheckpointWriter.submit``): the arrays handed to the worker
+    are views of this buffer, and the next output time must not overwrite
+    them while they are being hashed and written.  Two buffers would let a
+    snapshot be taken under a running write, at twice the pinned host
+    memory (6.2 GiB at T383), which the host beside an export and a plot
+    pool cannot spare.
+
+    A copy is a copy: the views hold exactly the bytes ``asnumpy`` returns,
+    so the per-array SHA-256, ``self_sha256`` and every restart are those
+    of the pageable path.
+    """
+
+    def __init__(self, xp):
+        self.xp = xp
+        self._memory = None
+        self._bytes = None
+        self.capacity = 0
+        self.allocations = 0
+
+    def _ensure(self, nbytes: int) -> None:
+        if nbytes <= self.capacity:
+            return
+        from .spill import pinned_host_array
+
+        # Dropping the old buffer first: its views belong to a write that
+        # the caller has already joined.
+        self._bytes = None
+        self._bytes = pinned_host_array((int(nbytes),), np.uint8, xp=self.xp)
+        self.capacity = int(nbytes)
+        self.allocations += 1
+
+    def copy(self, sources: dict, to_numpy) -> dict[str, np.ndarray]:
+        """``{name: value}`` on the card, in the tier or on the host, copied
+        into views of the buffer, in the order given."""
+        layout = []
+        offset = 0
+        for name, value in sources.items():
+            if spilled(value):
+                value.tier.synchronize()
+                kind, source = "host", value.host
+            elif isinstance(value, np.ndarray):
+                kind, source = "host", value
+            elif hasattr(value, "get") and hasattr(value, "data") and hasattr(
+                    value, "dtype"):
+                kind, source = "device", value
+            else:
+                kind, source = "host", np.asarray(to_numpy(value))
+            shape = tuple(int(extent) for extent in source.shape)
+            dtype = np.dtype(source.dtype)
+            count = 1
+            for extent in shape:
+                count *= extent
+            nbytes = count * dtype.itemsize
+            layout.append((name, kind, source, shape, dtype, offset, nbytes))
+            offset += -(-nbytes // _SNAPSHOT_ALIGN) * _SNAPSHOT_ALIGN
+        self._ensure(max(offset, 1))
+        arrays: dict[str, np.ndarray] = {}
+        for name, kind, source, shape, dtype, start, nbytes in layout:
+            view = np.ndarray(shape, dtype=dtype, buffer=self._bytes,
+                              offset=start)
+            if nbytes:
+                if kind == "device":
+                    # Synchronous on the current stream, exactly as
+                    # ``asnumpy`` is: the step that produced the values has
+                    # finished writing them when this returns.
+                    source.get(out=view)
+                else:
+                    np.copyto(view, source, casting="no")
+            arrays[name] = view
+        return arrays
+
+
 def bundle_arrays(
     bundle: ArwenGlobalState, to_numpy, trajectory=None, *,
-    card_gather=None,
+    card_gather=None, snapshot: PinnedSnapshot | None = None,
 ) -> dict[str, np.ndarray]:
     """Every checkpointed array: the five spectral fields as complex
     coefficients, the ten grid tracers as real Gaussian-grid arrays
@@ -139,22 +245,33 @@ def bundle_arrays(
     the pinned host tier rather than on the card; the format, the array
     names, the per-array hashes and ``self_sha256`` do not know which,
     and a checkpoint written either way is byte-identical.
+
+    ``snapshot`` (a :class:`PinnedSnapshot`) copies the arrays into its
+    page-locked buffer instead of a fresh pageable array each; the arrays
+    returned are then views of that buffer and stay valid until the next
+    call with the same snapshot.
     """
     bundle.physics_state.validate()
-    arrays = {
-        f"atmosphere__{name}": _checkpoint_array(
-            getattr(bundle.atmosphere, name), to_numpy)
+    sources = {
+        f"atmosphere__{name}": getattr(bundle.atmosphere, name)
         for name in PROGNOSTIC_FIELDS
     }
-    arrays.update({
-        f"surface__{name}": _checkpoint_array(value, to_numpy)
+    sources.update({
+        f"surface__{name}": value
         for name, value in bundle.surface.arrays().items()
     })
     for name, value in sorted(bundle.physics_state.arrays.items()):
-        arrays[f"physics__{name}"] = _checkpoint_array(value, to_numpy)
+        sources[f"physics__{name}"] = value
     if trajectory is not None:
         for name, value in trajectory.arrays().items():
-            arrays[f"trajectory__{name}"] = _checkpoint_array(value, to_numpy)
+            sources[f"trajectory__{name}"] = value
+    if snapshot is not None:
+        arrays = snapshot.copy(sources, to_numpy)
+    else:
+        arrays = {
+            name: _checkpoint_array(value, to_numpy)
+            for name, value in sources.items()
+        }
     if card_gather is not None:
         # A multi-card run holds each card's own latitude rows; the
         # checkpoint is the globe, and its per-array hashes are what the
@@ -194,6 +311,7 @@ def write_checkpoint(
     integrator: str = DEFAULT_INTEGRATOR,
     trajectory=None,
     card_gather=None,
+    compression: str = "deflate",
 ) -> Path:
     """Write a hash-bound checkpoint.  ``semi_implicit_scheme`` is the
     [semi_implicit] scheme the run integrates with: it selects the
@@ -215,6 +333,7 @@ def write_checkpoint(
         physics_metadata=bundle.physics_state.metadata,
         config_hash=config_hash, trackers=trackers,
         semi_implicit_scheme=semi_implicit_scheme, integrator=integrator,
+        compression=compression,
     )
 
 
@@ -286,9 +405,17 @@ def write_checkpoint_arrays(
     semi_implicit_scheme: str = DEFAULT_SEMI_IMPLICIT_SCHEME,
     integrator: str = DEFAULT_INTEGRATOR,
     metadata: dict[str, object] | None = None,
+    compression: str = "deflate",
 ) -> Path:
     """The host half of :func:`write_checkpoint`: hash, serialise and
     publish arrays already brought to the host by :func:`bundle_arrays`.
+
+    ``compression`` is one of :data:`CHECKPOINT_COMPRESSIONS`: ``"none"``
+    stores the members (``np.savez``), ``"deflate"`` compresses them
+    (``np.savez_compressed``, this function's behaviour before the option
+    existed and still its default for every caller that does not name
+    one).  The metadata record, the member names and every hash are the
+    same for both; only the container's bytes differ.
 
     Split out so a runner can take the device-to-host copy on the model
     thread and hand this part (SHA-256 of every array, zlib compression,
@@ -301,6 +428,10 @@ def write_checkpoint_arrays(
     it is checked against the arrays' own identity before anything is
     written, so a stale record cannot be published over fresh arrays.
     """
+    if compression not in CHECKPOINT_COMPRESSIONS:
+        raise ValueError(
+            f"checkpoint compression must be one of {CHECKPOINT_COMPRESSIONS}, "
+            f"got {compression!r}")
     computed = checkpoint_metadata(
         arrays, step=step, time_s=time_s,
         physics_state_schema=physics_state_schema,
@@ -318,8 +449,9 @@ def write_checkpoint_arrays(
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.partial-{os.getpid()}")
+    save = np.savez if compression == "none" else np.savez_compressed
     with temporary.open("wb") as stream:
-        np.savez_compressed(
+        save(
             stream,
             __metadata__=np.asarray(
                 json.dumps(metadata, sort_keys=True, allow_nan=False)
@@ -330,6 +462,113 @@ def write_checkpoint_arrays(
         os.fsync(stream.fileno())
     os.replace(temporary, target)
     return target
+
+
+_ZIP_LOCAL_HEADER = struct.Struct("<4sHHHHHIIIHH")
+_ZIP_LOCAL_SIGNATURE = b"PK\x03\x04"
+
+
+def _readinto_exactly(stream, buffer: np.ndarray, source, name: str) -> None:
+    view = memoryview(buffer).cast("B")
+    filled = 0
+    while filled < len(view):
+        got = stream.readinto(view[filled:])
+        if not got:
+            raise ValueError(
+                f"checkpoint {source} is truncated: member {name} ends "
+                f"{len(view) - filled} bytes early")
+        filled += got
+
+
+def _stored_members(source: Path) -> dict[str, np.ndarray] | None:
+    """Every member of a STORED ``.npz``, read at its offset; or None.
+
+    ``np.load`` reads a stored member through ``zipfile``, in small chunks
+    with a CRC-32 kept in Python, and then ``read_checkpoint`` copies it:
+    MEASURED 2026-11-12 on a 24-core Linux host for one T255 checkpoint, 3.3 to 5.2 s
+    through ``np.load`` against 1.4 to 1.9 s read at the members' offsets.
+    Here the central directory gives each member's local-header offset,
+    the LOCAL header's own name and extra-field lengths give where its
+    bytes start (they may differ from the central directory's: numpy
+    writes a zip64 extra into every local header), the ``.npy`` header
+    gives shape, dtype and order, and the array is read with one
+    ``readinto`` into memory it owns.
+
+    Returns None when any member is compressed (a deflated checkpoint, or
+    a file written by anything else) or uses an ``.npy`` format version
+    this reader does not parse, and the caller takes the ``np.load`` path.
+    No CRC is checked here; the caller verifies every array against the
+    SHA-256 the metadata record carries and the record against its own
+    ``self_sha256``, which is the stronger check and the one the
+    ``np.load`` path relies on too.
+    """
+    from numpy.lib import format as npy_format
+
+    with zipfile.ZipFile(source) as archive:
+        infos = archive.infolist()
+    if not infos or any(info.compress_type != zipfile.ZIP_STORED
+                        for info in infos):
+        return None
+    members: dict[str, np.ndarray] = {}
+    with source.open("rb", buffering=0) as stream:
+        for info in infos:
+            if not info.filename.endswith(".npy"):
+                raise ValueError(
+                    f"checkpoint {source} holds a member that is not an "
+                    f"array: {info.filename!r}")
+            name = info.filename[:-4]
+            stream.seek(info.header_offset)
+            raw = stream.read(_ZIP_LOCAL_HEADER.size)
+            if len(raw) != _ZIP_LOCAL_HEADER.size:
+                raise ValueError(f"checkpoint {source} is truncated at member {name}")
+            fields = _ZIP_LOCAL_HEADER.unpack(raw)
+            if fields[0] != _ZIP_LOCAL_SIGNATURE:
+                raise ValueError(
+                    f"checkpoint {source}: member {name} has no local header "
+                    "at the offset its central directory names")
+            data_start = (info.header_offset + _ZIP_LOCAL_HEADER.size
+                          + fields[9] + fields[10])
+            stream.seek(data_start)
+            version = npy_format.read_magic(stream)
+            if version == (1, 0):
+                shape, fortran, dtype = npy_format.read_array_header_1_0(stream)
+            elif version == (2, 0):
+                shape, fortran, dtype = npy_format.read_array_header_2_0(stream)
+            else:
+                return None
+            if dtype.hasobject:
+                raise ValueError(
+                    f"checkpoint {source}: member {name} has an object dtype")
+            count = 1
+            for extent in shape:
+                count *= int(extent)
+            nbytes = count * dtype.itemsize
+            header_bytes = stream.tell() - data_start
+            if header_bytes + nbytes != info.file_size:
+                raise ValueError(
+                    f"checkpoint {source}: member {name} holds "
+                    f"{info.file_size - header_bytes} array bytes where its "
+                    f"header describes {nbytes}")
+            flat = np.empty(nbytes, dtype=np.uint8)
+            if nbytes:
+                _readinto_exactly(stream, flat, source, name)
+            members[name] = flat.view(dtype).reshape(
+                shape, order="F" if fortran else "C")
+    return members
+
+
+def _verify_one(array: np.ndarray) -> tuple[str, bool]:
+    """One array's SHA-256 and whether every value is finite (complex
+    parts both).  Both release the GIL on a large array, so a reader can
+    run them for several arrays at once."""
+    finite = bool(np.isfinite(array.real).all()) and (
+        not np.iscomplexobj(array) or bool(np.isfinite(array.imag).all()))
+    return _array_hash(array), finite
+
+
+#: Threads :func:`read_checkpoint` verifies arrays on.  MEASURED 2026-11-12:
+#: SHA-256 of a T255 checkpoint's arrays 0.37 s on one thread, 0.10 s on four.
+_VERIFY_THREADS = 4
 
 
 def read_checkpoint_header(path: str | Path) -> dict:
@@ -380,15 +619,26 @@ def read_checkpoint(
     existed, and that arithmetic is shipped bit-identical.
     """
     source = Path(path)
-    with np.load(source, allow_pickle=False) as archive:
-        if "__metadata__" not in archive:
+    # A stored checkpoint (``checkpoint_compression = "none"``) is read
+    # member by member at its offsets; a deflated one, or anything the
+    # offset reader does not recognise, through ``np.load`` as before.
+    # Both return the same arrays, verified below by the same hashes.
+    stored = _stored_members(source)
+    if stored is not None:
+        if "__metadata__" not in stored:
             raise ValueError(f"checkpoint {source} has no metadata")
-        metadata = json.loads(str(archive["__metadata__"].item()))
-        arrays = {
-            name: np.array(archive[name], copy=True)
-            for name in archive.files
-            if name != "__metadata__"
-        }
+        metadata = json.loads(str(stored.pop("__metadata__").item()))
+        arrays = stored
+    else:
+        with np.load(source, allow_pickle=False) as archive:
+            if "__metadata__" not in archive:
+                raise ValueError(f"checkpoint {source} has no metadata")
+            metadata = json.loads(str(archive["__metadata__"].item()))
+            arrays = {
+                name: np.array(archive[name], copy=True)
+                for name in archive.files
+                if name != "__metadata__"
+            }
     required = {
         "schema", "config_hash", "pins_hash", "time_s", "step",
         "run_trackers", "physics_state_schema", "physics_metadata",
@@ -530,13 +780,22 @@ def read_checkpoint(
         for name in arrays
     ):
         raise ValueError("checkpoint has an unknown array namespace")
+    # The per-array hashes and finiteness, taken on a few threads (both
+    # release the GIL); the checks below read them in the archive's order,
+    # so the first failure named is the one a serial pass would name.
+    if any(array.dtype.hasobject for array in arrays.values()):
+        raise TypeError("checkpoint arrays may not use object dtype")
+    with ThreadPoolExecutor(
+            max_workers=max(1, min(_VERIFY_THREADS, len(arrays)))) as pool:
+        verified = dict(zip(arrays, pool.map(_verify_one, arrays.values())))
     for name, array in arrays.items():
         row = expected[name]
         if not isinstance(row, dict) or set(row) != {"shape", "dtype", "sha256"}:
             raise ValueError(f"checkpoint array metadata for {name} is malformed")
         if list(array.shape) != row["shape"] or array.dtype.str != row["dtype"]:
             raise ValueError(f"checkpoint array {name} shape/dtype mismatch")
-        if _array_hash(array) != row["sha256"]:
+        digest, finite = verified[name]
+        if digest != row["sha256"]:
             raise ValueError(f"checkpoint array {name} hash mismatch")
         if name in spectral_names and array.dtype.kind != "c":
             raise ValueError(f"spectral checkpoint array {name} must be complex")
@@ -545,11 +804,7 @@ def read_checkpoint(
                 f"grid tracer checkpoint array {name} must be a real float "
                 "array on the Gaussian grid"
             )
-        if array.dtype.hasobject:
-            raise TypeError(f"checkpoint array {name} may not use object dtype")
-        if not np.isfinite(array.real).all() or (
-            np.iscomplexobj(array) and not np.isfinite(array.imag).all()
-        ):
+        if not finite:
             raise ValueError(f"checkpoint array {name} contains non-finite values")
     return metadata, arrays
 

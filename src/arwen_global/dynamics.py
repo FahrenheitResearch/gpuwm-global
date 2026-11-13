@@ -516,6 +516,11 @@ class MoistHybridModel:
     # within a step are served from it.  Same bits either way; False
     # recomputes every synthesis (the memory-tightest form).
     synthesis_memo: bool = True
+    # The transform diet ([transforms] in the run config; config.py says
+    # what each switch changes and which identity it carries).  Both off
+    # is the step as it was, call for call.
+    skip_unread_planes: bool = False
+    divergence_only_mass_flux: bool = False
     # The fold floor of the semi-Lagrangian core (semilag/), read by no
     # other integrator.  It REPLACES the advective CFL gate on that path:
     # a semi-Lagrangian advection has no advective CFL limit, and what
@@ -790,6 +795,20 @@ class MoistHybridModel:
             if name in need
         )
         return need, spectral_names
+
+    #: What the semi-Lagrangian step reads of its input state's grid view:
+    #: every key but the two spectral planes only the Eulerian right-hand
+    #: side reads (``rhs``: the absolute vorticity and the divergence of
+    #: the flux form).  The dependency closure of this set is the full
+    #: closure less those two syntheses, so every value handed back is the
+    #: same row of a narrower stack.
+    SEMILAG_GRID_KEYS = _GRID_KEYS - frozenset({"vorticity", "divergence"})
+
+    def semilag_grid_keys(self):
+        """``only=`` for the semi-Lagrangian step's grid view: everything
+        (None) as shipped, or :attr:`SEMILAG_GRID_KEYS` under
+        ``skip_unread_planes``."""
+        return self.SEMILAG_GRID_KEYS if self.skip_unread_planes else None
 
     def grid_sources(self, state: MoistHybridState, only=None) -> GridSources:
         """The band loop's view of one spectral state's grid space.
@@ -1098,7 +1117,12 @@ class MoistHybridModel:
             del g
             waist.fill_band(rows.start, rows.stop, fluxes)
             del fluxes
-        _zeta, divergence = self.vector._vordiv_from_fourier(waist.close())
+        if self.divergence_only_mass_flux:
+            # Only the divergence is kept, so only its two half-products
+            # are contracted (vector.divergence_from_fourier).
+            divergence = self.vector.divergence_from_fourier(waist.close())
+        else:
+            _zeta, divergence = self.vector._vordiv_from_fourier(waist.close())
         del waist
         spectral = self.transform.project(divergence)
         if self.pipeline.resident:

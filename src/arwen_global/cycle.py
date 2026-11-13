@@ -82,6 +82,7 @@ from .runner import (
     _release_cached_device_blocks,
     _host_spill_receipt,
     _sizing_model_peak_bytes,
+    _snapshot_for,
     hold_pool_to_plan,
     latitude_bands_receipt,
     _update_trackers,
@@ -512,6 +513,7 @@ def _cycle_tracked(
     writer = _CheckpointWriter(
         cfg, backend.to_numpy,
         trajectory=model.trajectory_state if model.semi_lagrangian else None,
+        snapshot=_snapshot_for(cfg, backend),
     )
     output_every = int(round(cfg.output_interval_s / cfg.dt_s))
     checkpoints: list[str] = []
@@ -525,6 +527,7 @@ def _cycle_tracked(
             config_hash=cfg.config_hash, to_numpy=backend.to_numpy,
             trackers=trackers, semi_implicit_scheme=cfg.semi_implicit_scheme,
             integrator=cfg.integrator,
+            compression=str(getattr(cfg, "checkpoint_compression", "deflate")),
         )
         checkpoints.append(str(path))
 

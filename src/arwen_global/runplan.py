@@ -1586,9 +1586,9 @@ def _experiment_doors() -> dict[str, dict[str, Any]]:
     Both loaders are RUN, in order, and the first that accepts the config
     names the door.  A config no door loads carries ``run_plan_route: null``
     and the first door's own refusal as its reason, which is the sentence a
-    user would have met several commands later.  All 55 shipped configs are
-    measured in 0.04 s on the Windows desktop, so this is a measurement
-    rather than a table that can rot.
+    user would have met several commands later.  The 55 configs 0.1.7
+    shipped were measured in 0.04 s on the Windows desktop, so this is a
+    measurement rather than a table that can rot.
     """
 
     import importlib
