@@ -57,12 +57,16 @@ never a checkpoint), leaving out every file whose path and size are in the
 ``path<TAB>size`` lines read from stdin (what the destination holds).
 
 Nothing here changes the forecast: the model is run exactly as by hand.
+
+Chains run on Linux hosts.  ``start`` and ``status`` need a POSIX host
+(``fcntl`` locks, ``fork``, the ``flock`` command) and refuse on Windows
+before they touch the run folder; the module still imports there, and
+``stop``, ``report``, ``pack`` and the pure pieces below work anywhere.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
-import fcntl
 import hashlib
 import json
 import math
@@ -76,6 +80,11 @@ import sys
 import tarfile
 import threading
 import time
+
+try:
+    import fcntl
+except ImportError:  # Windows: start and status refuse (_need_posix)
+    fcntl = None
 
 SCHEMA = "gpuwm.arwen-global-longrun-chain/v1"
 CHAIN_JSON = "chain.json"
@@ -421,6 +430,12 @@ def _detach(run: Path) -> None:
     sys.stderr = os.fdopen(2, "w", buffering=1, closefd=False)
 
 
+def _need_posix(command: str) -> None:
+    if fcntl is None:
+        raise SystemExit(f"chain: {command} needs a POSIX host (fcntl locks, fork, flock); "
+                         "chains run on Linux hosts")
+
+
 def _take_chain_lock(run: Path):
     handle = open(run / CHAIN_LOCK, "a+")
     try:
@@ -436,6 +451,7 @@ def _take_chain_lock(run: Path):
 
 
 def start(args) -> int:
+    _need_posix("start")
     run = Path(args.run_dir).resolve()
     run.mkdir(parents=True, exist_ok=True)
     plan = _create_or_check(run, args)
@@ -698,6 +714,7 @@ def _after_lease(run: Path, plan: dict, folder: Path | None, found, protected) -
 # ---------------------------------------------------------------------------
 
 def status(args) -> int:
+    _need_posix("status")
     run = Path(args.run_dir).resolve()
     if (run / STATUS).is_file():
         sys.stdout.write((run / STATUS).read_text(encoding="utf-8"))

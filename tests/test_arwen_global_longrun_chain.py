@@ -192,3 +192,16 @@ def test_a_pull_never_carries_a_checkpoint_and_skips_what_the_destination_holds(
     assert packed(have) == sorted([
         "STATUS", "leases/L001/arwen-global-receipt.json",
         "products/arwen_global_daily_2026-08-01.npz", "products/receipts/L001.json"])
+
+
+def test_without_fcntl_the_module_imports_and_start_refuses_before_writing(
+        chain, tmp_path, monkeypatch):
+    # Windows has no fcntl: the tool must still import (the tests above run
+    # there), and start must refuse before it writes anything in RUN_DIR.
+    monkeypatch.setattr(chain, "fcntl", None)
+    run = tmp_path / "run"
+    with pytest.raises(SystemExit, match="POSIX host"):
+        chain.main(["start", str(run), "--config", str(tmp_path / "x.toml")])
+    with pytest.raises(SystemExit, match="POSIX host"):
+        chain.main(["status", str(run)])
+    assert not run.exists()
