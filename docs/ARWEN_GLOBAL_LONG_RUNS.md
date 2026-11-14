@@ -136,6 +136,19 @@ from, have their own page, [ARWEN_GLOBAL_OCEAN.md](ARWEN_GLOBAL_OCEAN.md).
   the modes, their parameters, the climatology's SHA-256, the start and the
   SHA-256 of the starting anomaly). A restart whose block differs from the
   rebuilt one is refused before any of its arrays becomes the run's state.
+- A held run can be moved onto a rule from one of its checkpoints:
+  `gpuwm-global run RULE_CONFIG --restart RUN/arwen_global_stepN.npz
+  --branch-from-other-config`. The rule is rebuilt from the run's cold
+  start, so the branch's first step writes the SST a straight rule run
+  writes at that instant; the receipt's `branch.surface_boundary` names the
+  parent's boundary and the branch's, and the branch's checkpoints carry
+  the branch's, so its own restarts continue it. The same works between
+  hold, anomaly and climatology. A boundary with prognostic arrays (the
+  slab, a calibration) cannot be branched onto. Measured on the 50-day T383
+  run of 2026-11-12 (held sea): from day 25 under `mode = "anomaly"`,
+  `anomaly_reference = "start"`, the SST off Tampico read 24.4 C against the
+  held 26.25 C and the day's largest open-water evaporation fell from 55.0
+  to 46.6 kg/m2 (day 26-27: 52.1 to 44.6).
 - The rules are closed forms in time, an ice record re-applied after a
   restart is the identity, and the greenness march is anchored at the model
   day's start. So a restarted run reproduces the straight run bit for bit.

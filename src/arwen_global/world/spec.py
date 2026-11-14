@@ -120,7 +120,7 @@ NOT_SUPPORTED_YET: dict[str, str] = {
         "another amount of air is not supported yet: the convection and "
         "microphysics hold absolute-pressure thresholds that are being "
         "audited (docs/arwen-global-worlds-pressure-audit.md) and the "
-        "radiation refuses above 109,663 Pa"),
+        "radiation refuses above 115,000 Pa"),
 }
 
 #: Air-mass rules for moving the surface pressure under changed terrain.

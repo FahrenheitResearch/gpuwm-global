@@ -110,7 +110,10 @@ CLOSURE_FAMILIES = {0: "none", 1: "quasi_equilibrium", 2: "omega",
 
 def _gf_module(nz: int, updraft_only_when_downdraft_dry: bool = False,
                resolved_convergence_closure: bool = False,
-               resolved_convergence_floor_percent: int = 100):
+               resolved_convergence_floor_percent: int = 100, *,
+               shallow_buoyancy_from_cloud_base: bool = False,
+               shallow_blqe_to_cloud_base: bool = False,
+               shallow_depth_min_m: int = 0):
     """The compiled kernel for ``nz`` levels; with
     ``updraft_only_when_downdraft_dry`` the deep arm keeps running, without
     a downdraft, in the columns WRF's GFDRV rejects because their downdraft
@@ -120,11 +123,17 @@ def _gf_module(nz: int, updraft_only_when_downdraft_dry: bool = False,
     form (gf.cu GF_RESOLVED_CONVERGENCE_CLOSURE: the heating cap yields to
     the column's resolved latent-heat supply, the downdraft sweeps continue
     past massless levels, a downdraft that cannot form leaves the updraft
-    running).  Both off, the module is the oracle-graded kernel word for
-    word."""
+    running); with ``shallow_buoyancy_from_cloud_base`` the shallow arm's
+    cloud-top test integrates the plume's buoyancy from cloud base, as MPAS
+    v8.4.2's and GSL's GFL shallow schemes do (gf.cu
+    GF_SHALLOW_BUOYANCY_FROM_CLOUD_BASE).  All off, the module is the
+    oracle-graded kernel word for word."""
     defines = _gf_defines(nz, updraft_only_when_downdraft_dry,
                           resolved_convergence_closure,
-                          resolved_convergence_floor_percent)
+                          resolved_convergence_floor_percent,
+                          shallow_buoyancy_from_cloud_base=shallow_buoyancy_from_cloud_base,
+                          shallow_blqe_to_cloud_base=shallow_blqe_to_cloud_base,
+                          shallow_depth_min_m=shallow_depth_min_m)
     if not defines:
         from arwen_global.core.kernels import load_module
 
@@ -136,7 +145,10 @@ def _gf_module(nz: int, updraft_only_when_downdraft_dry: bool = False,
 
 def _gf_defines(nz: int, updraft_only_when_downdraft_dry: bool = False,
                 resolved_convergence_closure: bool = False,
-                resolved_convergence_floor_percent: int = 100) -> tuple[tuple[str, int], ...]:
+                resolved_convergence_floor_percent: int = 100, *,
+                shallow_buoyancy_from_cloud_base: bool = False,
+                shallow_blqe_to_cloud_base: bool = False,
+                shallow_depth_min_m: int = 0) -> tuple[tuple[str, int], ...]:
     """The integer defines :func:`_gf_module` compiles gf.cu with.  Every
     value is a positive integer, the only kind the define loader takes: a
     floor percent of 0 (no floor) is spelt GF_RESOLVED_CONVERGENCE_FLOOR_DISABLED
@@ -154,6 +166,12 @@ def _gf_defines(nz: int, updraft_only_when_downdraft_dry: bool = False,
             defines.append(("GF_RESOLVED_CONVERGENCE_FLOOR_DISABLED", 1))
         elif percent != 100:
             defines.append(("GF_RESOLVED_CONVERGENCE_FLOOR_PERCENT", percent))
+    if shallow_buoyancy_from_cloud_base:
+        defines.append(("GF_SHALLOW_BUOYANCY_FROM_CLOUD_BASE", 1))
+    if shallow_blqe_to_cloud_base:
+        defines.append(("GF_SHALLOW_BLQE_TO_CLOUD_BASE", 1))
+    if int(shallow_depth_min_m) > 0:
+        defines.append(("GF_SHALLOW_DEPTH_MIN_M", int(shallow_depth_min_m)))
     return tuple(defines)
 
 
@@ -285,8 +303,24 @@ class GrellFreitas:
     def __init__(self, *, column_chunk: int | None = None,
                  updraft_only_when_downdraft_dry: bool = False,
                  resolved_convergence_closure: bool = False,
-                 resolved_convergence_floor_percent: int = 100):
+                 resolved_convergence_floor_percent: int = 100,
+                 shallow_buoyancy_from_cloud_base: bool = False,
+                 shallow_blqe_to_cloud_base: bool = False,
+                 shallow_depth_min_m: int = 0):
         self._driver = None
+        #: The shallow arm's cloud-top test integrates the plume's buoyancy
+        #: from cloud base (MPAS v8.4.2 and GSL GFL), not from the source
+        #: level (WRF v4.6.1, whose sum lets the sub-cloud deficit cancel the
+        #: cloud layer's positive area); False is WRF's word for word.
+        self.shallow_buoyancy_from_cloud_base = bool(shallow_buoyancy_from_cloud_base)
+        #: The shallow BLQE closure sums the PBL's MSE tendency over the
+        #: sub-cloud layer (1..kbcon, GFL), not 1..kpbl (WRF v4.6.1).
+        self.shallow_blqe_to_cloud_base = bool(shallow_blqe_to_cloud_base)
+        #: Minimum shallow cloud depth (m, cloud base to top; 0 = none, WRF).
+        depth = int(shallow_depth_min_m)
+        if depth < 0:
+            raise ValueError(f"shallow_depth_min_m is {depth}: a depth is not negative")
+        self.shallow_depth_min_m = depth
         #: Deep convection continues without a downdraft where WRF's GFDRV
         #: would reject the column for a downdraft that cannot form (the
         #: saturated global column); False is WRF's word for word.
@@ -434,7 +468,10 @@ class GrellFreitas:
 
         module = _gf_module(nz, self.updraft_only_when_downdraft_dry,
                             self.resolved_convergence_closure,
-                            self.resolved_convergence_floor_percent)
+                            self.resolved_convergence_floor_percent,
+                            shallow_buoyancy_from_cloud_base=self.shallow_buoyancy_from_cloud_base,
+                            shallow_blqe_to_cloud_base=self.shallow_blqe_to_cloud_base,
+                            shallow_depth_min_m=self.shallow_depth_min_m)
         fn = module.get_function("gf_gfdrv_stage")
         block = GF_BLOCK
         # Columns are packed in chunks of `column_chunk` (GF_COLUMN_CHUNK:

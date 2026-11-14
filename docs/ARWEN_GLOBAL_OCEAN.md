@@ -151,6 +151,17 @@ h_ref is the thickness the climatology's ice fraction is read with, 2.0 m
 north and 1.0 m south of the equator: the climatology has no thickness, so
 these are stated engineering choices near observed annual means, not fits.
 
+The slopes dC_s/dt and dC_i/dt come from a shape-preserving cubic (PCHIP,
+Fritsch and Carlson 1980) through the monthly planes at their mid-month
+instants, and each step books the curve's change over that step. A column
+driven by exactly F_cal therefore still reaches each month's plane at its
+mid-month instant, and Q no longer steps there. The piecewise-linear slope
+it replaced was constant between mid-month instants and stepped at each:
+in the 180-day coupled run the ocean mean of Q jumped by 21 to 27 W/m2 at
+the August to November instants and by 12 W/m2 at the December and January
+ones. With the cubic, on the same days the jumps were 0.04 and 0.08 W/m2,
+and no 6-hourly change exceeded 0.18 W/m2.
+
 **Under ice.** While a column holds ice the mixed layer sits at the
 freezing point and the ocean's heat goes to the ice, so on those columns
 Q leaves out its first term, the heat that warms or cools the
@@ -165,6 +176,53 @@ cost: a column whose climatology warms while the slab still holds ice
 reaches open water at the freezing point, then warms at the climatology's
 rate but behind it. One mixed layer per column cannot be both partly
 frozen and above freezing, and this is a limit of the design.
+
+**A cooling Q under a pack.** Where the slab holds ice, a negative Q is
+carried only in the share (1 - A) / (1 - C_i) when the slab's fraction A is
+above the climatology's C_i, and in full otherwise. The reason is how that
+cooling arises. Under the southern summer pack, F_cal is mostly the
+shortwave that the climatology's leads, and its partly frozen water-class
+columns, absorbed at the open-water albedo. That heat is beyond what the
+climatology's slopes store, so Q books it as heat the ocean carried away.
+A pack more closed than the climatology's absorbs only its own open share
+of that heat, so it is charged only that share. A column whose state and
+fluxes are the calibration's is unchanged.
+
+Charged in full, the sink grew the 180-day coupled run's southern pack
+through the austral summer. On the cells where the model and the
+climatology both held ice, the monthly-mean Q was -78 W/m2 in December and
+-87 W/m2 in January. The slab's pack absorbed 5 W/m2 in its leads at the
+end of December against the 45 to 56 W/m2 the calibration booked, because
+its fraction was 0.96 against the climatology's 0.55. The new ice the
+negative flux formed closed the leads further. Southern volume went from
+7.24 to 11.04 thousand km3 between 1 December and 28 January.
+
+The same run resumed with the share from its 30 November checkpoint
+(RTX 5090, 2026-11-13/14) gave these figures. The run is on the long-run
+line with the fix cherry-picked onto it: its ocean modules are 0.2.2's
+byte for byte, and its atmosphere is that line's, not 0.2.2's.
+
+- Monthly-mean Q on the shared cells was -30 W/m2 in December and -42 W/m2
+  in January.
+- The fraction on those cells was 0.78 and 0.72, against the climatology's
+  0.63 and 0.53.
+- Southern volume fell from 7.21 to 2.52 thousand km3.
+- The 15 % ice area fell from 8.47 to 3.94 million km2 (-53 %). The
+  climatology's area fell from 13.22 to 6.24 (-53 %).
+- The northern ice area at 28 January was 13.52 million km2 against 13.59
+  without the share, and the northern volume 11.98 against 12.70 thousand
+  km3. Over those months the share hardly acts in the north: Q under the
+  winter pack is positive.
+- The energy books' largest column residual was 1.05e-2 J/m2, and the
+  open-ocean SST against the climatology was -0.471 K against -0.472.
+
+The CAM slab ocean's answer to the same problem (the CAM5 scientific guide,
+"Slab Ocean Model") is different. It tapers every cooling Q to zero as the
+mixed layer nears freezing, spreads the withheld heat over warm water, and
+tunes a per-hemisphere term under ice. Here that would withhold 0.6 to
+0.8 PW in December and January. It would also remove the -51 to -61 W/m2
+under the northern summer pack, which follows the analysis to its
+September minimum with its fraction as compact as the climatology's.
 
 **How F_cal is made.** The standard way (Hansen and co-authors 1984, the
 CESM slab-ocean lineage): a run of this model with the SST prescribed.
@@ -391,7 +449,11 @@ B's own functions; the parts' known answers are in
   in `self_sha256`, read with `tools/arwen_global_checkpoint_identity.py`.
   The 1 h run repeated on 2026-11-13, before and after the under-ice rule
   and the checkpoint reader's float64 slab arrays: identical at steps 0, 6
-  and 12, config hash `500bba26...` on both.
+  and 12, config hash `500bba26...` on both. Repeated for the under-ice
+  share and the cubic tendency (2026-11-14, RTX 5090): the shipped T255
+  native semi-Lagrangian 6 h config dated to GDAS 2026-09-01 00Z, no table,
+  on 0.2.0 and on the fixed tree. Steps 0, 36 and 72 were identical array
+  for array and in `self_sha256`, config hash `bb21f857...` on both.
 - **OC-2, restart is exact with the ocean on.** The T3 smoke under `slab`
   with a synthetic climatology and Q file, and under the calibration,
   straight and restarted at a step inside an ice record and across a
@@ -538,7 +600,12 @@ time.
   symmetric: a net cooling of the ocean under a pack adds area at the
   new-ice thickness, a melt takes area away only as the square root of
   the volume, and Q's ice term pays for the climatology's area change at
-  h_ref. Which of these to change is open.
+  h_ref. A cooling Q under a pack more closed than the climatology's is now
+  carried only in its open share (under ice, above), which stopped the
+  southern summer pack's growth; the area rules themselves are unchanged.
+  The share has been measured over December and January only; under the
+  northern summer pack (July and August, where Q is -51 to -61 W/m2) it is
+  not yet measured.
 - A month's F_cal comes from whatever days of that month a calibration
   reached. A ten-day calibration in mid-November leaves October and
   December with under half a day each (0.17 and 0.37 days), and after the

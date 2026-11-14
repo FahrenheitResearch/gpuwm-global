@@ -659,7 +659,15 @@ driver gave (`tests/test_rrtmgp_column_spans_cuda.py`). On the RTX 5070 Ti
 a call is 0.96 s at T255 (chunk 12,500) and 2.17 s at T383 (chunk 5,000),
 against 2.26 and 4.30 s before (the changelog has the runs).
 
-Grell-Freitas is default on; `cumulus = "none"` removes it. The adapter
+Grell-Freitas is default on; `cumulus = "none"` removes it. Three
+experimental switches on its shallow arm (0.2.2, all off by default, each
+joining the config hash only when set) are
+`gf_shallow_buoyancy_from_cloud_base`, `gf_shallow_blqe_to_cloud_base` and
+`gf_shallow_depth_min_m`: together at 500 m they took a 10-day T255 August
+run's excess of reflected sunlight over the tropical ocean from +30.1 to
++7.9 W/m2 against CERES, in one case. A 30-day December run vented the
+trades too, but darkened the Peru deck from +8.5 to -28.8 W/m2.
+[trade-shallow.md](trade-shallow.md) has the cause and the runs. The adapter
 owns the top-to-surface reversal and the contiguous FP32 packing at the
 boundary, and that conversion is part of its arithmetic identity. A native
 half step is all-or-nothing: the caller's exchange cannot be partially

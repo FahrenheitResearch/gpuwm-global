@@ -211,20 +211,84 @@ def test_the_parameters_refuse_what_the_switch_does_not_offer():
             SlabParameters(**bad)
 
 
-def test_the_tendency_is_the_slope_between_mid_month_instants(tmp_path):
+def test_the_tendency_over_a_bracket_is_the_change_between_its_months(tmp_path):
+    """Summed step by step over the interval between two mid-month instants,
+    the tendency gives exactly the change between the two months' planes."""
     grid = GaussianGrid.create(21)
     clim = _climatology(tmp_path, grid)
-    ds, di = climatology_tendency(clim, START, np)
     i0, i1, t0, t1 = month_bracket(START)
-    span = (t1 - t0).total_seconds()
-    expected = (clim.sst_k[i1].astype(np.float64) - clim.sst_k[i0].astype(np.float64)) / span
-    np.testing.assert_array_equal(ds, expected)
-    np.testing.assert_array_equal(di, 0.0)
-    # The slope times an interval inside the bracket is the interpolated change.
-    later = START + timedelta(hours=30)
-    change = (interpolate(clim.sst_k.astype(np.float64), later)
-              - interpolate(clim.sst_k.astype(np.float64), START))
-    np.testing.assert_allclose(ds * 30 * 3600.0, change, rtol=0.0, atol=1.0e-9)
+    total = np.zeros(clim.sst_k.shape[1:])
+    when = t0
+    while when < t1:
+        until = when + timedelta(seconds=DT)
+        ds, di = climatology_tendency(clim, when, np, until=until)
+        total += ds * DT
+        np.testing.assert_array_equal(di, 0.0)
+        when = until
+    expected = clim.sst_k[i1].astype(np.float64) - clim.sst_k[i0].astype(np.float64)
+    np.testing.assert_allclose(total, expected, rtol=0.0, atol=1.0e-9)
+
+
+def test_the_tendency_is_continuous_across_a_mid_month_instant(tmp_path):
+    """The piecewise-linear slope stepped at every mid-month instant (Q's
+    ocean mean jumped 20 to 27 W/m2 there in the 180-day coupled run); the
+    curve's slope just before and just after one now agree."""
+    grid = GaussianGrid.create(21)
+    clim = _climatology(tmp_path, grid)
+    knot = mid_month(2026, 12)
+    before, _ = climatology_tendency(clim, knot - timedelta(seconds=1), np)
+    after, _ = climatology_tendency(clim, knot, np)
+    _i0, _i1, t0, t1 = month_bracket(knot - timedelta(seconds=1))
+    _j0, _j1, u0, u1 = month_bracket(knot)
+    old_before = (clim.sst_k[_i1].astype(np.float64) - clim.sst_k[_i0]) / (t1 - t0).total_seconds()
+    old_after = (clim.sst_k[_j1].astype(np.float64) - clim.sst_k[_j0]) / (u1 - u0).total_seconds()
+    jump_old = float(np.max(np.abs(old_after - old_before)))
+    jump_new = float(np.max(np.abs(after - before)))
+    assert jump_old > 1.0e-8                     # the climatology bends here
+    assert jump_new < 1.0e-6 * jump_old
+    # A step's rate is the curve's change over it, and near the step's start
+    # it is the curve's own slope.
+    ds, _ = climatology_tendency(clim, knot, np, until=knot + timedelta(seconds=DT))
+    np.testing.assert_allclose(ds, after, rtol=0.0, atol=1.0e-3 * float(np.max(np.abs(after))))
+    with pytest.raises(ValueError, match="until > when"):
+        climatology_tendency(clim, knot, np, until=knot)
+
+
+def test_a_climatology_linear_in_time_has_its_constant_slope(tmp_path):
+    """Monthly planes that lie on a line in time (across the unequal months)
+    give that line's slope everywhere: the curve adds no wiggle."""
+    grid = GaussianGrid.create(21)
+    nlat, nlon = int(grid.nlat), int(grid.nlon)
+    origin = mid_month(2026, 1)
+    seconds = np.array([(mid_month(2026, m) - origin).total_seconds() for m in range(1, 13)])
+    rate = 2.0e-7
+    # Months 10..12 and 1..2 are the ones the curve reads around November.
+    sst = 280.0 + rate * seconds[:, None, None] + np.zeros((12, nlat, nlon))
+    ice = 0.5 - 1.0e-8 * seconds[:, None, None] + np.zeros((12, nlat, nlon))
+    path = tmp_path / "linear.npz"
+    ocean = np.ones((nlat, nlon), dtype=bool)
+    write_climatology(path, {"sst_k": sst, "sea_ice_fraction": ice}, ocean=ocean,
+                      latitude_deg=grid.latitude_deg, longitude_deg=grid.longitude_deg,
+                      provenance={"schema": "gpuwm.arwen-global-surface-climatology/v1",
+                                  "test": True})
+    clim = load_climatology(path)
+    for when in (datetime(2026, 9, 20, tzinfo=timezone.utc), mid_month(2026, 10),
+                 datetime(2026, 11, 3, 7, tzinfo=timezone.utc)):
+        ds, di = climatology_tendency(clim, when, np)
+        # The planes are stored as float32, so the line holds to their rounding.
+        np.testing.assert_allclose(ds, rate, rtol=2.0e-2)
+        np.testing.assert_allclose(di, -1.0e-8, rtol=2.0e-2)
+
+
+def test_a_cooling_q_under_ice_is_carried_in_the_open_share():
+    from arwen_global.ocean_slab import under_ice_cooling_share
+
+    a = np.array([0.96, 0.55, 0.30, 1.0, 1.0, 0.8, 0.0])
+    c = np.array([0.55, 0.55, 0.55, 1.0, 0.6, np.nan, 0.0])
+    share = under_ice_cooling_share(ice_fraction=a, climatology_ice_fraction=c, xp=np)
+    np.testing.assert_allclose(share, [0.04 / 0.45, 1.0, 1.0, 1.0, 0.0, 0.2, 1.0],
+                               rtol=1.0e-12)
+    assert share.dtype == np.float64
 
 
 def test_the_tendency_reads_zero_off_the_climatology_ocean(tmp_path):
@@ -262,12 +326,16 @@ def test_a_column_driven_by_exactly_f_cal_follows_the_climatology(tmp_path):
     params = SlabParameters()
     h_ref = np.ones(shape)
     when = START
-    t = interpolate(clim.sst_k.astype(np.float64), START)
+    # On the curve the tendency is read from (it meets each month's plane at
+    # its mid-month instant; between them it is not the linear interpolant).
+    from arwen_global.ocean_slab import _smooth_climatology
+
+    t = _smooth_climatology(clim.sst_k, START, np, derivative=False)
     marks = {mid_month(2026, 11): 10, mid_month(2026, 12): 11}
     seen = 0
     while when < mid_month(2026, 12):
         h = mixed_layer_depth(clim, when, params, ocean, np)
-        ds, di = climatology_tendency(clim, when, np)
+        ds, di = climatology_tendency(clim, when, np, until=when + timedelta(seconds=DT))
         fc = qfile.at(when, np)
         q = qflux(depth_m=h, sst_rate_k_s=ds, ice_fraction_rate_s=di,
                   ice_reference_thickness_m=h_ref, calibration_flux_w_m2=fc, xp=np)

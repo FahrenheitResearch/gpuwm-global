@@ -449,8 +449,10 @@ def test_fresh_with_the_ensemble_filter_hands_back_a_control_analysis_and_a_fore
 def test_an_analysed_state_above_the_radiation_ceiling_is_named_and_not_handed_back(spun_up):
     """The T127 over T63 twin's noisy arm died inside the radiation tables
     with a 1,096.98 hPa column after a noisy pressure increment; the door
-    reads the analysed surface pressure against the radiation tables'
-    ceiling (109,663 Pa) and carries the background when it exceeds it.
+    reads the analysed surface pressure against the radiation's pressure
+    ceiling (115,000 Pa since 0.2.2, the deepest layer the radiation
+    accepts; 109,663 Pa, the tables' own top, when the arm died) and
+    carries the background when it exceeds it.
     The observation vocabulary's 108,000 Pa gross bound is a bound on a
     report, not on a state: a T127 control carries 107.7 kPa at the Andes'
     Pacific foot by construction, so a state between the two is within."""
@@ -466,7 +468,7 @@ def test_an_analysed_state_above_the_radiation_ceiling_is_named_and_not_handed_b
     model.enforce(state)
     inside = analysed_state_within_bounds(model, transform, state)
     assert inside["within"] is True and inside["columns_outside"] == 0
-    assert inside["ceiling_pa"] == RADIATION_SURFACE_PRESSURE_CEILING_PA == 109_663.0
+    assert inside["ceiling_pa"] == RADIATION_SURFACE_PRESSURE_CEILING_PA == 115_000.0
     assert 45_000.0 < inside["surface_pressure_min_pa"] <= inside["surface_pressure_max_pa"] < 108_000.0
     field_index = SPECTRAL_FIELDS.index("log_surface_pressure")
 
@@ -479,9 +481,17 @@ def test_an_analysed_state_above_the_radiation_ceiling_is_named_and_not_handed_b
     # ceiling is within: nothing refuses it.
     between = analysed_state_within_bounds(model, transform, lifted_by(108_800.0 / inside["surface_pressure_max_pa"]))
     assert between["within"] is True and 108_000.0 < between["surface_pressure_max_pa"] < 109_663.0
-    # Lift the whole surface pressure by ten percent (ln ps + ln 1.1): above
+    # Past the tables' own top and under the radiation's ceiling is within
+    # too: the radiation looks such a layer up at the tables' deepest
+    # pressure (0.2.1) and steps it.
+    past_tables = analysed_state_within_bounds(
+        model, transform, lifted_by(112_000.0 / inside["surface_pressure_max_pa"]))
+    assert past_tables["within"] is True
+    assert 109_663.0 < past_tables["surface_pressure_max_pa"] < 115_000.0
+    # Lift the whole surface pressure until its maximum reads 116 kPa: above
     # the ceiling, named and not handed back.
-    outside = analysed_state_within_bounds(model, transform, lifted_by(1.1))
+    outside = analysed_state_within_bounds(
+        model, transform, lifted_by(116_000.0 / inside["surface_pressure_max_pa"]))
     assert outside["within"] is False and outside["columns_outside"] > 0
-    assert outside["surface_pressure_max_pa"] > 109_663.0
+    assert outside["surface_pressure_max_pa"] > 115_000.0
     assert outside["breakage"] == ANALYSED_STATE_BOUNDS_BREAKAGE and "1,096.98 hPa" in outside["breakage"]

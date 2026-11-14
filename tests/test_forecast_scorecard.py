@@ -384,3 +384,20 @@ def test_a_reference_that_does_not_decode_is_a_named_missing_row(tmp_path):
     assert got is None and files == {}
     assert "did not decode" in failures[0]["reason"]
     assert not bad.exists() and (tmp_path / (bad.name + ".undecodable")).exists()
+
+
+def test_an_undecodable_analysis_is_a_failure_row_through_the_default_decoder(tmp_path):
+    """The default decoder was a name only score_forecast imported, so the
+    first reference the real scorecard decoded raised NameError
+    (measured 2026-11-13 on the 0.2.0 wheel, `gpuwm-global score` of a
+    T255 run): every analysis row was lost with the observation rows."""
+    from arwen_global import forecast_scorecard as fs
+
+    bad = tmp_path / "gdas.t00z.pgrb2.0p25.f000"
+    bad.write_bytes(b"GRIB-cut-short")
+    files = {"2026-09-01_00:00:00": bad}
+    failures = []
+    got = fs.decode_or_fail("gfs", tmp_path / "no-such-mapping.json", files,
+                            "2026-09-01_00:00:00", failures, progress=lambda *_: None)
+    assert got is None and files == {}
+    assert "did not decode" in failures[0]["reason"]

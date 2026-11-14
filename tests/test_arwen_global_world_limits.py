@@ -200,7 +200,7 @@ def test_the_preflights_rows_are_here_unchanged():
     assert rows["skin_temperature_max_k"].caution == 5.0
     assert rows["air_temperature_min_k"].value == 140.0
     assert rows["radiation_table_floor_k"].value == 160.0
-    assert rows["surface_pressure_ceiling_pa"].value == 109_663.0
+    assert rows["surface_pressure_ceiling_pa"].value == 115_000.0
     assert rows["surface_pressure_ceiling_pa"].caution == 1_116.0
     assert rows["surface_pressure_floor_pa"].value == 45_000.0
     assert rows["ocean_water_store_kg_m2"].value == 500.0

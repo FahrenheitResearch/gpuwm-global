@@ -70,7 +70,7 @@ over each hunk's engine-side lines and another over its carried-side lines. All
 37 carried files are measured that way, whatever their suffix; a pair either
 side of which does not decode as text has no lines to diff, so it is compared
 byte for byte instead and a difference there is one whole-file hunk.
-`src/arwen_global/data/engine-divergence.json` carries all 865 of them with the
+`src/arwen_global/data/engine-divergence.json` carries them, 912 at 0.2.2, with the
 class and decision of the row they belong to, and the engine line keys its own
 change lists by the engine-side hash, so the same difference has the same name
 on both sides. `tools/fingerprint_engine_divergence.py` documents the
@@ -102,6 +102,28 @@ normalisation exactly and is what recomputes it.
   Blackwell cards only. The longwave lid fix then added two hunks, measured on the same engine, filed as `RRTMGP-26`. The valid-year gas selection added one more, measured on the same engine, filed as `RRTMGP-27`. The in-cloud path factor added three, measured on the same engine, filed as `RRTMGP-28`. The 2.8.0 baseline
   before it is in the git history of this file; it read 361 hunks forward
   from 2.7.3, dropped 14 and read 66 new ones.
+* **Where the rows stand at 0.2.2 (measured 2026-11-14).** Since 0.2.0 the
+  declared range is `gpuwm>=2.9.13,<2.10`, the fingerprint tool refuses any
+  engine outside it, and the two comparison nodes skip because the rows
+  still name 2.8.5. The radiation pressure ceiling (`RRTMGP-29`,
+  `GAS-CU-2`, `NPREF-17`) and the shallow-arm switches (`GF-CU-13`, and the
+  moved carried side of `GF-PY-3`, `GF-PY-4` and `GF-CU-3`) were measured
+  against 2.8.5 with the tool's own hunk function, the range check set
+  aside for that one engine, so they join the rows on the baseline the rows
+  are keyed to; every `core/gf.py` and `core/kernels/gf.cu` row's line
+  ranges were re-read from that measurement. Measured the same way, 51
+  hunks still have no row and 21 rows no hunk, all of them from before 0.2.1:
+  38 hunks in `core/rrtmgp.py` where later carried changes moved the lines
+  of `RRTMGP-14`, `RRTMGP-16`, `RRTMGP-23` and `RRTMGP-24`; six in
+  `core/physics.py` and one in `core/ysu.py` whose engine-side text, after
+  the carve's current rewiring, no longer matches `PHYSICS-1`, `PHYSICS-19`
+  and `YSU-PY-2`; and the six terrain-drag hunks, whose rows were taken on
+  2.9.13. Against 2.9.13 itself the tree measures 1,449 hunks: 526 carry a
+  row forward, 923 are new and 386 rows match nothing. That re-baseline
+  is the `--rewrite` workflow of the standing note below, with 923 hunks
+  (17,683 engine lines and 7,677 carried lines) to read, classify and
+  date against the engine's public tags from v2.8.5 to v2.9.13. It was not
+  done in the 0.2.2 cut.
 * **This package:** the model source revision `a2a674a2757c2dfc70fc9a2b12b4412ba3b18fcd`
   of 2026-09-12, which is what `SOURCE.md` records and what `pyproject.toml`
   states beside the version.
@@ -189,6 +211,7 @@ notice that travels with them.
 | `RRTMGP-26` | 664-681, 693-693 | 757-762, 774-774 | equal to engine | global-fix | package 9df6bf6 and 9d4ea0f, 2026-10-05 | level-0 potential temperature drift -59.4 to -10.6 K/day (T255, GDAS 2026-09-01 00Z); binds only below a 2 hPa top | **offer** |
 | `RRTMGP-27` | 3554-3574 | after 3324 | equal to engine | global-fix | package, 2026-11-12 | nothing unless called: the default `ghg_year = "start"` never calls it; under `"valid"` CO2 steps by the year's published change, 2.85 ppm from 2024 to 2025 | **offer** |
 | `RRTMGP-28` | 3351-3361, 3378-3381, 4066-4071 | after 3145, after 3164, after 3678 | equal to engine | global-fix | package fix/albedo, 2026-11-12 | nothing at the shipped default | **offer** |
+| `RRTMGP-29` | 526-554, 1823-1824, 3138-3138, 3238-3238, 4780-4780, 4856-4856, 5475-5475 | after 612, 1519-1519, 2985-2988, 3080-3082, 4171-4172, 4248-4249, 4803-4804 | equal to engine | global-fix | package 9555906, 2026-11-13 | nothing for a layer inside the tables; a layer between 1,096.6 and 1,150 hPa radiates instead of stopping the run | **offer** |
 
 **`RRTMGP-1`.** Both copies now open with the same third-party notice. One word inside it differs, because this copy cites the reference commit from its docstring and the engine's cites it from its header. Take an engine rewording of the notice whenever it is convenient.
 
@@ -244,25 +267,27 @@ notice that travels with them.
 
 **`RRTMGP-28`.** The driver takes `cloud_path_scale` (default 1.0) and, below 1, multiplies the in-cloud liquid and ice paths that both the longwave and the shortwave solver radiate; the sizes and the size-bounding record are left as they were. It is the effective-thickness correction for in-cloud variability a homogeneous subcolumn cannot carry (Cahalan et al. 1994, about 0.7 for marine stratocumulus; Tiedtke 1996, 0.7 on liquid and ice in both spectra in the ECMWF model). WRF's RRTMG has no such factor, so it is a declared departure, reached only through the native option `radiation_cloud_inhomogeneity = "tiedtke1996"`; at 1.0 the call is the call it always was (`tests/test_arwen_global_cloud_radiation_options_card.py`). See `docs/albedo-fixes.md`.
 
+**`RRTMGP-29`.** RRTMGP v1.9's gas tables end at 109,663.316 Pa of layer pressure, and the range gate both copies run refused anything deeper, so the run stopped. A truncated orography goes deeper under a winter high: the T127 year run of 2026-11-13 stopped at day 192.8 on a 109,701.9 Pa layer where the T127 terrain rings down to -101 m on the south-east Caspian shore. This copy looks such a layer up at the tables' deepest pressure (`GAS-CU-2`, and `NPREF-17` in the mirror), the way the UFS/CCPP RRTMGP interface bounds `p_lay` to `get_press_max()` in `GFS_rrtmgp_pre.F90`, and ends the gate at `RRTMGP_PLAY_CEILING_PA` = 115,000 Pa instead of at the table top. Only the lookup coordinate moves: the absorber columns, the minor-gas density scaling, the troposphere test and the cloud fraction keep the true pressure. A layer inside the tables reads exactly what it read before (`tests/test_rrtmgp_pressure_ceiling.py` pins the prepass to the untouched oracle bit for bit), and a 12 h winter T255 run was byte-identical to the 0.2.0 tree in all 589 arrays. The engine's copy keeps the table-top gate, so any engine run with a layer deeper than the tables stops the same way; it is offered as is. Measured against the 2.8.5 baseline this file is keyed to: seven hunks, every one on lines no other row covers.
+
 ### `core/gf.py`
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
 | `GF-PY-1` | 5-6 | 5-12 | equal to carried | deliberate | owner c9a5f2c88, 2026-09-12, keeps the block; engine c0ffc53b5, 2026-09-04, replaced its own copy | nothing by itself | **refuse** |
 | `GF-PY-2` | after 81 | 88-96 | equal to carried | deliberate | owner c9a5f2c88, 2026-09-12, keeps the block; engine c0ffc53b5, 2026-09-04, replaced its own copy | nothing on the shipped path | **refuse** |
-| `GF-PY-3` | 87-92, 94-128, 134-157 | 102-102, 104-111, 117-117 | equal to engine | adaptation | owner fca73b086, 2026-09-04; 957059111, 2090ac84a, e30f9fda6, c4a95bc61 and 58fd47304, 2026-09-05 | nothing at the shipped defaults | **refuse** |
-| `GF-PY-4` | 209-229, 267-270, 272-308, 352-356, after 362, 365-365, 369-369, 374-393, 399-403, 407-407, 413-419, 422-433, 435-486, 489-496, 502-521, 526-528 | after 267, 305-305, after 306, 350-365, 372-372, 375-375, 379-379, 384-402, 408-418, 422-422, 428-441, 444-450, 452-458, 461-469, 475-479, 484-485 | equal to engine | adaptation | owner a74805618, 2026-09-01 | nothing | **offer** |
-| `GF-PY-5` | 338-338 | 336-336 | equal to carried | no-behaviour | engine 9a2f350e7, 2026-09-14 | nothing, docstring only | **none** |
-| `GF-PY-6` | 345-345, 347-348 | 343-344, 346-346 | equal to carried | engine-fix | engine v2.8.5 (3e2d273), 2026-10-03 | nothing at this package's settings | **none** |
-| `GF-PY-7` | 189-197 | 149-256 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing: the engine records every output word unchanged | **none** |
+| `GF-PY-3` | 87-92, 94-137, 143-175 | 102-102, 104-111, 117-117 | equal to engine | adaptation | owner fca73b086, 2026-09-04; 957059111, 2090ac84a, e30f9fda6, c4a95bc61 and 58fd47304, 2026-09-05; package fix/trade-shallow, 2026-11-13 | nothing at the shipped defaults | **refuse** |
+| `GF-PY-4` | 227-265, 303-309, 311-360, 404-408, after 414, 417-417, 421-421, 426-445, 451-455, 459-459, 465-474, 477-489, 491-542, 545-552, 558-577, 582-584 | after 267, 305-305, after 306, 350-365, 372-372, 375-375, 379-379, 384-402, 408-418, 422-422, 428-441, 444-450, 452-458, 461-469, 475-479, 484-485 | equal to engine | adaptation | owner a74805618, 2026-09-01 | nothing | **offer** |
+| `GF-PY-5` | 390-390 | 336-336 | equal to carried | no-behaviour | engine 9a2f350e7, 2026-09-14 | nothing, docstring only | **none** |
+| `GF-PY-6` | 397-397, 399-400 | 343-344, 346-346 | equal to carried | engine-fix | engine v2.8.5 (3e2d273), 2026-10-03 | nothing at this package's settings | **none** |
+| `GF-PY-7` | 207-215 | 149-256 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing: the engine records every output word unchanged | **none** |
 
 **`GF-PY-1`.** The docstring of the cumulus driver. On the engine it dates and describes the engine's own gamma replacement; here it describes the gamma this package runs. No number moves. Refused with GF-CU-1, whose position it restates.
 
 **`GF-PY-2`.** Three per-column scalar slots at the engine's driver entry point that let a reference capture's shape factor be pinned in place of the computed one; the engine's shipped path zeroes all three. They exist so the engine can audit its own gamma replacement against a capture. This package computes its shape factor with the gamma it was graded with and has nothing to audit that way, so the slots are refused with GF-CU-9, the kernel half of the same hatch.
 
-**`GF-PY-3`.** The per-column closure reading's names, and the plumbing that compiles the kernel with integer defines for the two coarse-column switches. Both switches default off, so a default run compiles the engine's own text. An engine change to the module dispatcher lands on the wider signature and has to be re-applied rather than copied over. At 2.8.5 the engine's module dispatcher also took a stochastic-perturbation argument (`GF-PY-6`) on the signature this row widens.
+**`GF-PY-3`.** The per-column closure reading's names, and the plumbing that compiles the kernel with integer defines for the two coarse-column switches. Both switches default off, so a default run compiles the engine's own text. An engine change to the module dispatcher lands on the wider signature and has to be re-applied rather than copied over. At 2.8.5 the engine's module dispatcher also took a stochastic-perturbation argument (`GF-PY-6`) on the signature this row widens. Since 0.2.2 the same plumbing also compiles the three shallow-arm defines of `GF-CU-13`; they default off, and a default run still compiles the engine's own text.
 
-**`GF-PY-4`.** The seam packs and allocates one column chunk at a time. One thread still owns one complete column, the kernel never reads across columns, and the per-launch slices are contiguous views indexed exactly as before, so a column's answer does not depend on which chunk carried it. The engine already tiles the LAUNCH; what this adds is an outer loop that also bounds the ALLOCATION, and an absent driver lane stops materialising a full-batch zero array. Measured on the largest global batch, 1,283,202 columns by 40 levels on a 32 GB card, the whole-batch input block was 3.07 GB and the output block 3.28 GB and the output allocation failed with 32.2 GB already live; at the shipped chunk the two blocks are 0.65 GB. The engine's seam still builds the whole batch in one block and would hit the same wall at the same size, so it is worth offering back. Between 2.8.1 and 2.8.5 the engine's own seam took the stochastic pattern lanes, empty rather than zeroed output blocks and a view-based packing on these lines; it still builds the whole batch in one block, so the offer stands.
+**`GF-PY-4`.** The seam packs and allocates one column chunk at a time. One thread still owns one complete column, the kernel never reads across columns, and the per-launch slices are contiguous views indexed exactly as before, so a column's answer does not depend on which chunk carried it. The engine already tiles the LAUNCH; what this adds is an outer loop that also bounds the ALLOCATION, and an absent driver lane stops materialising a full-batch zero array. Measured on the largest global batch, 1,283,202 columns by 40 levels on a 32 GB card, the whole-batch input block was 3.07 GB and the output block 3.28 GB and the output allocation failed with 32.2 GB already live; at the shipped chunk the two blocks are 0.65 GB. The engine's seam still builds the whole batch in one block and would hit the same wall at the same size, so it is worth offering back. Between 2.8.1 and 2.8.5 the engine's own seam took the stochastic pattern lanes, empty rather than zeroed output blocks and a view-based packing on these lines; it still builds the whole batch in one block, so the offer stands. Since 0.2.2 the seam's constructor also takes and validates the three shallow-arm switches of `GF-CU-13` and hands them to the module dispatcher; that is part of the offer only together with that row.
 
 **`GF-PY-5`.** One docstring word from the engine's 2.7.5 word sweep. Nothing to decide.
 
@@ -489,6 +514,7 @@ These rows, and the two of `core/kernels/terrain_drag.cu` below, are measured ag
 | `NPREF-14` | 609-611, after 669 | 572-576, 635-673 | equal to carried | engine-fix | engine v2.8.2 (4c27749), 2026-10-02 | nothing in this package | **none** |
 | `NPREF-15` | 3516-3517, 3523-3523, 3540-3540, 3542-3542, 3551-3551, 3554-3554, 3559-3559, 3562-3562, 3570-3570, 3573-3573, 3626-3626, 3628-3629, 3633-3633, after 3647, 3649-3649, 3651-3651, 3760-3761, 3811-3811, 3819-3819 | 3552-3553, 3559-3559, 3576-3576, 3578-3581, 3590-3594, 3597-3600, 3605-3605, 3608-3610, 3618-3622, 3625-3628, 3681-3682, 3684-3685, 3689-3690, 3705-3705, 3707-3707, 3709-3709, 3818-3819, 3869-3872, 3880-3883 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01, and v2.8.2 (4c27749), 2026-10-02 | nothing in this package | **none** |
 | `NPREF-16` | 1323-1324, 1329-1331, 1335-1335, 1377-1377, 1418-1418, 1990-1990, 2009-2011, 2013-2015, 2109-2110, 2200-2200 | 1309-1309, 1314-1314, 1318-1318, 1360-1360, 1394-1394, 1966-1966, after 1984, after 1985, 2076-2076, 2165-2165 | equal to engine | global-fix | package fix/droplet-number, 2026-11-12 | nothing at the shipped default | **offer** |
+| `NPREF-17` | 7148-7155, 7176-7181, 7271-7272, 7693-7694 | after 7179, 7200-7200, 7290-7291, 7683-7684 | equal to engine | global-fix | package 9555906, 2026-11-13 | nothing for a layer inside the tables | **offer** |
 
 **`NPREF-1`.** The third-party notice for what this file transcribes. Its RTE+RRTMGP half matches the engine's own header for the same work; its AER half is the correction of RRTMGP-2, in the mirror rather than the driver, and applies to the engine's copy unchanged.
 
@@ -520,6 +546,8 @@ These rows, and the two of `core/kernels/terrain_drag.cu` below, are measured ag
 
 **`NPREF-16`.** The mirror half of `MORRISON-CU-4`: `np_morrison_column` takes the column's droplet number, WRF's 250 cm-3 by default, and both resets read it.
 
+**`NPREF-17`.** The mirror half of `RRTMGP-29` and `GAS-CU-2`: the float64 gas interpolation looks a layer deeper than the tables' deepest pressure up at it, the troposphere test keeps the true pressure, and both range checks accept layers to `RRTMGP_PLAY_CEILING_PA`, through one helper that mirrors the driver's `_play_bounds`.
+
 ### `core/kernels/__init__.py`
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
@@ -544,21 +572,22 @@ These rows, and the two of `core/kernels/terrain_drag.cu` below, are measured ag
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
-| `GF-CU-1` | 14-14, 42-47, 49-54, 56-61, 629-635, 3038-3040, 3048-3054 | 14-15, 43-49, 51-57, 59-95, 576-583, 2859-2868, 2876-2879 | equal to carried | deliberate | owner c9a5f2c88, 2026-09-12, keeps the block; engine c0ffc53b5, 2026-09-04, replaced its own copy | taking the engine's would move the deep cloud-base mass flux by up to 7.3 percent | **refuse** |
-| `GF-CU-3` | 98-184 | after 131 | equal to engine | deliberate | owner bc62dcfdd and 4939f1c13, 2026-09-04; 957059111, 2026-09-05 | nothing at the shipped defaults | **refuse** |
-| `GF-CU-4` | 1199-1210, 2247-2247, 2312-2325 | 1151-1151, after 2180, after 2244 | equal to engine | deliberate | owner 957059111, 2026-09-05 | nothing with the define off | **refuse** |
-| `GF-CU-5` | 2352-2352, 2383-2398, 2488-2488, 2956-2956, 3010-3011, 3024-3024 | after 2270, after 2300, 2390-2390, after 2779, 2833-2833, after 2845 | equal to engine | deliberate | owner bc62dcfdd and 4939f1c13, both 2026-09-04; 55aa34fb4, 2026-09-04 | nothing at the default | **refuse** |
-| `GF-CU-6` | 2908-2928, 3941-3944, 3947-3947, 3956-3956, 3973-3974, 4177-4177, 4179-4180, 4206-4208 | after 2752, after 3765, 3768-3768, after 3776, after 3792, after 3981, 3983-3983, 4008-4009 | equal to engine | deliberate | owner 957059111, 2026-09-05 | nothing with the define off, re-derived rather than assumed | **refuse** |
-| `GF-CU-7` | 1487-1488, 1511-1513, 1516-1517, 2785-2841, 2848-2848 | 1426-1426, after 1447, after 1449, after 2686, 2693-2693 | equal to engine | deliberate | owner 2090ac84a, e30f9fda6, c4a95bc61 and 58fd47304, all 2026-09-05 | nothing with the define off, re-derived rather than assumed | **refuse** |
-| `GF-CU-8` | 1341-1341, 1346-1346, 1390-1390, 1495-1495, 1718-1738, 1751-1752, 1759-1767, 2781-2781, 2875-2875, 3022-3022, 4000-4018, 4024-4038, 4192-4193, 4202-4202, 4308-4323, 4330-4333 | 1282-1282, after 1286, after 1329, after 1432, after 1641, after 1653, after 1659, 2683-2683, 2720-2720, 2844-2844, after 3827, after 3832, 3995-3995, 4004-4004, after 4108, after 4114 | equal to engine | adaptation | owner fca73b086, 2026-09-04; 957059111 and 58fd47304, 2026-09-05 | nothing, verified by reading every new access | **offer** |
-| `GF-CU-9` | after 3984, after 3986, after 4067, 4172-4172, 4198-4198 | 3803-3811, 3814-3814, 3870-3872, 3977-3977, 4000-4000 | equal to carried | deliberate | owner c9a5f2c88, 2026-09-12, keeps the block; engine c0ffc53b5, 2026-09-04, replaced its own copy | nothing on the shipped path | **refuse** |
-| `GF-CU-10` | 1544-1552 | 1476-1476 | equal to engine | global-fix | package, 2026-10-05 | the reported convective rain falls to the water the tendencies remove: 1.27 to 1.004 times it over the oracle capture's raining columns | **offer** |
-| `GF-CU-11` | 674-674, 676-676, 682-682, 697-697, 699-704, 718-730, 1883-1884, 1893-1893, 1903-1903, after 1963 | 622-622, 624-624, 630-630, 645-645, 647-654, 668-682, 1775-1792, 1801-1801, 1811-1811, 1872-1897 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing at the engine's settings, by its record | **none** |
-| `GF-CU-12` | 4042-4042 | 3836-3844 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing: the engine records every output word unchanged | **none** |
+| `GF-CU-1` | 14-14, 42-47, 49-54, 56-61, 679-685, 3088-3090, 3098-3104 | 14-15, 43-49, 51-57, 59-95, 576-583, 2859-2868, 2876-2879 | equal to carried | deliberate | owner c9a5f2c88, 2026-09-12, keeps the block; engine c0ffc53b5, 2026-09-04, replaced its own copy | taking the engine's would move the deep cloud-base mass flux by up to 7.3 percent | **refuse** |
+| `GF-CU-3` | 98-234 | after 131 | equal to engine | deliberate | owner bc62dcfdd and 4939f1c13, 2026-09-04; 957059111, 2026-09-05; package fix/trade-shallow, 2026-11-13 | nothing at the shipped defaults | **refuse** |
+| `GF-CU-4` | 1249-1260, 2297-2297, 2362-2375 | 1151-1151, after 2180, after 2244 | equal to engine | deliberate | owner 957059111, 2026-09-05 | nothing with the define off | **refuse** |
+| `GF-CU-5` | 2402-2402, 2433-2448, 2538-2538, 3006-3006, 3060-3061, 3074-3074 | after 2270, after 2300, 2390-2390, after 2779, 2833-2833, after 2845 | equal to engine | deliberate | owner bc62dcfdd and 4939f1c13, both 2026-09-04; 55aa34fb4, 2026-09-04 | nothing at the default | **refuse** |
+| `GF-CU-6` | 2958-2978, 4012-4015, 4018-4018, 4027-4027, 4044-4045, 4248-4248, 4250-4251, 4277-4279 | after 2752, after 3765, 3768-3768, after 3776, after 3792, after 3981, 3983-3983, 4008-4009 | equal to engine | deliberate | owner 957059111, 2026-09-05 | nothing with the define off, re-derived rather than assumed | **refuse** |
+| `GF-CU-7` | 1537-1538, 1561-1563, 1566-1567, 2835-2891, 2898-2898 | 1426-1426, after 1447, after 1449, after 2686, 2693-2693 | equal to engine | deliberate | owner 2090ac84a, e30f9fda6, c4a95bc61 and 58fd47304, all 2026-09-05 | nothing with the define off, re-derived rather than assumed | **refuse** |
+| `GF-CU-8` | 1391-1391, 1396-1396, 1440-1440, 1545-1545, 1768-1788, 1801-1802, 1809-1817, 2831-2831, 2925-2925, 3072-3072, 4071-4089, 4095-4109, 4263-4264, 4273-4273, 4379-4394, 4401-4404 | 1282-1282, after 1286, after 1329, after 1432, after 1641, after 1653, after 1659, 2683-2683, 2720-2720, 2844-2844, after 3827, after 3832, 3995-3995, 4004-4004, after 4108, after 4114 | equal to engine | adaptation | owner fca73b086, 2026-09-04; 957059111 and 58fd47304, 2026-09-05 | nothing, verified by reading every new access | **offer** |
+| `GF-CU-9` | after 4055, after 4057, after 4138, 4243-4243, 4269-4269 | 3803-3811, 3814-3814, 3870-3872, 3977-3977, 4000-4000 | equal to carried | deliberate | owner c9a5f2c88, 2026-09-12, keeps the block; engine c0ffc53b5, 2026-09-04, replaced its own copy | nothing on the shipped path | **refuse** |
+| `GF-CU-10` | 1594-1602 | 1476-1476 | equal to engine | global-fix | package, 2026-10-05 | the reported convective rain falls to the water the tendencies remove: 1.27 to 1.004 times it over the oracle capture's raining columns | **offer** |
+| `GF-CU-11` | 724-724, 726-726, 732-732, 747-747, 749-754, 768-780, 1933-1934, 1943-1943, 1953-1953, after 2013 | 622-622, 624-624, 630-630, 645-645, 647-654, 668-682, 1775-1792, 1801-1801, 1811-1811, 1872-1897 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing at the engine's settings, by its record | **none** |
+| `GF-CU-12` | 4113-4113 | 3836-3844 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing: the engine records every output word unchanged | **none** |
+| `GF-CU-13` | 3585-3590, 3611-3618, 3867-3874 | after 3359, after 3379, 3628-3628 | equal to engine | global-fix | package fix/trade-shallow d70f5b0, c16360d and 0816b4d, 2026-11-13 | nothing with the three defines at 0, the default | **offer** |
 
 **`GF-CU-1`.** The comment block and the library probe of the cumulus kernel, on the side of the gamma the kernel calls. The shape factor of the mass-flux profile is a ratio of three gamma functions, and the closure's difference of two nearly equal quantities turns one unit in the last place of it into up to 7.3 percent of the deep cloud-base mass flux, so which gamma the kernel calls is a physics choice. The gamma this package carries is its own work and the one the global model was graded with; the engine line's correctly rounded variant moves that shape factor on 68.17 percent of reachable tuning values (the engine line's own host-compiled enumeration of 2026-09-04, cited in full under LIBM-3) and is a numerics choice to grade against observations, not to pull. The number-moving definition is the shared header, LIBM-3.
 
-**`GF-CU-3`.** The two compile-time defines for the coarse-column deep arm, and the comment that states what each one does. Both default to zero, so a default run compiles the engine's own text. They exist because at 50 km the grid scale cannot carry deep convection: the observed failure was a warm-pool column with 1,200 J/kg of available energy and seventeen saturated levels raining 84 mm/h through the microphysics while the cumulus scheme booked 0.06 mm/h. A future engine change to the code these defines guard is re-applied around them, never instead of them.
+**`GF-CU-3`.** The two compile-time defines for the coarse-column deep arm, and the comment that states what each one does. Both default to zero, so a default run compiles the engine's own text. They exist because at 50 km the grid scale cannot carry deep convection: the observed failure was a warm-pool column with 1,200 J/kg of available energy and seventeen saturated levels raining 84 mm/h through the microphysics while the cumulus scheme booked 0.06 mm/h. A future engine change to the code these defines guard is re-applied around them, never instead of them. Since 0.2.2 the same block also declares, at zero, the three shallow-arm defines of `GF-CU-13`.
 
 **`GF-CU-4`.** With the define off both guards are inside the conditional block, so the kernel takes the reference's exit exactly as the engine does and the counter is only exported. With it set, a level the downdraft's profile reaches with no mass takes the environment's moisture, enthalpy and momentum, evaporates nothing, contributes no buoyancy, and the sweep continues below it. The reason is the same as the row above: on a column the grid resolves none of, exiting the whole scheme because the downdraft profile collapsed within a level or two of its detrainment height hands deep convection to a grid scale that cannot carry it. The updraft's own zero-denominator exit is untouched on both sides.
 
@@ -577,6 +606,8 @@ These rows, and the two of `core/kernels/terrain_drag.cu` below, are measured ag
 **`GF-CU-11`.** A production column the trigger rejects writes zero outputs and returns, and the environment above the trigger's reach is formed only for columns that pass. The engine records its outputs as unchanged. Here it would have to be proved again against this package's coarse-column arm (`GF-CU-3` to `GF-CU-7`), which changes what later stages do with a flagged column; not owed, and not taken without that check.
 
 **`GF-CU-12`.** `__launch_bounds__(64, 8)` on the driver kernel, guarded so the host oracle still includes the source. The kernel half of `GF-PY-7`; take the two together.
+
+**`GF-CU-13`.** Three opt-in changes to the shallow arm, each behind an integer define that defaults to zero, where the kernel compiles WRF v4.6.1's shallow arm word for word. `GF_SHALLOW_BUOYANCY_FROM_CLOUD_BASE` starts the cloud-top test's buoyancy integral `dbyt` at cloud base `kbcon` instead of at the source level (`module_cu_gf_sh.F:530`); GSL's GFL (`cu_gfl_sh_run`) and MPAS v8.4.2 (`CUP_gf_sh`) both start at cloud base, so WRF's sum is the odd one out, and it lets the sub-cloud deficit the parcel already crossed cancel the cloud layer's positive area. `GF_SHALLOW_BLQE_TO_CLOUD_BASE` sums the boundary-layer quasi-equilibrium closure's MSE source over `1..kbcon`, as GFL does, instead of `1..kpbl` (`module_cu_gf_sh.F:838`). `GF_SHALLOW_DEPTH_MIN_M` is this package's own: the deep arm's ierr 6 cloud-depth exit (`module_cu_gf_deep.F:949`) applied to the shallow cloud. They are reached only through the native options `gf_shallow_buoyancy_from_cloud_base`, `gf_shallow_blqe_to_cloud_base` and `gf_shallow_depth_min_m`. On the probe of a T255 August control WRF's arm exited on ierr 5 in 47 to 67 percent of the columns of the three trade-wind boxes, and under the first define 94 to 97 percent of those columns convected; in a 10-day twin the three together took the tropical ocean's excess of reflected sunlight over CERES from +30.1 to +7.9 W/m2 (`docs/trade-shallow.md`). One case, so the engine is offered the first two as the reference lines' own correction and the third as an option, not as a default. Measured against the 2.8.5 baseline this file is keyed to: three hunks, two pure insertions and one replaced loop bound, none on another row's lines.
 
 ### `core/kernels/ntiedtke.cu`
 
@@ -670,8 +701,11 @@ These rows, and the two of `core/kernels/terrain_drag.cu` below, are measured ag
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
 | `GAS-CU-1` | after 78, after 79, 400-412 | 79-87, 89-289, 610-624 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01, and v2.8.2 (4c27749), 2026-10-02 | nothing: the engine records every output word unchanged | **none** |
+| `GAS-CU-2` | 38-48 | 38-38 | equal to engine | global-fix | package 9555906, 2026-11-13 | nothing for a layer inside the tables | **offer** |
 
 **`GAS-CU-1`.** The gas optics kernel runs four cells per block, one warp each, computes each minor-gas scaling and each flavour weight once per cell in shared memory, forms the dry-air column amount itself, and stores coalesced. The engine records every word unchanged. The kernel half of `RRTMGP-24`'s gas change.
+
+**`GAS-CU-2`.** The kernel half of `RRTMGP-29`: `rrtmgp_interpolation_prepass` looks a layer deeper than `press_ref[0]` (the tables descend from the surface) up at `press_ref[0]`, where the pressure weight sits wholly on the deepest level instead of extrapolating past it. A ternary, not `fminf`, so a NaN stays a NaN and the range gate still sees it; a layer inside the tables reads the value it always read. Take it with `RRTMGP-29` and `NPREF-17`.
 
 ### `core/kernels/rrtmgp_cloud.cu`
 
@@ -879,6 +913,15 @@ here is owed to this package; the list is what to send.
   solvers radiate, the Tiedtke (1996) 0.7 for unresolved in-cloud
   variability; nothing moves at the default of 1. Package branch
   `fix/albedo`, 2026-11-12.
+* `RRTMGP-29` with `GAS-CU-2` and `NPREF-17`. A layer deeper than the gas
+  tables is looked up at their deepest pressure instead of stopping the
+  run, and layers to 1,150 hPa are accepted; a layer inside the tables
+  reads what it always read. Package commit `9555906`, 2026-11-13.
+* `GF-CU-13`, with the parts of `GF-PY-3` and `GF-PY-4` that carry its
+  switches. The shallow arm's cloud-top buoyancy integral from cloud base
+  and its BLQE closure to cloud base, as GSL's GFL has them, and a shallow
+  cloud-depth minimum; all three off by default. Package branch
+  `fix/trade-shallow`, 2026-11-13.
 
 ## REFUSE
 

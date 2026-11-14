@@ -70,7 +70,7 @@ def _mixed_layer_depth(climatology, when, params, ocean, xp):
     return xp.where(ocean, xp.asarray(h), 0.0)
 
 
-def _climatology_tendency(climatology, when, xp):
+def _climatology_tendency(climatology, when, xp, *, until=None):
     shape = climatology.sst_k.shape[1:]
     return xp.zeros(shape), xp.zeros(shape)
 
@@ -447,6 +447,36 @@ def test_under_ice_the_q_flux_leaves_out_the_climatology_sst_slope(tmp_path, par
     assert _residual(istate) <= 1e-9 * 12 * 300.0 * 40.0 + 1e-3
 
 
+def test_under_ice_a_cooling_q_is_carried_in_the_packs_open_share(tmp_path, parts):
+    """F_cal = +40 on a flat climatology with half its area iced: Q = -40.
+    A pack at 0.9 (more closed than the climatology's 0.5) carries 0.1 / 0.5
+    of that cooling and grows by that much; a pack at 0.4 carries all of it,
+    as open water does.  The books close either way."""
+    grid = GaussianGrid.create(21)
+    shape = (int(grid.nlat), int(grid.nlon))
+    clim = _climatology(tmp_path, grid, ice=np.full((12, *shape), 0.5))
+    options = _slab_options(slab_depth=40.0)
+    for cover in (0.9, 0.4):
+        provider, state, _ = _provider(tmp_path, options=options, skin=T_F, flux=40.0,
+                                       clim=clim, ice=np.full(shape, cover),
+                                       thickness=np.full(shape, 1.5))
+        arrays = state.physics_state.arrays
+        a = float(np.float32(cover))
+        share = min(1.0, (1.0 - a) / 0.5)
+        np.testing.assert_allclose(arrays[oc.SLAB_QFLUX], -40.0 * share, rtol=1e-12)
+        volume = arrays[oc.ICE_VOLUME].copy()
+        _march(provider, state, 0.0, 1)
+        arrays = state.physics_state.arrays
+        np.testing.assert_allclose(arrays[oc.SLAB_QFLUX], -40.0 * share, rtol=1e-12)
+        np.testing.assert_allclose(arrays[oc.ICE_VOLUME] - volume,
+                                   300.0 * 40.0 * share / RHO_L, rtol=1e-9)
+        assert _residual(state) <= 1e-9 * 300.0 * 40.0 + 1e-3
+    # Open water carries the whole cooling.
+    provider, state, _ = _provider(tmp_path, options=options, skin=284.0, flux=40.0,
+                                   clim=clim)
+    np.testing.assert_allclose(state.physics_state.arrays[oc.SLAB_QFLUX], -40.0, rtol=1e-12)
+
+
 def test_the_calibration_deposits_by_month_weight_after_the_spin_up(tmp_path, parts):
     from arwen_global.ocean_rules import RuleProvider
 
@@ -736,3 +766,40 @@ def test_a_restarted_calibration_reproduces_the_straight_one_bit_for_bit(
     plain = replace(cfg, ocean=replace(cfg.ocean, qflux_calibration=False))
     with pytest.raises(ValueError):
         run(plain, tmp_path / "plain", restart=full / "arwen_global_step00000004.npz")
+
+
+def test_a_held_run_is_not_branched_onto_the_slab_or_a_calibration(tmp_path, monkeypatch, parts):
+    """--branch-from-other-config moves a held sea onto a rule (the rule
+    tests hold that), but not onto a boundary that keeps prognostic arrays:
+    a parent written without the slab's or the calibration's arrays has none
+    to resume."""
+    from arwen_global import ocean_qflux
+    from arwen_global.config import load_config
+    from arwen_global.runner import run
+
+    start = datetime(2026, 1, 16, 11, 59, 20, tzinfo=timezone.utc)
+    base = load_config(SMOKE)
+    grid, sst, ice = _smoke_climatology(tmp_path, base.truncation, base.dealias_factor)
+    clim = _climatology(tmp_path, grid, sst=sst, ice=ice)
+    qpath = tmp_path / "q.npz"
+    qpath.write_bytes(b"test q-flux")
+    qsha = hashlib.sha256(b"test q-flux").hexdigest()
+    shape = (int(grid.nlat), int(grid.nlon))
+    monkeypatch.setattr(ocean_qflux, "load_qflux",
+                        lambda path: FakeQFlux(shape, flux=-20.0, sha256=qsha))
+    sea_ice = SeaIceOptions(mode="match", record_interval_hours=30.0 / 3600.0)
+    slab = _smoke(tmp_path, monkeypatch, start, OceanOptions(
+        declared=True, implicit=False, mode="slab", climatology=str(clim.path),
+        climatology_sha256=clim.sha256, slab_qflux=str(qpath), slab_qflux_sha256=qsha,
+        slab_depth=10.0, slab_relaxation_days=30.0, anomaly_reference="start",
+        anomaly_truncation=None, sea_ice=replace(sea_ice, new_ice_thickness_m=0.5)))
+    calibration = replace(slab, ocean=OceanOptions(
+        declared=True, implicit=False, mode="climatology", climatology=str(clim.path),
+        climatology_sha256=clim.sha256, anomaly_reference="start", anomaly_truncation=None,
+        qflux_calibration=True, qflux_calibration_spinup_days=20.0 / DAY, sea_ice=sea_ice))
+    held = replace(slab, ocean=base.ocean, duration_s=40.0)
+    run(held, tmp_path / "held")
+    fork = tmp_path / "held" / "arwen_global_step00000004.npz"
+    for name, target in (("slab", slab), ("calibration", calibration)):
+        with pytest.raises(ValueError, match="keeps its own prognostic arrays"):
+            run(target, tmp_path / name, restart=fork, branch_config=True)

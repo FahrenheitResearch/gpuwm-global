@@ -371,7 +371,7 @@ def test_the_twin_refuses_a_displaced_start_above_the_radiation_ceiling_by_name(
                             dt_s=10.0, control_dt_s=10.0, interval_s=40.0, spinup_s=20.0,
                             synthetic_stations=12, synthetic_soundings=3, amv_points=4, seed=5)
     monkeypatch.setattr(analysis_module, "RADIATION_SURFACE_PRESSURE_CEILING_PA", 90_000.0)
-    with pytest.raises(ValueError, match="exceeds the radiation tables' ceiling") as caught:
+    with pytest.raises(ValueError, match="exceeds the radiation's pressure ceiling") as caught:
         run_global_osse(setup, tmp_path, progress=lambda *_: None)
     text = str(caught.value)
     assert "member 0 at" in text and "seed 5" in text and "T3 members under a T7 control" in text

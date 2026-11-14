@@ -8,7 +8,7 @@ package 1.6).  Two things come out:
   known not to survive: terrain so tall that the predicted lowest surface
   pressure falls under the floor the model's vertical grid and dynamics
   were built for (``terrain_too_tall``), and a predicted surface pressure
-  over the radiation tables' ceiling (``pressure_over_ceiling``), and a
+  over the radiation's pressure ceiling (``pressure_over_ceiling``), and a
   land skin the terrain edit warms (6.5 K per km of height removed, plan
   4.3 rule 5) past the radiation's 355 K range (``start_skin_over_limit``):
   each would stop the run in its first radiation call;
@@ -90,7 +90,7 @@ MEASURED_EARTH: dict[str, Measured] = dict(_measured_rows())
 REFUSALS: dict[str, str] = {
     "terrain_too_tall": "the terrain is too tall for the model",
     "pressure_over_ceiling": (
-        "the predicted surface pressure is over the radiation tables' ceiling"),
+        "the predicted surface pressure is over the radiation's pressure ceiling"),
     "start_skin_over_limit": (
         "the start's land skin, warmed where terrain was removed, is over the "
         "radiation's 355 K limit"),

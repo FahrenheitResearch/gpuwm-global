@@ -1,5 +1,182 @@
 # Changelog
 
+## 0.2.2
+
+Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.2.1 did;
+proven against `gpuwm 2.9.13`.  `tools/measure_boundary.py` reads 242
+symbols across 72 modules with no gap, and all 50 engine seam files are
+pinned at 2.9.13.  The companion bundle carries ten Rust doors, unchanged
+from 0.2.0.  Every shipped config keeps its 0.2.1 hash, and a forecast
+that names no new option and holds the sea or runs an ocean rule (not
+`[ocean] mode = "slab"`) writes 0.2.1's checkpoints byte for byte
+(Measured, below, on a held sea; the ocean rules' code is 0.2.1's).  Two
+changes need no option: a coupled slab run takes the under-ice share and
+the cubic tendency from its first step (Fixed, below), and a data
+assimilation cycle whose analysed surface pressure lands between 109,663
+and 115,000 Pa now applies the analysis where 0.2.1 kept the background.
+The coupled slab ocean no longer grows the southern
+summer pack, and its heat-flux correction no longer steps at mid-month.
+Three experimental switches on the Grell-Freitas shallow arm, off by
+default, vent the trade-wind cloud sheet.  A held-sea run can be moved onto
+an ocean rule from one of its checkpoints, `gpuwm-global score` decodes its
+reference analyses again, and the data assimilation and the worlds
+preflight use the radiation's 1,150 hPa ceiling.
+
+### Fixed
+
+- Coupled ocean (`[ocean] mode = "slab"` only): under ice, a cooling
+  heat-flux correction Q is now carried only in the share (1 - A) / (1 - C_i)
+  where the slab's ice fraction A is above the climatology's C_i, and in
+  full otherwise.  Under the southern summer pack the calibrated flux is
+  mostly the shortwave the climatology's open leads absorbed; charged in
+  full to a pack whose leads were closed, it was a sink of -78 W/m2 in
+  December and -87 W/m2 in January on the cells where the model and the
+  climatology both held ice, and the new ice it formed closed the leads
+  further.  The 180-day coupled run, resumed from its 30 November
+  checkpoint with the share (RTX 5090), against the same run without it,
+  1 December to 28 January.  That run is on the long-run line, not this
+  tree: the fix (`9aaac7d`) was cherry-picked onto it, so its
+  `ocean_coupler.py`, `ocean_slab.py` and the other ocean modules are
+  this release's byte for byte, but its atmosphere is the long-run
+  line's:
+  - southern ice volume 7.21 to 2.52 thousand km3, against 7.24 to 11.04;
+  - southern 15 % ice area -53 % (8.47 to 3.94 million km2), against
+    -11 %; the climatology's fell 53 % (13.22 to 6.24);
+  - monthly-mean Q on the shared cells -30 W/m2 in December and -42 in
+    January, against -78 and -87;
+  - northern ice area at 28 January 13.52 million km2, against 13.59;
+  - largest column residual of the energy books 1.05e-2 J/m2, against
+    1.09e-2; open-ocean SST against the climatology -0.471 K, against
+    -0.472.
+  The share has been measured over December and January only; under the
+  northern summer pack (July and August, Q -51 to -61 W/m2) it is not yet
+  measured.  `docs/ARWEN_GLOBAL_OCEAN.md` has the derivation.
+- Coupled ocean: the climatology's tendencies dC/dt now come from a
+  shape-preserving cubic (PCHIP) through the monthly planes at their
+  mid-month instants, and each step books the curve's change over the
+  step, so a column driven by the calibrated flux still reaches each
+  month's plane at mid-month.  The piecewise-linear slope it replaces
+  stepped at every mid-month instant: in the same run the ocean mean of Q
+  jumped by 12.07 W/m2 on 16 December and 12.16 W/m2 on 16 January (21 to
+  27 W/m2 at the August to November instants); with the cubic, 0.04 and
+  0.08 W/m2, and no 6-hourly change exceeded 0.18 W/m2.
+- `gpuwm-global score`: the scorecard's default reference decoder was a
+  name only `score_forecast` imported, so the first reference analysis
+  raised `NameError: name 'decode_reference' is not defined` and the whole
+  scorecard was lost (measured with the 0.2.0 wheel on a T255 72 h run; it
+  stopped at lead 24 h).  The decoder is imported where it is used
+  (`tests/test_forecast_scorecard.py`).
+- Data assimilation and worlds: the radiation's pressure ceiling is
+  115,000 Pa since 0.2.1, but the ensemble's member reading, the
+  analysed-state bound, the twin's displaced-start refusal
+  (`da/analysis.py` `RADIATION_SURFACE_PRESSURE_CEILING_PA`) and the worlds
+  preflight row (`surface_pressure_ceiling_pa`) still used the gas tables'
+  109,663 Pa, so they named or refused states the radiation steps.  All of
+  them now use 115,000 Pa, and the planet row says air thicker than 1.15
+  bar.  `tests/test_rrtmgp_pressure_ceiling.py` holds the three numbers
+  equal.  Nothing changes for a state under 109,663 Pa; the 2026-09 DA
+  deaths the DA page cites were measured against the old ceiling and have
+  not been re-run.
+
+### Added
+
+- Three experimental switches on the Grell-Freitas shallow arm, in
+  `native_adapter_options`, all off by default and read only under
+  `cumulus = "gf"`; each joins the config hash only when set:
+  - `gf_shallow_buoyancy_from_cloud_base`: the cloud-top test integrates
+    the plume's buoyancy from cloud base, as GSL's GFL and MPAS v8.4.2 do,
+    instead of from the source level as WRF v4.6.1 does
+    (`module_cu_gf_sh.F:530`);
+  - `gf_shallow_blqe_to_cloud_base`: the boundary-layer quasi-equilibrium
+    closure sums the PBL's MSE tendency over 1..kbcon, as GFL does, instead
+    of 1..kpbl;
+  - `gf_shallow_depth_min_m`: a shallow cloud less than this many metres
+    deep exits, the deep arm's ierr 6 test; this one is the package's own.
+  - Cause: on a probe of the T255 control from GDAS 2026-08-01 00Z, WRF's
+    shallow arm exited on ierr 5 in 67, 47 and 66 % of the open-water
+    columns of the SE Pacific, NE Pacific and S Indian trade boxes; under
+    the cloud-base integral 94 to 97 % of those columns convect.
+  - 10-day T255 twins from GDAS 2026-08-01 00Z, exact 00Z-00Z means from
+    the daily checkpoints over 2 to 11 August, against CERES EBAF 4.2.1
+    August, all three set (500 m) against the control: excess reflected
+    shortwave global +3.7 against +14.9 W/m2, ocean 30S-30N +7.9 against
+    +30.1, SE Pacific trades +4.9 against +57.4, Peru stratocumulus -40.3
+    against -32.1, net TOA -5.4 against -15.0.  Z500 RMSE 7.93 / 25.14 m
+    at 24 / 72 h against 8.12 / 24.90; T850 at 72 h 1.899 against 1.872 K;
+    rain against GPCP, 48-72 h, RMSE 10.63 against 10.98 mm/day.  The
+    cloud-base integral alone collapses the stratocumulus decks (Peru cover
+    0.64 to 0.23); the depth minimum keeps them (0.58).  Open: NE Pacific
+    trades +43.3 W/m2, 30N-60N land 5.5 W/m2 darker than the control, and
+    one August case.  `docs/trade-shallow.md` has the cause, the probe
+    (`tools/arwen_global_shallow_probe.py`) and the twins.  The twins ran
+    the 90-day anomaly arm's config (the albedo pair on), not a shipped
+    config.  With the three off, a 24 h run on the branch matched the
+    control's step-288 checkpoint in all 135 state arrays.
+  - A 30-day December twin on the same config, from GDAS 2025-12-16 00Z,
+    all three set against none, monthly means against CERES December and
+    January: the trades vent as in August (ocean 30S-30N +3.3 against
+    +26.0 W/m2, SE Pacific -0.9 against +48.7, global +5.8 against +16.3,
+    30-day rain field RMSE against GPCP 2.94 against 3.30 mm/day), but the
+    Peru deck goes from +8.5 to -28.8 and the Australian deck from +24.5
+    to -15.8: in the southern summer the depth minimum does not keep the
+    decks.  The page has the table.
+  - Divergence ledger rows `GF-CU-13` (new) and `GF-PY-3`, `GF-PY-4`,
+    `GF-CU-3` (carried side moved).
+- `--branch-from-other-config` may now change the ocean rule between hold,
+  anomaly and climatology.  The rules are closed forms of model time built
+  from the cold state, so the branch's first step evaluates what a
+  straight run under the new rule evaluates at that instant; the receipt's
+  `branch.surface_boundary` names the parent's boundary and the branch's,
+  and the branch's checkpoints carry the branch's, so its own restarts
+  continue it.  A boundary with prognostic arrays (the slab, a
+  calibration) is still refused.  On the 50-day T383 run of 2026-11-12
+  (held sea), branched at day 25 onto `mode = "anomaly"`,
+  `anomaly_reference = "start"`: the SST off Tampico read 24.36 C against
+  the held 26.25 C, and the largest 24 h open-water evaporation fell from
+  55.05 to 46.61 kg/m2 (day 26-27: 52.10 to 44.61).
+  `tests/test_arwen_global_ocean_rules.py` holds the branch and its
+  restart bit for bit.
+
+### Changed
+
+- The carried-physics divergence ledger has rows for the 0.2.1 radiation
+  ceiling (`RRTMGP-29`, `GAS-CU-2`, `NPREF-17`) and the shallow-arm
+  switches, measured against the 2.8.5 baseline the rows are keyed to (912
+  rows).  The ledger has not been re-baselined on 2.9.13, the engine the
+  declared range installs: against it the tree measures 1,449 hunks, 526
+  carrying a row forward, 923 new and 386 stale, and the two comparison
+  nodes of `tests/test_engine_divergence.py` skip as they did in 0.2.0
+  and 0.2.1.  `docs/CARRIED-PHYSICS-DIVERGENCE.md` says where the rows
+  stand.
+
+### Measured
+
+- On an RTX 4090 (24 GB), the shipped
+  `arwen_global_gdas_t255_native_sl_si_24h` from its GDAS 2026-09-01 00Z
+  analysis, run 24 h by the 0.2.1 tree and by this tree in one card
+  lease, checkpoints compared with
+  `tools/arwen_global_checkpoint_identity.py`, 2026-11-14.  The config
+  hash is 0.2.1's (c7a000d28c206ace).  A cold start wrote its nine
+  checkpoints, steps 0 to 288 every 3 h, byte-identical to 0.2.1's (44
+  and 135 arrays, archive hash included).  A restart from 0.2.1's 12 h
+  checkpoint (step 144) to 24 h wrote steps 180 to 288 byte-identical to
+  0.2.1's straight run.  All three receipts pass.  This config runs
+  Grell-Freitas with the three shallow switches off and the sea held, so
+  it covers the defaults; the slab ocean and the ocean-rule branch are
+  not on its path.
+- The under-ice share and the cubic tendency with the ocean off: the
+  shipped `arwen_global_gdas_t255_native_sl_si_6h` dated to GDAS
+  2026-09-01 00Z, on 0.2.0 and on the fix branch (0.2.0 plus `9aaac7d`;
+  RTX 5090, 2026-11-14), wrote steps 0, 36 and 72 identical array for
+  array and in `self_sha256`.  On this tree the held-sea run above stands
+  for it.
+- Every shipped config hashes as in 0.2.1: the same 55 hashes, and the
+  same four fixtures that do not load as configs.
+- The CPU tier (`pytest -m "not gpu"`) from the installed tree passed:
+  3434 passed, 86 skipped, 0 failed (Python 3.12, numpy 2.5.4, gpuwm
+  2.9.13, cards hidden).  Without CuPy installed the same tree gave 3434
+  passed and 100 skipped.
+
 ## 0.2.1
 
 Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.2.0 did;

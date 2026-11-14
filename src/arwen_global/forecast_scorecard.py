@@ -560,7 +560,8 @@ def decode_or_fail(name: str, mapping, files: dict, stamp: str, failures: list, 
     left by an interrupted fetch) used to abort the whole scorecard; it is
     now a failure like an unfetchable analysis, and the file is renamed
     aside so the next score fetches it again instead of reusing it."""
-    decode = decode or decode_reference
+    if decode is None:
+        from .upper_air_scorecard import decode_reference as decode
     path = Path(files[stamp])
     try:
         return decode(mapping, path)

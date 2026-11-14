@@ -20,7 +20,11 @@ the mixed-layer temperature and h(t) its depth:
       Q = rho_w c_w h dC_s/dt - rho_i L_f h_ref dC_i/dt - F_cal(t)
 
   so that a column whose fluxes equal the calibration run's follows the
-  climatology exactly (ocean_qflux.py makes and reads F_cal);
+  climatology exactly (ocean_qflux.py makes and reads F_cal).  The slopes
+  come from a shape-preserving cubic through the mid-month planes
+  (:func:`climatology_tendency`), so Q does not step at a mid-month
+  instant, and under ice a cooling Q is carried only in the share
+  :func:`under_ice_cooling_share` gives (the coupler applies both);
 * R, :func:`restoring_flux`: rho_w c_w h (T* - T) / tau_r, the optional
   weak restoring toward the target SST T* (zero when tau_r is None).
 
@@ -147,23 +151,106 @@ def mixed_layer_depth(climatology, when, params: SlabParameters, ocean, xp):
     return xp.where(ocean, h, 0.0)
 
 
-def climatology_tendency(climatology, when, xp):
-    """``(dC_s/dt, dC_i/dt)`` at ``when``, K/s and 1/s, float64 planes: the
-    slopes of the piecewise-linear climatology between the two mid-month
-    instants that bracket ``when`` (zero off the climatology's ocean).
+def _knot_slope(d_a, d_b, h_a: float, h_b: float, xp):
+    """The PCHIP slope at a knot between secants ``d_a`` (interval length
+    ``h_a`` before it) and ``d_b`` (``h_b`` after it): the weighted harmonic
+    mean of Fritsch and Carlson (1980) as Fritsch and Butland weight it for
+    unequal intervals, and 0 where the secants differ in sign or one is 0,
+    so the curve never overshoots the two months it joins."""
+    w1 = 2.0 * h_b + h_a
+    w2 = h_b + 2.0 * h_a
+    same = (d_a * d_b) > 0.0
+    safe_a = xp.where(same, d_a, 1.0)
+    safe_b = xp.where(same, d_b, 1.0)
+    return xp.where(same, (w1 + w2) / (w1 / safe_a + w2 / safe_b), 0.0)
 
-    The slope is constant between two mid-month instants and steps at each,
-    so a step that ends on a mid-month instant carries exactly the change of
-    the climatology over it; a model step of 300 s divides the 12 h
-    resolution of the mid-month instants (each is at 00 or 12 UTC)."""
+
+def _smooth_climatology(planes, when, xp, *, derivative: bool):
+    """The monthly ``planes`` on the shape-preserving cubic (PCHIP) through
+    the mid-month instants at ``when``: the value, or with ``derivative``
+    its time derivative per second; float64.
+
+    It passes through every month's plane at that month's mid-month instant
+    (as the piecewise-linear :func:`surface_climatology.interpolate` does)
+    and, unlike it, has a continuous slope, so a tendency read from it does
+    not step at the mid-month instants."""
+    from .surface_climatology import mid_month
+
     i0, i1, t0, t1 = month_bracket(when)
-    span = (t1 - t0).total_seconds()
+    before = mid_month(t0.year - 1, 12) if t0.month == 1 else mid_month(t0.year, t0.month - 1)
+    after = mid_month(t1.year + 1, 1) if t1.month == 12 else mid_month(t1.year, t1.month + 1)
+    h_a = (t0 - before).total_seconds()
+    h = (t1 - t0).total_seconds()
+    h_b = (after - t1).total_seconds()
+    p_a = _f64(planes[(i0 - 1) % 12], xp)
+    p0 = _f64(planes[i0], xp)
+    p1 = _f64(planes[i1], xp)
+    p_b = _f64(planes[(i1 + 1) % 12], xp)
+    d_a, d0, d_b = (p0 - p_a) / h_a, (p1 - p0) / h, (p_b - p1) / h_b
+    m0 = _knot_slope(d_a, d0, h_a, h, xp)
+    m1 = _knot_slope(d0, d_b, h, h_b, xp)
+    s = (_utc_instant(when) - t0).total_seconds() / h
+    if derivative:
+        return ((6.0 * s * s - 6.0 * s) * (p0 - p1) / h
+                + (3.0 * s * s - 4.0 * s + 1.0) * m0 + (3.0 * s * s - 2.0 * s) * m1)
+    return ((2.0 * s ** 3 - 3.0 * s * s + 1.0) * p0 + (s ** 3 - 2.0 * s * s + s) * h * m0
+            + (-2.0 * s ** 3 + 3.0 * s * s) * p1 + (s ** 3 - s * s) * h * m1)
+
+
+def _utc_instant(when):
+    from .surface_climatology import _utc
+
+    return _utc(when)
+
+
+def climatology_tendency(climatology, when, xp, *, until=None):
+    """``(dC_s/dt, dC_i/dt)``, K/s and 1/s, float64 planes (zero off the
+    climatology's ocean), from the shape-preserving cubic through the
+    mid-month planes (:func:`_smooth_climatology`).
+
+    With ``until`` (a later instant) the rate is the curve's change from
+    ``when`` to ``until`` over that interval, so the steps of a run add up
+    to the climatology's change exactly and a column driven by exactly
+    F_cal reaches each month's plane at its mid-month instant; without it,
+    the curve's slope at ``when``.  Either way the tendency is continuous
+    in time: the piecewise-linear slope this replaced stepped at every
+    mid-month instant, and Q's ocean mean jumped there by 20 to 27 W/m2 in
+    the 180-day coupled run."""
     out = []
     for name in ("sst_k", "sea_ice_fraction"):
         planes = getattr(climatology, name)
-        rate = (_f64(planes[i1], xp) - _f64(planes[i0], xp)) / span
+        if until is None:
+            rate = _smooth_climatology(planes, when, xp, derivative=True)
+        else:
+            span = (_utc_instant(until) - _utc_instant(when)).total_seconds()
+            if not span > 0.0:
+                raise ValueError(f"a tendency over an interval needs until > when, "
+                                 f"not {when} to {until}")
+            rate = (_smooth_climatology(planes, until, xp, derivative=False)
+                    - _smooth_climatology(planes, when, xp, derivative=False)) / span
         out.append(xp.where(xp.isfinite(rate), rate, 0.0))
     return out[0], out[1]
+
+
+def under_ice_cooling_share(*, ice_fraction, climatology_ice_fraction, xp):
+    """The share of a negative (cooling) Q that a column holding ice carries,
+    float64 in [0, 1]: ``(1 - A) / (1 - C_i)`` where the slab's fraction A
+    is above the climatology's C_i, and 1 where it is not.
+
+    Under a pack, Q's cooling is the heat the calibration's atmosphere put
+    into the climatology's leads and open water (at the open-water albedo)
+    beyond what the climatology's ice and SST slopes store, and which the
+    ocean then carried away.  A pack more closed than the climatology's
+    takes in only its own open share of that heat, so it is charged only
+    that share of the cooling; with the climatology's fraction or less it
+    carries all of it, and a column whose state and fluxes are the
+    calibration's still follows the climatology."""
+    a = xp.clip(_f64(ice_fraction, xp), 0.0, 1.0)
+    c = _f64(climatology_ice_fraction, xp)
+    c = xp.clip(xp.where(xp.isfinite(c), c, 0.0), 0.0, 1.0)
+    closer = a > c
+    open_clim = xp.where(closer, 1.0 - c, 1.0)
+    return xp.clip(xp.where(closer, (1.0 - a) / open_clim, 1.0), 0.0, 1.0)
 
 
 def open_water_flux(*, swdown, albedo, glw, emissivity, skin_k, hfx, qfx, xp):
@@ -251,5 +338,5 @@ __all__ = [
     "LATENT_HEAT_VAPORIZATION_J_KG", "RHO_CP_SEAWATER_J_M3_K", "RHO_SEAWATER_KG_M3",
     "SECONDS_PER_DAY", "SLAB_TARGETS", "STEFAN_BOLTZMANN_W_M2_K4", "SlabParameters",
     "climatology_tendency", "initial_temperature", "mixed_layer_depth", "month_bracket",
-    "open_water_flux", "qflux", "restoring_flux", "slab_step",
+    "open_water_flux", "qflux", "restoring_flux", "slab_step", "under_ice_cooling_share",
 ]

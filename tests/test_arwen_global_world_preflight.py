@@ -208,15 +208,22 @@ def test_earth_s_own_peaks_are_never_refused_as_too_tall():
 
 
 def test_a_start_over_the_radiation_ceiling_is_refused_with_the_remedy():
-    # A cold plateau: 4,000 m at about 216 K, flattened under "fill".
-    terrain = one_mountain(4000.0)
-    view = lapse_frame(terrain, temperature_offset=-45.0)
+    # A cold plateau, 4,000 m at about 216 K, flattened under "fill" reads
+    # about 111.8 kPa: past the radiation tables' 109,663 Pa and under the
+    # 115,000 Pa the radiation accepts since 0.2.1, so it is no longer refused.
+    view = lapse_frame(one_mountain(4000.0), temperature_offset=-45.0)
+    report = preflight(FLAT_FILL, view=view, vertical=VERTICAL)
+    assert report.refusals == ()
+    assert 109_663.0 < report.prediction["surface_pressure_max_pa"] < 115_000.0
+    # Colder and taller, 4,500 m at about 206 K: about 117 kPa, refused.
+    terrain = one_mountain(4500.0)
+    view = lapse_frame(terrain, temperature_offset=-55.0)
     report = preflight(FLAT_FILL, view=view, vertical=VERTICAL)
     keys = [r.key for r in report.refusals]
     assert keys == ["pressure_over_ceiling"]
     text = report.refusals[0].text
     assert text.startswith(REFUSALS["pressure_over_ceiling"])
-    assert "109,663 Pa" in text and "air_mass = 'conserve'" in text
+    assert "115,000 Pa" in text and "air_mass = 'conserve'" in text
     assert report.prediction["surface_pressure_max_pa"] > LIMITS[
         "surface_pressure_ceiling_pa"].value
 
@@ -224,7 +231,7 @@ def test_a_start_over_the_radiation_ceiling_is_refused_with_the_remedy():
 def test_the_mover_s_own_output_is_what_the_refusal_reads_when_given():
     view = lapse_frame(one_mountain(1000.0))
     over = view.surface_pressure_pa.copy()
-    over[0, 0] = 110_000.0
+    over[0, 0] = 116_000.0
     report = preflight(FLAT, view=view, edited_surface_pressure_pa=over)
     assert [r.key for r in report.refusals] == ["pressure_over_ceiling"]
     assert report.prediction["pressure_rule"] == "the pressure mover's own output"

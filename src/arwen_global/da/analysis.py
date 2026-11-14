@@ -765,25 +765,32 @@ def _added_state(model, transform, state: ArwenGlobalState, increment_spectral: 
     return new, offset, repair
 
 
-#: The surface pressure above which a state dies in the radiation call:
-#: RRTMGP's pressure tables end at 109,663.316 Pa of layer pressure (the
-#: physics refuses ``play range ... outside allowed range [1.00518357,
-#: 109663.316] Pa``) and the lowest layer's pressure lies within a few
-#: pascals of the surface pressure.  Measured 2026-09-06 on the T63 / T127
+#: The surface pressure above which a state dies in the radiation call.
+#: The radiation accepts layer pressures up to 115,000 Pa
+#: (``core/rrtmgp.py`` ``RRTMGP_PLAY_CEILING_PA``; the two are held equal by
+#: ``tests/test_rrtmgp_pressure_ceiling.py``): RRTMGP's gas tables end at
+#: 109,663.316 Pa, a layer between that and 115,000 Pa is looked up at the
+#: tables' deepest pressure, as the UFS/CCPP interface does
+#: (GFS_rrtmgp_pre), and only a deeper layer is refused (``play range ...
+#: outside allowed range``).  The lowest layer's pressure lies under the
+#: surface pressure, so a state at or under this surface pressure has no
+#: layer the radiation refuses.  Until 0.2.2 this was the tables' own
+#: 109,663 Pa, the bound from before the radiation looked deeper layers up
+#: at the table top.  Measured 2026-09-06 on the T63 / T127
 #: twin: the T63 truncation's orography undershoots below sea level at the
 #: Andes' Pacific foot (19.6 S, 73.1 W), so every T63 member carries 109.2
 #: to 109.7 kPa there by construction and moves it by several hundred
 #: pascals within an hour of free integration; at seed 4242 one member
-#: started 48 Pa above the ceiling and died in the first radiation call
-#: with no analysis at all.  The observation vocabulary's gross bound for
+#: started 48 Pa above the then ceiling of 109,663 Pa and died in the first
+#: radiation call with no analysis at all.  The observation vocabulary's gross bound for
 #: a surface-pressure REPORT (108,000 Pa) is not a bound on a state:
 #: applied to the members (ff15274ff) it refused every T63 member on every
 #: cycle of the reference twin and the ensemble's own update silently
 #: stopped while the receipt read pass.
-RADIATION_SURFACE_PRESSURE_CEILING_PA = 109_663.0
+RADIATION_SURFACE_PRESSURE_CEILING_PA = 115_000.0
 
 MEMBER_CEILING_BREAKAGE = (
-    "a member whose surface pressure exceeds the radiation tables' ceiling "
+    "a member whose surface pressure exceeds the radiation's pressure ceiling "
     f"({RADIATION_SURFACE_PRESSURE_CEILING_PA:,.0f} Pa of layer pressure) dies in "
     "the window's first radiation call and one dead member ends the cycle; the "
     "member keeps its increment and is named here (members_above_radiation_ceiling) "

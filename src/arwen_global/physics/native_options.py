@@ -230,6 +230,49 @@ class NativePhysicsOptions:
     # 15,357 deep-active columns at the arm's hour 12; the census names
     # them).
     gf_resolved_convergence_closure: bool = False
+    # Read only where cumulus="gf" and gf_ishallow=1.  The shallow arm's
+    # cloud-top test (module_cu_gf_sh.F:517-551: ktop is one level above
+    # the peak of the plume's vertically integrated buoyancy dbyt, and a
+    # ktop below kbcon + 1 exits with ierr 5) integrates from cloud base,
+    # as MPAS v8.4.2's CUP_gf_sh and the NOAA GSL GFL cu_gfl_sh_run do,
+    # instead of from the source level k22 + 1 as WRF v4.6.1 does (gf.cu
+    # GF_SHALLOW_BUOYANCY_FROM_CLOUD_BASE).  Below kbcon the unsaturated
+    # plume is negatively buoyant by kbcon's definition, so WRF's sum lets
+    # the sub-cloud deficit the parcel has already crossed cancel the cloud
+    # layer's positive area; over the trade-wind oceans of the 2026-08-01
+    # T255 control that exit stopped the scheme in 55-69 percent of the
+    # columns, and the moisture it should vent through the trade inversion
+    # stayed as a near-saturated sheet under it (docs/trade-shallow.md).
+    # True joins the hash; False is WRF's kernel word for word and keeps
+    # every earlier checkpoint's identity.
+    gf_shallow_buoyancy_from_cloud_base: bool = False
+    # Read only where cumulus="gf" and gf_ishallow=1.  The shallow arm's
+    # boundary-layer quasi-equilibrium closure (xff_shal(3) = blqe / (hc -
+    # he at kbcon)) sums the PBL's moist-static-energy tendency over the
+    # sub-cloud layer, k = 1..kbcon, as GSL's GFL cu_gfl_sh_run does (MPAS
+    # v8.4.2: 1..kbcon-1), instead of WRF v4.6.1's 1..kpbl
+    # (module_cu_gf_sh.F:838; gf.cu GF_SHALLOW_BLQE_TO_CLOUD_BASE).  Under
+    # a capped, cloud-topped boundary layer kpbl sits above cloud base and
+    # WRF's sum adds the cloud layer's PBL tendency to the sub-cloud source
+    # the closure is defined on; with gf_shallow_buoyancy_from_cloud_base
+    # the stratocumulus columns of the 2026-08-01 T255 control took 0.17-0.22
+    # kg m-2 s-1 from that member for a two-level plume (the probe in
+    # docs/trade-shallow.md).  True joins the hash; False is WRF's word for
+    # word.
+    gf_shallow_blqe_to_cloud_base: bool = False
+    # Read only where cumulus="gf" and gf_ishallow=1.  A minimum depth, in
+    # whole metres from cloud base to cloud top, for the shallow arm's
+    # cloud: shallower plumes exit as the deep arm's do (ierr 6, "cloud
+    # depth very shallow", module_cu_gf_deep.F:949, depth_min 1000 m deep
+    # and 500 m mid-level; gf.cu GF_SHALLOW_DEPTH_MIN_M).  WRF v4.6.1's
+    # shallow arm has no such test; this is the package's own departure.
+    # With gf_shallow_buoyancy_from_cloud_base the shallow arm also fires
+    # under the stratocumulus decks, where its plume is one or two levels
+    # deep (250-490 m interquartile on the 2026-08-01 T255 probe) and vents
+    # the capped layer within a day, while the trade-cumulus plumes are
+    # 770-1330 m (docs/trade-shallow.md).  0 (the default) is no test and
+    # keeps every earlier identity; any other value joins the hash.
+    gf_shallow_depth_min_m: int = 0
     # Read only where cumulus="ntiedtke": True runs the New Tiedtke kernels
     # with classic Tiedtke's deep closure (the fixed 2400 s adjustment time
     # and the moisture-convergence first guess in place of the
@@ -458,6 +501,12 @@ class NativePhysicsOptions:
             del payload["gf_updraft_only_when_downdraft_dry"]
         if self.cumulus_scheme != "gf" or not self.gf_resolved_convergence_closure:
             del payload["gf_resolved_convergence_closure"]
+        if self.cumulus_scheme != "gf" or not self.gf_shallow_buoyancy_from_cloud_base:
+            del payload["gf_shallow_buoyancy_from_cloud_base"]
+        if self.cumulus_scheme != "gf" or not self.gf_shallow_blqe_to_cloud_base:
+            del payload["gf_shallow_blqe_to_cloud_base"]
+        if self.cumulus_scheme != "gf" or self.gf_shallow_depth_min_m == 0:
+            del payload["gf_shallow_depth_min_m"]
         if self.sfclay_iz0tlnd == 0:
             del payload["sfclay_iz0tlnd"]
         if self.radiation_between == "hold":
@@ -623,6 +672,14 @@ class NativePhysicsOptions:
             raise ValueError("snow_ageing must be true or false")
         if not isinstance(self.gf_resolved_convergence_closure, bool):
             raise ValueError("gf_resolved_convergence_closure must be true or false")
+        if not isinstance(self.gf_shallow_buoyancy_from_cloud_base, bool):
+            raise ValueError("gf_shallow_buoyancy_from_cloud_base must be true or false")
+        if not isinstance(self.gf_shallow_blqe_to_cloud_base, bool):
+            raise ValueError("gf_shallow_blqe_to_cloud_base must be true or false")
+        if (isinstance(self.gf_shallow_depth_min_m, bool)
+                or not isinstance(self.gf_shallow_depth_min_m, int)
+                or not 0 <= self.gf_shallow_depth_min_m <= 5000):
+            raise ValueError("gf_shallow_depth_min_m must be a whole number of metres, 0..5000")
         if self.orographic_drag not in {"none", "kim-gwdo"}:
             raise ValueError(
                 "orographic_drag must be 'none' or 'kim-gwdo' (WRF gwd_opt = 1, "

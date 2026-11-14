@@ -1,7 +1,7 @@
 """The limits of the model as data, and the label each world earns.
 
 A world is measured against the model's limits (the radiation's 355 K skin
-range, the 109,663 Pa pressure ceiling, the 450 hPa terrain floor, the
+range, the 115,000 Pa pressure ceiling, the 450 hPa terrain floor, the
 water store every column pays its evaporation from, ...), against Earth's
 own figures measured with this model, and against the rules of worlds plan
 section 2 that give it one of three labels: ``science``, ``illustration``

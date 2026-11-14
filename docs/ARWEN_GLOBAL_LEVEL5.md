@@ -254,6 +254,21 @@ CHECKPOINT` (`--calibrate` prints the census calibration rows, the floor and
 downdraft rows among them). The regional `cu_physics = 3` seam keeps the
 WRF-faithful kernel, its parity anchor.
 
+Three opt-in switches act on the Grell-Freitas shallow arm. All are off by
+default and read only under `cumulus = "gf"`:
+- `gf_shallow_buoyancy_from_cloud_base` integrates the plume's buoyancy for
+  its cloud-top test from cloud base, as GSL's GFL and MPAS v8.4.2 do, instead
+  of from the source level as WRF v4.6.1 does.
+- `gf_shallow_blqe_to_cloud_base` sums the boundary-layer quasi-equilibrium
+  closure's MSE source over the sub-cloud layer, as GFL does.
+- `gf_shallow_depth_min_m` applies the deep arm's cloud-depth exit (ierr 6)
+  to the shallow cloud.
+
+Together at 500 m they vent the trade-wind cloud sheet behind most of the
+model's remaining excess of reflected sunlight, and they keep the
+stratocumulus decks. `docs/trade-shallow.md` has the cause, the probe and the
+10-day T255 twins. Each joins the identity only when set.
+
 `ntiedtke_tiedtke_closure = true` (default `false`, read only under
 `cumulus = "ntiedtke"`) runs the New Tiedtke kernels with classic Tiedtke's
 deep closure; `docs/cumulus-new-tiedtke.md` records what that changes. The

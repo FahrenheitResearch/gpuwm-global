@@ -23,9 +23,9 @@
       "caution": 0.0
     },
     "surface_pressure_ceiling_pa": {
-      "value": 109663.0, "unit": "Pa",
-      "name": "the radiation tables' pressure ceiling",
-      "source": "RRTMGP pressure tables end at 109,663.316 Pa of layer pressure (da/analysis.py RADIATION_SURFACE_PRESSURE_CEILING_PA)",
+      "value": 115000.0, "unit": "Pa",
+      "name": "the radiation's pressure ceiling",
+      "source": "the radiation accepts layer pressures to 115,000 Pa (core/rrtmgp.py RRTMGP_PLAY_CEILING_PA, da/analysis.py RADIATION_SURFACE_PRESSURE_CEILING_PA); the RRTMGP gas tables end at 109,663.316 Pa and a layer between the two is looked up at the tables' deepest pressure",
       "caution": 1116.0
     },
     "surface_pressure_floor_pa": {
@@ -209,7 +209,7 @@
     },
     {
       "id": "pressure_over_ceiling", "label": "not supported yet", "setting": "terrain",
-      "limit": "the predicted surface pressure is over the radiation tables' ceiling",
+      "limit": "the predicted surface pressure is over the radiation's pressure ceiling",
       "source": "preflight refusal pressure_over_ceiling (world/preflight.py)",
       "when": {"key": "facts.surface_pressure_max_pa", "op": ">", "limit": "surface_pressure_ceiling_pa"}
     },
@@ -395,7 +395,7 @@
     },
     {
       "id": "planet_constants", "label": "not supported yet", "setting": "planet",
-      "limit": "another gravity, radius or air composition, or air thicker than 1.09 bar: the full-physics kernels have Earth's gravity and air compiled in and are pinned by hash, the radiation tables stop at 1,096.6 hPa, and about 240 lines in about 35 files read Earth's constants directly",
+      "limit": "another gravity, radius or air composition, or air thicker than 1.15 bar: the full-physics kernels have Earth's gravity and air compiled in and are pinned by hash, the radiation refuses layers deeper than 1,150 hPa (its gas tables stop at 1,096.6 hPa), and about 240 lines in about 35 files read Earth's constants directly",
       "source": "the worlds page (docs/ARWEN_GLOBAL_WORLDS.md)",
       "when": {"any": [
         {"key": "gravity_m_s2", "op": "present"},
@@ -495,7 +495,7 @@
     {"id": "mountains-capped", "request": {"label": "capped-1500", "terrain": {"cap_m": 1500.0}},
       "label": "science", "rules": ["mountains_lowered"]},
     {"id": "no-mountains-over-ceiling", "request": {"label": "flat-earth", "terrain": {"scale": 0.0},
-      "facts": {"surface_pressure_max_pa": 110000.0}},
+      "facts": {"surface_pressure_max_pa": 116000.0}},
       "label": "not supported yet", "rules": ["mountains_lowered", "pressure_over_ceiling"]},
     {"id": "no-mountains-hot-skin", "request": {"label": "flat-earth", "terrain": {"scale": 0.0},
       "facts": {"skin_temperature_max_k": 357.0}},

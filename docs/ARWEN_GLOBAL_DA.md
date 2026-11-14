@@ -443,7 +443,12 @@ ceiling by name, an analysed member above it is named in the report, and
 the real arms below ran six and twenty-four hourly cycles of noisy real
 reports on T127 members under the T255 control with the incremental
 analysis update. So the noisy control path is demonstrated on the real
-case, and the T63 twin is not the calibration of record for it. The wall of one hourly cycle:
+case, and the T63 twin is not the calibration of record for it. Since
+0.2.1 the radiation looks a layer between 1,096.6 and 1,150 hPa up at the
+tables' deepest pressure instead of stopping, and since 0.2.2 the twin's
+start check, the named members and the analysed-state bound use that
+1,150 hPa (115,000 Pa) ceiling; the deaths above were measured against the
+tables' own 109,663 Pa and have not been re-run. The wall of one hourly cycle:
 the members' advance 41 s, the LETKF solve 2 s, the members' O-A
 operators 12 s, the control's operators for the binning sensitivity and
 the card 15 s, the control's own hour of forecast 11 s; the resident
@@ -622,7 +627,8 @@ trajectory gate in the third hour and then the Lipschitz gate at 0.7689
 against 0.75, fixed by keeping a coarser truncation's step under a
 semi-Lagrangian integrator; at 300 s a member's surface pressure passed
 the radiation tables' 109,663 Pa ceiling in the second hour, 109,764 Pa,
-and the cycle stopped by name). The letkf cycle on the semi-Lagrangian
+and the cycle stopped by name; that pressure is under the 115,000 Pa the
+radiation accepts since 0.2.1, and the cycle has not been re-run). The letkf cycle on the semi-Lagrangian
 members is therefore not demonstrated here.
 
 ## Lineage, receipts and the information cutoff

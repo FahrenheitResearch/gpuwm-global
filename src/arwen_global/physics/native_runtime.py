@@ -1853,6 +1853,12 @@ class NativePhysicsRuntime:
                 extra["resolved_convergence_closure"] = (
                     self.options.gf_resolved_convergence_closure
                 )
+                if self.options.gf_shallow_buoyancy_from_cloud_base:
+                    extra["shallow_buoyancy_from_cloud_base"] = True
+                if self.options.gf_shallow_blqe_to_cloud_base:
+                    extra["shallow_blqe_to_cloud_base"] = True
+                if self.options.gf_shallow_depth_min_m:
+                    extra["shallow_depth_min_m"] = self.options.gf_shallow_depth_min_m
             self._cumulus = getattr(module, class_name)(
                 column_chunk=self.options.cumulus_column_chunk, **extra
             )

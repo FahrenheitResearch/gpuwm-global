@@ -183,6 +183,56 @@
 #define GF_RESOLVED_CONVERGENCE_FLOOR_DISABLED 0
 #endif
 
+// GF_SHALLOW_BUOYANCY_FROM_CLOUD_BASE: the shallow arm's cloud-top test
+// integrates the plume's buoyancy from cloud base (kbcon) up, as both later
+// Grell-Freitas lines do (MPAS v8.4.2 module_cu_gf.mpas.F CUP_gf_sh builds
+// dby from kbcon and takes ktop at its first negative level; the NOAA GSL
+// GFL cu_gfl_sh_run accumulates dbyt only where k >= kbcon), where WRF
+// v4.6.1 (module_cu_gf_sh.F:530) accumulates it from the source level
+// k22 + 1.  Below kbcon the plume is unsaturated and dbyo < 0 by the
+// definition of kbcon, so in WRF's sum the sub-cloud deficit the parcel
+// has already crossed cancels the positive area of the cloud layer: a
+// trade-wind column whose plume is buoyant from cloud base to the
+// inversion still gets ktop < kbcon + 1 and exits with ierr 5 whenever its
+// sub-cloud layer is deeper than its cloud layer is buoyant (55-69 percent
+// of the trade columns of the 2026-08-01 T255 control).  A DECLARED
+// DIVERGENCE from WRF v4.6.1; off (the default and the oracle's only state)
+// every word is WRF's.
+#ifndef GF_SHALLOW_BUOYANCY_FROM_CLOUD_BASE
+#define GF_SHALLOW_BUOYANCY_FROM_CLOUD_BASE 0
+#endif
+
+// GF_SHALLOW_BLQE_TO_CLOUD_BASE: the shallow arm's boundary-layer
+// quasi-equilibrium closure (xff_shal(3) = blqe / (hc - he at kbcon))
+// integrates the PBL's moist-static-energy tendency over the SUB-CLOUD layer,
+// k = 1..kbcon, as GSL's GFL cu_gfl_sh_run does (MPAS v8.4.2's CUP_gf_sh
+// sums 1..kbcon-1), instead of WRF v4.6.1's 1..kpbl (module_cu_gf_sh.F:838).
+// Under a capped, cloud-topped boundary layer kpbl sits above cloud base,
+// so WRF's sum adds the PBL's cloud-layer tendency to the sub-cloud source
+// the closure is defined on, over a denominator that is small in a
+// well-mixed layer: the stratocumulus columns of the 2026-08-01 T255
+// control took 0.17-0.22 kg m-2 s-1 from this member for a two-level plume
+// with 0.6-1 J/kg of cloud work function.  A DECLARED DIVERGENCE from WRF
+// v4.6.1; off, every word is WRF's.
+#ifndef GF_SHALLOW_BLQE_TO_CLOUD_BASE
+#define GF_SHALLOW_BLQE_TO_CLOUD_BASE 0
+#endif
+
+// GF_SHALLOW_DEPTH_MIN_M: a minimum depth, in metres, from cloud base to
+// cloud top for the shallow arm, the deep arm's ierr 6 test
+// (module_cu_gf_deep.F:943-951, depth_min = 1000 m deep and 500 m for the
+// mid-level arm) applied to the shallow cloud.  WRF v4.6.1's shallow arm
+// has none (MPAS v8.4.2's CUP_gf_sh declares depth_min = 50. and never
+// reads it).  THIS PACKAGE'S OWN DEPARTURE, not a reference port: with the
+// cloud-base integral (GF_SHALLOW_BUOYANCY_FROM_CLOUD_BASE) the shallow arm
+// also fires under the stratocumulus decks, where the plume is one or two
+// levels deep (250-490 m interquartile on the 2026-08-01 T255 probe, 0.4-1.4
+// J/kg of cloud work function) and vents the capped layer within a day; the
+// trade-cumulus plumes are 770-1330 m.  0 (the default) compiles no test.
+#ifndef GF_SHALLOW_DEPTH_MIN_M
+#define GF_SHALLOW_DEPTH_MIN_M 0
+#endif
+
 #ifndef GF_KMAX
 #define GF_KMAX 40
 #endif
@@ -3532,6 +3582,12 @@ __device__ void gfd_shallow_column(
                      upme[k - 1]));
             dbyo[k] = FSUB(hco[k], heso_cup[k]);
             float dz = FSUB(zo_cup[k + 1], zo_cup[k]);
+#if GF_SHALLOW_BUOYANCY_FROM_CLOUD_BASE
+            // GFL's cu_gfl_sh_run: the integral starts at cloud base, so
+            // the sub-cloud deficit the parcel already crossed to reach
+            // kbcon no longer cancels the cloud layer's positive area.
+            if (k >= kbcon)
+#endif
             dbyt[k] = FADD(dbyt[k - 1], FMUL(dbyo[k], dz));
         }
         ki = gfd_maxloc(dbyt, 1, nz);
@@ -3552,6 +3608,14 @@ __device__ void gfd_shallow_column(
         } else if (ktop > ktf - 2) {
             ierr = 5;
         }
+#if GF_SHALLOW_DEPTH_MIN_M
+        // The deep arm's ierr 6 (module_cu_gf_deep.F:949) on the shallow
+        // cloud: a plume shallower than GF_SHALLOW_DEPTH_MIN_M metres from
+        // cloud base to cloud top is the capped layer's, not a cumulus.
+        if (ierr == 0
+            && FADD(-zo_cup[kbcon], zo_cup[ktop]) < (float)GF_SHALLOW_DEPTH_MIN_M)
+            ierr = 6;
+#endif
     }
     ISCB[SHI_ki_dbyt] = ki;
 
@@ -3800,7 +3864,14 @@ __device__ void gfd_shallow_column(
         xff0 = GMAX(K_ZERO,
                     FDIV(-FSUB(aa1, aa0), FMUL(xkshal, dtime)));
         xff1 = FMUL(K_P03, zws);
-        for (int k = 1; k <= kpbl; k++) {
+        // BLQE: the sub-cloud MSE source.  WRF sums dhdt to kpbl
+        // (module_cu_gf_sh.F:838); GFL to kbcon (cu_gfl_sh_run).
+#if GF_SHALLOW_BLQE_TO_CLOUD_BASE
+        const int kblqe = kbcon;
+#else
+        const int kblqe = kpbl;
+#endif
+        for (int k = 1; k <= kblqe; k++) {
             blqe = FADD(blqe,
                 FDIV(FMUL(FMUL(K_HUNDRED, dhdt[k]),
                           FSUB(po_cup[k], po_cup[k + 1])),

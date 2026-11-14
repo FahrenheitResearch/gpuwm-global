@@ -278,22 +278,41 @@ class SlabProvider:
         return xp.asarray(mixed_layer_depth(self.clim, when, self.params, ocean, xp),
                           dtype=xp.float64)
 
-    def _qflux(self, when, depth, xp, iced):
-        """Q on the ocean columns. Where the slab holds ice (``iced``) the
-        mixed layer sits at the freezing point and every watt of the ocean's
-        heat goes to the ice, so the climatology's SST slope (the heat that
-        warms or cools open water) is left out there: given to the pack, it
-        melts or grows ice at a rate the climatology's ice slope does not
-        ask for. The ice slope's term stays everywhere."""
-        from .ocean_slab import climatology_tendency, qflux
+    def _qflux(self, when, depth, xp, iced, fraction, until=None):
+        """Q on the ocean columns, over the step from ``when`` to ``until``
+        (the slopes are the climatology curve's change over it; None: its
+        slope at ``when``).
 
-        sst_rate, ice_rate = climatology_tendency(self.clim, when, xp)
-        sst_rate = xp.where(xp.asarray(iced, dtype=bool), 0.0, sst_rate)
+        Where the slab holds ice (``iced``) the mixed layer sits at the
+        freezing point and every watt of the ocean's heat goes to the ice, so
+        the climatology's SST slope (the heat that warms or cools open
+        water) is left out there: given to the pack, it melts or grows ice
+        at a rate the climatology's ice slope does not ask for. The ice
+        slope's term stays everywhere.
+
+        Under ice a negative Q is also carried only in the share
+        ocean_slab.under_ice_cooling_share gives for the slab's ice
+        ``fraction`` against the climatology's: that cooling is the heat
+        the calibration's leads took in and the ocean carried off, and a
+        pack more closed than the climatology's takes in less of it. Charged
+        whole, it grew the southern summer pack from below (-78 W/m2 in
+        December, -87 in January, on the 180-day coupled run's cells where
+        both held ice), and the new ice it formed closed the leads further."""
+        from .ocean_slab import climatology_tendency, qflux, under_ice_cooling_share
+
+        sst_rate, ice_rate = climatology_tendency(self.clim, when, xp, until=until)
+        iced = xp.asarray(iced, dtype=bool)
+        sst_rate = xp.where(iced, 0.0, sst_rate)
         value = qflux(depth_m=depth, sst_rate_k_s=sst_rate, ice_fraction_rate_s=ice_rate,
                       ice_reference_thickness_m=self._ice_reference(xp),
                       calibration_flux_w_m2=self.qflux_file.at(when, xp), xp=xp)
+        value = xp.nan_to_num(xp.asarray(value, dtype=xp.float64))
+        share = under_ice_cooling_share(
+            ice_fraction=fraction,
+            climatology_ice_fraction=self.clim.at("sea_ice_fraction", when, xp), xp=xp)
+        value = xp.where(iced & (value < 0.0), value * share, value)
         ocean = self._on(xp, "ocean", self.ocean)
-        return xp.where(ocean, xp.nan_to_num(xp.asarray(value, dtype=xp.float64)), 0.0)
+        return xp.where(ocean, value, 0.0)
 
     def _target(self, t: float, when, xp):
         if self.options.slab_target == "anomaly":
@@ -331,7 +350,7 @@ class SlabProvider:
             out[ICE_FRACTION] = np.where(ocean, fraction, 0.0)
             out[ICE_VOLUME] = np.where(ocean, np.asarray(volume, dtype=np.float64), 0.0)
             out[SLAB_QFLUX] = self._qflux(self.start, depth, np,
-                                          ocean & (out[ICE_VOLUME] > 0.0))
+                                          ocean & (out[ICE_VOLUME] > 0.0), out[ICE_FRACTION])
             out[ENERGY_SOURCES] = np.zeros(shape, dtype=np.float64)
             out[ENERGY_STORED] = np.zeros(shape, dtype=np.float64)
         if self.reference_suite:
@@ -466,13 +485,15 @@ class SlabProvider:
                 deposited = True
                 self.stats["deposits_this_segment"] += 1
         else:
-            self._advance_slab(state, xp, t0, dt, when, ocean, f_open, basal, melt)
+            self._advance_slab(state, xp, t0, dt, when, ocean, f_open, basal, melt,
+                               until=self.when(t))
         state.physics_state.metadata[METADATA_KEY] = {
             **meta, "last_update_s": t, "advances": int(meta.get("advances", 0)) + 1,
             **({"deposits": int(meta.get("deposits", 0)) + 1} if deposited else {})}
         self.stats["advances_this_segment"] += 1
 
-    def _advance_slab(self, state, xp, t0, dt, when, ocean, f_open, basal, melt) -> None:
+    def _advance_slab(self, state, xp, t0, dt, when, ocean, f_open, basal, melt, *,
+                      until) -> None:
         from .ocean_slab import RHO_CP_SEAWATER_J_M3_K, restoring_flux, slab_step
         from .sea_ice_thermo import ice_step
 
@@ -486,7 +507,7 @@ class SlabProvider:
         depth = xp.where(ocean, self._depth(when, xp), 0.0)
         safe_depth = xp.where(ocean, depth, 1.0)
         iced = ocean & (volume > 0.0)
-        q = self._qflux(when, depth, xp, iced)
+        q = self._qflux(when, depth, xp, iced, fraction, until=until)
         restoring = xp.where(ocean, xp.asarray(restoring_flux(
             temperature_k=temperature, target_k=self._target(t0, when, xp), depth_m=depth,
             relaxation_days=self.params.relaxation_days, xp=xp), dtype=xp.float64), 0.0)

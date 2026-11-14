@@ -641,7 +641,9 @@ def run_global_osse(setup: GlobalOsseSetup, outdir: str | Path, *, progress=prin
     # sea level at the Andes' Pacific foot (T63: 109.2 to 109.7 kPa there by
     # construction) and a member that starts above the ceiling dies in the
     # twin's first radiation call with no analysis at all (seed 4242, scale
-    # 1.5, 2026-09-06), so the twin refuses such a start by name.
+    # 1.5, 2026-09-06, against the then ceiling of 109,663 Pa; the radiation
+    # now accepts layers to 115,000 Pa), so the twin refuses such a start by
+    # name.
     start_pressure = members_surface_pressure_record(
         [member_surface_pressure_extrema(model, transform, m) for m in ensemble.members])
     control_pressure = member_surface_pressure_extrema(det_model, det_transform, control_state)
@@ -656,7 +658,7 @@ def run_global_osse(setup: GlobalOsseSetup, outdir: str | Path, *, progress=prin
         if control_pressure["columns_above_ceiling"]:
             who = (who + "; " if who else "") + f"the control at {control_pressure['surface_pressure_max_pa']:.0f} Pa"
         raise ValueError(
-            f"the displaced start exceeds the radiation tables' ceiling "
+            f"the displaced start exceeds the radiation's pressure ceiling "
             f"({members_reading['ceiling_pa']:,.0f} Pa): {who} (seed {setup.seed}, start_perturbation_scale "
             f"{setup.start_perturbation_scale:g}, T{ecfg.truncation} members under a T{control_cfg.truncation} "
             f"control; the truncated orography undershoots at {members_reading['column_of_max']['latitude_deg']:.1f} N, "

@@ -2586,12 +2586,30 @@ def _run_tracked(
     # restart written under another rule is refused here, before any of its
     # arrays becomes the run's state.
     surface_update = _surface_services_for(cfg, model, cold)
+    branch_boundary = None
     if restart is not None:
-        from .ocean_rules import check_restart_identity
+        from .ocean_rules import IDENTITY_KEY, check_restart_identity
 
-        check_restart_identity(surface_update.identity,
-                               restart_metadata.get("physics_metadata"),
-                               f"restart checkpoint {restart}")
+        parent_boundary = (restart_metadata.get("physics_metadata") or {}).get(IDENTITY_KEY)
+        if branch_config and parent_boundary != surface_update.identity:
+            # A branch under another config may also change the ocean rule
+            # (hold, anomaly or climatology): the rule is a closed form of
+            # model time built from the cold state, so the branch evaluates
+            # at its first step exactly what a straight run under the new
+            # rule evaluates at that instant.  A rule that keeps prognostic
+            # arrays (the slab, a calibration) has no such closed form, and
+            # its arrays are not in a parent written without it.
+            if getattr(surface_update.provider, "initialize", None) is not None:
+                raise ValueError(
+                    f"--branch-from-other-config cannot move restart checkpoint {restart} "
+                    f"onto [ocean] mode = {cfg.ocean.mode!r}: that boundary keeps its own "
+                    "prognostic arrays, which a checkpoint written under another boundary "
+                    "does not carry")
+            branch_boundary = {"parent": parent_boundary, "this": surface_update.identity}
+        else:
+            check_restart_identity(surface_update.identity,
+                                   restart_metadata.get("physics_metadata"),
+                                   f"restart checkpoint {restart}")
     elif surface_update.identity is not None:
         from .ocean_rules import IDENTITY_KEY
 
@@ -2614,6 +2632,13 @@ def _run_tracked(
             carried_physics_arrays=carried_physics_arrays(cfg),
         )
         adopt_checkpoint_clock(model, state, f"restart checkpoint {restart}")
+        if branch_boundary is not None:
+            # The branch's checkpoints carry ITS boundary, so a restart of
+            # the branch continues the branch's rule, not the parent's.
+            if surface_update.identity is None:
+                state.physics_state.metadata.pop(IDENTITY_KEY, None)
+            else:
+                state.physics_state.metadata[IDENTITY_KEY] = surface_update.identity
         surface_update.check_restart_state(state, f"restart checkpoint {restart}")
         # The second time level rides with the state.  Without it the
         # resumed run would take a non-extrapolated start-up step in the
@@ -3170,6 +3195,7 @@ def _run_tracked(
             "config_hash": cfg.config_hash,
             "config_differs": restart_metadata["config_hash"] != cfg.config_hash,
             "parent_checkpoint_self_sha256": restart_metadata["self_sha256"],
+            **({"surface_boundary": branch_boundary} if branch_boundary is not None else {}),
         }} if branch_config else {}),
         "restart_targets": restart_targets,
         # Where open water's surface water is booked, and whether this

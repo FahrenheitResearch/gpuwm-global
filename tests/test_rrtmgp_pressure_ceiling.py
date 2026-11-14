@@ -98,3 +98,26 @@ def test_the_float64_mirror_looks_a_deep_layer_up_at_the_last_pressure(kind):
     with pytest.raises(ValueError, match="outside allowed range"):
         npref.np_rrtmgp_gas_optics(tables, bad, plev + 2_000.0, tlay, vmr)
 
+
+
+def test_the_da_and_worlds_ceilings_are_the_radiation_s():
+    """The data assimilation's state bound and the worlds' preflight row are
+    the ceiling the radiation accepts, not the tables' 109,663 Pa.
+
+    Until 0.2.2 both still read the tables' own top, so after 0.2.1 they
+    refused states (a member, an analysed control, a terrain edit) that the
+    radiation steps: a layer between the tables' deepest pressure and
+    1,150 hPa is looked up at the deepest pressure.  The three numbers are
+    stated in three places (the DA module and the limits file are read
+    without importing the radiation), so they are held equal here."""
+    import json
+    from importlib import resources
+
+    from arwen_global.da.analysis import RADIATION_SURFACE_PRESSURE_CEILING_PA
+
+    limits = json.loads(resources.files("arwen_global").joinpath(
+        "data", "world-limits.json").read_text(encoding="utf-8"))
+    row = limits["limits"]["surface_pressure_ceiling_pa"]
+    assert RADIATION_SURFACE_PRESSURE_CEILING_PA == rrtmgp.RRTMGP_PLAY_CEILING_PA
+    assert row["value"] == rrtmgp.RRTMGP_PLAY_CEILING_PA
+    assert "RRTMGP_PLAY_CEILING_PA" in row["source"]

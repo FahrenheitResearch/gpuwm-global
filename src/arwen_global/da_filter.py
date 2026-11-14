@@ -401,12 +401,14 @@ def _overlay_door_options(filter_options, options):
 
 
 ANALYSED_STATE_BOUNDS_BREAKAGE = (
-    "an analysed surface pressure above the radiation tables' ceiling is not an "
-    "atmosphere the physics can step: the RRTMGP pressure tables end at 1,096.6 hPa "
-    "of layer pressure and the next radiation call refuses the column (the T127 "
-    "over T63 twin's noisy arm of 2026-09-06 died there with 1,096.98 hPa at one "
-    "column after a noisy pressure increment), so the analysis is not applied and "
-    "the background is carried, with the columns named; the observation "
+    "an analysed surface pressure above the radiation's pressure ceiling is not an "
+    "atmosphere the physics can step: the radiation accepts layer pressures to "
+    "1,150 hPa (the RRTMGP gas tables end at 1,096.6 hPa and a layer between the "
+    "two is looked up at the tables' deepest pressure) and the next radiation "
+    "call refuses a deeper column (the T127 over T63 twin's noisy arm of "
+    "2026-09-06 died with 1,096.98 hPa at one column after a noisy pressure "
+    "increment, when the ceiling was still the tables' own), so the analysis is "
+    "not applied and the background is carried, with the columns named; the observation "
     "vocabulary's 108,000 Pa gross bound is a bound on a report, not on a state "
     "(a T127 control carries 107.7 kPa at the Andes' Pacific foot by construction, "
     "a T63 member 109.5 kPa)"
@@ -415,9 +417,9 @@ ANALYSED_STATE_BOUNDS_BREAKAGE = (
 
 def analysed_state_within_bounds(model, transform, state) -> dict[str, object]:
     """Engineering validity of the analysed state itself: the surface
-    pressure everywhere finite and at or below the radiation tables'
+    pressure everywhere finite and at or below the radiation's pressure
     ceiling (:data:`arwen_global.da.analysis.
-    RADIATION_SURFACE_PRESSURE_CEILING_PA`, 109,663 Pa).  Returns the
+    RADIATION_SURFACE_PRESSURE_CEILING_PA`, 115,000 Pa).  Returns the
     record (``within``, the extrema, the count of columns outside and
     the breakage when not)."""
     from .da.analysis import RADIATION_SURFACE_PRESSURE_CEILING_PA

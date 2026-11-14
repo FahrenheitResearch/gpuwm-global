@@ -405,6 +405,50 @@ def test_a_restarted_rule_run_reproduces_the_straight_run_bit_for_bit(tmp_path, 
         run(other, tmp_path / "other", restart=full / "arwen_global_step00000004.npz")
 
 
+def test_a_held_run_branches_onto_the_anomaly_rule_and_its_branch_continues_it(tmp_path, monkeypatch):
+    from arwen_global.checkpoint import read_checkpoint
+    from arwen_global.runner import run
+
+    start = datetime(2026, 1, 16, 11, 59, 20, tzinfo=timezone.utc)
+    rule = replace(_smoke_rule_config(tmp_path, monkeypatch, start), output_interval_s=20.0)
+    held =replace(rule, ocean=replace(rule.ocean, mode="hold"))
+    parent, branch, resumed, straight = (tmp_path / name for name in
+                                         ("parent", "branch", "resumed", "straight"))
+    run(held, parent)
+    fork = parent / "arwen_global_step00000004.npz"
+    # Without the opt-in the held checkpoint is refused by the rule run.
+    with pytest.raises(ValueError):
+        run(rule, tmp_path / "refused", restart=fork)
+    result = run(rule, branch, restart=fork, branch_config=True)
+    assert result["branch"]["surface_boundary"]["parent"] is None
+    assert result["branch"]["surface_boundary"]["this"]["ocean_mode"] == "anomaly"
+    # The branch's checkpoints carry the rule, so a plain restart of the
+    # branch continues it, and reaches the branch's own end bit for bit.
+    meta, arrays = read_checkpoint(branch / "arwen_global_step00000008.npz")
+    assert meta["physics_metadata"]["surface_boundary"]["ocean_mode"] == "anomaly"
+    run(rule, resumed, restart=branch / "arwen_global_step00000006.npz")
+    _meta, again = read_checkpoint(resumed / "arwen_global_step00000008.npz")
+    for name in arrays:
+        assert np.array_equal(arrays[name], again[name]), name
+    # The branch's open-ocean skin at its end is the rule's, the same as a
+    # straight rule run's at that instant.
+    run(rule, straight)
+    _meta, rule_arrays = read_checkpoint(straight / "arwen_global_step00000008.npz")
+    _meta, held_arrays = read_checkpoint(parent / "arwen_global_step00000008.npz")
+    skin = "surface__surface_temperature_k"
+    ice = "surface__sea_ice_fraction"
+    water = ((np.asarray(arrays["surface__land_fraction"]) <= 0.5)
+             & (arrays[ice] == 0) & (rule_arrays[ice] == 0) & (held_arrays[ice] == 0))
+    assert water.any()
+    # (Equal to the straight run's up to what the step after the write does
+    # with two different atmospheres over the same sea; far from the held
+    # sea.)
+    to_rule = np.abs(arrays[skin][water] - rule_arrays[skin][water]).max()
+    to_held = np.abs(arrays[skin][water] - held_arrays[skin][water]).max()
+    print(f"branch skin vs rule run {to_rule:.3e} K, vs held run {to_held:.3e} K")
+    assert to_rule < 1.0e-3 * to_held
+
+
 def test_a_start_sst_below_the_freezing_point_is_not_an_anomaly(tmp_path):
     grid = GaussianGrid.create(21)
     S = (int(grid.nlat), int(grid.nlon))

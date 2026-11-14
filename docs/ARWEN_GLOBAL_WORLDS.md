@@ -198,7 +198,7 @@ before the cold start reads a field:
 | Refusal | When |
 |---|---|
 | `terrain_too_tall` | the predicted lowest surface pressure is under 45,000 Pa |
-| `pressure_over_ceiling` | the predicted surface pressure is over 109,663 Pa, where the radiation tables end |
+| `pressure_over_ceiling` | the predicted surface pressure is over 115,000 Pa, the deepest layer the radiation accepts (its gas tables end at 109,663 Pa and a layer between the two is looked up at their deepest pressure) |
 | `start_skin_over_limit` | a land skin, warmed 6.5 K per km of height removed, passes 355 K |
 
 Each limit is a row with the code that enforces it, in
@@ -492,7 +492,7 @@ Not supported yet, and why:
 | any world's own climate, an ice age, a snowball | no ocean or sea ice answers the atmosphere |
 | a tidally locked planet | needs a sea that answers its sky |
 | another gravity, radius or air composition | the physics kernels and the grid hold Earth's gravity, radius and air |
-| more or less air | the radiation tables end at 109,663 Pa; both carried convection schemes hold live thresholds in absolute pressure (six in Grell-Freitas, seven in New Tiedtke, none in the microphysics) and the vertical coordinate is checked only down to a 500 hPa surface, read row by row in [the thin-air kernel audit](arwen-global-worlds-pressure-audit.md) |
+| more or less air | the radiation refuses layers deeper than 115,000 Pa and looks every layer past its tables' 109,663 Pa up at 109,663 Pa; both carried convection schemes hold live thresholds in absolute pressure (six in Grell-Freitas, seven in New Tiedtke, none in the microphysics) and the vertical coordinate is checked only down to a 500 hPa surface, read row by row in [the thin-air kernel audit](arwen-global-worlds-pressure-audit.md) |
 | another year length | ozone, vegetation, the land-use season and the trace gases follow a 365-day calendar |
 | another star | the solar spectrum is fixed |
 | a regional zoom on a world with its own coast | the regional model reads Earth's geography |
