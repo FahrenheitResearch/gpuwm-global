@@ -590,8 +590,13 @@ def _state_variable_attributes(writer, ocean_fields=()) -> None:
         return
     from .ocean_coupler import TAPE_FIELD_ATTRS
 
+    attrs = TAPE_FIELD_ATTRS
+    if any(name not in TAPE_FIELD_ATTRS for name in ocean_fields):
+        from .ocean_dyn.coupler import TAPE_FIELD_ATTRS as DYNAMIC_ATTRS
+
+        attrs = {**TAPE_FIELD_ATTRS, **DYNAMIC_ATTRS}
     stated = {**TAPE_VARIABLE_ATTRS,
-              **{name: TAPE_FIELD_ATTRS[name] for name in ocean_fields}}
+              **{name: attrs[name] for name in ocean_fields}}
     for name, attrs in stated.items():
         try:
             variable = writer.ds.variables[name]
@@ -1408,6 +1413,12 @@ def _slab_ocean_planes(bundle, regrid) -> dict[str, np.ndarray]:
     from .ocean_coupler import tape_fields
 
     fields = tape_fields(bundle.physics_state.arrays, bundle.surface.temperature_k, None)
+    if fields and any(name.startswith("ocean_dyn_tape_") for name in bundle.physics_state.arrays):
+        # The dynamic ocean's planes (SSH, currents, KPP depth, D20, OHC300),
+        # present only under [ocean] mode = "dynamic".
+        from .ocean_dyn.coupler import tape_fields as dynamic_tape_fields
+
+        fields.update(dynamic_tape_fields(bundle.physics_state.arrays))
     return {name: regrid(value).astype(np.float32) for name, value in fields.items()}
 
 

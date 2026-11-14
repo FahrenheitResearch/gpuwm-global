@@ -90,6 +90,7 @@ from .runner import (
     build_model_and_cold_state,
     carried_physics_arrays,
     build_transform,
+    mass_target_row,
     run_gates,
     vertical_grid_receipt,
 )
@@ -499,7 +500,7 @@ def _cycle_tracked(
         cfg, transform, scratch_destination=output)
     start_time = reconcile_start_time(model.forecast_clock, start_utc)
     cold_diag = model.diagnostics(cold)
-    target_mass = cold_diag["global_mean_surface_pressure_pa"]
+    target_mass = cold_diag[mass_target_row(cfg)]
     target_water = cold_diag["global_mean_total_water_kg_m2"]
     trackers = normalize_trackers()
     supplementary = fresh_supplementary()
@@ -525,7 +526,7 @@ def _cycle_tracked(
             model.initialize_mass_target(state.atmosphere)
             model.initialize_water_target(state)
             epoch = model.diagnostics(state)
-            target_mass = epoch["global_mean_surface_pressure_pa"]
+            target_mass = epoch[mass_target_row(cfg)]
             target_water = epoch["global_mean_total_water_kg_m2"]
             epochs.append({
                 "opened_by": "restart checkpoint carrying an assimilation chain",
@@ -792,7 +793,7 @@ def _cycle_tracked(
                     epoch = model.diagnostics(state)
                     epoch["analysis_step"] = int(state.step)
                     _append_diagnostics(diagnostics_path, epoch)
-                    target_mass = epoch["global_mean_surface_pressure_pa"]
+                    target_mass = epoch[mass_target_row(cfg)]
                     target_water = epoch["global_mean_total_water_kg_m2"]
                     epochs.append({
                         "opened_by": "analysis",

@@ -39,18 +39,34 @@ The planes are cached once per truncation beside the land-surface statics
 cache, with the same self-hashed sidecar (:func:`arwen_global.statics.
 write_cache`), and the sidecar records the SHA-256 of every source tile and
 of the land-surface cache whose LANDMASK masked them.
+
+BUILT WHEN A RUN NEEDS IT (0.2.3).  The shipped T255 and T383 forecast days
+turn the drag on, so a machine that built its land-surface statics under
+0.2.2 or earlier, and a runner that skips ``statics`` once the land cache is
+there, would otherwise meet a refusal on its first 0.2.3 run.
+:func:`ensure_orographic_statistics` builds the cache at the door instead,
+from the WPS_GEOG tree the land cache was built from, and when that tree
+lacks ``orogwd_10m`` it stages the one dataset with the engine's own
+``gpuwm fetch-geog`` (NCAR's 3.3 MB archive, SHA-256 pinned by the engine).
+Anything it cannot do is one sentence naming the two commands, or the
+option that turns the drag off, before the card is touched.
 """
 from __future__ import annotations
 
+import dataclasses
 from datetime import datetime, timezone
+import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import time
 
 import numpy as np
 
 from .statics import (STATICS_SCHEMA, StaticsOptions, _array_hash,
                       _file_hash, cache_paths as statics_cache_paths,
-                      load_statics, read_cache, machine_class)
+                      load_statics, read_cache, machine_class, write_cache)
 
 #: The ten planes the KIM drag reads, in WRF's geo_em names and launch order.
 SSO_FIELDS = ("VAR", "CON", "OA1", "OA2", "OA3", "OA4",
@@ -212,9 +228,9 @@ def build_orographic_statistics(grid, options: StaticsOptions) -> tuple[dict, di
             raise FileNotFoundError(
                 f"the WPS_GEOG tree at {root} lacks {SSO_DATASET}/{_leaf(name)}, "
                 f"which the orographic drag's {name} is built from; stage it "
-                "with `gpuwm fetch-geog` (the engine's default fetch includes "
-                f"{SSO_DATASET}) or unpack NCAR's {SSO_DATASET}.tar.bz2 under "
-                "the GEOG root")
+                f"with `gpuwm fetch-geog --root {root} --datasets "
+                f"{SSO_DATASET} --source {FETCH_SOURCE}` or unpack NCAR's "
+                f"{SSO_DATASET}.tar.bz2 under that tree")
         values, index, tile_sha = read_global_tile(directory)
         plane = sample_average_4pt(values, index, lat2, lon2)
         plane = np.where(water, 0.0, plane)
@@ -280,6 +296,151 @@ def load_orographic_statistics(options: StaticsOptions, grid) -> tuple[dict, dic
     return fields, document
 
 
+#: Where ``gpuwm fetch-geog`` takes ``orogwd_10m`` from: NCAR only (the
+#: engine's mirror does not carry it; the engine pins the archive's bytes).
+FETCH_SOURCE = "ncar"
+#: How long a run waits for another process's build of the same cache.
+LOCK_WAIT_S = 900.0
+#: How long the engine's fetch of the one 3.3 MB archive may take.
+FETCH_TIMEOUT_S = 900.0
+
+
+def fetch_command(root: Path) -> list[str]:
+    """The engine's own fetch of the one dataset, into ``root``."""
+    return [sys.executable, "-m", "gpuwm", "fetch-geog", "--root", str(root),
+            "--datasets", SSO_DATASET, "--source", FETCH_SOURCE]
+
+
+def fetch_dataset(root: Path) -> None:
+    """Stage ``orogwd_10m`` under ``root`` with ``gpuwm fetch-geog``.
+
+    A subprocess of the installed engine's command, so the archive's pinned
+    size and SHA-256, the geog root's lock and the fetch manifest are the
+    engine's, exactly as ``gpuwm fetch-geog`` typed by hand would leave them.
+    """
+    command = fetch_command(root)
+    done = subprocess.run(command, capture_output=True, text=True,
+                          timeout=FETCH_TIMEOUT_S, check=False)
+    if done.returncode != 0:
+        lines = (done.stderr or done.stdout or "").strip().splitlines()
+        raise OSError(f"`gpuwm {' '.join(command[3:])}` exited {done.returncode}"
+                      + (f": {lines[-1]}" if lines else ""))
+
+
+def _land_cache_geog_root(options, grid) -> Path | None:
+    """The WPS_GEOG root the land-surface cache for ``grid`` was built from."""
+    _, sidecar = statics_cache_paths(options, grid)
+    try:
+        root = json.loads(sidecar.read_text(encoding="utf-8")).get("geog_root")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return Path(root) if root else None
+
+
+def _dataset_present(root: Path) -> bool:
+    return all((Path(root) / SSO_DATASET / _leaf(name) / "index").is_file()
+               for name in SSO_FIELDS)
+
+
+def unbuildable_sentence(npz_path: Path, error: BaseException) -> str:
+    """The one line a run that cannot build the cache stops with."""
+    reason = " ".join(f"{type(error).__name__}: {error}".split())
+    return (
+        f"orographic_drag = \"kim-gwdo\" needs the sub-grid orography cache "
+        f"{npz_path}, and it could not be built here ({reason}); stage the "
+        f"data with `gpuwm fetch-geog --datasets {SSO_DATASET} --source "
+        f"{FETCH_SOURCE}` (add --root to name your WPS_GEOG tree) and build it "
+        "with `gpuwm-global statics CONFIG --orographic`, or run without the "
+        "drag by setting orographic_drag = \"none\" in [physics] "
+        "native_adapter_options")
+
+
+def _wait_for_other_build(npz_path: Path, sidecar: Path, lock: Path,
+                          say) -> None:
+    say(f"gpuwm-global: another process is building {npz_path.name}; "
+        "waiting for it")
+    deadline = time.monotonic() + LOCK_WAIT_S
+    while lock.exists() and time.monotonic() < deadline:
+        time.sleep(1.0)
+    if npz_path.is_file() and sidecar.is_file():
+        return
+    if lock.exists():
+        raise FileNotFoundError(unbuildable_sentence(npz_path, TimeoutError(
+            f"the build lock {lock} is still there after {LOCK_WAIT_S:.0f} s; "
+            "remove it if no other run is building the cache")))
+    raise FileNotFoundError(unbuildable_sentence(npz_path, RuntimeError(
+        "the other process stopped without writing it")))
+
+
+def _say(line: str) -> None:
+    print(line, flush=True)
+
+
+def ensure_orographic_statistics(options: StaticsOptions, grid, *, say=_say,
+                                 fetch=fetch_dataset) -> Path | None:
+    """Build the drag's cache for ``grid`` now if it is not on disk.
+
+    Returns the cache it wrote, or None when there was nothing to do: the
+    cache is already there, or the land-surface cache it is masked with is
+    not (that cache's own refusal, which names ``gpuwm-global statics``, is
+    the first thing such a run must hear).  The WPS_GEOG tree read is the
+    config's ``geog_root``, else the tree the land-surface cache records it
+    was built from, else the engine's search; when that tree lacks
+    ``orogwd_10m`` the one dataset is staged into it by ``fetch`` (the
+    engine's ``gpuwm fetch-geog``; None stages nothing).  One process
+    builds at a time: the others wait for its lock, so the ranks of a
+    multi-card run do not race on one file.  Any failure is
+    :func:`unbuildable_sentence`, one line, raised as FileNotFoundError.
+    """
+    npz_path, sidecar = cache_paths(options, grid)
+    if npz_path.is_file() and sidecar.is_file():
+        return None
+    land_npz, land_sidecar = statics_cache_paths(options, grid)
+    if not (land_npz.is_file() and land_sidecar.is_file()):
+        return None
+    npz_path.parent.mkdir(parents=True, exist_ok=True)
+    lock = npz_path.with_name(f".{npz_path.name}.lock")
+    try:
+        descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        _wait_for_other_build(npz_path, sidecar, lock, say)
+        return None
+    try:
+        os.write(descriptor, f"{os.getpid()}\n".encode("ascii"))
+        started = time.perf_counter()
+        try:
+            if options.geog_root:
+                root = Path(options.geog_root)
+            else:
+                root = _land_cache_geog_root(options, grid)
+                if root is None or not root.is_dir():
+                    root = geog_root(options)
+            if not _dataset_present(root):
+                if fetch is None:
+                    raise FileNotFoundError(
+                        f"the WPS_GEOG tree at {root} has no {SSO_DATASET}")
+                say(f"gpuwm-global: the orographic drag reads WPS_GEOG "
+                    f"{SSO_DATASET}, which {root} lacks; staging it with "
+                    f"`gpuwm fetch-geog --datasets {SSO_DATASET} --source "
+                    f"{FETCH_SOURCE}` (3.3 MB, SHA-256 pinned by the engine)")
+                fetch(root)
+            built = dataclasses.replace(options, geog_root=str(root))
+            fields, provenance = build_orographic_statistics(grid, built)
+            write_cache(npz_path, fields, provenance)
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            raise FileNotFoundError(unbuildable_sentence(npz_path, error)) from error
+        say(f"gpuwm-global: built the orographic drag's sub-grid orography "
+            f"for T{int(grid.truncation)} {int(grid.nlat)}x{int(grid.nlon)} "
+            f"from {root} in {time.perf_counter() - started:.1f} s: {npz_path}")
+        return npz_path
+    finally:
+        os.close(descriptor)
+        try:
+            lock.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def orographic_statistics_summary(fields: dict, document: dict) -> dict:
     """The receipt row: which cache, and what it holds over land."""
     var = np.asarray(fields["VAR"], dtype=np.float64)
@@ -298,6 +459,8 @@ def orographic_statistics_summary(fields: dict, document: dict) -> dict:
 
 __all__ = [
     "SSO_DATASET", "SSO_FIELDS", "SSO_KIND", "build_orographic_statistics",
-    "cache_paths", "load_orographic_statistics", "missing_cache_remedy",
+    "cache_paths", "ensure_orographic_statistics", "fetch_command", "fetch_dataset",
+    "load_orographic_statistics", "missing_cache_remedy",
     "orographic_statistics_summary", "read_global_tile", "sample_average_4pt",
+    "unbuildable_sentence",
 ]

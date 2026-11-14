@@ -537,6 +537,20 @@ def surface_geopotential_from_frame(frame, transform) -> np.ndarray:
     return np.asarray(transform.inverse(transform.forward(phi_src)), dtype=np.float64)
 
 
+def surface_geopotential_cache_name(digest: str, receipt: dict) -> str:
+    """The file a run's rebuilt surface geopotential is cached under.
+
+    Keyed on the analysis, the TRUNCATION and the grid shape, never on the
+    shape alone: T383 on its linear grid (dealias_factor 1.0) and T255 on
+    its quadratic grid are both 384 x 768, and a cache keyed on the shape
+    handed the T383 run the T255 terrain."""
+    geometry = receipt.get("transform") or {}
+    config = receipt.get("config") or {}
+    truncation = int(geometry.get("truncation", config.get("truncation")))
+    nlat, nlon = int(geometry["nlat"]), int(geometry["nlon"])
+    return f"phi-surface-{digest[:16]}-T{truncation}-{nlat}x{nlon}.npz"
+
+
 def resolve_mapping(spec: str | None, receipt: dict) -> Path:
     from .analysis_initial import MappingTablesDisagree, resolve_analysis_mapping
 
@@ -619,10 +633,9 @@ def surface_geopotential_for_run(
         "construction": "analysis terrain regridded bilinearly to the Gaussian grid, "
                         "times g, spectrally truncated, float64 rebuild of the run's float32 field",
     }
-    nlat, nlon = transform.grid.shape
     cache = None
     if cache_dir is not None:
-        cache = Path(cache_dir) / f"phi-surface-{digest[:16]}-{nlat}x{nlon}.npz"
+        cache = Path(cache_dir) / surface_geopotential_cache_name(digest, receipt)
         if cache.exists():
             with np.load(cache, allow_pickle=False) as archive:
                 return np.array(archive["phi"]), {**provenance, "cache": str(cache)}
@@ -2050,7 +2063,8 @@ __all__ = [
     "model_cache_path", "vertical_round_trip",
     "analysis_series", "measure_run", "reference_fields", "relative_humidity_percent", "render_chart",
     "render_scorecard_table", "representation_floor", "score_pair",
-    "scorecard_table", "shifted_copy", "summary_lines", "surface_geopotential_for_run",
+    "scorecard_table", "shifted_copy", "summary_lines", "surface_geopotential_cache_name",
+    "surface_geopotential_for_run",
     "surface_geopotential_from_frame", "synthetic_columns", "synthetic_grid", "synthetic_reference",
     "zonal_mean_climatology",
 ]

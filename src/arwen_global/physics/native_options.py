@@ -18,6 +18,15 @@ from .cloud_radiation_options import (
 # Option value -> the name the component order reports for the slot.
 CUMULUS_COMPONENTS = {"gf": "gf", "own": "arwen-massflux-v1", "ntiedtke": "ntiedtke"}
 
+#: New Tiedtke's multiplicative storm-intensity switches -> the closed
+#: range each admits.  1.0 is WRF's arithmetic for every one of them and
+#: leaves the identity; read only where cumulus="ntiedtke".
+NTIEDTKE_FACTORS = {
+    "ntiedtke_adjustment_time_factor": (0.25, 20.0),
+    "ntiedtke_entrainment_factor": (0.25, 8.0),
+    "ntiedtke_downdraft_factor": (0.1, 2.0),
+}
+
 # Morrison droplet-number modes: WRF's single NDCNST, or the declared
 # land/ocean departure (see NativePhysicsOptions.morrison_droplet_number).
 MORRISON_DROPLET_NUMBER_MODES = frozenset({"fixed", "land_ocean"})
@@ -282,6 +291,70 @@ class NativePhysicsOptions:
     # identity (see ``identity``), so a Grell-Freitas checkpoint keeps its
     # hash.
     ntiedtke_tiedtke_closure: bool = False
+    # Read only where cumulus="ntiedtke".  True (the default) is WRF's
+    # cu_ntiedtke.F90 lmfdudv = .true.: the scheme's convective momentum
+    # transport (cumastrn:927-1056, the momentum profiles, rescale,
+    # cududvn and the kinetic-energy dissipation) reaches the wind.  False
+    # is WRF's lmfdudv = .false. arm: those four stages do not run, the
+    # momentum pair is zero and no dissipation heat is formed.  Experimental;
+    # only False joins the identity, so every New Tiedtke checkpoint keeps
+    # its hash.  MEASURED (T383 Katrina from ERA5 2005-08-25 00Z, 60 h):
+    # False deepens the storm by about 4 hPa (995 against 999 hPa), so the
+    # momentum transport is a small part of New Tiedtke's weak storms.
+    ntiedtke_momentum_transport: bool = True
+    # Read only where cumulus="ntiedtke".  Multiplies the deep CAPE
+    # closure's adjustment time (cumastrn:676 ztau = ztauc * scale_fac, or
+    # the classic 2400 s): 1.0 (the default) is WRF's arithmetic and keeps
+    # every result bit-identical; only a value other than 1.0 joins the
+    # identity.  Experimental.  MEASURED (same Katrina case): 3.0 leaves the
+    # 60 h storm where it was (1000 against 999 hPa): under quasi-equilibrium
+    # a slower closure lets CAPE build until the same heating comes out.
+    ntiedtke_adjustment_time_factor: float = 1.0
+    # Read only where cumulus="ntiedtke".  Multiplies the organised
+    # entrainment constant 1.75e-3 /m (Bechtold et al. 2008, the IFS
+    # value) in the deep test parcel (cutypen) and in the updraft
+    # (cuascn); 1.0 (the default) is WRF's arithmetic, and only another
+    # value joins the identity.  THE STORM-INTENSITY SWITCH.  The constant
+    # enters as 1.75e-3 (1.3 - RH)(qs/qs_base)^3, so in a moist tropical
+    # cyclone core (RH near 1) the plume is nearly undilute: the scheme
+    # fires in every slightly unstable column, holds the core at its own
+    # equilibrium and keeps it from saturating, the grid-scale share of
+    # core rain stays near 5 % and the core heating never concentrates.
+    # MEASURED (T383 Katrina from ERA5, 60 h; min MSLP at 24/36/48/60 h,
+    # mean rain within 150 km of the centre per 6 h over 36-60 h):
+    #   1.0  1007/1005/1001/999 hPa, 18 m/s, core 9-15 mm
+    #   2.0  1004/1002/996/992 hPa, 26 m/s, core 20-28 mm
+    #   3.0  1002/997/987/977 hPa, 39 m/s, core 28-48 mm
+    #   ERA5 1001/996/987/978 hPa,           core 28-43 mm
+    # NOT A RECOMMENDED SETTING YET.  Five-day T383 cases from ERA5 and a
+    # T383 global twin from GDAS 2026-11-12 12Z (deepest hPa, track error
+    # at 120 h, 5-day peak rain in the storm box):
+    #   Katrina 1.0 977, 440 km, 345 mm | 2.0 952, 340 km, 560 mm |
+    #     3.0 945, 432 km, 804 mm (331 mm in 6 h of grid-scale rain at one
+    #     cell); ERA5 933, best track 902
+    #   Ian (3.0) 962 hPa, 92 km (1.0: 994, 397 km); best track 937
+    #   Sandy 1.0 951, 304 km | 2.0 951, 567 km | 3.0 964, 1260 km: the
+    #     storm goes out to sea (NJ landfall-time error 352 / 744 / 1076 km)
+    #   global 0-72 h: cells over 500 mm 0 / 9 / 75; 2.0 keeps the open
+    #     ocean clean (the SW Pacific maximum is convective) but puts
+    #     598-664 mm of mostly grid-scale rain on the Colombian Pacific
+    #     coast and Kelantan (GFS 160-201 mm); TOA net -4.7 / -9.0 W/m2
+    #     against 1.0, tropical rain -6 % / +1 %.
+    # Measured at T383 only.
+    ntiedtke_entrainment_factor: float = 1.0
+    # Read only where cumulus="ntiedtke".  Multiplies cmfdeps = 0.3, the
+    # downdraft's share of the cloud-base mass flux at its top (cudlfsn);
+    # 1.0 (the default) is WRF's arithmetic, and only another value joins
+    # the identity.  Experimental.  MEASURED (same Katrina case): 0.333
+    # (cmfdeps 0.1) leaves the 60 h storm where it was (999 hPa).
+    ntiedtke_downdraft_factor: float = 1.0
+    # Read only where cumulus="ntiedtke".  The organised-entrainment
+    # factor of the deep TEST PARCEL alone (cutypen, the trigger); None
+    # (the default) follows ntiedtke_entrainment_factor, so the trigger and
+    # the updraft entrain alike as in WRF and the IFS.  A number splits
+    # them (1.0 with an entrainment factor above 1 keeps WRF's trigger and
+    # dilutes only the updraft).  Only a number joins the identity.
+    ntiedtke_trigger_entrainment_factor: float | None = None
     # Columns the Grell-Freitas seam packs per pass (arwen_global.core.gf
     # GF_COLUMN_CHUNK).  MEASURED on the T533 40-level batch (1,283,202
     # columns, RTX 5090 32 GB): packed whole, the scheme's input and output
@@ -411,7 +484,7 @@ class NativePhysicsOptions:
     # (dynamics.ensure_exchange_account).
     open_water_exchange: bool = True
     # Noah's snow age (WRF SNOTIME) carried between land calls, so a pack
-    # ages and its albedo decays as ALCALC intends (noah.cu:154-173).  Off
+    # ages and its albedo decays as ALCALC intends (noah.cu:163-188).  Off
     # rebuilds the age as zeros on every call: the arithmetic of 0.1.5 and
     # every earlier release, where each pack sat at its fresh-snow albedo.
     # It changes the numbers of every run with snow, so on it joins the
@@ -422,6 +495,24 @@ class NativePhysicsOptions:
     # it (docs/ARWEN_GLOBAL_LONG_RUNS.md), because a pack that lies for
     # weeks should darken.
     snow_ageing: bool = False
+    # How a snowfall makes a carried pack new again (needs snow_ageing).
+    # "any" (the default) is WRF's ALCALC: SNOTIME = 0 on any call that
+    # snows, of any amount.  On this model a trace of snow falls on most
+    # snow-covered land on most calls (Morrison's surface snow flux is
+    # rarely exactly zero under cloud), so the age never grows: in the
+    # 365-day T127 run with snow_ageing = true, 79 % of the snow-covered
+    # land columns Noah integrates (land ice left out) on 2027-02-28 were
+    # under 0.01 day old, the 90th percentile 0.35 day, 0.09 % over 5 days,
+    # and every pack sat at its fresh-snow albedo all winter.  "amount" is
+    # Noah-MP's snowfall-amount refresh (SNOW_AGE, after BATS:
+    # DELS = dsnow / SWEMX) applied to WRF's Livneh age: the age still grows
+    # by the call's interval with no temperature factor and the albedo curve
+    # is still Livneh's, a snowfall of dsnow kg/m2 keeps 1 - min(dsnow / 1, 1)
+    # of the age (MPTABLE SWEMX = 1 kg/m2), and bare ground carries no age,
+    # so a trace no longer renews a pack, 1 kg/m2 still does, and a pack that
+    # forms on bare ground starts new.  Off ("any") keeps every hash and the
+    # arithmetic bit for bit; "amount" joins the identity.
+    snow_age_refresh: str = "any"
     # Orographic gravity-wave drag (arwen_global.physics.orographic_drag):
     # "none" (the default) or "kim-gwdo", WRF's gwd_opt = 1, the KIM
     # orographic gravity-wave drag with flow blocking (Choi and Hong 2015),
@@ -469,6 +560,10 @@ class NativePhysicsOptions:
         for name in _DATED_UNLESS_SET:
             if payload[name] is None:
                 del payload[name]
+        # An unset trigger factor (it follows the entrainment factor) is
+        # left out for the same reason: a TOML config cannot carry None.
+        if payload["ntiedtke_trigger_entrainment_factor"] is None:
+            del payload["ntiedtke_trigger_entrainment_factor"]
         return payload
 
     @property
@@ -489,6 +584,17 @@ class NativePhysicsOptions:
         # are different trajectories and never share one.
         if self.cumulus_scheme != "ntiedtke":
             del payload["ntiedtke_tiedtke_closure"]
+        # The storm-intensity switches join only when they change the
+        # arithmetic, so every New Tiedtke checkpoint written before they
+        # existed keeps its hash.
+        if self.cumulus_scheme != "ntiedtke" or self.ntiedtke_momentum_transport:
+            del payload["ntiedtke_momentum_transport"]
+        for name in NTIEDTKE_FACTORS:
+            if self.cumulus_scheme != "ntiedtke" or float(getattr(self, name)) == 1.0:
+                del payload[name]
+        if (self.cumulus_scheme != "ntiedtke"
+                or self.ntiedtke_trigger_entrainment_factor is None):
+            del payload["ntiedtke_trigger_entrainment_factor"]
         # WRF's thickness-scaled length is the arithmetic every checkpoint
         # before 2026-09-05 was written under, when the option did not
         # exist: spelling it must keep those hashes.  "fixed" is a
@@ -516,6 +622,9 @@ class NativePhysicsOptions:
         if self.orographic_drag == "none":
             # The arithmetic every checkpoint before the option carried.
             del payload["orographic_drag"]
+        if self.snow_age_refresh == "any":
+            # WRF's reset: the arithmetic of every checkpoint before it.
+            del payload["snow_age_refresh"]
         if self.ozone == "rfmip-median":
             # The arithmetic every checkpoint before the option carried.
             del payload["ozone"]
@@ -666,10 +775,37 @@ class NativePhysicsOptions:
             raise ValueError("gf_ishallow must be 0 or 1")
         if not isinstance(self.ntiedtke_tiedtke_closure, bool):
             raise ValueError("ntiedtke_tiedtke_closure must be true or false")
+        if not isinstance(self.ntiedtke_momentum_transport, bool):
+            raise ValueError("ntiedtke_momentum_transport must be true or false")
+        for name, (low, high) in NTIEDTKE_FACTORS.items():
+            factor = getattr(self, name)
+            if (isinstance(factor, bool) or not isinstance(factor, (int, float))
+                    or not math.isfinite(float(factor))
+                    or not low <= float(factor) <= high):
+                raise ValueError(f"{name} must be a number in [{low:g}, {high:g}]")
+        trigger = self.ntiedtke_trigger_entrainment_factor
+        if trigger is not None:
+            low, high = NTIEDTKE_FACTORS["ntiedtke_entrainment_factor"]
+            if (isinstance(trigger, bool) or not isinstance(trigger, (int, float))
+                    or not math.isfinite(float(trigger))
+                    or not low <= float(trigger) <= high):
+                raise ValueError(
+                    "ntiedtke_trigger_entrainment_factor must be unset or a "
+                    f"number in [{low:g}, {high:g}]")
         if not isinstance(self.gf_updraft_only_when_downdraft_dry, bool):
             raise ValueError("gf_updraft_only_when_downdraft_dry must be true or false")
         if not isinstance(self.snow_ageing, bool):
             raise ValueError("snow_ageing must be true or false")
+        if self.snow_age_refresh not in {"any", "amount"}:
+            raise ValueError(
+                "snow_age_refresh must be 'any' (WRF ALCALC: any snowfall makes "
+                "the pack new) or 'amount' (Noah-MP SNOW_AGE: by the new snow "
+                f"over 1 kg/m2), got {self.snow_age_refresh!r}")
+        if self.snow_age_refresh != "any" and not self.snow_ageing:
+            raise ValueError(
+                "snow_age_refresh = 'amount' needs snow_ageing = true: without "
+                "it the age is rebuilt as zeros on every land call, so there is "
+                "no age for a snowfall to refresh")
         if not isinstance(self.gf_resolved_convergence_closure, bool):
             raise ValueError("gf_resolved_convergence_closure must be true or false")
         if not isinstance(self.gf_shallow_buoyancy_from_cloud_base, bool):

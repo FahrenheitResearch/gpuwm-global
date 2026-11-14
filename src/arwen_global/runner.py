@@ -31,7 +31,7 @@ from .config import (
     default_eulerian_step_s,
     eulerian_wind_ceiling_m_s,
 )
-from .constants import EARTH_RADIUS_M
+from .constants import DRY_TARGET_MASS_RELATIVE_DRIFT_FLOOR, EARTH_RADIUS_M
 from .device_memory import (
     device_memory_receipt,
     disable_fft_plan_cache,
@@ -688,6 +688,9 @@ def build_model_and_cold_state(cfg: ArwenGlobalConfig, transform=None, *,
             off_centring_weight=cfg.semi_implicit_off_centring_weight,
         ),
         mass_fixer=cfg.mass_fixer,
+        mass_fixer_target=cfg.mass_fixer_target,
+        energy_fixer=cfg.energy_fixer,
+        vapour_fixer=cfg.vapour_fixer,
         water_fixer=cfg.water_fixer,
         open_water_exchange=books_open_water_exchange(cfg),
         positivity_repair=cfg.positivity_repair,
@@ -1327,6 +1330,49 @@ def _relative(value: float, reference: float) -> float:
     return abs(value - reference) / max(abs(reference), 1.0e-30)
 
 
+def mass_target_row(cfg) -> str:
+    """The diagnostics row the mass fixer holds, so the receipt's mass
+    drift gate reads the quantity the run conserves: the global-mean
+    surface pressure, or under ``[repair] mass_fixer_target = "dry"`` the
+    dry surface pressure ps - g W (whose total then moves with the
+    planet's water, as it should)."""
+    if getattr(cfg, "mass_fixer_target", "total") == "dry":
+        return "global_mean_dry_surface_pressure_pa"
+    return "global_mean_surface_pressure_pa"
+
+
+_MASS_ROWS = ("global_mean_surface_pressure_pa", "global_mean_dry_surface_pressure_pa")
+
+
+def branch_mass_epoch(cfg, cold_diag: dict, restart_diag: dict) -> float | None:
+    """Whether a branch (``--branch-from-other-config``) starts from a
+    checkpoint whose run held the OTHER mass quantity, and if so how far
+    this run's quantity has moved from the cold target (relative).
+
+    The fixer's target is built from the cold state on every segment.  A
+    run that held the total moves the dry mass with the planet's water (49
+    Pa over the T127 year run), and one that held the dry mass moves the
+    total; branching such a state onto the other target would take the
+    whole difference out on the first step as one uniform mass shock
+    (5e-4 of the mass at day 180 of the year run, beyond the float32 step
+    gate).  The fingerprint is read off the two states, not a key, since a
+    checkpoint names only its config hash: this run's quantity departs from
+    the cold value by more than ``DRY_TARGET_MASS_RELATIVE_DRIFT_FLOOR``
+    while the other one stays within it.  A parent that held this run's
+    own quantity, or held neither (mass fixer off), keeps the cold target,
+    as every branch did before the dry target existed."""
+    if not getattr(cfg, "mass_fixer", True):
+        return None
+    held = mass_target_row(cfg)
+    other = next(row for row in _MASS_ROWS if row != held)
+    moved = _relative(restart_diag[held], cold_diag[held])
+    kept = _relative(restart_diag[other], cold_diag[other])
+    if (moved > DRY_TARGET_MASS_RELATIVE_DRIFT_FLOOR
+            and kept <= DRY_TARGET_MASS_RELATIVE_DRIFT_FLOOR):
+        return float(moved)
+    return None
+
+
 class _CheckpointWriter:
     """Checkpoints published off the model thread.
 
@@ -1649,6 +1695,21 @@ class SurfaceServices:
         return out
 
 
+def check_dynamic_ocean_run(cfg) -> None:
+    """The dynamic ocean couples once per whole hour on exactly 3600 s of
+    accumulated atmosphere steps and steps one copy of the ocean per card;
+    a run that breaks either is refused here, before the first step."""
+    dt = float(cfg.dt_s)
+    if not 0.0 < dt <= 3600.0 or abs(3600.0 / dt - round(3600.0 / dt)) > 1.0e-9:
+        raise ValueError(
+            f"[ocean] mode = \"dynamic\" couples every 3600 s, which dt_s = {dt:g} s does not "
+            "divide; choose a dt_s that divides 3600 (e.g. 120, 150, 180, 200, 225, 240, 300)")
+    if int(getattr(cfg, "cards", 1) or 1) > 1:
+        raise ValueError(
+            "[ocean] mode = \"dynamic\" runs on one card only; each card would step its own "
+            "copy of the ocean, which no test proves stays identical across cards")
+
+
 def _surface_services_for(cfg, model, cold) -> SurfaceServices:
     """The lower-boundary services of this run, built from the COLD state
     (the analysis the run starts from, rebuilt by every segment), so the
@@ -1662,17 +1723,23 @@ def _surface_services_for(cfg, model, cold) -> SurfaceServices:
     rule = ocean.mode in ("anomaly", "climatology") or ocean.ice_mode in (
         "anomaly", "climatology")
     series = ocean.mode == "series"
-    slab = ocean.mode == "slab"
+    slab = ocean.mode in ("slab", "dynamic")
     calibrate = bool(getattr(ocean, "qflux_calibration", False))
+    response = bool(getattr(ocean, "mixed_layer_response", False))
     real = getattr(cfg.statics, "source", None) == "real"
-    if not (rule or series or slab or (greenness_daily and real)):
+    if not (rule or series or slab or response or (greenness_daily and real)):
         return SurfaceServices(cfg)
-    if (slab or calibrate) and cfg.physics_mode not in ("reference", "arwen-native"):
+    if (slab or calibrate or response) and cfg.physics_mode not in ("reference",
+                                                                    "arwen-native"):
         raise ValueError(
             f"[ocean] mode = {ocean.mode!r}"
             + (" with qflux_calibration" if calibrate else "")
+            + (" with mixed_layer_response" if response else "")
             + " reads the surface fluxes of a physics suite, and physics.mode = "
             f"{cfg.physics_mode!r} computes none")
+    if response and (slab or calibrate):
+        raise ValueError("ocean.mixed_layer_response rides on a prescribed sea surface, "
+                         "not on the slab or its calibration")
     clock = getattr(model, "forecast_clock", None)
     start = None if clock is None else getattr(clock, "start_utc", None)
     if start is None:
@@ -1718,11 +1785,21 @@ def _surface_services_for(cfg, model, cold) -> SurfaceServices:
                          sea_ice=_replace(ocean.sea_ice, mode="hold")),
                 climatology, grid, start_time=start, cold_surface=planes,
                 model_truncation=int(cfg.truncation), reference=reference)
-        provider = SlabProvider(
+        provider_class = SlabProvider
+        if ocean.mode == "dynamic":
+            check_dynamic_ocean_run(cfg)
+            from .ocean_dyn.coupler import DynamicOceanProvider as provider_class
+        provider = provider_class(
             ocean, climatology, qflux, grid, start_time=start, cold_surface=planes,
             model_truncation=int(cfg.truncation), rule=target,
             physics_mode=cfg.physics_mode, physics_identity=physics_identity(cfg),
             duration_s=float(cfg.duration_s))
+        if ocean.mode == "dynamic":
+            print(f"gpuwm-global: dynamic ocean {provider.ogrid.nx}x{provider.ogrid.ny}x"
+                  f"{provider.ogrid.nz} (grid sha256 {provider.ogrid.sha256[:12]}, initial "
+                  f"{provider.oinit.valid_utc} sha256 {provider.oinit.sha256[:12]}) on "
+                  f"{provider.stats['owned_columns']} owned columns, coupled hourly; the "
+                  "slab carries the rest", flush=True)
         print(f"gpuwm-global: ocean slab (depth {ocean.slab_depth}, restoring "
               f"{ocean.slab_relaxation_days or 'none'} d toward {ocean.slab_target}), sea "
               f"ice {ocean.ice_mode}, climatology {ocean.climatology} (sha256 "
@@ -1769,6 +1846,26 @@ def _surface_services_for(cfg, model, cold) -> SurfaceServices:
             print("gpuwm-global: Q-flux calibration: the slab's flux is deposited by "
                   f"month after {ocean.qflux_calibration_spinup_days:g} days of spin-up",
                   flush=True)
+    elif response:
+        # Hold with held ice: the rule provider in hold writes nothing and
+        # the response writes the held skin plus its departure.
+        from .ocean_rules import RuleProvider, cold_surface_planes
+
+        provider = RuleProvider(ocean, None, grid, start_time=start,
+                                cold_surface=cold_surface_planes(cold.surface),
+                                model_truncation=int(cfg.truncation))
+    if response:
+        from .ocean_response import MixedLayerResponse
+        from .ocean_rules import cold_surface_planes
+
+        provider = MixedLayerResponse(
+            provider, ocean, grid, start_time=start,
+            cold_surface=cold_surface_planes(cold.surface), physics_mode=cfg.physics_mode)
+        print(f"gpuwm-global: mixed-layer response on the {ocean.mode} sea surface: depth "
+              f"{ocean.mixed_layer_depth_m:g} m, relaxation "
+              f"{ocean.mixed_layer_relaxation_days:g} d, departure within "
+              f"+-{ocean.mixed_layer_max_departure_k:g} K, normal flux over "
+              f"{ocean.mixed_layer_reference_days:g} d", flush=True)
     boundary = None
     if provider is not None:
         boundary = SurfaceBoundary(
@@ -2592,14 +2689,24 @@ def _run_tracked(
 
         parent_boundary = (restart_metadata.get("physics_metadata") or {}).get(IDENTITY_KEY)
         if branch_config and parent_boundary != surface_update.identity:
-            # A branch under another config may also change the ocean rule
-            # (hold, anomaly or climatology): the rule is a closed form of
-            # model time built from the cold state, so the branch evaluates
-            # at its first step exactly what a straight run under the new
-            # rule evaluates at that instant.  A rule that keeps prognostic
-            # arrays (the slab, a calibration) has no such closed form, and
-            # its arrays are not in a parent written without it.
-            if getattr(surface_update.provider, "initialize", None) is not None:
+            response = surface_update.provider
+            if (getattr(response, "kind", None) == "response"
+                    and parent_boundary == response.identity_without_response()):
+                # A branch may switch the mixed-layer response on at a
+                # checkpoint written under the same boundary without it: the
+                # response starts there with zero departure
+                # (ocean_response.py).
+                response.start_at_branch = True
+            elif getattr(response, "initialize", None) is not None:
+                # A branch under another config may also change the ocean
+                # rule (hold, anomaly or climatology): the rule is a closed
+                # form of model time built from the cold state, so the
+                # branch evaluates at its first step exactly what a straight
+                # run under the new rule evaluates at that instant.  A
+                # boundary that keeps prognostic arrays (the slab, a
+                # calibration, the mixed-layer response over another rule)
+                # has no such closed form, and its arrays are not in a
+                # parent written without it.
                 raise ValueError(
                     f"--branch-from-other-config cannot move restart checkpoint {restart} "
                     f"onto [ocean] mode = {cfg.ocean.mode!r}: that boundary keeps its own "
@@ -2616,7 +2723,7 @@ def _run_tracked(
         cold.physics_state.metadata[IDENTITY_KEY] = surface_update.identity
     if restart is None:
         surface_update.initialize(cold)
-    target_mass = cold_diag["global_mean_surface_pressure_pa"]
+    target_mass = cold_diag[mass_target_row(cfg)]
     target_water = cold_diag["global_mean_total_water_kg_m2"]
     trackers = normalize_trackers()
     supplementary = fresh_supplementary()
@@ -2634,7 +2741,8 @@ def _run_tracked(
         adopt_checkpoint_clock(model, state, f"restart checkpoint {restart}")
         if branch_boundary is not None:
             # The branch's checkpoints carry ITS boundary, so a restart of
-            # the branch continues the branch's rule, not the parent's.
+            # the branch continues the branch's rule (or the response), not
+            # the parent's.
             if surface_update.identity is None:
                 state.physics_state.metadata.pop(IDENTITY_KEY, None)
             else:
@@ -2683,11 +2791,38 @@ def _run_tracked(
                 ),
                 "cold_mass_target_pa": target_mass,
                 "cold_total_water_target_kg_m2": target_water,
-                "mass_target_pa": epoch["global_mean_surface_pressure_pa"],
+                "mass_target_pa": epoch[mass_target_row(cfg)],
                 "total_water_target_kg_m2": epoch["global_mean_total_water_kg_m2"],
             }
-            target_mass = epoch["global_mean_surface_pressure_pa"]
+            target_mass = epoch[mass_target_row(cfg)]
             target_water = epoch["global_mean_total_water_kg_m2"]
+        elif branch_config:
+            # A branch from a run that held the other mass quantity opens a
+            # new MASS epoch at the restart state (branch_mass_epoch says
+            # how it is recognized); the water target stays the cold one,
+            # since both targets' runs hold the same total water.  Any other
+            # branch keeps the cold targets, bit for bit as before.
+            epoch = model.diagnostics(state)
+            moved = branch_mass_epoch(cfg, cold_diag, epoch)
+            if moved is not None:
+                model.initialize_mass_target(state.atmosphere)
+                restart_targets = {
+                    "reason": (
+                        "a branch from a checkpoint whose run held the other "
+                        "mass quantity: this run's "
+                        f"{mass_target_row(cfg)} had moved {moved:.3e} of the "
+                        "cold value while the other stayed within "
+                        f"{DRY_TARGET_MASS_RELATIVE_DRIFT_FLOOR:g}, so the "
+                        "mass target is the restart state's own and the water "
+                        "target the cold one"
+                    ),
+                    "cold_mass_target_pa": target_mass,
+                    "cold_total_water_target_kg_m2": target_water,
+                    "mass_target_pa": epoch[mass_target_row(cfg)],
+                    "total_water_target_kg_m2": target_water,
+                }
+                target_mass = epoch[mass_target_row(cfg)]
+            del epoch
     # The open-water exchange account (native physics, water.
     # OCEAN_EXCHANGE_NAMES): a cold start and a checkpoint written before
     # the account existed are given a zero one here, before the first
@@ -3292,7 +3427,7 @@ def run_gates(
     Every row but one is a CEILING: the value must not exceed the limit.
     Gate WIRE-1 is a FLOOR and carries ``direction`` to say so."""
     mass_drift = _relative(
-        final_diag["global_mean_surface_pressure_pa"], target_mass
+        final_diag[mass_target_row(cfg)], target_mass
     )
     water_drift = _relative(
         final_diag["global_mean_total_water_kg_m2"], target_water

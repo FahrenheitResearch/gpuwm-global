@@ -151,17 +151,32 @@ __device__ static real noah_snfrac(real sneqv, real snup, real salp)
 }
 
 // --------------------------------------------------------------- ALCALC
+// snow_age_refresh (launch argument): 0 is WRF's rule, any snowfall of any
+// amount makes the pack new (SNOTIME = 0).  1 takes only the snowfall-amount
+// refresh of Noah-MP's SNOW_AGE (module_sf_noahmplsm.F, after BATS),
+// DELS = dsnow / SWEMX, and applies it to WRF's Livneh age: the age still
+// grows by dt in seconds with no temperature factor and the albedo curve is
+// still Livneh's, and a snowfall of dsnow kg/m2 then keeps
+// (1 - min(dsnow / SWEMX, 1)) of the age, SWEMX the new snow that fully
+// covers the old surface (MPTABLE SWEMX = 1 kg/m2).  A trace of snow no
+// longer makes a weeks-old pack fresh; 1 kg/m2 or more still does.
 __device__ static void noah_alcalc(real alb, real snoalb, real embrd,
                                    real sncovr, real dt, bool snowng,
                                    real& snotime1, real lvcoef,
-                                   real& albedo, real& emissi)
+                                   real& albedo, real& emissi,
+                                   int refresh, real newsnow, real swemx)
 {
     const real snacca = 0.94f, snaccb = 0.58f;
     albedo = alb + sncovr * (snoalb - alb);
     emissi = embrd + sncovr * (NEMISSI_S - embrd);
     real snoalb1 = snoalb + lvcoef * (0.85f - snoalb);
     real snoalb2 = snoalb1;
-    if (snowng) {
+    if (refresh == 1) {
+        real dels = snowng ? fminf(newsnow / swemx, 1.0f) : 0.0f;
+        snotime1 = fmaxf((snotime1 + dt) * (1.0f - dels), 0.0f);
+        snoalb2 = snoalb1 * powf(snacca,
+                                 powf(snotime1 / 86400.0f, snaccb));
+    } else if (snowng) {
         snotime1 = 0.0f;
     } else {
         snotime1 = snotime1 + dt;
@@ -928,6 +943,7 @@ void noah_column(const int* __restrict__ ivgtyp,
                  real dt, int lucats, int slcats, int isurban,
                  int isice, real xice_threshold, int itimestep, int frpcpn,
                  int usemonalb, int rdlai2d, int opt_thcnd,
+                 int snow_age_refresh, real snow_age_swemx,
                  int ny, int nx)
 {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1158,6 +1174,12 @@ void noah_column(const int* __restrict__ ivgtyp,
         sndens = sneqv / snowhk;
         sncond = noah_csnow(sndens);
     }
+    // Under the amount rule the age is only refreshed in proportion to the
+    // new snow, so bare ground must carry no age: Noah-MP's SNOW_AGE sets
+    // TAUSS = 0 when SNEQV <= 0.  Without this a trace of snow on ground
+    // that melted out weeks ago starts a pack with the old pack's age.
+    // (WRF's rule zeroes the age on any snowfall and never reads it here.)
+    if (snow_age_refresh == 1 && sneqv == 0.0f) snotime1 = 0.0f;
     if (prcp > 0.0f) {
         if (ffrozp > 0.5f) snowng = true;
         else if (t1 <= NTFREEZ) frzgra = true;
@@ -1182,8 +1204,11 @@ void noah_column(const int* __restrict__ ivgtyp,
     } else {
         sncovr = noah_snfrac(sneqv, snup, salp);
         sncovr = fminf(sncovr, 0.98f);
+        // the new snow this call put on the pack, kg/m2 (SFLX adds
+        // prcp * dt / 1000 m of water equivalent when it snows)
         noah_alcalc(alb, snoalb1, embrd, sncovr, dt, snowng, snotime1,
-                    lvcoef, albedo, emissi);
+                    lvcoef, albedo, emissi, snow_age_refresh, prcp * dt,
+                    snow_age_swemx);
     }
 
     // surface thermal conductivity + first-guess soil heat flux

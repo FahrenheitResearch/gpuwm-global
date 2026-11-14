@@ -4,7 +4,7 @@ Humidity convention.  The global model carries every water field as
 SPECIFIC humidity (kg per kg of moist air): the analysis init stores GDAS
 SPFH (GRIB2 0/1/0) unconverted and the dycore's water ledger prices
 column water as sum(q dp)/g.  The WRF-lineage kernels consume DRY MIXING
-RATIO (kg per kg of dry air): noah.cu:982 forms q2k = qv1/(1+qv1), and
+RATIO (kg per kg of dry air): noah.cu:998 forms q2k = qv1/(1+qv1), and
 sfclay.cu:255-257 / morrison.cu:950 compare qv straight against
 EP2*e/(p-e).  Handing q to them as if it were r read every saturation test
 dry by q_v^2 -- 2.0% at q = 0.02, 1.0% at 0.01, a dry bias across the

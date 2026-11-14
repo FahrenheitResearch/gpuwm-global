@@ -1480,11 +1480,11 @@ def test_the_pages_that_count_the_shipped_experiments_count_them_right():
 
     words = {52: "fifty-two", 53: "fifty-three", 54: "fifty-four",
              55: "fifty-five", 56: "fifty-six", 57: "fifty-seven",
-             58: "fifty-eight", 59: "fifty-nine"}
+             58: "fifty-eight", 59: "fifty-nine", 60: "sixty"}
     total = len(list_configs())
     arwen = sum(1 for name in list_configs() if name.startswith("arwen_global_"))
     assert total in words and arwen in words, (
-        "this gate's number-word table stops at fifty-nine; extend it")
+        "this gate's number-word table stops at sixty; extend it")
     repo = Path(__file__).resolve().parents[1]
     readme = (repo / "README.md").read_text(encoding="utf-8")
     assert f"{words[total].capitalize()} experiments ship inside" in readme

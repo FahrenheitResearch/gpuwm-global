@@ -23,6 +23,7 @@ from .constants import (
     EARTH_ROTATION_RATE_S,
     GRAVITY_M_S2,
     KAPPA,
+    LATENT_HEAT_VAPORIZATION,
     REFERENCE_PRESSURE_PA,
     ADVECTED_TRACERS,
     CONDENSATE_SPECIES,
@@ -32,6 +33,7 @@ from .constants import (
     WATER_SPECIES,
     DEFAULT_EULERIAN_STEP_RULE_FRACTION,
     CONVECTIVE_RAIN_ACCUMULATOR,
+    MASS_FIXER_TARGETS,
 )
 from .bands import (
     BandPipeline,
@@ -65,6 +67,11 @@ from .longrun_gates import (
     atmosphere_rows,
     surface_rows,
 )
+
+#: Physics-namespace arrays on another grid than the atmosphere's (the
+#: dynamic ocean's, arwen_global.ocean_dyn.coupler.PREFIX): carried around
+#: the physics call, never cut into bands.
+PHYSICS_CARRIED_PREFIX = "ocean_dyn_"
 
 
 class SynthesisMemo:
@@ -439,6 +446,29 @@ class MoistHybridModel:
         VerticalModeSemiImplicit()
     )
     mass_fixer: bool = True
+    # What the mass fixer holds (constants.MASS_FIXER_TARGETS): "total" is
+    # the global-mean surface pressure (shipped); "dry" the global-mean dry
+    # surface pressure ps - g W, the atmosphere's water read where the step
+    # already reads it (the first positivity repair) or measured.  The
+    # physics books water at a fixed surface pressure, so under "total"
+    # every kilogram of water the planet's atmosphere gains or loses moves
+    # the dry mass by g Pa, the wrong way round (LR-1, 2026-11-14).
+    mass_fixer_target: str = "total"
+    # The global dry-energy fixer (2026-11-14).  Off: the step as it was.
+    # On: the dry total energy int (cp T + K) dp/g + Phi_s ps/g of the state
+    # entering the dynamics is restored after the dynamics, the diffusion
+    # and the mass fixer, by one uniform temperature increment (a
+    # degree-zero theta offset per level weighted by the level's own mean
+    # exner function, so the energy added is the deficit exactly).  Those
+    # operators conserve that energy in the continuous equations; their
+    # discrete forms lost 4.9 W/m2 in the T127 year run (in-situ ledger:
+    # diffusion -6.2, mass fixer -3.8, semi-Lagrangian pair +5.1).
+    energy_fixer: bool = False
+    # The vapour fixer (2026-11-14): off, the step as it was; on, the
+    # global vapour column the state carries into the dynamics is restored
+    # after the dynamics, the diffusion and the mass fixer by one uniform
+    # rescale of qv (_fix_energy says why and what it measured).
+    vapour_fixer: bool = False
     water_fixer: bool = True
     # The open-water exchange account (water.OCEAN_EXCHANGE_NAMES).  On,
     # the state carries the account (ensure_exchange_account) and the native
@@ -582,6 +612,10 @@ class MoistHybridModel:
     card_halo_rows: int = 16
 
     def __post_init__(self) -> None:
+        if self.mass_fixer_target not in MASS_FIXER_TARGETS:
+            raise ValueError(
+                "mass_fixer_target must be one of "
+                f"{', '.join(MASS_FIXER_TARGETS)}, got {self.mass_fixer_target!r}")
         # Zero is the absorber's off switch, so it is not folded into the
         # nonnegativity check; a negative base selects no ring while
         # reading as a configured absorber - a run believed sponged then
@@ -1924,10 +1958,59 @@ class MoistHybridModel:
                 dtype=np.float64,
             ))
         )
-        self._target_mass_pa = self.transform.grid.global_mean(ps)
+        target = self.transform.grid.global_mean(ps)
+        if self.mass_fixer_target == "dry":
+            # The dry mass, ps - g W: what the column weighs without its
+            # water (the LR-1 row's quantity, longrun_gates.atmosphere_rows).
+            target = target - GRAVITY_M_S2 * self._global_mean_atmospheric_water(state)
+        self._target_mass_pa = target
         return float(self._target_mass_pa)
 
-    def _fix_mass(self, state: MoistHybridState):
+    def _global_mean_atmospheric_water(self, state: MoistHybridState, *,
+                                       split: bool = False):
+        """Global-mean atmospheric water column (vapour plus the five
+        condensates), kg/m2, a latitude band at a time: the diagnostics
+        row's reading (``global_mean_atmospheric_water_kg_m2``).
+
+        ``split`` also returns the part of it carried by the surface-
+        pressure share of the layer thickness, sum_k q_k db_k ps / g, so a
+        caller that scales ps by c knows the water becomes W + (c - 1)
+        times that part (dp_k = da_k + db_k ps, the mixing ratios held)."""
+        xp = self.transform.backend.xp
+        sources = self.grid_sources(state, only=(*WATER_SPECIES, "dp", "ps"))
+        names = ("mass_fixer_atmospheric_water", "mass_fixer_atmospheric_water_b")
+        planes = [PlaneAccumulator(
+            xp, self.transform.grid.shape, self.transform.backend.float_dtype,
+            name=name, exchange=self.pipeline.exchange,
+        ) for name in (names if split else names[:1])]
+        if split:
+            _a, b = self.vertical.device_arrays(self.transform.backend)
+            db = (b[1:] - b[:-1])[:, None, None]
+        for rows in self.pipeline.local_slices():
+            g, _stack, _names = self.grid_band(sources, rows)
+            planes[0].add_band(rows, xp.sum(atmospheric_water_column(g), axis=0))
+            if split:
+                mixing = sum(g[name] for name in WATER_SPECIES)
+                planes[1].add_band(rows, xp.sum(
+                    mixing * db * g["ps"][None] / GRAVITY_M_S2, axis=0))
+                del mixing
+            del g
+        del sources
+        means = [float(self.transform.grid.global_mean(
+            self.transform.backend.to_numpy(plane.plane))) for plane in planes]
+        return (means[0], means[1]) if split else means[0]
+
+    def _fix_mass(self, state: MoistHybridState, water_kg_m2: float | None = None):
+        """Hold the global mass at its target by one uniform ln ps offset.
+
+        ``water_kg_m2`` is the global-mean atmospheric water a "dry" target
+        adds back (g W) to name the total the step holds; None measures it
+        on ``state``.  The step hands in the first positivity repair's
+        reading of the state entering the dynamics, which the repair takes
+        anyway: the dynamics moves no water across the globe but its own
+        non-conservation (2e-4 kg/m2 a step, 0.002 Pa), and each step
+        re-anchors, so nothing accumulates.  A "total" target ignores it.
+        """
         if not self.mass_fixer:
             return state, 0.0
         if self._target_mass_pa is None:
@@ -1953,13 +2036,162 @@ class MoistHybridModel:
         )
         if not math.isfinite(current) or current <= 0.0:
             raise FloatingPointError(f"invalid global mean surface pressure {current!r}")
-        correction = math.log(float(self._target_mass_pa) / current)
+        target = float(self._target_mass_pa)
+        if self.mass_fixer_target != "dry":
+            correction = math.log(target / current)
+        elif water_kg_m2 is not None:
+            correction = math.log((target + GRAVITY_M_S2 * float(water_kg_m2)) / current)
+        else:
+            # Measured here, on the state being fixed: the offset scales ps
+            # by c and with it the water's db ps share, so c solves
+            # c <ps> - g (W + (c - 1) W_b) = D exactly.
+            water, water_b = self._global_mean_atmospheric_water(state, split=True)
+            scale = ((target + GRAVITY_M_S2 * (water - water_b))
+                     / (current - GRAVITY_M_S2 * water_b))
+            if not (math.isfinite(scale) and scale > 0.0):
+                raise FloatingPointError(f"invalid dry-mass fixer scale {scale!r}")
+            correction = math.log(scale)
         fixed = self.transform.add_grid_constant(
             state.log_surface_pressure, correction
         )
         values = list(state.fields())
         values[3] = fixed
         return state.with_fields(values), correction
+
+    #: What the energy fixer reads of a state's grid view.
+    ENERGY_FIXER_KEYS = ("temperature", "u", "v", "dp", "ps", "p_full")
+
+    def _energy_fixer_sources(self, state: MoistHybridState, *, share_semilag: bool = False):
+        """The grid sources of one energy reading.  ``share_semilag`` builds
+        them from the very syntheses the semi-Lagrangian step's own grid
+        view asks for, so on the state entering the dynamics the memo hands
+        the step what this reading made and the reading costs reductions
+        only (same arrays, same bits: SynthesisMemo); the band loop below
+        then derives only what the reading needs."""
+        keys = self.ENERGY_FIXER_KEYS + (("qv",) if self.vapour_fixer else ())
+        if not share_semilag:
+            return self.grid_sources(state, only=keys)
+        wide = self.grid_sources(state, only=self.semilag_grid_keys())
+        need, _spectral = self._grid_closure(keys)
+        return GridSources(state, need, stack=wide.stack, pressure=wide.pressure,
+                           wind=wide.wind)
+
+    def _dry_energy_reading(self, state: MoistHybridState, *, share_semilag: bool = False):
+        """One reading of the energy the fixer holds, float64 on the host:
+        ``(energy, mass, exner_mass, vapour)`` with ``energy`` the global mean of
+        int (cp T + K) dp/g + Phi_s ps/g (J/m2: the in-situ ledger's
+        ``total``, insitu.energy, and budgets.py's total dry energy) and,
+        per level, the global means of dp/g and of (p/p0)^kappa dp/g
+        (kg/m2), which weigh the correction; ``vapour`` is the global-mean
+        vapour column int qv dp/g (kg/m2) under ``vapour_fixer``, else None.
+
+        A latitude band at a time and a level at a time, in float64
+        planes (no volume temporaries): every quantity is column-local and
+        every zonal mean reads one row, so the readings are the whole
+        grid's whatever the band count, and the latitude sum runs once in
+        grid order (LatitudeAccumulator)."""
+        xp = self.transform.backend.xp
+        grid = self.transform.grid
+        nlev = int(self.nlev)
+        sources = self._energy_fixer_sources(state, share_semilag=share_semilag)
+        zonal = LatitudeAccumulator(
+            xp, (2 * nlev + 1 + int(self.vapour_fixer), grid.nlat), xp.float64,
+            name="energy_fixer_zonal", exchange=self.pipeline.exchange,
+        )
+        for rows in self.pipeline.local_slices():
+            g, _stack, _names = self.grid_band(sources, rows)
+            column = (xp.asarray(self.surface_geopotential[rows]).astype(xp.float64)
+                      * g["ps"].astype(xp.float64) / GRAVITY_M_S2)
+            planes = [None]
+            for k in range(nlev):
+                dp_g = g["dp"][k].astype(xp.float64) / GRAVITY_M_S2
+                u = g["u"][k].astype(xp.float64)
+                v = g["v"][k].astype(xp.float64)
+                column = column + (
+                    DRY_AIR_CP * g["temperature"][k].astype(xp.float64)
+                    + 0.5 * (u * u + v * v)) * dp_g
+                planes.append(dp_g)
+                del u, v
+            for k in range(nlev):
+                exner = (g["p_full"][k].astype(xp.float64)
+                         / REFERENCE_PRESSURE_PA) ** KAPPA
+                planes.append(exner * planes[1 + k])
+                del exner
+            planes[0] = column
+            if self.vapour_fixer:
+                vapour = xp.zeros(g["ps"].shape, dtype=xp.float64)
+                for k in range(nlev):
+                    vapour = vapour + g["qv"][k].astype(xp.float64) * planes[1 + k]
+                planes.append(vapour)
+                del vapour
+            zonal.add_band(rows, xp.stack([
+                xp.mean(plane, axis=-1, dtype=xp.float64) for plane in planes]))
+            del g, planes, column
+        del sources
+        weights = xp.asarray(0.5 * grid.quadrature_weights, dtype=xp.float64)
+        means = self.transform.backend.to_numpy(zonal.total(weights))
+        means = np.asarray(means, dtype=np.float64)
+        vapour = float(means[2 * nlev + 1]) if self.vapour_fixer else None
+        return float(means[0]), means[1:nlev + 1], means[nlev + 1:2 * nlev + 1], vapour
+
+    def _fix_energy(self, state: MoistHybridState, reference, dt_s: float):
+        """Restore ``reference`` (a :meth:`_dry_energy_reading` of the
+        state entering the dynamics) on ``state``: the vapour column by one
+        uniform rescale of qv (``vapour_fixer``), the dry energy by one
+        uniform temperature increment (``energy_fixer``).
+
+        The vapour: the semi-Lagrangian core advects qv spectrally with no
+        mass fixer (the condensates have one), and the T127 year run's
+        adiabatic step created 1.1-2.3e-4 kg/m2 of it a step, which the
+        global water fixer then took off the SURFACE stores, leaving the
+        atmosphere +0.5..1.0 W/m2 of latent energy nothing supplied.  The
+        rescale takes it back where it was made: qv times W_before /
+        W_after, linear in the coefficients, so no column changes sign and
+        the dry energy is untouched.
+
+        The increment is a degree-zero theta offset per level, d theta_k =
+        c M_k / X_k (M_k the level's global-mean mass, X_k its global-mean
+        exner-weighted mass), so the temperature it adds at a point is
+        c (p/p0)^kappa / <(p/p0)^kappa>_k, c on the level's mass-weighted
+        mean, and the energy it adds is cp c sum_k M_k: c is set so that
+        equals the deficit exactly.  Nothing else of the state moves (ps
+        and the wind are untouched, so K and Phi_s ps/g are too).
+        Returns the state and the step's record."""
+        energy_before = float(reference[0])
+        energy_after, mass, exner_mass, vapour_after = self._dry_energy_reading(state)
+        record: dict[str, float] = {}
+        xp = self.transform.backend.xp
+        values = list(state.fields())
+        if self.vapour_fixer:
+            vapour_before = float(reference[3])
+            if not (math.isfinite(vapour_after) and vapour_after > 0.0
+                    and math.isfinite(vapour_before)):
+                raise FloatingPointError(
+                    f"vapour fixer reading is invalid: {vapour_before!r} -> {vapour_after!r} kg/m2")
+            ratio = vapour_before / vapour_after
+            # A Python float is a weak scalar: the product keeps qv's dtype.
+            values[4] = xp.asarray(state.qv) * float(ratio)
+            record["vapour_fixer_kg_m2"] = float(vapour_before - vapour_after)
+            record["vapour_fixer_latent_w_m2"] = float(
+                LATENT_HEAT_VAPORIZATION * (vapour_before - vapour_after) / float(dt_s))
+        if not self.energy_fixer:
+            return state.with_fields(values), record
+        deficit = energy_before - energy_after
+        total_mass = float(np.sum(mass))
+        if not (math.isfinite(deficit) and total_mass > 0.0
+                and np.all(exner_mass > 0.0)):
+            raise FloatingPointError(
+                f"energy fixer reading is invalid: deficit {deficit!r} J/m2, "
+                f"column mass {total_mass!r} kg/m2")
+        warming = deficit / (DRY_AIR_CP * total_mass)
+        offsets = warming * mass / exner_mass
+        theta = xp.asarray(state.theta).copy()
+        theta[:, 0, 0] += xp.asarray(
+            offsets * math.sqrt(4.0 * math.pi)).astype(theta.dtype)
+        values[2] = theta
+        record["energy_fixer_w_m2"] = float(deficit / float(dt_s))
+        record["energy_fixer_delta_t_k"] = float(warming)
+        return state.with_fields(values), record
 
     def _level_water_mass_rows(self, stacked, dp):
         """The band-local stage of :meth:`_level_water_mass`: the zonal
@@ -3316,6 +3548,25 @@ class MoistHybridModel:
             return self._sponge_only_physics_pass(bundle, dt_s)
         from .state import SURFACE_ARRAY_NAMES, PhysicsState, SurfaceState, _copy_json
 
+        # The dynamic ocean's arrays live in the namespace (so checkpoints
+        # carry them) but on the OCEAN grid: the suite never reads them and
+        # the band loop must not cut them by atmosphere rows.  They are
+        # carried around the call untouched.  A run without the dynamic
+        # ocean has none and takes the call exactly as before.
+        carried = {name: value for name, value in bundle.physics_state.arrays.items()
+                   if name.startswith(PHYSICS_CARRIED_PREFIX)}
+        if carried:
+            inner = ArwenGlobalState(bundle.atmosphere, bundle.surface, PhysicsState(
+                schema=bundle.physics_state.schema,
+                arrays={name: value for name, value in bundle.physics_state.arrays.items()
+                        if name not in carried},
+                metadata=bundle.physics_state.metadata))
+            out, info = self.apply_physics(inner, dt_s)
+            return ArwenGlobalState(out.atmosphere, out.surface, PhysicsState(
+                schema=out.physics_state.schema,
+                arrays={**out.physics_state.arrays, **carried},
+                metadata=out.physics_state.metadata)), info
+
         prof = profiler_of(self)
         xp = self.transform.backend.xp
         dtype = self.transform.backend.float_dtype
@@ -3924,6 +4175,14 @@ class MoistHybridModel:
             with prof.section("transport"):
                 with prof.section("fluxes"):
                     start_fluxes = self._transport_fluxes(first.atmosphere)
+        energy_reference = None
+        if self.energy_fixer or self.vapour_fixer:
+            # The energy entering the dynamics, read from the syntheses the
+            # semi-Lagrangian step is about to ask for (the memo serves it
+            # the same arrays).
+            with prof.section("energy_fixer"):
+                energy_reference = self._dry_energy_reading(
+                    first.atmosphere, share_semilag=semi_lagrangian)
         with prof.section("dynamics"):
             advanced, semi = self.integrate_dynamics(first.atmosphere, dt_s, mark=mark)
         with prof.section("diffusion"):
@@ -3931,9 +4190,23 @@ class MoistHybridModel:
         if mark is not None:
             mark("diffusion", advanced)
         with prof.section("mass_fixer"):
-            advanced, mass_offset = self._fix_mass(advanced)
+            dry_water = None
+            if self.mass_fixer_target == "dry":
+                # The first repair's reading of the state entering the
+                # dynamics; zero means no repair read it (merged split or
+                # the repair off) and the fixer measures it itself.
+                dry_water = float(first_fixer.get("atmospheric_water_kg_m2", 0.0)) or None
+            advanced, mass_offset = self._fix_mass(advanced, water_kg_m2=dry_water)
         if mark is not None:
             mark("mass_fixer", advanced)
+        energy_record = None
+        if energy_reference is not None:
+            with prof.section("energy_fixer"):
+                advanced, energy_record = self._fix_energy(
+                    advanced, energy_reference, dt_s)
+            del energy_reference
+            if mark is not None:
+                mark("energy_fixer", advanced)
         # The grid tracers rode through the spectral maps by reference;
         # they are advanced here, once, by the flux-form transport with
         # the step's own mass fluxes.
@@ -4074,6 +4347,12 @@ class MoistHybridModel:
             "first_half_physics": first_physics,
             "second_half_physics": second_physics,
         }
+        # The long-run conservation switches' records, only when on, so a
+        # step under the shipped repair writes the rows it always wrote.
+        if energy_record is not None:
+            metrics.update(energy_record)
+        if dry_water is not None:
+            metrics["mass_fixer_atmospheric_water_kg_m2"] = float(dry_water)
         # The observer sees the state BEFORE the research-bound refusals so
         # a refused state has a ledger row and a snapshot, not just a
         # traceback.

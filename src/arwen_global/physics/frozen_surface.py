@@ -1,9 +1,9 @@
 """Heat conduction column for the surfaces the land surface skips as frozen.
 
 The Noah port skips two kinds of column before SFLX exactly as WRF's
-driver does: sea ice (``xice >= xice_threshold``, noah.cu:969; WRF hands
+driver does: sea ice (``xice >= xice_threshold``, noah.cu:985; WRF hands
 those to ``seaice_noah`` in module_sf_noah_seaice_drv.F) and land ice
-(``ivgtyp == isice``, noah.cu:976; WRF's SFLX_GLACIAL, not ported).
+(``ivgtyp == isice``, noah.cu:992; WRF's SFLX_GLACIAL, not ported).
 Before the cold-start seeding no column was sea ice, and the land-ice
 columns (Greenland, Antarctica) kept the analysis skin temperature for
 the whole run: a surface that never responded to its own radiation or

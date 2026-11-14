@@ -406,6 +406,18 @@ def sh2o_init(smois, tslb, isltyp, params: NoahParams) -> np.ndarray:
 # kernel launcher
 # ---------------------------------------------------------------------------
 
+#: How a snowfall resets Noah's snow age, and the kernel's code for each.
+#: ``"any"``: WRF v4.6.1 ALCALC, SNOTIME = 0 whenever it snows (SNOWNG), of
+#: any amount.  ``"amount"``: the snowfall-amount refresh of Noah-MP's
+#: SNOW_AGE (module_sf_noahmplsm.F, after BATS; DELS = dsnow / SWEMX) applied
+#: to WRF's Livneh age: the age grows by dt (seconds, no temperature factor)
+#: and is then scaled by ``1 - min(dsnow / SWEMX, 1)``, dsnow the call's new
+#: snow in kg/m2, and bare ground carries no age.  The albedo curve is still
+#: Livneh's.
+SNOW_AGE_REFRESH_RULES = {"any": 0, "amount": 1}
+#: Noah-MP MPTABLE SWEMX: the new snow (kg/m2) that fully covers old snow.
+SNOW_AGE_SWEMX_KG_M2 = 1.0
+
 # ordered 2-D real field names, matching the noah_column kernel signature
 _F2D = ("psfc", "sfcprs", "sfctmp", "qv1", "qgh", "dz8w1", "glw",
         "swdown", "rainbl", "sr", "chs", "cqs2", "chs2", "rib",
@@ -466,8 +478,17 @@ def launch_noah(dev: dict, params: NoahParams, dt: float, dzs,
                 isurban: int = 13, isice: int = 15,
                 xice_threshold: float = 0.5, frpcpn: bool = False,
                 usemonalb: bool = False, rdlai2d: bool = False,
-                opt_thcnd: int = 1, itimestep: int = 2) -> None:
+                opt_thcnd: int = 1, itimestep: int = 2,
+                snow_age_refresh: str = "any",
+                snow_age_swemx_kg_m2: float = SNOW_AGE_SWEMX_KG_M2) -> None:
     """Run the ``noah_column`` kernel on device arrays (in place).
+
+    ``snow_age_refresh`` is how a snowfall resets the pack's age (SNOTIME):
+    ``"any"`` is WRF's ALCALC, any snowfall makes the pack new; ``"amount"``
+    is Noah-MP's snowfall-amount refresh on WRF's Livneh age, the age grows
+    by ``dt`` and a snowfall of ``dsnow`` kg/m2 keeps
+    ``1 - min(dsnow / snow_age_swemx_kg_m2, 1)`` of it, and a column with no
+    snow carries no age (see :data:`SNOW_AGE_REFRESH_RULES`).
 
     ``dev`` maps field names to CuPy arrays: every name in ``_F2D`` as
     ``(ny, nx)`` float32 (``ivgtyp``/``isltyp`` int32), every name in
@@ -476,6 +497,13 @@ def launch_noah(dev: dict, params: NoahParams, dt: float, dzs,
     land-ice (``ivgtyp == isice``) columns are skipped exactly as the
     WRF driver skips them.
     """
+    if snow_age_refresh not in SNOW_AGE_REFRESH_RULES:
+        raise ValueError(
+            f"snow_age_refresh must be one of {sorted(SNOW_AGE_REFRESH_RULES)}, "
+            f"got {snow_age_refresh!r}")
+    if not float(snow_age_swemx_kg_m2) > 0.0:
+        raise ValueError("snow_age_swemx_kg_m2 must be positive")
+
     import cupy as cp
 
     from arwen_global.core.kernels import get_kernel
@@ -507,6 +535,8 @@ def launch_noah(dev: dict, params: NoahParams, dt: float, dzs,
              np.int32(itimestep),
              np.int32(1 if frpcpn else 0), np.int32(1 if usemonalb else 0),
              np.int32(1 if rdlai2d else 0), np.int32(opt_thcnd),
+             np.int32(SNOW_AGE_REFRESH_RULES[snow_age_refresh]),
+             DTYPE(snow_age_swemx_kg_m2),
              np.int32(ny), np.int32(nx)]
     kern = get_kernel("noah", "noah_column")
     blocks = (ny * nx + _TPB - 1) // _TPB

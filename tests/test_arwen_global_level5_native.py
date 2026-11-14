@@ -250,7 +250,7 @@ def _noah_first_call_fill_modules(branch_columns, *, fill_side="water"):
     ``fill_side="water"`` reproduces gpuwm/core/kernels/noah.cu:940-948
     verbatim: on itimestep==1 every xland>=1.5 column takes smois=1,
     tslb=273.16, smcrel=1, and the kernel then returns before SFLX
-    (noah.cu:968), so those columns are never integrated -- the fill is a
+    (noah.cu:984), so those columns are never integrated -- the fill is a
     diagnostic constant, not a flux.  Every other tendency in these fakes is
     zero, so any water-ledger movement the suite's closure sees comes from
     that fill alone.  ``fill_side="land"`` stamps the same values on the
@@ -553,7 +553,7 @@ def test_statics_the_tables_cannot_index_are_refused_by_name():
 def _roughness_recording_modules(sfclay_znt, ysu_znt, *, noah_land_znt):
     """Fakes recording the roughness sfclay is handed (positional arg 8)
     and YSU is handed (keyword znt); Noah stamps ``noah_land_znt`` on the
-    columns it integrates, as the kernel writes znt_a (noah.cu:1486)."""
+    columns it integrates, as the kernel writes znt_a (noah.cu:1511)."""
     modules = _fake_modules()
     stock_sfclay = modules["arwen_global.core.sfclay"].sfclay
     stock_ysu = modules["arwen_global.core.ysu"].launch_ysu
@@ -800,8 +800,8 @@ def _noah_saturation_clip_modules(clipped_columns):
 
     Per integrated column (xland < 1.5, xice below threshold), the fake
     performs SSTEP's clip-and-cascade against the REAL SOILPARM SMCMAX for
-    the column's isltyp (noah.cu:548-564) and the driver's runoff epilogue
-    (noah.cu:1450-1451, 1518-1519): the whole-stack saturation excess leaves
+    the column's isltyp (noah.cu:563-579) and the driver's runoff epilogue
+    (noah.cu:1475-1476, 1543-1544): the whole-stack saturation excess leaves
     the soil into udrunoff.  Every other tendency is zero, so any
     water-ledger movement the suite's closure sees comes from that move
     alone.
@@ -828,7 +828,7 @@ def _noah_saturation_clip_modules(clipped_columns):
             zsoil[k] = -dzs32[k] + zsoil[k - 1]
         smc = dev["smois"]
         sh2o = dev["sh2o"]
-        sice = (smc - sh2o).astype(np.float32)  # noah.cu:590
+        sice = (smc - sh2o).astype(np.float32)  # noah.cu:605
         dt32 = np.float32(dt)
         wplus = np.zeros(xland.shape, np.float32)
         for k in range(len(dzs32)):
@@ -850,8 +850,8 @@ def _noah_saturation_clip_modules(clipped_columns):
                 np.maximum(smc_new - sice[k], np.float32(0.0)).astype(np.float32),
                 sh2o[k],
             )
-        runoff3 = (wplus / dt32).astype(np.float32)  # noah.cu:564, 1450
-        runoff2 = runoff3  # noah.cu:1451, drainage zero here
+        runoff3 = (wplus / dt32).astype(np.float32)  # noah.cu:579, 1475
+        runoff2 = runoff3  # noah.cu:1476, drainage zero here
         dev["udrunoff"][...] = np.where(
             land,
             (dev["udrunoff"] + runoff2 * dt32 * np.float32(1000.0)
@@ -873,7 +873,7 @@ def test_saturated_soil_clip_books_runoff_as_moved_not_destroyed_water():
     # [0, 1], so ice-sheet columns enter surface.soil_water_fraction at
     # exactly 1.0 and integrate as ordinary uniform-category soil.  Noah's
     # first due call clips every layer to SMCMAX and books the whole-stack
-    # excess into udrunoff (noah.cu:548-564, 1450-1451, 1518-1519) --
+    # excess into udrunoff (noah.cu:563-579, 1475-1476, 1543-1544) --
     # (1.0 - 0.464) * 2 m * 1000 kg/m3 = 1072 kg/m2 in one step at
     # land_fraction 1.  With the runoff stores outside the water ledger the
     # closure priced that move as destroyed water, and both six-hour
@@ -1000,9 +1000,9 @@ def _mass_consistent_precip_modules(dp_bottom_up, booked, leftovers):
     bridge's own helpers (the kernel's contract: fallout is water that LEFT
     the atmosphere) -- and Noah consumes rainbl into counted
     stores the way SFLX does -- the liquid part fills the canopy to the
-    CMCMAX cap of 0.5 kg/m2 (noah.cu:566-568, 1479) with the excess booked
-    into sfcrunoff (noah.cu:1518), and the frozen part accrues into snow
-    (noah.cu:1161-1171, 1480).  Every destination is a store both water
+    CMCMAX cap of 0.5 kg/m2 (noah.cu:581-583, 1504) with the excess booked
+    into sfcrunoff (noah.cu:1543), and the frozen part accrues into snow
+    (noah.cu:1183-1193, 1505).  Every destination is a store both water
     ledgers count; no other tendency moves water, so any closure residual
     is the booking itself.
     """
@@ -2119,7 +2119,7 @@ def test_land_columns_hand_ysu_the_land_surface_fluxes_on_every_call():
 
 def test_kernels_receive_dry_mixing_ratio_and_the_model_keeps_specific_humidity():
     # Audit 2026-09-01 NB-3: the model's qv is GDAS specific humidity and
-    # every WRF-lineage kernel consumes dry mixing ratio (noah.cu:982 forms
+    # every WRF-lineage kernel consumes dry mixing ratio (noah.cu:998 forms
     # q2k = qv1/(1+qv1); sfclay/morrison compare qv against EP2*e/(p-e));
     # the bridge copied the field unchanged, so the kernels read every
     # saturation test dry by q^2 -- 2.04% at q = 0.02.  Converted at the

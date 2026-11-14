@@ -1684,6 +1684,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="build a dated SST / sea-ice series on a config's Gaussian grid "
              "(table-driven sources; four GRIB2 messages per record by byte range)"))
     _add_climatology_arguments(sub.add_parser("climatology", help=_CLIMATOLOGY_HELP))
+    from .ocean_dyn import cli as _ocean_cli
+
+    _ocean_cli.add_arguments(sub.add_parser("ocean", help=_ocean_cli.HELP))
     _add_assimilate_arguments(
         sub.add_parser("assimilate", help=_ASSIMILATE_HELP))
     _add_cycle_arguments(sub.add_parser("cycle", help=_CYCLE_HELP))
@@ -2033,8 +2036,16 @@ def _forcing_arguments(args) -> dict[str, object]:
 
 
 def _run(args: argparse.Namespace) -> int:
-    cfg, plan = _size_the_run(
-        args, _with_surface_series(args, load_config(args.config)), _door_name(args))
+    loaded = _with_surface_series(args, load_config(args.config))
+    # The orographic drag's cache, built (and its WPS_GEOG dataset staged)
+    # BEFORE the card is priced: the shipped forecast days turn the drag on
+    # from 0.2.3, and a land-surface cache built by an earlier release, or a
+    # runner that skips `statics` once that cache exists, has no drag cache
+    # beside it.  A no-op when the cache is there or the drag is off.
+    from .physics.orographic_drag import prepare_orographic_statistics
+
+    prepare_orographic_statistics(loaded)
+    cfg, plan = _size_the_run(args, loaded, _door_name(args))
     # The config travels with the run.  Written after the sizer has accepted
     # it, so a directory that carries a config is a directory a run actually
     # started in, and never after a refusal.
@@ -2178,6 +2189,13 @@ def _statics(args: argparse.Namespace) -> int:
         "wall_seconds": document["wall_seconds"],
         "arrays": len(document["arrays"]),
     }, indent=2, sort_keys=True))
+    if out == default_out:
+        # A config that turns the orographic drag on (the shipped forecast
+        # days, from 0.2.3) reads a second cache masked with this one's
+        # land; build it now, so `statics` leaves the run nothing to build.
+        from .physics.orographic_drag import prepare_orographic_statistics
+
+        prepare_orographic_statistics(cfg, grid)
     return 0
 
 
@@ -3154,6 +3172,10 @@ def main(argv: list[str] | None = None) -> int:
             return score_main(args)
         if args.command == "obs":
             return args.func(args)
+        if args.command == "ocean":
+            from .ocean_dyn import cli as ocean_cli
+
+            return ocean_cli.main(args)
         if args.command == "run-plan":
             from .runplan import run_plan_main
 

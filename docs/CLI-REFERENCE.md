@@ -6,7 +6,7 @@ the tool after changing an option and commit what it writes.
 
 `gpuwm-global <command> --help` prints the same text at the terminal.
 
-**60 commands.**
+**64 commands.**
 
 - `gpuwm-global pins`
 - `gpuwm-global physics-manifest`
@@ -29,6 +29,10 @@ the tool after changing an option and commit what it writes.
 - `gpuwm-global climatology fetch`
 - `gpuwm-global climatology build`
 - `gpuwm-global climatology qflux`
+- `gpuwm-global ocean build-grid`
+- `gpuwm-global ocean build-init`
+- `gpuwm-global ocean init-from-state`
+- `gpuwm-global ocean run`
 - `gpuwm-global assimilate`
 - `gpuwm-global cycle`
 - `gpuwm-global da init`
@@ -275,6 +279,50 @@ the tool after changing an option and commit what it writes.
 | option | what it does | default |
 |---|---|---|
 | `qflux_args` (positional) | CHECKPOINT [CHECKPOINT ...] --out NPZ [--smoothing-truncation N], read by arwen_global.ocean_qflux.main |  |
+
+## `gpuwm-global ocean`
+
+### `gpuwm-global ocean build-grid`
+
+| option | what it does | default |
+|---|---|---|
+| `--etopo-bed` `ETOPO_BED` | _(the parser declares no help text for this option)_ |  |
+| `--etopo-surface` `ETOPO_SURFACE` | _(the parser declares no help text for this option)_ |  |
+| `--out` `OUT` | _(the parser declares no help text for this option)_ |  |
+
+### `gpuwm-global ocean build-init`
+
+| option | what it does | default |
+|---|---|---|
+| `--grid` `GRID` | _(the parser declares no help text for this option)_ |  |
+| `--valid` `VALID` | YYYYMMDDHH |  |
+| `--godas-dir` `GODAS_DIR` | _(the parser declares no help text for this option)_ |  |
+| `--woa-dir` `WOA_DIR` | _(the parser declares no help text for this option)_ |  |
+| `--barotropic` `{remove,godas}` | _(the parser declares no help text for this option)_ | `remove` |
+| `--out` `OUT` | _(the parser declares no help text for this option)_ |  |
+
+### `gpuwm-global ocean init-from-state`
+
+| option | what it does | default |
+|---|---|---|
+| `--grid` `GRID` | _(the parser declares no help text for this option)_ |  |
+| `--base-init` `BASE_INIT` | _(the parser declares no help text for this option)_ |  |
+| `--state` `STATE` | _(the parser declares no help text for this option)_ |  |
+| `--out` `OUT` | _(the parser declares no help text for this option)_ |  |
+
+### `gpuwm-global ocean run`
+
+| option | what it does | default |
+|---|---|---|
+| `--grid` `GRID` | _(the parser declares no help text for this option)_ |  |
+| `--init` `INIT` | _(the parser declares no help text for this option)_ |  |
+| `--godas-dir` `GODAS_DIR` | _(the parser declares no help text for this option)_ |  |
+| `--start` `START` | YYYYMMDDHH |  |
+| `--days` `DAYS` | _(the parser declares no help text for this option)_ |  |
+| `--out` `OUT` | _(the parser declares no help text for this option)_ |  |
+| `--xp` `{cupy,numpy}` | _(the parser declares no help text for this option)_ | `cupy` |
+| `--checkpoint-days` `CHECKPOINT_DAYS` | _(the parser declares no help text for this option)_ | `5.0` |
+| `--sst-restore-days` `SST_RESTORE_DAYS` | restore the top cell toward GODAS's own SST (the restored arm) |  |
 
 ## `gpuwm-global assimilate`
 

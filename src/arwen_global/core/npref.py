@@ -4951,14 +4951,23 @@ def _noah_snfrac(sneqv, snup, salp):
 
 
 def _noah_alcalc(alb, snoalb, embrd, sncovr, dt, snowng, snotime1,
-                 lvcoef):
-    """ALCALC: snow albedo (Livneh aging) + emissivity blend."""
+                 lvcoef, refresh="any", newsnow=0.0, swemx=1.0):
+    """ALCALC: snow albedo (Livneh aging) + emissivity blend.
+
+    ``refresh="amount"`` is Noah-MP's snowfall-amount refresh applied to the
+    Livneh age (noah.cu noah_alcalc): the age grows by dt and keeps
+    ``1 - min(newsnow / swemx, 1)`` of itself when it snows, ``newsnow`` the
+    call's new snow in kg/m2."""
     snacca, snaccb = 0.94, 0.58
     albedo = alb + sncovr * (snoalb - alb)
     emissi = embrd + sncovr * (_NEMISSI_S - embrd)
     snoalb1 = snoalb + lvcoef * (0.85 - snoalb)
     snoalb2 = snoalb1
-    if snowng:
+    if refresh == "amount":
+        dels = min(newsnow / swemx, 1.0) if snowng else 0.0
+        snotime1 = max((snotime1 + dt) * (1.0 - dels), 0.0)
+        snoalb2 = snoalb1 * (snacca ** ((snotime1 / 86400.0) ** snaccb))
+    elif snowng:
         snotime1 = 0.0
     else:
         snotime1 = snotime1 + dt
@@ -5824,7 +5833,7 @@ def _noah_sflx(ffrozp, dt, nsoil, sldpth, lwdn, soldn, solnet, sfcprs,
                shdfac, shdmin, shdmax, alb, snoalb, tbot, z0brd, cmc,
                t1, stc, smc, sh2o, snowh, sneqv, ch, xlai, snotime1,
                ribb, params, isurban, opt_thcnd, rdlai2d, usemonalb,
-               flags):
+               flags, snow_age_refresh="any", snow_age_swemx=1.0):
     """SFLX: the unified Noah column update.  Mutates stc/smc/sh2o
     (lists); returns a dict of everything the WRF driver consumes plus
     the energy-identity diagnostics."""
@@ -5951,6 +5960,10 @@ def _noah_sflx(ffrozp, dt, nsoil, sldpth, lwdn, soldn, solnet, sfcprs,
             raise ValueError(
                 "Physical snow depth is less than snow water equiv.")
         sncond = _noah_csnow(sndens)
+    if snow_age_refresh == "amount" and sneqv == 0.0:
+        # bare ground carries no age under the amount rule (Noah-MP
+        # SNOW_AGE: TAUSS = 0 when SNEQV <= 0); noah.cu noah_column
+        snotime1 = 0.0
     if 0.0 < sneqv <= 2.0e-7:
         flags["near_branch"] = True
     if prcp > 0.0:
@@ -5982,7 +5995,8 @@ def _noah_sflx(ffrozp, dt, nsoil, sldpth, lwdn, soldn, solnet, sfcprs,
             flags["near_branch"] = True
         sncovr = min(sncovr, 0.98)
         albedo, emissi, snotime1 = _noah_alcalc(
-            alb, snoalb, embrd, sncovr, dt, snowng, snotime1, lvcoef)
+            alb, snoalb, embrd, sncovr, dt, snowng, snotime1, lvcoef,
+            snow_age_refresh, prcp * dt, snow_age_swemx)
 
     # ---- surface thermal conductivity + first-guess soil heat flux
     df1 = _noah_tdfcnd(smc[0], quartz, smcmax, sh2o[0], bexp, psisat,
@@ -6146,7 +6160,8 @@ def _noah_sflx(ffrozp, dt, nsoil, sldpth, lwdn, soldn, solnet, sfcprs,
 
 def np_noah_column(col, params, dt, dzs, isurban=13, isice=15,
                    xice_threshold=0.5, frpcpn=False, usemonalb=False,
-                   rdlai2d=False, opt_thcnd=1):
+                   rdlai2d=False, opt_thcnd=1, snow_age_refresh="any",
+                   snow_age_swemx=1.0):
     """Float64 mirror of one Noah column step: the WRF v4.6.1 driver
     ``lsm`` prep + ``SFLX`` + post-update, for a single (i, j).
 
@@ -6265,7 +6280,8 @@ def np_noah_column(col, params, dt, dzs, isurban=13, isice=15,
                    vegtyp, soiltyp, shdfac, shmin, shmax, albbrd,
                    snoalb1, tbot, z0brd, cmc, t1, stc, smc, swc,
                    snowhk, sneqv, chk, xlai, snotime1, ribb, params,
-                   isurban, opt_thcnd, rdlai2d, usemonalb, flags)
+                   isurban, opt_thcnd, rdlai2d, usemonalb, flags,
+                   snow_age_refresh, snow_age_swemx)
 
     # ---- driver post-SFLX state/flux updates
     out["lai"] = r["xlai"]

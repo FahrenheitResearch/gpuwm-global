@@ -347,9 +347,18 @@ def test_a_default_config_keeps_its_hash(tmp_path):
         ("arwen_global_gdas_t533_native_24h.toml",
          "1f85e23806a5410e76a9f414f227343236b394856cb80200d0b80aa92f79fd60"),
         ("arwen_global_gdas_t255_native_sl_si_24h.toml",
-         "c7a000d28c206ace5f88312d92320f4c30e72f7f0eb6d6108587022d935b4bbf"),
+         "7b140980a546263ea2be34cc145e0dedb68e16327898bff137debb3c87579713"),
     ):
         assert load_config(root / name).config_hash == digest, name
+    # The T255 day's 0.2.3 hash is its 0.2.2 hash plus the orographic drag:
+    # without the drag it reads c7a000d2..., the digest before 0.2.3.
+    import dataclasses
+
+    day = load_config(root / "arwen_global_gdas_t255_native_sl_si_24h.toml")
+    options = {key: value for key, value in day.native_adapter_options.items()
+               if key != "orographic_drag"}
+    assert dataclasses.replace(day, native_adapter_options=options).config_hash == (
+        "c7a000d28c206ace5f88312d92320f4c30e72f7f0eb6d6108587022d935b4bbf")
     identity = _load(tmp_path).config_identity
     assert identity["maximum_lipschitz"] == 0.75
     assert "minimum_fold_determinant" not in identity

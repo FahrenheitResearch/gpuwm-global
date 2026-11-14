@@ -34,7 +34,12 @@ import hashlib
 import math
 from pathlib import Path
 
-OCEAN_MODES = ("hold", "anomaly", "climatology", "slab", "series")
+OCEAN_MODES = ("hold", "anomaly", "climatology", "slab", "series", "dynamic")
+#: The modes with a prognostic ocean and its thermodynamic sea ice: the slab,
+#: and the dynamic ocean (arwen_global.ocean_dyn), which carries the slab
+#: for every ocean column its grid does not cover and so reads everything
+#: the slab reads.
+PROGNOSTIC_OCEAN_MODES = ("slab", "dynamic")
 SEA_ICE_MODES = ("match", "hold", "anomaly", "climatology", "thermodynamic", "series")
 RULE_MODES = ("anomaly", "climatology")
 GREENNESS_MODES = ("daily", "start")
@@ -54,6 +59,21 @@ _OCEAN_KEYS = {
 _SLAB_KEYS = {"slab_target", "slab_relaxation_days", "slab_depth",
               "slab_depth_bounds_m", "slab_qflux"}
 _CALIBRATION_KEYS = {"qflux_calibration", "qflux_calibration_spinup_days"}
+#: The mixed-layer cooling response of a prescribed sea surface
+#: (arwen_global.ocean_response), off unless ``mixed_layer_response = true``.
+_RESPONSE_KEYS = {"mixed_layer_response", "mixed_layer_depth_m",
+                  "mixed_layer_relaxation_days", "mixed_layer_max_departure_k",
+                  "mixed_layer_reference_days"}
+#: The [ocean] modes the response may ride on: the prescribed ones.
+RESPONSE_MODES = ("hold", "anomaly", "climatology", "series")
+RESPONSE_DEFAULT_DEPTH_M = 40.0
+RESPONSE_DEFAULT_RELAXATION_DAYS = 10.0
+RESPONSE_DEFAULT_MAX_DEPARTURE_K = 5.0
+RESPONSE_DEFAULT_REFERENCE_DAYS = 30.0
+_DYNAMIC_KEYS = {"dynamic_grid", "dynamic_initial", "dynamic_sss_restoring_m_per_day",
+                 "dynamic_sst_restoring_days", "dynamic_gm_kappa_m2_s"}
+DYNAMIC_SSS_RESTORING_M_PER_DAY = 50.0 / 300.0
+DYNAMIC_GM_KAPPA_M2_S = 800.0
 SLAB_TARGETS = ("climatology", "anomaly")
 #: The new-ice thickness under ``sea_ice.mode = "thermodynamic"`` when the
 #: key is not given (the rules' default stays 1.0 m).
@@ -146,19 +166,68 @@ class OceanOptions:
     #: only).
     qflux_calibration: bool = False
     qflux_calibration_spinup_days: float = 2.0
+    #: The mixed-layer cooling response (prescribed modes only; off by
+    #: default, and absent from every identity and receipt while off).
+    mixed_layer_response: bool = False
+    mixed_layer_depth_m: float = RESPONSE_DEFAULT_DEPTH_M
+    mixed_layer_relaxation_days: float = RESPONSE_DEFAULT_RELAXATION_DAYS
+    mixed_layer_max_departure_k: float = RESPONSE_DEFAULT_MAX_DEPARTURE_K
+    mixed_layer_reference_days: float = RESPONSE_DEFAULT_REFERENCE_DAYS
+
+    def response_receipt(self) -> dict:
+        """``{"mixed_layer_response": {...}}`` when the response is on, as
+        the identity and the receipt carry it; {} when it is off, so every
+        payload written before it stays as it was."""
+        if not self.mixed_layer_response:
+            return {}
+        return {"mixed_layer_response": {
+            "depth_m": self.mixed_layer_depth_m,
+            "relaxation_days": self.mixed_layer_relaxation_days,
+            "max_departure_k": self.mixed_layer_max_departure_k,
+            "reference_days": self.mixed_layer_reference_days,
+        }}
+
+    #: The dynamic ocean's keys (``mode = "dynamic"`` only; files by
+    #: content SHA-256).  ``dynamic_sst_restoring_days`` None is "none".
+    dynamic_grid: str | None = None
+    dynamic_grid_sha256: str | None = None
+    dynamic_initial: str | None = None
+    dynamic_initial_sha256: str | None = None
+    dynamic_sss_restoring_m_per_day: float | None = DYNAMIC_SSS_RESTORING_M_PER_DAY
+    dynamic_sst_restoring_days: float | None = None
+    dynamic_gm_kappa_m2_s: float = DYNAMIC_GM_KAPPA_M2_S
 
     @property
     def ice_mode(self) -> str:
         """The sea-ice rule after ``match``: hold for hold, anomaly for
         anomaly, climatology for climatology, series for series,
-        thermodynamic for slab."""
+        thermodynamic for slab and dynamic."""
         if self.sea_ice.mode != "match":
             return self.sea_ice.mode
-        return "thermodynamic" if self.mode == "slab" else self.mode
+        return "thermodynamic" if self.mode in PROGNOSTIC_OCEAN_MODES else self.mode
 
     @property
     def slab(self) -> bool:
-        return self.mode == "slab"
+        """A prognostic ocean (the slab, or the dynamic ocean with the slab
+        beside it): everything the slab reads is read."""
+        return self.mode in PROGNOSTIC_OCEAN_MODES
+
+    @property
+    def dynamic(self) -> bool:
+        return self.mode == "dynamic"
+
+    def dynamic_receipt(self) -> dict:
+        if not self.dynamic:
+            return {}
+        return {
+            "dynamic_grid_sha256": self.dynamic_grid_sha256,
+            "dynamic_initial_sha256": self.dynamic_initial_sha256,
+            "dynamic_sss_restoring_m_per_day": ("none" if self.dynamic_sss_restoring_m_per_day
+                                                is None else self.dynamic_sss_restoring_m_per_day),
+            "dynamic_sst_restoring_days": ("none" if self.dynamic_sst_restoring_days is None
+                                           else self.dynamic_sst_restoring_days),
+            "dynamic_gm_kappa_m2_s": self.dynamic_gm_kappa_m2_s,
+        }
 
     @property
     def needs_climatology(self) -> bool:
@@ -186,6 +255,7 @@ class OceanOptions:
                 "slab_target": self.slab_target,
                 "sea_ice_record_interval_hours": self.sea_ice.record_interval_hours,
                 "new_ice_thickness_m": self.sea_ice.new_ice_thickness_m,
+                **self.dynamic_receipt(),
             }
         if self.qflux_calibration:
             return {"qflux_calibration": True,
@@ -198,7 +268,9 @@ class OceanOptions:
         with no table already has (hold with held ice; the series)."""
         ice = self.ice_mode
         if self.mode in ("hold", "series") and ice in ("hold", "series"):
-            return None
+            if not self.mixed_layer_response:
+                return None
+            return {"mode": self.mode, "sea_ice_mode": ice, **self.response_receipt()}
         payload: dict[str, object] = {"mode": self.mode, "sea_ice_mode": ice,
                                       "climatology_sha256": self.climatology_sha256}
         if self.needs_anomaly:
@@ -223,9 +295,10 @@ class OceanOptions:
             )
             if ice == "climatology":
                 payload["climatology_ramp_days"] = self.climatology_ramp_days
-        # The slab and the calibration join only when set, so every config
-        # hash written before them stays as it was.
+        # The slab, the calibration and the mixed-layer response join only
+        # when set, so every config hash written before them stays as it was.
         payload.update(self.slab_receipt())
+        payload.update(self.response_receipt())
         return payload
 
     def receipt(self) -> dict:
@@ -262,6 +335,10 @@ class OceanOptions:
             out.update(self.slab_receipt())
             if self.slab:
                 out["slab_qflux"] = self.slab_qflux
+            if self.dynamic:
+                out["dynamic_grid"] = self.dynamic_grid
+                out["dynamic_initial"] = self.dynamic_initial
+        out.update(self.response_receipt())
         return out
 
 
@@ -375,15 +452,15 @@ def parse_ocean(ocean_table: dict | None, ice_table: dict | None, *, source_dir:
     ocean_mode = (None if ocean_table is None
                   else str(dict(ocean_table).get("mode", "anomaly")).strip().lower())
     thermodynamic = ice_mode == "thermodynamic" or (
-        ice_mode == "match" and ocean_mode == "slab")
-    if ice_mode == "thermodynamic" and ocean_mode != "slab":
+        ice_mode == "match" and ocean_mode in PROGNOSTIC_OCEAN_MODES)
+    if ice_mode == "thermodynamic" and ocean_mode not in PROGNOSTIC_OCEAN_MODES:
         raise ValueError(
             "sea_ice.mode = \"thermodynamic\" (ice that grows and melts from the "
-            "model's fluxes) goes only with [ocean] mode = \"slab\": the ice and the "
-            "water must answer the same energy")
-    if ocean_mode == "slab" and ice_mode not in ("match", "thermodynamic"):
+            "model's fluxes) goes only with [ocean] mode = \"slab\" or \"dynamic\": the "
+            "ice and the water must answer the same energy")
+    if ocean_mode in PROGNOSTIC_OCEAN_MODES and ice_mode not in ("match", "thermodynamic"):
         raise ValueError(
-            "[ocean] mode = \"slab\" carries its own sea ice (sea_ice.mode = "
+            f"[ocean] mode = {ocean_mode!r} carries its own sea ice (sea_ice.mode = "
             f"\"thermodynamic\", which \"match\" resolves to); {ice_mode!r} would "
             "prescribe ice under a prognostic SST")
     sea_ice = SeaIceOptions(
@@ -408,15 +485,24 @@ def parse_ocean(ocean_table: dict | None, ice_table: dict | None, *, source_dir:
     ocean_table = dict(ocean_table)
     slab_keys = sorted(set(ocean_table) & _SLAB_KEYS)
     calibration_keys = sorted(set(ocean_table) & _CALIBRATION_KEYS)
-    unknown = sorted(set(ocean_table) - _OCEAN_KEYS - _SLAB_KEYS - _CALIBRATION_KEYS)
+    response_table = {key: ocean_table.pop(key) for key in sorted(set(ocean_table)
+                                                                  & _RESPONSE_KEYS)}
+    dynamic_keys = sorted(set(ocean_table) & _DYNAMIC_KEYS)
+    unknown = sorted(set(ocean_table) - _OCEAN_KEYS - _SLAB_KEYS - _CALIBRATION_KEYS
+                     - _DYNAMIC_KEYS)
     if unknown:
         raise ValueError(f"unknown keys in [ocean]: {', '.join(unknown)}")
     mode = _choice(ocean_table.get("mode", "anomaly"), OCEAN_MODES, "ocean.mode")
-    if slab_keys and mode != "slab":
+    if slab_keys and mode not in PROGNOSTIC_OCEAN_MODES:
         raise ValueError(
             f"{', '.join('ocean.' + key for key in slab_keys)} "
             f"{'is' if len(slab_keys) == 1 else 'are'} read only under [ocean] mode = "
             f"\"slab\"; this run's mode is {mode!r}")
+    if dynamic_keys and mode != "dynamic":
+        raise ValueError(
+            f"{', '.join('ocean.' + key for key in dynamic_keys)} "
+            f"{'is' if len(dynamic_keys) == 1 else 'are'} read only under [ocean] mode = "
+            f"\"dynamic\"; this run's mode is {mode!r}")
     calibrate = ocean_table.get("qflux_calibration", False)
     if not isinstance(calibrate, bool):
         raise ValueError("ocean.qflux_calibration must be true or false")
@@ -468,8 +554,10 @@ def parse_ocean(ocean_table: dict | None, ice_table: dict | None, *, source_dir:
                                     _truncation, "ocean.anomaly_truncation"),
         sea_ice=sea_ice,
     )
-    if mode == "slab":
+    if mode in PROGNOSTIC_OCEAN_MODES:
         options = _with_slab(options, ocean_table, source_dir)
+        if mode == "dynamic":
+            options = _with_dynamic(options, ocean_table, source_dir)
     elif calibrate:
         spinup = ocean_table.get("qflux_calibration_spinup_days", 2.0)
         if isinstance(spinup, bool) or not math.isfinite(float(spinup)) \
@@ -478,6 +566,8 @@ def parse_ocean(ocean_table: dict | None, ice_table: dict | None, *, source_dir:
                              "number of days >= 0")
         options = replace(options, qflux_calibration=True,
                           qflux_calibration_spinup_days=float(spinup))
+    if response_table:
+        options = _with_response(options, response_table)
     if options.needs_climatology and initial_mode != "analysis" \
             and statics_source != "real":
         raise ValueError(
@@ -520,6 +610,72 @@ def _with_slab(options: OceanOptions, table: dict, source_dir: Path) -> OceanOpt
     return replace(options, slab_qflux=qflux, slab_qflux_sha256=qflux_sha,
                    slab_depth=depth, slab_depth_bounds_m=bounds,
                    slab_relaxation_days=relax, slab_target=target)
+
+
+def _with_response(options: OceanOptions, table: dict) -> OceanOptions:
+    """The mixed-layer response keys, checked (arwen_global.ocean_response)."""
+    on = table.get("mixed_layer_response", False)
+    if not isinstance(on, bool):
+        raise ValueError("ocean.mixed_layer_response must be true or false")
+    others = sorted(set(table) - {"mixed_layer_response"})
+    if not on:
+        if others:
+            raise ValueError(
+                f"{', '.join('ocean.' + key for key in others)} "
+                f"{'is' if len(others) == 1 else 'are'} read only with "
+                "mixed_layer_response = true")
+        return options
+    if options.mode not in RESPONSE_MODES:
+        raise ValueError(
+            f"ocean.mixed_layer_response cools a prescribed sea surface (mode "
+            f"{', '.join(repr(m) for m in RESPONSE_MODES)}); under [ocean] mode = "
+            f"{options.mode!r} the sea surface already answers the fluxes")
+    if options.qflux_calibration:
+        raise ValueError(
+            "ocean.mixed_layer_response does not go with qflux_calibration: the "
+            "calibration records the fluxes of the climatology rule's own sea surface")
+    depth = _positive(table.get("mixed_layer_depth_m", RESPONSE_DEFAULT_DEPTH_M),
+                      "ocean.mixed_layer_depth_m")
+    relax = _positive(table.get("mixed_layer_relaxation_days",
+                                RESPONSE_DEFAULT_RELAXATION_DAYS),
+                      "ocean.mixed_layer_relaxation_days")
+    bound = _positive(table.get("mixed_layer_max_departure_k",
+                                RESPONSE_DEFAULT_MAX_DEPARTURE_K),
+                      "ocean.mixed_layer_max_departure_k")
+    reference = _positive(table.get("mixed_layer_reference_days",
+                                    RESPONSE_DEFAULT_REFERENCE_DAYS),
+                          "ocean.mixed_layer_reference_days")
+    return replace(options, mixed_layer_response=True, mixed_layer_depth_m=depth,
+                   mixed_layer_relaxation_days=relax, mixed_layer_max_departure_k=bound,
+                   mixed_layer_reference_days=reference)
+
+
+def _with_dynamic(options: OceanOptions, table: dict, source_dir: Path) -> OceanOptions:
+    """The dynamic ocean's keys, checked; its grid and initial files enter by
+    content SHA-256."""
+    for key, what in (("dynamic_grid", "`gpuwm-global ocean build-grid`"),
+                      ("dynamic_initial", "`gpuwm-global ocean build-init`")):
+        if key not in table:
+            raise ValueError(f"[ocean] mode = \"dynamic\" needs {key} = \"<path>\" (write it with "
+                             f"{what}; docs/ARWEN_GLOBAL_DYNAMIC_OCEAN.md)")
+    grid, grid_sha = _file(table["dynamic_grid"], source_dir, "ocean.dynamic_grid",
+                           "build it with `gpuwm-global ocean build-grid`")
+    init, init_sha = _file(table["dynamic_initial"], source_dir, "ocean.dynamic_initial",
+                           "build it with `gpuwm-global ocean build-init`")
+    sss = _none_or(table.get("dynamic_sss_restoring_m_per_day", DYNAMIC_SSS_RESTORING_M_PER_DAY),
+                   _positive, "ocean.dynamic_sss_restoring_m_per_day")
+    sst = _none_or(table.get("dynamic_sst_restoring_days", "none"), _positive,
+                   "ocean.dynamic_sst_restoring_days")
+    gm = table.get("dynamic_gm_kappa_m2_s", DYNAMIC_GM_KAPPA_M2_S)
+    if isinstance(gm, bool) or not math.isfinite(float(gm)) or float(gm) < 0.0:
+        raise ValueError("ocean.dynamic_gm_kappa_m2_s must be a finite number >= 0")
+    if sst is not None:
+        raise ValueError("ocean.dynamic_sst_restoring_days needs a target SST series, which "
+                         "stage 1 does not read; leave it \"none\"")
+    return replace(options, dynamic_grid=grid, dynamic_grid_sha256=grid_sha,
+                   dynamic_initial=init, dynamic_initial_sha256=init_sha,
+                   dynamic_sss_restoring_m_per_day=sss, dynamic_sst_restoring_days=sst,
+                   dynamic_gm_kappa_m2_s=float(gm))
 
 
 def long_run_refusal(cfg) -> str | None:
@@ -601,7 +757,8 @@ def _with_climatology(options: OceanOptions, table: dict, source_dir: Path) -> O
 
 __all__ = [
     "GREENNESS_MODES", "LONG_RUN_THRESHOLD_S", "LandOptions", "OCEAN_MODES",
-    "OceanOptions", "OutputOptions", "RULE_MODES", "SEA_ICE_MODES", "SLAB_TARGETS",
+    "OceanOptions", "OutputOptions", "RESPONSE_MODES", "RULE_MODES", "SEA_ICE_MODES",
+    "SLAB_TARGETS",
     "SeaIceOptions", "THERMODYNAMIC_NEW_ICE_THICKNESS_M",
     "long_run_refusal", "parse_land", "parse_ocean", "parse_output", "with_series",
 ]

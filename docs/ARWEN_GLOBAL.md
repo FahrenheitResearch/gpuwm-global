@@ -650,7 +650,8 @@ RTE+RRTMGP -> MM5 SFCLAY -> Noah LSM -> YSU PBL -> Grell-Freitas cumulus -> Morr
 ```
 
 Radiation fires on its own clock (`radiation_interval_s`: 3000 s in the
-T255 configs, 2100 s at T383) and walks the grid in
+T255 configs and, from 0.2.3, in the shipped T383 semi-Lagrangian day;
+2100 s in the other T383 configs) and walks the grid in
 `radiation_column_chunk` columns. The chunk is a memory setting and does
 not set the solver's speed: the two RTE solvers launch over spans of about
 SMs x 1024 / 32 columns whatever the chunk is, and the shortwave runs the
@@ -680,7 +681,7 @@ naming an unregistered adapter is refused before a transform is built.
 There is no silent fallback to the reference suite. What the built-in
 adapter's evidence currently covers is in the envelope below.
 
-### Orographic gravity-wave drag (off by default)
+### Orographic gravity-wave drag (on in the T255 and T383 forecast days since 0.2.3)
 
 Until `orographic_drag = "kim-gwdo"` the global model had no gravity-wave
 drag of any kind: the only momentum sink aloft is the zonal-mean drag in the
@@ -688,9 +689,20 @@ top levels. The option adds WRF's `gwd_opt = 1`, the KIM orographic
 gravity-wave drag with flow blocking (Choi and Hong 2015), carried from the
 engine (`arwen_global/core/terrain_drag.py`, `kernels/terrain_drag.cu`) and
 added to YSU's momentum tendencies from the column state YSU read, where
-WRF's PBL driver adds it. It is a native adapter option and ships **off**:
-nothing has measured it on this model over a season yet, and the long-run
-validation decides the default. There is still no non-orographic
+WRF's PBL driver adds it. It is a native adapter option, off by default,
+and **on** in the two forecast days a user is pointed at,
+`arwen_global_gdas_t255_native_sl_si_24h` and
+`arwen_global_gdas_t383_native_sl_si_24h`, from 0.2.3 (every other shipped
+config keeps it off and keeps its 0.2.2 hash; `orographic_drag = "none"` in
+a copy of the T255 day gives 0.2.2's arithmetic and hash, and a copy of the
+T383 day, whose radiation interval also moved, needs
+`radiation_interval_s = 2100.0` as well for 0.2.2's hash). It is on
+because of the 16-start forecast scorecard (2026-09-14 to 11-08, 120 h,
+T255, GFS analysis truth): NH Z500 RMSE at 120 h 54.3 against 52.0 m (14
+of 16 starts better), NH MSLP 5.33 against 5.11 hPa (16 of 16), NH 250 hPa
+wind 0.40 m/s lower, about 3.6 h of NH Z500 lead at 96-120 h; the southern hemisphere
+neutral (SH MSLP +0.08 hPa at 120 h, 5 of 16 better). Its skill at T383
+and over a season has not been measured. There is still no non-orographic
 gravity-wave drag (the drag of waves from convection and fronts, which
 carries most of the momentum into the upper stratosphere and mesosphere).
 
@@ -699,15 +711,24 @@ native_adapter_options = { ..., dx_m = 52100.0, orographic_drag = "kim-gwdo" }
 ```
 
 It reads ten sub-grid orography planes per column (VAR, CON, OA1-4, OL1-4)
-from WPS_GEOG's `orogwd_10m`, which `gpuwm fetch-geog` stages by default.
-Build them once per truncation, after the land-surface statics:
+from WPS_GEOG's `orogwd_10m`, cached once per truncation beside the
+land-surface statics. Nothing has to be run by hand: `gpuwm-global statics
+CONFIG` builds the drag's cache after the land-surface one, and `run` (and
+`go`) builds it before it prices the card when it is missing, from the
+WPS_GEOG tree the land cache was built from. When that tree has no
+`orogwd_10m` (the WPS_GEOG trees on both of the hosts this release was
+checked on had none) the run stages it there with the engine's own
+`gpuwm fetch-geog --datasets orogwd_10m --source ncar` (3.3 MB, its SHA-256
+pinned by the engine; it took 4.5 s on one host). By hand:
 
 ```bash
+gpuwm fetch-geog --datasets orogwd_10m --source ncar
 gpuwm-global statics CONFIG --orographic
 ```
 
-A run with the option on and no such cache is refused before the card is
-touched, naming that command. What is prescribed, not measured:
+What cannot be built or fetched (no network, no write access to the tree)
+stops the run before its first step with one sentence naming those two
+commands and `orographic_drag = "none"`. What is prescribed, not measured:
 
 * the planes are GEOGRID.TBL.ARW's: `average_4pt` of the 10-arc-minute
   source at each column, 0 on water. They are not re-aggregated over a
@@ -738,6 +759,48 @@ device peak. A restart at 24 h reproduced the straight run's 48 h
 checkpoint bit for bit, all 134 arrays and its metadata. Three days are not
 a season: whether the drag helps the month-scale circulation is what the
 long-run validation measures.
+
+### The day-one config (opt-in)
+
+The 16-start scorecard against GFS and IFS put most of ArWen's gap into the
+first 24 hours. The cause is a cooling driven by the physics. Grell-Freitas
+heats too little early on, and the model has no orographic drag. The
+`arwen_global_gdas_t255_native_sl_si_24h_dayone` config switches on two
+existing options together: `orographic_drag = "kim-gwdo"` and
+`cumulus = "ntiedtke"`. Since 0.2.3 the T255 forecast day carries the drag
+itself, so the day-one config is that day with New Tiedtke in place of
+Grell-Freitas. It stays opt-in. The drag's cache is built as for the
+forecast days (or by hand with `gpuwm-global statics
+arwen_global_gdas_t255_native_sl_si_24h_dayone --orographic`).
+
+Measured on all 16 of the scorecard's starts with 120 h runs and the GFS
+analysis as truth, against 0.2.2 as shipped; the "+ kim-gwdo" column is the
+scorecard's drag arm, which is what the 0.2.3 T255 day runs:
+
+| | GFS | 0.2.2 | + kim-gwdo | day-one set | starts better |
+|---|---|---|---|---|---|
+| NH Z500 RMSE, 24 h (m) | 5.22 | 10.30 | 9.45 | 8.60 | 16/16 |
+| NH Z500 RMSE, 120 h (m) | 41.72 | 54.35 | 52.04 | 50.46 | 15/16 |
+| NH Z500 ACC, 120 h | 0.894 | 0.835 | 0.845 | 0.852 | 14/16 |
+| Tropical T850 RMSE, 24 h (K) | 0.60 | 1.06 | 1.06 | 0.78 | 16/16 |
+| Tropical 250 hPa wind RMSE, 120 h (m/s) | 7.55 | 8.47 | 8.38 | 7.59 | 16/16 |
+| Tropical Z500 RMSE, 120 h (m) | 9.16 | 11.24 | 11.33 | 14.20 | 1/16 |
+| Tropical Z500 bias, 120 h (m) | -5.17 | +0.07 | -0.91 | -8.83 | 1/16 |
+
+Read off the control's NH Z500 ACC curve on the 14 starts verified to
+240 h, the set is worth 7.3 h of lead at 120 h (kim-gwdo alone 3.7 h). The
+control reaches ACC 0.8 at 130 h, GFS at 150 h and IFS at 166 h; the set
+reaches it at about 137 h.
+
+The cost is tropical Z500, and it is mostly a mean offset. New Tiedtke
+causes it: on 6 of the starts, with the drag off, New Tiedtke alone gives
+-7.96 m at 120 h. On those 6 the tropical MSLP bias at 120 h is
+-0.67 hPa, against -0.77 hPa for 0.2.2.
+The surface is therefore not lower, and the offset is in the 1000 to
+500 hPa thickness. That is about 0.45 K of layer-mean virtual temperature.
+T850 is not colder (+0.13 K against +0.08 K), so the deficit sits above
+850 hPa or in the moisture. It is not traced further yet, so the config
+stays opt-in.
 
 ### Where that physics lives, and what is still the engine's
 

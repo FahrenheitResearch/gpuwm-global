@@ -1,5 +1,277 @@
 # Changelog
 
+## 0.2.3
+
+Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.2.2 did;
+proven against `gpuwm 2.9.13`.  `tools/measure_boundary.py` reads 242
+symbols across 72 modules with no gap, and all 50 engine seam files are
+pinned at 2.9.13.  The companion bundle carries ten Rust doors, unchanged
+from 0.2.0.  Two shipped configs change on purpose: the T255 and T383
+forecast days (`arwen_global_gdas_t255_native_sl_si_24h`,
+`arwen_global_gdas_t383_native_sl_si_24h`) turn the kim-gwdo orographic drag
+on, and the T383 day calls radiation every 3000 s instead of 2100 s.  Every
+other config 0.2.2 shipped keeps its 0.2.2 hash, and one config is new.
+Everything else here is off by default: opt-in switches for long and coupled
+runs, and two experimental pieces (a dynamic ocean, storm switches on New
+Tiedtke).  With `orographic_drag = "none"` the T255 day writes 0.2.2's
+checkpoints byte for byte (Measured, below).
+
+### Changed (defaults)
+
+- The kim-gwdo orographic gravity-wave drag (WRF `gwd_opt = 1`,
+  `orographic_drag = "kim-gwdo"`) is on in the T255 and T383 forecast days.
+  Over the forecast scorecard's 16 starts (2026-09-14 to 11-08, 120 h, T255,
+  0.2.1 tree on RTX 5090s, GFS analysis as truth), against the same day
+  without it: NH Z500 RMSE at 120 h 52.0 against 54.3 m (better on 14 of 16
+  starts), NH MSLP 5.11 against 5.33 hPa (16 of 16), NH 250 hPa wind 0.40
+  m/s lower (14 of 16), NH T850 0.08 K lower (15 of 16), about 3.6 h of NH
+  Z500 lead at 96-120 h.  The southern hemisphere is neutral; SH MSLP is
+  0.08 hPa worse at 120 h (5 of 16 better).  It was measured at T255 only:
+  its skill at T383 and over a season is not measured.  `orographic_drag =
+  "none"` in a copy of the T255 day gives 0.2.2's arithmetic and hash.  The
+  T383 day also changed its radiation interval (below), so a copy of it
+  needs `orographic_drag = "none"` and `radiation_interval_s = 2100.0` to
+  get 0.2.2's hash back (the drag off alone gives neither release's); its
+  checkpoints were not compared with 0.2.2's.
+- The drag reads a second statics cache (VAR, CON, OA1-4 and OL1-4 from
+  WPS_GEOG `orogwd_10m`, masked with the land cache's land mask), which a
+  machine set up under 0.2.2 does not have.  It is now built for you:
+  `gpuwm-global statics CONFIG` builds it after the land cache, and `run`
+  (so `go` and `run-plan` too) builds it before it prices the card when it
+  is missing, from the WPS_GEOG tree the land cache records.  When that
+  tree has no `orogwd_10m`, the run stages the one dataset with the
+  engine's own `gpuwm fetch-geog --datasets orogwd_10m --source ncar` (3.3
+  MB, SHA-256 pinned by the engine).  One process builds at a time behind a
+  lock file, so the ranks of a multi-card run do not race.  What cannot be
+  built is one sentence, before the first step, naming `gpuwm fetch-geog
+  --datasets orogwd_10m --source ncar`, `gpuwm-global statics CONFIG
+  --orographic` and `orographic_drag = "none"`.  Neither host this release was checked on had `orogwd_10m` in its WPS_GEOG
+  tree; from an empty tree the run door staged it and built the cache in
+  2.5 s at T255 and 3.9 s at T383 (fetch included), then ran (Measured).
+- The T383 day calls radiation every 3000 s (2100 s before).  Over eight
+  120 h T383 starts (2026-09-29 to 11-08) scored against the GFS analysis,
+  no metric was worse by more than three times the round-off twin spread
+  (0 of 65 cells; one cell better, T850 NH at 96 h), and the run stepped
+  1.067x faster on an RTX 5090 (1.056 against 1.126 s a step, the paired
+  median over the eight starts) and 1.17x in one 24 h run on an RTX 5070 Ti
+  (1.70 against 1.99 s a step).  The other T383 configs keep 2100 s.
+
+### Added (opt-in)
+
+- `arwen_global_gdas_t255_native_sl_si_24h_dayone`: the T255 forecast day
+  with New Tiedtke (`cumulus = "ntiedtke"`) in place of Grell-Freitas, and
+  the drag, which the day itself now carries.  Measured on all 16 of the
+  scorecard's starts, 120 h runs on RTX 5090s, GFS analysis as truth,
+  against 0.2.2 as shipped.  "k/16" counts the starts where the set is
+  better; the scorecard's bootstrap 95% interval excludes zero for every
+  difference quoted here unless it says otherwise:
+  - NH Z500 RMSE 10.30 to 8.60 m at 24 h (16/16) and 54.35 to 50.46 m at
+    120 h (15/16). NH Z500 ACC at 120 h goes from 0.835 to 0.852 (14/16).
+    kim-gwdo alone gives 9.45 m and 0.845. Read off the control's ACC curve
+    on the 14 starts verified to 240 h, the set is worth 7.3 h of NH Z500
+    lead at 120 h (kim-gwdo alone 3.7 h): ACC 0.8 at about 137 h against
+    the control's 130 h, GFS's 150 h and IFS's 166 h.
+  - T850 RMSE is lower in the NH and the tropics at 24, 72 and 120 h
+    (14-16/16). 250 hPa wind is lower in the NH and the tropics (14-16/16).
+    NH MSLP RMSE goes from 5.33 to 4.89 hPa at 120 h (13/16).
+  - SH Z500 RMSE is better through 72 h (14-15/16). At 120 h it is 61.62 to
+    59.84 m on 10 of 16 starts, which is not significant.
+  - Cost: tropical Z500. RMSE goes from 5.02 to 5.68 m at 24 h (0/16) and
+    from 11.24 to 14.20 m at 120 h (1/16). Most of it is a mean offset: the
+    tropical Z500 bias goes from +0.07 to -8.83 m at 120 h. Tropical Z500
+    ACC at 120 h drops from 0.664 to 0.644 (7/16, not significant). On 6
+    starts New Tiedtke alone gives -7.96 m, so New Tiedtke causes it. On
+    those 6 the tropical MSLP bias is no lower (-0.67 against -0.77 hPa),
+    so the offset is in the 1000-500 hPa thickness. It is not traced
+    further, so the config stays opt-in.
+  - New Tiedtke alone, on 6 starts (09-14, 09-18, 09-21 12Z, 09-25, 10-21,
+    10-28): NH Z500 RMSE 8.67 m at 24 h and 44.93 m at 120 h, against 7.97
+    and 43.64 m for the set on the same starts.
+  - A 0.2.2 control on 2026-09-14, rerun on the same card type as the arms,
+    reproduces the scorecard's control to 0.02 m at 24 h (NH Z500 RMSE
+    8.008 against 8.026 m) and 0.41 m at 120 h. The fields are not bit for
+    bit the same.
+- `[repair] mass_fixer_target = "dry"`, `energy_fixer = true` and
+  `vapour_fixer = true`: the dry mass, the dry total energy and the vapour
+  column held across the dynamics for long runs
+  (`docs/ARWEN_GLOBAL_LONG_RUNS.md`, "The conservation switches a long run
+  sets").  All three are off by default and join the config hash only
+  when set; a run that names none of them writes 0.2.1's checkpoints,
+  receipts and diagnostics byte for byte (the shipped smoke and a T21
+  semi-Lagrangian variant over 1,500 m terrain, CPU; and 36 T127 steps of
+  the full native suite on an RTX 5090).  Sixty T127 days
+  with them: LR-4's residual 0.24 / 0.43 W/m2 over days 0-30 / 30-60
+  (4.06 / 4.50 without), the dry-mass range 0.26 Pa (35.1 without); ten
+  T255 days: -0.29 W/m2 (5.44 without) and 0.21 Pa (10.2 without).  The
+  energy the dynamics lost is 28-40% of the troposphere's cold drift
+  against GDAS over 60 days, not all of it.  Under the dry
+  target the receipt's mass gate
+  defaults to 1e-5 and a tighter one is refused (the dry row carries each
+  step's half-step E - P at an output instant), and a branch from a run
+  that held the other quantity opens a new mass epoch.  Two five-day T255
+  forecasts with them scored neutral against GDAS (NH Z500 RMSE at 120 h
+  52.70 against 53.10 m and 43.94 against 44.33 m); the 850 hPa warm bias
+  at 120 h rose from +0.16 to +0.31 K and from +0.37 to +0.55 K.  They stay off for forecasts.
+- The long-run recipe (`docs/ARWEN_GLOBAL_LONG_RUNS.md`, "The native
+  options a long run sets") now sets the three Grell-Freitas shallow-arm
+  switches of 0.2.2 (`gf_shallow_buoyancy_from_cloud_base`,
+  `gf_shallow_blqe_to_cloud_base`, `gf_shallow_depth_min_m = 500`) and the
+  three conservation switches above, for long and coupled runs; the
+  package ships no long-run config, so no shipped hash moves.  In the
+  90-day atmosphere-only arm from GDAS 2026-08-01 (anomaly SST, kim-gwdo,
+  the albedo pair) the shallow switches took the excess of reflected
+  sunlight over CERES from +15.0 / +15.9 / +14.2 to +3.5 / +5.4 / +4.5
+  W/m2 in August / September / October, and in the coupled slab arm the
+  open-water SST against GDAS at day 59 read -0.07 K against -0.30 K, on a
+  Q-flux calibrated without them.  They stay off for forecasts: over the
+  16-start scorecard they cost tropical T850 +0.04 to +0.08 K and 250 hPa
+  wind +0.22 to +0.24 m/s at 72-120 h, and in the southern summer they vent
+  the Peru deck (-28.8 against +8.5 W/m2 of excess in a 30-day December
+  twin).  The two sets were measured apart; a long run with both on has
+  not been run, and neither has a Q-flux calibration with the shallow
+  switches on.  `docs/trade-shallow.md` has the 90-day arm, the December
+  twin, the scorecard's tropical cost and the coupled arm.
+- Ocean: an off-by-default mixed-layer cooling response for the prescribed
+  sea surfaces (`[ocean] mixed_layer_response = true` under `mode =
+  "hold"`, `"anomaly"`, `"climatology"` or `"series"`;
+  docs/ARWEN_GLOBAL_OCEAN_RESPONSE.md).  A held sea cannot cool under days
+  of dry offshore wind, and in the T383 50-day runs its evaporation reached
+  51-55 kg m-2 a day off Tampico, in the northern Red Sea and in the Gulf of
+  Tehuantepec, close to the 60 kg m-2 ceiling that stops a run.  The
+  response carries one departure D from the prescribed field on open ocean,
+  driven by the net surface heat flux less the column's own running-mean
+  flux, into a fixed 40 m layer, relaxed back over 10 days and held within
+  5 K.  With the key absent or false no config hash, identity, receipt,
+  checkpoint array or metadata moves; with it on, two float64 planes ride in
+  the checkpoint and a restart is bit for bit.
+  `--branch-from-other-config` may switch it on at a checkpoint written
+  without it, under the same rule; a branch onto the response over another
+  rule is refused, as a branch onto the slab is.
+  `tests/test_arwen_global_ocean_response.py`.  Measured on
+  the T383 50-day path at the defaults: the Tampico norther days 55.05,
+  52.10, 49.74 kg m-2 become 52.83, 46.71, 42.61, and the Tehuantepec gap
+  jet day 50.54 becomes 48.14; global open-water departure mean within
+  0.02 K of zero, its 1st to 99th percentiles within 0.5 K; no measurable
+  cost in memory or step time on the 16 GB card.  It lowers the margin to
+  the ceiling, it does not remove the risk.
+- Noah: `snow_age_refresh = "amount"` (native option, needs `snow_ageing =
+  true`, off by default and in the config hash only when set).  WRF's rule
+  (`"any"`, the default) makes a snowpack fresh on any call that snows, and
+  on this model a trace of snow reaches most snow-covered land on most land
+  calls: in the 365-day T127 run 79% of the snow columns were under 0.01
+  day old on 2027-02-28, and NH land absorbed 10-20 W/m2 less sunlight than
+  ERA5 from February to April.  `"amount"` keeps 1 - min(dsnow / 1 kg m-2,
+  1) of the age (Noah-MP's refresh) and a column with no snow carries no
+  age.  In two 60-day T127 winter twins it lowered the NH land (20-70N)
+  albedo by 0.024 / 0.025 (late-winter twin, February / March) and 0.027 /
+  0.043 (second twin, January / February), about 30% of the late-winter
+  twin's excess over ERA5, and warmed NH land 2 m temperature in February by +0.58 K and
+  +1.72 K; two twins agree in sign, they are not an ensemble.  One 120 h
+  T255 forecast was neutral.  With the default rule a T127 day is
+  byte-identical to 0.2.1 (143 of 143 arrays).  Divergence rows `NOAH-CU-3`,
+  `NOAH-PY-5` and `NPREF-18`; `docs/ARWEN_GLOBAL_LEVEL5.md`, "Snow age".
+
+### Added (experimental)
+
+- The dynamic ocean, `[ocean] mode = "dynamic"` (off by default), and the
+  `ocean` command (`build-grid`, `build-init`, `init-from-state`, `run`)
+  that builds its grid from ETOPO 2022 and its start from NOAA GODAS and
+  WOA23: a 360 x 209 x 50 ocean from 78S to 65N with KPP mixing, coupled
+  every hour, with the slab and its thermodynamic ice north of 65N and the
+  slab's ice above it.  Off, it changes nothing (55 config
+  hashes and a T127 6 h run's 317 arrays as v0.2.1).  A coupled restart is
+  byte-identical to the straight run (177 of 177 arrays).  A 30-day coupled
+  T255 run passed every gate.  It fit the 16 GB RTX 5070 Ti at T383 (card
+  peak 14,990 of 16,303 MiB) at +13.7% a step (+11.6% at T255), measured on
+  the T383 day as 0.2.1 shipped it (radiation every 2100 s, no drag); it was
+  not re-measured on 0.2.3's T383 day.  Open, and
+  why it is experimental: the equatorial undercurrent at 140W falls from
+  0.73 to 0.26 m/s in 30 days against GODAS's 0.76 to 0.63; the Kelvin
+  (+6.6%) and Rossby (-10.9%) wave speeds and wind-driven mixed-layer
+  deepening (27% too shallow) fail their gates; the remap's effect on the
+  SST, ice and stress the atmosphere sees is not measured.  A run is
+  refused when `dt_s` does not divide 3600 s or it asks for more than one
+  card.  `docs/ARWEN_GLOBAL_DYNAMIC_OCEAN.md`.
+- New Tiedtke: five storm-intensity switches, off by default, in the
+  config hash only when set away from their defaults under `cumulus =
+  "ntiedtke"`: `ntiedtke_momentum_transport` (WRF's `lmfdudv`),
+  `ntiedtke_adjustment_time_factor`, `ntiedtke_entrainment_factor`,
+  `ntiedtke_trigger_entrainment_factor` and `ntiedtke_downdraft_factor`.
+  There is no recommended value.  New Tiedtke barely dilutes the plume in a
+  moist cyclone core (Katrina at T383: rain within 150 km of the centre a
+  third of ERA5's from hour 18, 95% of it from the scheme).  Twice the
+  organised entrainment deepened Katrina from 977 to 952 hPa (ERA5 933),
+  but put 9 cells over 500 mm in a global 72 h twin (0 without; GFS 1) and
+  moved Sandy's landfall-time track error from 352 to 744 km; three times
+  gave 75 such cells.  At the defaults a 2 h T383 checkpoint is
+  byte-identical to v0.2.1's.  Divergence rows `NTIEDTKE-PY-5` and
+  `NTIEDTKE-CU-2`.
+
+### Fixed
+
+- The sizer matched its completed-plan, measured-run and floor rows on the
+  truncation alone, so a T383 run on a linear 384x768 grid was priced at
+  the 14.27 GiB of card a quadratic T383 run took (its own allocator read
+  6.75 GiB, RTX 5090).  Rows now match on (truncation, nlat, nlon), and a
+  row without a shape is the truncation's quadratic grid, so every shipped
+  config prices as before.  The upper-air and observation scorecards
+  cached the rebuilt surface geopotential under the analysis and nlat x
+  nlon only, so a T255 run and a 384x768 T383 run read each other's
+  terrain; the cache name now carries the truncation
+  (`tests/test_arwen_global_grid_shape_keys.py`).
+
+### Changed
+
+- The carried-physics divergence ledger has 947 rows (912 at 0.2.2): the
+  storm switches' `NTIEDTKE-PY-5` and `NTIEDTKE-CU-2`, the snow-age rows,
+  and every row of the five carried files 0.2.3 changed re-read, all
+  measured against the 2.8.5 baseline the rows are keyed to.  The 2.9.13
+  re-baseline is still owed, and the two comparison nodes of
+  `tests/test_engine_divergence.py` skip as before.
+
+### Measured
+
+- On an RTX 4090 (24 GB, shared with other processes), one card lease,
+  2026-11-14, GDAS 2026-09-01 00Z, the shipped T255 day for 24 h, each tree
+  over gpuwm 2.9.13; checkpoints compared with
+  `tools/arwen_global_checkpoint_identity.py`:
+  - 0.2.3 with `orographic_drag = "none"` (config hash c7a000d28c206ace,
+    0.2.2's) against 0.2.2: all nine checkpoints, steps 0 to 288,
+    byte-identical (44 and 135 arrays, `self_sha256` equal);
+  - 0.2.3 as shipped (hash 7b140980a546263e), from a copy whose only
+    change was `[statics] geog_root` pointing at an empty folder (paths are
+    outside the identity): the door staged `orogwd_10m` with `gpuwm
+    fetch-geog` and built the T255 drag cache (97,190 land columns) in 2.5 s,
+    then ran; against 0.2.2 its step 0 is equal in all 44 arrays and steps
+    144 and 288 differ in 119 of 135; allocator live peak 6.714 GiB against
+    6.703 GiB without the drag;
+  - a restart of it from its step 144 wrote steps 180 to 288 byte-identical
+    to its straight run (135 arrays);
+  - all four receipts pass.
+- On the 16 GB RTX 5070 Ti, alone, the shipped T383 day (drag on,
+  radiation every 3000 s) for 24 h from the same analysis, from an empty
+  WPS_GEOG tree as above (the door staged `orogwd_10m` and built the T383
+  cache, 218,598 land columns, in 3.9 s), against the same day with
+  `orographic_drag = "none"`, two runs each, the second with the CuPy
+  kernel cache warm (the first compiled every kernel):
+  - warm: 1.722 s a step with the drag against 1.701 without (+1.2 %);
+  - card peak (process, sampled every 250 ms): 14,368 and 14,434 MiB with
+    the drag, 14,826 and 14,246 MiB without, of 16,303 MiB; allocator live
+    peak 11.877 GiB with, 11.951 GiB without;
+  - all four receipts pass.
+- Config hashes, every shipped config loaded under 0.2.2 and 0.2.3: 53
+  identical, the T255 and T383 days changed (c7a000d2 to 7b140980 and
+  a30d9e52 to 0b7d0643), the day-one config new (a8ea1d16), the same four
+  fixtures that do not load as run configs.  Without the drag the T255
+  day's 0.2.3 hash is c7a000d2 again.
+- The CPU tier (`pytest -m "not gpu"`) from the installed wheel: 3506
+  passed, 86 skipped, 0 failed (Python 3.12, numpy 2.5.4, gpuwm 2.9.13,
+  cards hidden); without CuPy installed 3506 passed and 100 skipped.  The
+  CLI reference, the 151 doc examples, line endings, the engine boundary
+  and the 50 seam files check clean.  `python -m build` and `twine check
+  --strict` pass, and `gpuwm-global doctor` from the installed wheel finds
+  no gap.
+
 ## 0.2.2
 
 Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.2.1 did;

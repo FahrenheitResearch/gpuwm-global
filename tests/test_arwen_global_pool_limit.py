@@ -396,7 +396,7 @@ def _t383_5000():
 
 def _one_band_row():
     rows = [row for row in sizing.COMPLETED_PLAN_PEAKS
-            if row["truncation"] == 383 and row["bands"] == 1
+            if sizing.same_grid(row, 383) and row["bands"] == 1
             and not row["spill_slices"]
             and row["radiation_column_chunk"] == 5_000]
     assert len(rows) == 1

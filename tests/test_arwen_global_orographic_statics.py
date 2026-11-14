@@ -149,5 +149,142 @@ def test_a_tree_without_the_dataset_is_refused_with_the_remedy(tmp_path):
     options = _fake_land_cache(tmp_path, grid,
                                np.ones((grid.nlat, grid.nlon), dtype=bool))
     (tmp_path / "geog").mkdir(exist_ok=True)
-    with pytest.raises(FileNotFoundError, match="gpuwm fetch-geog"):
+    with pytest.raises(FileNotFoundError) as refused:
         build_orographic_statistics(grid, options)
+    # The remedy names the one dataset, its source and the tree that lacks
+    # it, as the run door's own sentence does.
+    message = str(refused.value)
+    assert "gpuwm fetch-geog --root " in message
+    assert "--datasets orogwd_10m --source ncar" in message
+    assert str(tmp_path / "geog") in message
+
+
+# ---------------------------------------------------------------------------
+# Built when a run needs it (0.2.3): the shipped forecast days turn the drag
+# on, and a land cache built by an earlier release has no drag cache beside it.
+# ---------------------------------------------------------------------------
+
+def _ensure(options, grid, **kwargs):
+    from arwen_global.orographic_statics import ensure_orographic_statistics
+
+    said = []
+    kwargs.setdefault("fetch", None)
+    out = ensure_orographic_statistics(options, grid, say=said.append, **kwargs)
+    return out, said
+
+
+def test_a_missing_cache_is_built_from_the_tree_and_then_left_alone(tmp_path):
+    grid = _grid()
+    land = np.zeros((grid.nlat, grid.nlon), dtype=bool)
+    land[1:-1, ::2] = True
+    options = _fake_land_cache(tmp_path, grid, land)
+    _fake_geog(tmp_path)
+    written, said = _ensure(options, grid)
+    npz, _ = cache_paths(options, grid)
+    assert written == npz and npz.is_file()
+    assert any("built the orographic drag's sub-grid orography" in line for line in said)
+    fields, _document = load_orographic_statistics(options, grid)
+    want, _ = build_orographic_statistics(grid, options)
+    for name in SSO_FIELDS:
+        assert np.array_equal(fields[name], want[name]), name
+    assert not list(npz.parent.glob(".*.lock"))
+    again, said = _ensure(options, grid)
+    assert again is None and said == []
+
+
+def test_the_tree_the_land_cache_records_is_read_when_the_config_names_none(tmp_path):
+    from dataclasses import replace
+
+    grid = _grid()
+    land = np.ones((grid.nlat, grid.nlon), dtype=np.float32)
+    unnamed = StaticsOptions(source="real", cache_dir=str(tmp_path / "cache"))
+    fields = {
+        "LANDMASK": land,
+        "latitude_deg": np.ascontiguousarray(grid.latitude_deg, np.float64),
+        "longitude_deg": np.ascontiguousarray(grid.longitude_deg, np.float64),
+    }
+    provenance = {
+        "schema": STATICS_SCHEMA, "truncation": int(grid.truncation),
+        "nlat": int(grid.nlat), "nlon": int(grid.nlon),
+        "geog_root": str(tmp_path / "geog"),
+        "arrays": {name: {"shape": list(v.shape), "dtype": v.dtype.str,
+                          "sha256": _array_hash(v)} for name, v in fields.items()},
+    }
+    land_npz, _ = statics_cache_paths(unnamed, grid)
+    write_cache(land_npz, fields, provenance)
+    _fake_geog(tmp_path)
+    assert replace(unnamed, geog_root=None) == unnamed
+    written, _said = _ensure(unnamed, grid)
+    assert written is not None
+    _fields, built = load_orographic_statistics(unnamed, grid)
+    assert built["geog_root"] == str(tmp_path / "geog")
+
+
+def test_a_tree_without_the_dataset_has_it_staged_by_the_engine_fetch(tmp_path):
+    grid = _grid()
+    options = _fake_land_cache(tmp_path, grid, np.ones((grid.nlat, grid.nlon), dtype=bool))
+    (tmp_path / "geog").mkdir()
+    fetched = []
+
+    def fetch(root):
+        fetched.append(Path(root))
+        _fake_geog(tmp_path)
+
+    written, said = _ensure(options, grid, fetch=fetch)
+    assert fetched == [tmp_path / "geog"] and written is not None
+    assert any("gpuwm fetch-geog --datasets orogwd_10m --source ncar" in line for line in said)
+
+
+def test_what_cannot_be_built_is_one_sentence_naming_the_commands_and_the_switch(tmp_path):
+    grid = _grid()
+    options = _fake_land_cache(tmp_path, grid, np.ones((grid.nlat, grid.nlon), dtype=bool))
+    (tmp_path / "geog").mkdir()
+
+    def offline(root):
+        raise OSError("`gpuwm fetch-geog ...` exited 1: no route to host")
+
+    for fetch in (None, offline):
+        with pytest.raises(FileNotFoundError) as caught:
+            _ensure(options, grid, fetch=fetch)
+        sentence = str(caught.value)
+        assert "\n" not in sentence
+        assert "gpuwm fetch-geog --datasets orogwd_10m --source ncar" in sentence
+        assert "gpuwm-global statics CONFIG --orographic" in sentence
+        assert 'orographic_drag = "none"' in sentence
+        npz, _ = cache_paths(options, grid)
+        assert not npz.exists() and not list(npz.parent.glob(".*.lock"))
+
+
+def test_without_a_land_cache_the_land_refusal_speaks_first(tmp_path):
+    grid = _grid()
+    options = StaticsOptions(source="real", geog_root=str(tmp_path / "geog"),
+                             cache_dir=str(tmp_path / "cache"))
+    _fake_geog(tmp_path)
+    assert _ensure(options, grid) == (None, [])
+    npz, _ = cache_paths(options, grid)
+    assert not npz.exists()
+
+
+def test_a_build_another_process_holds_is_waited_for(tmp_path, monkeypatch):
+    from arwen_global import orographic_statics
+
+    grid = _grid()
+    options = _fake_land_cache(tmp_path, grid, np.ones((grid.nlat, grid.nlon), dtype=bool))
+    npz, _ = cache_paths(options, grid)
+    lock = npz.with_name(f".{npz.name}.lock")
+    lock.write_text("4242\n", encoding="utf-8")
+    monkeypatch.setattr(orographic_statics, "LOCK_WAIT_S", 0.0)
+    with pytest.raises(FileNotFoundError, match="build lock"):
+        _ensure(options, grid)
+    assert lock.exists()
+
+
+def test_the_fetch_is_the_engines_own_command_for_the_one_dataset(tmp_path):
+    import sys
+
+    from arwen_global.orographic_statics import fetch_command
+
+    command = fetch_command(tmp_path)
+    assert command[:4] == [sys.executable, "-m", "gpuwm", "fetch-geog"]
+    assert command[4:] == ["--root", str(tmp_path), "--datasets", "orogwd_10m",
+                           "--source", "ncar"]

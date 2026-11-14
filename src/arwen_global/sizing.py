@@ -955,8 +955,48 @@ MEASURED_FLOORS = (
 )
 
 
-def measured_floor_for(truncation: int, nlev: int, precision: str
-                       ) -> dict | None:
+def quadratic_grid_shape(truncation: int) -> tuple[int, int]:
+    """The ``(nlat, nlon)`` of a truncation's shipped (dealias 1.5) grid."""
+
+    return GaussianGrid.shape_for(int(truncation), dealias_factor=1.5)
+
+
+def grid_shape_of(item) -> tuple[int, int]:
+    """The ``(nlat, nlon)`` a config, an estimate or a measured row
+    describes: its own nlat/nlon when it carries them, else the grid its
+    truncation and dealias factor build (1.5 when it names none, the
+    factor every row measured before the linear grid ran on)."""
+
+    get = (item.get if isinstance(item, dict)
+           else lambda key, default=None: getattr(item, key, default))
+    nlat, nlon = get("nlat"), get("nlon")
+    if nlat and nlon:
+        return int(nlat), int(nlon)
+    return GaussianGrid.shape_for(
+        int(get("truncation")), nlat=nlat, nlon=nlon,
+        dealias_factor=float(get("dealias_factor", 1.5) or 1.5))
+
+
+def same_grid(row: dict, truncation: int, shape=None) -> bool:
+    """Is ``row`` a measurement of this truncation ON THIS GRID?
+
+    The truncation alone is not the shape.  T383 on its linear grid
+    (dealias_factor = 1.0, 384 x 768) holds the columns of T255 and 0.44
+    of the points of shipped T383 (576 x 1152), so a T383 row measured on
+    the quadratic grid priced the linear run at a peak it never reaches,
+    and its plan and pool limit with it.  ``shape`` None means the
+    truncation's quadratic grid, which is what every caller meant before
+    the linear grid existed."""
+
+    if int(row["truncation"]) != int(truncation):
+        return False
+    want = (quadratic_grid_shape(truncation) if shape is None
+            else (int(shape[0]), int(shape[1])))
+    return grid_shape_of(row) == want
+
+
+def measured_floor_for(truncation: int, nlev: int, precision: str,
+                       shape=None) -> dict | None:
     """The floor row for this shape, if a capped probe reached one and no
     COMPLETED run has superseded it.
 
@@ -967,10 +1007,10 @@ def measured_floor_for(truncation: int, nlev: int, precision: str
     quoting the weaker evidence.
     """
 
-    if measured_runs_at(truncation, nlev, precision):
+    if measured_runs_at(truncation, nlev, precision, shape):
         return None
     for row in MEASURED_FLOORS:
-        if (int(row["truncation"]) == int(truncation)
+        if (same_grid(row, truncation, shape)
                 and int(row["nlev"]) == int(nlev)
                 and row["precision"] == precision):
             return row
@@ -1024,7 +1064,8 @@ def extrapolation_notes(cfg, nlev: int) -> tuple[str, ...]:
             "error over the measured shapes is "
             + ("not a number" if held_out is None
                else f"up to {100 * held_out:.0f}%"))
-        completed = measured_runs_at(cfg.truncation, nlev, cfg.precision)
+        completed = measured_runs_at(cfg.truncation, nlev, cfg.precision,
+                                     grid_shape_of(cfg))
         if completed:
             worst = max(completed, key=lambda row: int(row["peak_used_bytes"]))
             notes.append(
@@ -1033,7 +1074,8 @@ def extrapolation_notes(cfg, nlev: int) -> tuple[str, ...]:
                 f"{worst['device']} ({worst['measured_on']}) and completed, "
                 "at a recipe the calibration table cannot carry, so it "
                 "bounds the figure below without moving the fit")
-        floor = measured_floor_for(cfg.truncation, nlev, cfg.precision)
+        floor = measured_floor_for(cfg.truncation, nlev, cfg.precision,
+                                   grid_shape_of(cfg))
         if floor is not None:
             notes.append(
                 f"a capped probe of this shape reached "
@@ -1158,6 +1200,15 @@ class GlobalMemoryEstimate:
     #: so one allocator's measurement never prices another's run.
     #: Appended last so a positional construction keeps its meaning.
     device_allocator: str = "default"
+    #: The dynamic ocean's held bytes ([ocean] mode = "dynamic",
+    #: arwen_global.ocean_dyn): its state and static grid arrays on the card
+    #: (83 bytes per ocean cell, counted off model.STATE_DTYPES and
+    #: OceanModel's statics; MEASURED 310 MiB on the 360 x 209 x 50 grid)
+    #: and its float64 planes on the atmosphere grid.  Zero for every other
+    #: run.  Its step's own transient (0.77 GiB measured above the held
+    #: bytes) is freed before the atmosphere steps, so it is not added; the
+    #: T383 16 GB gate measures that.  Appended last.
+    ocean_dynamic_bytes: int = 0
 
     @property
     def resident_bytes(self) -> int:
@@ -1172,7 +1223,7 @@ class GlobalMemoryEstimate:
                 + (self.spectral_state_bytes * RESIDENT_SPECTRAL_STACKS
                    // LIVE_SPECTRAL_STACKS)
                 + self.surface_grid_bytes + self.resident_grid_bytes
-                + self.memo_grid_bytes + self.trajectory_bytes)
+                + self.memo_grid_bytes + self.trajectory_bytes + self.ocean_dynamic_bytes)
 
     @property
     def device_peak_bytes(self) -> int:
@@ -1191,7 +1242,7 @@ class GlobalMemoryEstimate:
                 + self.surface_grid_bytes + self.resident_grid_bytes
                 + self.working_grid_bytes + self.physics_column_bytes
                 + self.cumulus_column_bytes + self.fixed_bytes
-                + self.trajectory_bytes)
+                + self.trajectory_bytes + self.ocean_dynamic_bytes)
 
     @property
     def host_peak_bytes(self) -> int:
@@ -1276,6 +1327,13 @@ class GlobalMemoryEstimate:
                  "fitted; inside the one-band envelope above; a banded peak "
                  "carries it at one band's rows plus a "
                  f"{self.semilag_halo_rows}-row halo either side)"))
+        if self.ocean_dynamic_bytes:
+            rows.append(
+                ("dynamic ocean", self.ocean_dynamic_bytes,
+                 "the dynamic ocean's state and static grid (83 bytes per ocean cell) and its "
+                 "float64 planes on the atmosphere grid, held between steps (counted, not "
+                 "fitted); its step's 0.77 GiB transient is freed before the atmosphere "
+                 "steps and is not added"))
         if self.trajectory_bytes:
             rows.append(
                 ("semi-Lagrangian trajectory state", self.trajectory_bytes,
@@ -1296,6 +1354,34 @@ def _cumulus_column_chunk(cfg) -> int:
     options = getattr(cfg, "native_adapter_options", None) or {}
     value = options.get("cumulus_column_chunk") if isinstance(options, dict) else None
     return int(value) if value is not None else _default_cumulus_column_chunk()
+
+
+#: The dynamic ocean's held bytes per ocean cell: theta and S float64, u, v,
+#: four AB3 histories and w float32 (44); the static thickness float64,
+#: the two face thicknesses and a float32 copy float32, the three masks, two
+#: float64 depth arrays (39).
+DYNAMIC_OCEAN_BYTES_PER_CELL = 83
+#: Its float64 planes on the atmosphere grid (coupler.ACCUMULATORS + HELD).
+DYNAMIC_OCEAN_ATMOSPHERE_PLANES = 11
+
+
+def _dynamic_ocean_bytes(cfg, nlat: int, nlon: int) -> int:
+    """0 unless ``[ocean] mode = "dynamic"``; the grid's shape is read off the
+    grid file's header (the stage-1 360 x 209 x 50 when it cannot be read)."""
+    ocean = getattr(cfg, "ocean", None)
+    if getattr(ocean, "mode", None) != "dynamic":
+        return 0
+    cells = 360 * 209 * 50
+    try:
+        import numpy as _np
+
+        with _np.load(ocean.dynamic_grid, allow_pickle=False) as data:
+            cells = (int(data["lon_edges_deg"].size - 1) * int(data["lat_edges_deg"].size - 1)
+                     * int(data["z_edges_m"].size - 1))
+    except Exception:  # pragma: no cover - the stage-1 shape stands in
+        pass
+    return int(DYNAMIC_OCEAN_BYTES_PER_CELL * cells
+               + DYNAMIC_OCEAN_ATMOSPHERE_PLANES * 8 * nlat * nlon)
 
 
 def estimate_global_memory(cfg) -> GlobalMemoryEstimate:
@@ -1401,6 +1487,7 @@ def estimate_global_memory(cfg) -> GlobalMemoryEstimate:
         cards=max(1, int(getattr(cfg, "cards", 1) or 1)),
         device_allocator=str(
             getattr(cfg, "device_allocator", "default") or "default"),
+        ocean_dynamic_bytes=(_dynamic_ocean_bytes(cfg, nlat, nlon) if cupy else 0),
         semilag_banded_held_bytes=(
             semilag_banded_held_arrays(cfg) * nlev * points * itemsize
             if str(getattr(cfg, "integrator", "")).lower() in SEMILAG_INTEGRATOR_NAMES
@@ -3215,12 +3302,14 @@ MEASURED_RUNS = (
 )
 
 
-def measured_runs_at(truncation: int, nlev: int, precision: str) -> tuple:
-    """The completed runs recorded for this shape, if any."""
+def measured_runs_at(truncation: int, nlev: int, precision: str,
+                     shape=None) -> tuple:
+    """The completed runs recorded for this shape (``shape`` = (nlat, nlon),
+    None for the truncation's quadratic grid), if any."""
 
     return tuple(
         row for row in MEASURED_RUNS
-        if int(row["truncation"]) == int(truncation)
+        if same_grid(row, truncation, shape)
         and int(row["nlev"]) == int(nlev)
         and row["precision"] == precision)
 
@@ -3604,7 +3693,7 @@ def completed_plan_ceiling(estimate, bands: int, slices) -> dict | None:
     core = _estimate_core(estimate)
     rows = [
         row for row in COMPLETED_PLAN_PEAKS
-        if int(row["truncation"]) == int(estimate.truncation)
+        if same_grid(row, estimate.truncation, grid_shape_of(estimate))
         and int(row["nlev"]) == int(estimate.nlev)
         and str(row["precision"]) == str(getattr(estimate, "precision", "float32"))
         and str(row["core"]) == core
@@ -3698,7 +3787,7 @@ def above_fitted_domain(cfg, nlev: int | None = None) -> str | None:
     # sits at or above what that run measured: a model reading under a
     # run that happened is exactly the failure this refusal exists for,
     # and then the sentence names the run instead of the extrapolation.
-    completed = measured_runs_at(truncation, nlev, cfg.precision)
+    completed = measured_runs_at(truncation, nlev, cfg.precision, grid_shape_of(cfg))
     if completed:
         # The comparison is made at the ROW's own radiation chunk, not at
         # this config's: a smaller chunk is a smaller run, and asking
@@ -4053,7 +4142,7 @@ def _measured_plan_hint(estimate, free_bytes: int, cfg=None) -> str:
             if cfg is not None else "auto")
     rows = [row for row in COMPLETED_PLAN_PEAKS
             if row.get("card_bytes_measured")
-            and int(row["truncation"]) == int(estimate.truncation)
+            and same_grid(row, estimate.truncation, grid_shape_of(estimate))
             and int(row["nlev"]) == int(estimate.nlev)
             and str(row["precision"]) == str(estimate.precision)
             and str(row.get("core", "semilag")) == _estimate_core(estimate)]
@@ -4445,7 +4534,8 @@ def _print_report(args, cfg, estimate, gates, *, free, free_source, budget,
                       f"({100 * row['residual_fraction']:+.1f}%)")
         for floor in MEASURED_FLOORS:
             superseded = measured_runs_at(
-                floor["truncation"], floor["nlev"], floor["precision"])
+                floor["truncation"], floor["nlev"], floor["precision"],
+                grid_shape_of(floor))
             print(f"  floor          T{floor['truncation']} at {floor['nlev']} "
                   f"levels, {floor['radiation_column_chunk']:,}-column chunk: "
                   f"a capped probe reached "

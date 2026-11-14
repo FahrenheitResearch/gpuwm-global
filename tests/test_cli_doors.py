@@ -27,7 +27,7 @@ EXPECTED = {
     "inspect",
     "inspect-export", "inspect-parent-series", "inspect-regional-frame",
     "inspect-regional-target", "make-parent-series", "make-regional-target",
-    "microwave", "migrate-level4-checkpoint", "native-qualify", "obs",
+    "microwave", "migrate-level4-checkpoint", "native-qualify", "obs", "ocean",
     "physics-manifest", "pins", "render", "run", "run-plan", "score", "sources",
     "statics", "surface-series", "transform-check",
     "translate-regional-frame", "world",

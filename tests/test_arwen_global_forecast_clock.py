@@ -68,8 +68,14 @@ def _native_analysis_cfg(tmp_path: Path, start_time_utc: str | None):
     packaged = 'start_time_utc = "2026-09-01T00:00:00Z", '
     assert packaged in text
     replacement = "" if start_time_utc is None else f'start_time_utc = "{start_time_utc}", '
+    # The day's orographic drag (0.2.3) reads a statics cache built from
+    # WPS_GEOG, which a CPU test machine does not have; the clock is what
+    # these tests are about, so the copy runs without it.
+    drag = ', orographic_drag = "kim-gwdo"'
+    assert drag in text
     path = tmp_path / "native.toml"
-    path.write_text(text.replace(packaged, replacement, 1), encoding="utf-8")
+    path.write_text(text.replace(packaged, replacement, 1).replace(drag, "", 1),
+                    encoding="utf-8")
     return load_config(path)
 
 

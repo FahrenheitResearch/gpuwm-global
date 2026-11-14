@@ -3,8 +3,11 @@
 ``arwen_global_world_t255_no_mountains`` and
 ``arwen_global_world_t255_on_its_side`` are the T255 forecast-day
 experiment ``arwen_global_gdas_t255_native_sl_si_24h`` with a ``[world]``
-table appended and nothing else changed but the run name.  A launcher
-picks a template by name from ``gpuwm-global configs
+table appended and nothing else changed but the run name, as that day
+read before 0.2.3 turned its orographic drag on: the drag reads Earth's
+sub-grid terrain and is refused under a world that moves the terrain, so
+both templates keep the drag off and are held to the base without it.  A
+launcher picks a template by name from ``gpuwm-global configs
 --paths`` and sets seven keys in it by pattern, each of which has to occur
 exactly once outside a comment; these tests hold both templates to that
 and to the world each one says it is.
@@ -53,6 +56,21 @@ def _without_world(text: str) -> str:
     return text[:text.index("\n# The planet this forecast is on.")]
 
 
+#: What 0.2.3 added to the base day and the templates do not carry.
+DRAG_OPTION = ', orographic_drag = "kim-gwdo"'
+DRAG_NOTE = '# orographic_drag = "kim-gwdo" (WRF gwd_opt = 1), on since 0.2.3'
+
+
+def _without_the_drag(text: str) -> str:
+    """The base day as it read before 0.2.3: its drag note and option out."""
+
+    lines = text.split("\n")
+    start = next(i for i, line in enumerate(lines) if line.startswith(DRAG_NOTE))
+    end = next(i for i in range(start, len(lines)) if lines[i] == "[physics]")
+    assert DRAG_OPTION in text
+    return "\n".join(lines[:start] + lines[end:]).replace(DRAG_OPTION, "", 1)
+
+
 def _launcher_count(text: str, key: str) -> int:
     """How many lines a launcher's own pattern would set ``key`` on."""
 
@@ -70,7 +88,7 @@ def test_both_world_templates_ship():
 
 @pytest.mark.parametrize("name", sorted(WORLDS))
 def test_a_world_template_is_its_base_experiment_plus_one_world_table(name):
-    base = _text(BASE)
+    base = _without_the_drag(_text(BASE))
     text = _text(name)
     expected_name = name.replace("_", "-")
     stripped = _without_world(_body(text)).replace(
@@ -110,7 +128,10 @@ def test_a_world_template_is_the_world_it_says_it_is(name):
 def test_without_its_world_a_template_hashes_as_its_base(name, tmp_path):
     """The only physics a template changes is the world's."""
 
-    base = load_config(config_root() / f"{BASE}.toml")
+    base_path = tmp_path / "base" / f"{BASE}.toml"
+    base_path.parent.mkdir()
+    base_path.write_text(_without_the_drag(_text(BASE)), encoding="utf-8")
+    base = load_config(base_path)
     text = _without_world(_text(name)).replace(
         f'name = "{name.replace("_", "-")}"',
         'name = "arwen-global-gdas-t255-native-sl-si-24h"', 1)

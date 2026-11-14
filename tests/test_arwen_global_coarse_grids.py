@@ -6,6 +6,11 @@ they differ from ``arwen_global_gdas_t255_native_sl_si_24h`` in the grid
 and in nothing a reader has to diff.  These tests hold them to it: a
 change to the T255 config that is not carried to the coarse grids, or an
 edit to a coarse grid that is not a grid edit, fails here by key.
+
+One declared exception: from 0.2.3 the T255 forecast day turns the
+orographic drag on (``orographic_drag = "kim-gwdo"``), measured on the T255
+forecast scorecard; the coarse grids are experiments, not forecasts, and
+keep 0.2.2's physics and hash.
 """
 from __future__ import annotations
 
@@ -18,6 +23,8 @@ from arwen_global.config import load_config
 from arwen_global.configs_dir import config_root, resolve_config
 
 T255 = "arwen_global_gdas_t255_native_sl_si_24h"
+#: The keys the T255 record carries and the coarse grids do not (0.2.3).
+RECORD_ONLY = {"physics.native_adapter_options.orographic_drag"}
 COARSE = {
     "arwen_global_gdas_t63_native_sl_si_24h": 63,
     "arwen_global_gdas_t127_native_sl_si_24h": 127,
@@ -51,8 +58,9 @@ def _equatorial_dx_m(truncation: int) -> float:
 def test_a_coarse_grid_differs_from_the_t255_record_only_in_its_grid(name, truncation):
     record = _flatten(_toml(T255))
     coarse = _flatten(_toml(name))
-    assert set(coarse) == set(record), sorted(set(coarse) ^ set(record))
-    differing = {key for key in record if record[key] != coarse[key]}
+    assert set(coarse) == set(record) - RECORD_ONLY, sorted(set(coarse) ^ set(record))
+    assert record["physics.native_adapter_options.orographic_drag"] == "kim-gwdo"
+    differing = {key for key in coarse if record[key] != coarse[key]}
     assert differing == {"arwen_global.name", "grid.truncation",
                          "physics.native_adapter_options.dx_m"}, sorted(differing)
     assert coarse["grid.truncation"] == truncation

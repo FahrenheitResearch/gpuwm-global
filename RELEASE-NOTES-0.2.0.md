@@ -84,7 +84,7 @@ Experimental, each off by default:
   Earth one, and `gpuwm-global world twin` runs it beside its Earth
   control and a perturbed control. Two worlds ship as experiments:
   `arwen_global_world_t255_no_mountains` and
-  `arwen_global_world_t255_on_its_side` (59 experiments now ship). Each
+  `arwen_global_world_t255_on_its_side` (fifty-nine experiments shipped with 0.2.0). Each
   world is labelled science, illustration or not supported yet, and is
   named on its receipt, checkpoints and tapes.
   `docs/ARWEN_GLOBAL_WORLDS.md`.

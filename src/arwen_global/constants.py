@@ -107,3 +107,24 @@ LEVEL4_SPECTRAL_FIELDS = (
 #: names the step this fraction would have admitted.  Here, with no imports,
 #: because both the config parser and the dynamics read it.
 DEFAULT_EULERIAN_STEP_RULE_FRACTION = 0.70
+
+#: What the global mass fixer holds ([repair] mass_fixer_target): the
+#: global-mean surface pressure ("total", shipped) or the global-mean dry
+#: surface pressure ps - g W ("dry").  Here because the config parser and
+#: the dynamics both read it.
+MASS_FIXER_TARGETS = ("total", "dry")
+
+#: The tightest [gates] mass_relative_drift a "dry" mass_fixer_target admits,
+#: and its default there.  The fixer holds the dry mass of the state leaving
+#: the dynamics; the receipt reads it after the second physics half, which
+#: books that half step's E - P at a fixed surface pressure, so the output
+#: row departs from the target by g (E - P) dt/2 and the next step re-anchors
+#: it.  Measured on the 6-hourly global_mean_dry_surface_pressure_pa rows of
+#: every lease's diagnostics.jsonl (fx/energy-mass proof arms, GDAS
+#: 2026-08-01 00Z, all three switches, float32): 1.33e-6 at most over 60
+#: T127 days (dt 600 s, 246 rows, worst at day 29.5) and 1.23e-6 over 10
+#: T255 days (dt 300 s, 42 rows).  The shipped total-target gate (1e-9)
+#: would fail on weather, not on the fixer.  Also the departure beyond which
+#: a branch from a checkpoint that held the other quantity opens a new mass
+#: epoch (runner.branch_mass_epoch).
+DRY_TARGET_MASS_RELATIVE_DRIFT_FLOOR = 1.0e-5

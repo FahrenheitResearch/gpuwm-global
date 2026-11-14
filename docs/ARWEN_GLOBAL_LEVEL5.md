@@ -765,7 +765,7 @@ checkpoint boundary.
 Noah darkens a snowpack as it ages: with no new snow, the snow albedo is
 `snoalb1 * 0.94 ** ((age / 86400 s) ** 0.58)`, where
 `snoalb1 = snoalb + 0.5 * (0.85 - snoalb)` and 0.5 is GENPARM's LVCOEF. A
-snowfall sets the age back to zero (`core/kernels/noah.cu:155-170`, WRF's
+snowfall sets the age back to zero (`core/kernels/noah.cu:163-188`, WRF's
 ALCALC). By that formula a pack one day old has 0.94 of its fresh snow
 albedo, and a pack ten days old has 0.79. By default, and in every release
 up to 0.1.8, the runtime gives Noah a new array of zero ages on every land
@@ -774,6 +774,63 @@ default 60 s interval that is 0.999 of the fresh value, however long the
 snow has lain. With the native option `snow_ageing = true` the age is the
 persistent `noah_snotime`, carried between land calls and through
 checkpoints.
+
+How much snow makes a pack new is the native option `snow_age_refresh`
+(it needs `snow_ageing = true`):
+
+- `"any"`, the default, is WRF's ALCALC: any call that snows, of any
+  amount, sets the age to zero. On this model a trace of snow reaches most
+  snow-covered land on most land calls (Morrison's surface snow flux is
+  rarely exactly zero under cloud), so with this rule the carried age
+  hardly grows. In the 365-day T127 run with `snow_ageing = true`, 79 % of
+  the snow-covered land columns Noah integrates (land ice left out) on
+  2027-02-28 were under 0.01 day old, the 90th percentile was 0.35 day and
+  0.09 % were over 5 days old; the surface albedo over Siberia (50-70N,
+  60-140E) was 0.65 against ERA5's 0.45 in February and 0.63 against 0.36
+  in April.
+- `"amount"` is Noah-MP's snowfall-amount refresh (SNOW_AGE, after BATS:
+  `DELS = dsnow / SWEMX`) applied to WRF's Livneh age. Only the refresh is
+  Noah-MP's: the age still grows by the call's interval in seconds with no
+  temperature factor, and the albedo curve is still Livneh's, so an old
+  cold pack can darken faster than Noah-MP's own age would let it. A
+  snowfall of `dsnow` kg/m2 keeps `1 - min(dsnow / SWEMX, 1)` of the age,
+  with Noah-MP's SWEMX = 1 kg/m2, and a column with no snow carries no age
+  (Noah-MP sets its age to zero when the pack is gone), so a pack that forms
+  on bare ground starts new rather than with the age of the last pack that
+  melted there. A trace of snow renews only its share of the pack; 1 kg/m2
+  or more makes it new, as WRF does. Freezing rain renews nothing under
+  either rule. It
+  joins the config identity; `"any"` leaves every hash and the arithmetic
+  as they were. Tests: `tests/test_arwen_global_snow_age_refresh.py` (the
+  float64 mirror, the options, the runtime) and
+  `tests/test_arwen_global_snow_age_refresh_cuda.py` (the kernel against the
+  mirror).
+
+What `"amount"` measured, in one T127 twin (the year run's physics with
+`snow_ageing = true`, prescribed SST, from the GDAS analysis of 2026-01-16
+00Z for 60 days, the two arms differing only in this option), against the
+ERA5 surface albedo of 2016-2023 (1 - net SW / downward SW) over NH land
+20-70N:
+
+| | Feb | Mar 1-17 |
+|---|---|---|
+| albedo, `"any"` / `"amount"` / ERA5 | 0.410 / 0.386 / 0.332 | 0.417 / 0.392 / 0.327 |
+| Siberia 50-70N 60-140E | 0.630 / 0.548 / 0.450 | 0.642 / 0.570 / 0.446 |
+| absorbed sunlight, `"amount"` minus `"any"` | +2.3 W/m2 | +6.3 W/m2 |
+| 2 m temperature, `"amount"` minus `"any"` | +0.58 K | +0.52 K |
+
+On cells snow-covered in both arms the albedo falls by 0.06-0.07. The rule
+closes about 30 % of the NH land albedo excess over ERA5 and 37-46 % of
+Siberia's; the rest of the excess remains under `"amount"` (part of it
+is ALCALC's fresh-snow lift `snoalb + 0.5 (0.85 - snoalb)`, which this
+option does not change). A second twin, the same pair from 2025-12-16 00Z
+for 60 days, gave NH land albedo 0.389 / 0.362 / 0.318 in January and
+0.437 / 0.394 / 0.332 in February 1-14, and 2 m temperature +1.30 K and
++1.72 K. Both twins warm NH land in January and February, but two twins
+are not an ensemble: the temperature differences include weather
+divergence, and regional monthly means differ by up to 7 K either way.
+An autumn twin from 2026-10-01 moved the same albedo by 0.05
+but only 2-3 W/m2 of sunlight in October and November.
 
 What the model assumes about the age:
 

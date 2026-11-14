@@ -79,10 +79,18 @@ surface_water_kg_m2 = 500.0
 # spacing, and the Grell-Freitas cumulus scheme its scale-aware closure:
 # cumulus = "gf" is the adapter default (between YSU and Morrison, shallow
 # arm on), so it is not repeated in the options mapping below.
+# orographic_drag = "kim-gwdo" (WRF gwd_opt = 1), on since 0.2.3: over the
+# forecast scorecard's 16 starts (2026-09-14 to 11-08, 120 h, GFS analysis
+# truth) it took NH Z500 RMSE at 120 h from 54.3 to 52.0 m (14 of 16 starts
+# better), NH MSLP from 5.33 to 5.11 hPa (16 of 16), about 3.6 h of NH Z500
+# lead; SH neutral, SH MSLP +0.08 hPa at 120 h (5 of 16 better).  It reads a
+# sub-grid orography cache the run door builds when it is missing
+# (gpuwm-global statics CONFIG --orographic builds it by hand); set
+# orographic_drag = "none" for 0.2.2's arithmetic and hash.
 [physics]
 mode = "arwen-native"
 native_adapter_name = "arwen-cuda-column-suite-v1"
-native_adapter_options = { acknowledgement = "device-pending-arwen-native-physics-v1", start_time_utc = "2026-09-01T00:00:00Z", radiation = "rrtmgp", radiation_interval_s = 3000.0, radiation_column_chunk = 12500, radiation_validation_mode = "fused", surface_layer = "sfclay", sfclay_option = 1, land_surface = "noah", land_surface_interval_s = 300.0, pbl = "ysu", ysu_topdown_pblmix = 1, microphysics = "morrison", morr_rimed_ice = 1, dx_m = 52100.0 }
+native_adapter_options = { acknowledgement = "device-pending-arwen-native-physics-v1", start_time_utc = "2026-09-01T00:00:00Z", radiation = "rrtmgp", radiation_interval_s = 3000.0, radiation_column_chunk = 12500, radiation_validation_mode = "fused", surface_layer = "sfclay", sfclay_option = 1, land_surface = "noah", land_surface_interval_s = 300.0, pbl = "ysu", ysu_topdown_pblmix = 1, microphysics = "morrison", morr_rimed_ice = 1, dx_m = 52100.0, orographic_drag = "kim-gwdo" }
 
 # The semi-Lagrangian core's own drain (config.SEMILAG_DIFFUSION_ORDER,
 # MEASURED 2026-09-07 on the dry T255 ladder): order 16 at 12 min at the

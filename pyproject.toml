@@ -31,7 +31,7 @@ name = "gpuwm-global"
 # The model source this package carries is cut from revision
 # f6f1adaa3bda7a347c142544d4007cf14847db47, dated 2026-09-12.  SOURCE.md says
 # what that means and how a re-cut is done.
-version = "0.2.2"
+version = "0.2.3"
 description = "Arwen Global: a GPU-native hydrostatic global spectral weather model with ensemble data assimilation"
 readme = "README.md"
 requires-python = ">=3.11"

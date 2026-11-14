@@ -767,6 +767,7 @@ __device__ __forceinline__ void nt_cloud_base(
  * which is the specific hazard this scheme's branchiness creates. */
 __device__ __forceinline__ void nt_ascent_step(
         int jk, int levels, int klev, int ncol, int i, bool deep,
+        float entr_factor,
         float *ptu, float *pqu, float *plu, float *dh, float *dhen,
         float *kup, float *vptu, float *vten, float *zbuo, float *abuoy,
         int *klab,
@@ -778,7 +779,11 @@ __device__ __forceinline__ void nt_ascent_step(
     if (deep) {
         const float r = __fdiv_rn(NTC(pqsen, jk), NTC(pqsen, levels));
         const float fscale = fminf(1.0f, __fmul_rn(__fmul_rn(r, r), r));
-        eta = __fmul_rn(1.75e-3f, fscale);
+        /* entr_factor: Arwen Global storm-intensity switch
+         * (ntiedtke_entrainment_factor); 1.0f keeps WRF's constant. */
+        const float entrorg = (entr_factor != 1.0f)
+            ? __fmul_rn(1.75e-3f, entr_factor) : 1.75e-3f;
+        eta = __fmul_rn(entrorg, fscale);
     } else {
         eta = __fadd_rn(__fdiv_rn(0.8f, __fmul_rn(NTC(pgeo, jk), c.zrg)),
                         2.0e-4f);
@@ -871,6 +876,11 @@ extern "C" __global__ void ntiedtke_cutypen(
         int *__restrict__ ldcum_o, int *__restrict__ ktype_o,
         int *__restrict__ cubot_o, int *__restrict__ cutop_o,
         int *__restrict__ kdpl_o, float *__restrict__ wbase_o,
+        /* Arwen Global storm-intensity switch (native_options
+         * ntiedtke_trigger_entrainment_factor, which follows
+         * ntiedtke_entrainment_factor unless set): scales the deep test parcel's
+         * entrainment; 1.0f is WRF's arithmetic. */
+        float ztrig_factor,
         int ncol, int nz,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
         int expect_tpb, int expect_nblocks,
@@ -951,7 +961,7 @@ extern "C" __global__ void ntiedtke_cutypen(
             }
         }
         if (!loflag) break;                        /* is == 0 -> exit */
-        nt_ascent_step(jk, 0, klev, ncol, i, false,
+        nt_ascent_step(jk, 0, klev, ncol, i, false, ztrig_factor,
                        ptu, pqu, plu, dh, dhen, kup, vptu, vten, zbuo,
                        abuoy, klab, ptenh, pqenh, pgeo, pgeoh, paph, pqsen,
                        &kcbot, &kctop, &loflag, &lldcum, c);
@@ -1042,7 +1052,7 @@ extern "C" __global__ void ntiedtke_cutypen(
                     __fadd_rn(NTC(vptu, jk + 1), -NTC(vten, jk + 1)),
                     NTC(vten, jk + 1));
             }
-            nt_ascent_step(jk, levels, klev, ncol, i, true,
+            nt_ascent_step(jk, levels, klev, ncol, i, true, ztrig_factor,
                            ptu, pqu, plu, dh, dhen, kup, vptu, vten, zbuo,
                            abuoy, klab, ptenh, pqenh, pgeo, pgeoh, paph,
                            pqsen, &kcbot, &kctop, &loflag, &lldcum, c);
@@ -1481,6 +1491,10 @@ extern "C" __global__ void ntiedtke_closure(
         float *__restrict__ upbl,           // in AND out, deep+water only
         float *__restrict__ zmfub1,
         int tiedtke_closure,
+        /* Arwen Global storm-intensity switch (native_options
+         * ntiedtke_adjustment_time_factor): multiplies the deep
+         * adjustment time.  1.0f takes the untouched arm below. */
+        float ztau_factor,
         int ncol, int nz, float dt,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
         int expect_tpb, int expect_nblocks,
@@ -1574,8 +1588,9 @@ extern "C" __global__ void ntiedtke_closure(
          * (module_cu_tiedtke.F:105 parameter ztau = 2400.0), which is
          * precisely the scale-awareness deletion that separates the two
          * schemes' deep closures. */
-        const float ztau = tiedtke_closure
+        float ztau = tiedtke_closure
             ? 2400.0f : __fmul_rn(tc, scale_fac[i]);
+        if (ztau_factor != 1.0f) ztau = __fmul_rn(ztau, ztau_factor);
         ztau_o[i] = ztau;
         /* nonequil is .true. (cu_ntiedtke_common:49) */
         zcape2[i] = fmaxf(0.0f, zcape2[i]);
@@ -1721,6 +1736,10 @@ extern "C" __global__ void ntiedtke_cuascn(
         int ncol, int klev, float ztmst,
         /* llo3 is TILE-WIDE, so it is a launch argument.  See the header. */
         int llo3,
+        /* Arwen Global storm-intensity switch (native_options
+         * ntiedtke_entrainment_factor): scales the organised entrainment
+         * constant 1.75e-3; 1.0f is WRF's arithmetic. */
+        float zentr_factor,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
         /* The geometry tail NtStages.launch appends, always last. */
         int expect_tpb, int expect_nblocks,
@@ -1749,6 +1768,9 @@ extern "C" __global__ void ntiedtke_cuascn(
     const float zprcdgw = __fmul_rn(NT_CPRCON, c.zrg);
     const float z_cldmax = 5.0e-3f;
     const float z_cwifrac = 0.5f;
+    /* ntiedtke_entrainment_factor; 1.0f keeps the constant bit for bit. */
+    const float zentrorg = (zentr_factor != 1.0f)
+        ? __fmul_rn(1.75e-3f, zentr_factor) : 1.75e-3f;
     const float z_cprc2 = 0.5f;
     const float z_cwdrag =
         __fdiv_rn(__fmul_rn(__fdiv_rn(3.0f, 8.0f), 0.506f), 0.2f);
@@ -1852,7 +1874,7 @@ extern "C" __global__ void ntiedtke_cuascn(
                 const float r = fminf(1.0f, __fdiv_rn(NTC(pqen, jk),
                                                       NTC(pqsen, jk)));
                 zoentr = __fmul_rn(
-                    __fmul_rn(__fmul_rn(-1.75e-3f, __fadd_rn(r, -1.0f)),
+                    __fmul_rn(__fmul_rn(-zentrorg, __fadd_rn(r, -1.0f)),
                               __fadd_rn(NTC(pgeoh, jk),
                                         -NTC(pgeoh, jk + 1))), c.zrg);
                 zoentr = __fmul_rn(fminf(0.4f, zoentr), NTC(pmfu, jk + 1));
@@ -2014,7 +2036,7 @@ extern "C" __global__ void ntiedtke_cuascn(
                     const float q3 = fminf(1.0f,
                         __fdiv_rn(NTC(pqsen, jk), NTC(pqsen, KB)));
                     zoentr = __fmul_rn(__fmul_rn(__fmul_rn(
-                        __fmul_rn(1.75e-3f,
+                        __fmul_rn(zentrorg,
                                   __fadd_rn(0.3f, -__fadd_rn(rr, -1.0f))),
                         __fadd_rn(NTC(pgeoh, jk - 1), -NTC(pgeoh, jk))),
                         c.zrg), __fmul_rn(__fmul_rn(q3, q3), q3));
@@ -2433,6 +2455,10 @@ extern "C" __global__ void ntiedtke_cudlfsn(
         float *__restrict__ prfl,            /* UPDATED */
         int *__restrict__ kdtop,
         int *__restrict__ lddraf,
+        /* Arwen Global storm-intensity switch (native_options
+         * ntiedtke_downdraft_factor): scales cmfdeps, the downdraft's
+         * share of the cloud-base mass flux at its top; 1.0f is WRF. */
+        float zdd_factor,
         int ncol, int klev,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
         int expect_tpb, int expect_nblocks,
@@ -2490,7 +2516,9 @@ extern "C" __global__ void ntiedtke_cudlfsn(
             -__fmul_rn(NTC(ptenh, jk),
                 __fadd_rn(1.0f, __fmul_rn(c.vtmpc1, NTC(pqenh, jk)))));
         const float zcond = __fadd_rn(NTC(pqenh, jk), -zqenwb);
-        const float zmftop = -__fmul_rn(NT_CMFDEPS, pmfub[i]);
+        const float zcmfdeps = (zdd_factor != 1.0f)
+            ? __fmul_rn(NT_CMFDEPS, zdd_factor) : NT_CMFDEPS;
+        const float zmftop = -__fmul_rn(zcmfdeps, pmfub[i]);
         if (zbuo < 0.0f
             && rfl > __fmul_rn(__fmul_rn(10.0f, zmftop), zcond)) {
             kdt = jk;

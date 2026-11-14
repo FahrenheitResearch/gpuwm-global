@@ -853,7 +853,7 @@ NT_STAGE_SIGNATURE = {
         "pqu", "plu", "pmfu", "ptd", "pqd", "ptte", "pqte", "pmfd", "pmfds",
         "pmfdq", "pdmfdp", "pmfdde_rate", "zheat", "zcape", "zcape1",
         "zcape2", "ztauc", "ztaubl", "ztau_o", "upbl", "zmfub1",
-        "tiedtke_closure", "ncol",
+        "tiedtke_closure", "ztau_factor", "ncol",
         "nz", "dt", "cp", "rd", "rv", "xlv", "xlf", "grav", "expect_tpb",
         "expect_nblocks", "geom_report", "order_report", "ticket"
     ),
@@ -875,7 +875,7 @@ NT_STAGE_SIGNATURE = {
         "lndj", "kdpl", "wbase", "ptenh", "pqenh", "ptu", "pqu", "plu",
         "pmfu", "pmfus", "pmfuq", "pmful", "plude", "pdmfup", "plglac",
         "pmfude_rate", "klab", "ldcum", "ktype", "kcbot", "kctop", "kctop0",
-        "pmfub", "wup", "ncol", "klev", "ztmst", "llo3", "cp", "rd", "rv",
+        "pmfub", "wup", "ncol", "klev", "ztmst", "llo3", "zentr_factor", "cp", "rd", "rv",
         "xlv", "xlf", "grav", "expect_tpb", "expect_nblocks", "geom_report",
         "order_report", "ticket"
     ),
@@ -889,7 +889,7 @@ NT_STAGE_SIGNATURE = {
     "ntiedtke_cudlfsn": (
         "ldcum", "kcbot", "kctop", "ptenh", "pqenh", "pten", "pqsen",
         "pgeo", "pgeoh", "paph", "ptu", "pqu", "pmfub", "ptd", "pqd",
-        "pmfd", "pmfds", "pmfdq", "pdmfdp", "prfl", "kdtop", "lddraf",
+        "pmfd", "pmfds", "pmfdq", "pdmfdp", "prfl", "kdtop", "lddraf", "zdd_factor",
         "ncol", "klev", "cp", "rd", "rv", "xlv", "xlf", "grav",
         "expect_tpb", "expect_nblocks", "geom_report", "order_report",
         "ticket"
@@ -928,7 +928,7 @@ NT_STAGE_SIGNATURE = {
         "pqen", "ptenh", "pqenh", "pgeoh", "paph", "pgeo", "pqsen", "pap",
         "pten", "hfx", "qfx", "cutu", "cuqu", "culu", "culab", "scr",
         "scr_i", "ldcum_o", "ktype_o", "cubot_o", "cutop_o", "kdpl_o",
-        "wbase_o", "ncol", "nz", "cp", "rd", "rv", "xlv", "xlf", "grav",
+        "wbase_o", "ztrig_factor", "ncol", "nz", "cp", "rd", "rv", "xlv", "xlf", "grav",
         "expect_tpb", "expect_nblocks", "geom_report", "order_report",
         "ticket"
     ),
@@ -1052,8 +1052,17 @@ class NtPipeline:
                  cp: float = 1004.5, rd: float = 287.0, rv: float = 461.6,
                  xlv: float = 2.5e6, xlf: float = 3.5e5,
                  grav: float = 9.81, base=None,
-                 tiedtke_closure: bool = False):
+                 tiedtke_closure: bool = False,
+                 momentum_transport: bool = True,
+                 adjustment_time_factor: float = 1.0,
+                 entrainment_factor: float = 1.0,
+                 trigger_entrainment_factor: float | None = None,
+                 downdraft_factor: float = 1.0):
         import numpy as np
+
+        # lmfdudv (cu_ntiedtke.F90:55, a PARAMETER .true. in WRF): False
+        # skips NT_MOMENTUM_STAGES in _nt_walk, WRF's lmfdudv = .false. arm.
+        self.momentum_transport = bool(momentum_transport)
 
         self.w = NtWorkspace(ncol=ncol, nz=nz)
         self.geometry = NtLaunchGeometry(ncol=ncol, nz=nz)
@@ -1078,6 +1087,18 @@ class NtPipeline:
             # :855-866).  Those two substitutions are the whole difference
             # between the schemes' deep closures.  0 keeps cu16 bit-exact.
             "tiedtke_closure": np.int32(bool(tiedtke_closure)),
+            # Multiplies the deep closure's adjustment time (ntiedtke.cu
+            # ntiedtke_closure); 1.0 takes the kernel's untouched branch.
+            "ztau_factor": np.float32(adjustment_time_factor),
+            # Scale the organised entrainment constant 1.75e-3 (cutypen's deep
+            # test parcel and cuascn) and cmfdeps (cudlfsn); 1.0 takes each
+            # kernel's untouched arm.
+            "zentr_factor": np.float32(entrainment_factor),
+            # cutypen's deep test parcel; None follows the updraft's factor.
+            "ztrig_factor": np.float32(entrainment_factor
+                                       if trigger_entrainment_factor is None
+                                       else trigger_entrainment_factor),
+            "zdd_factor": np.float32(downdraft_factor),
             "delt": np.float32(self._delt),
             "ztmst": np.float32(self._delt),
             "cp": np.float32(cp), "rd": np.float32(rd), "rv": np.float32(rv),
@@ -1216,6 +1237,18 @@ NT_CALL_ORDER = (
     "ntiedtke_post_run",         # module_cu_ntiedtke.F:502-527
 )
 
+#: The stages cumastrn runs only under ``lmfdudv`` (the momentum profiles,
+#: the momentum rescale, cududvn and the kinetic-energy dissipation that
+#: returns cududvn's kinetic-energy loss as heat).  Nothing outside them
+#: reads what they write except post_conversion's pvom/pvol, which the
+#: run head zeroes, so skipping them is WRF's lmfdudv = .false. arm.
+NT_MOMENTUM_STAGES = frozenset((
+    "ntiedtke_momentum_profile",
+    "ntiedtke_momentum_rescale",
+    "ntiedtke_cududvn",
+    "ntiedtke_ke_dissipation",
+))
+
 
 def _nt_walk(pipeline) -> None:
     """One chunk through all twenty stages, with the assembler's own work.
@@ -1229,8 +1262,11 @@ def _nt_walk(pipeline) -> None:
     pipeline.run_stage("ntiedtke_prep")
     pipeline.run_stage("ntiedtke_convert")
     pipeline.snapshot_forcing()
+    momentum = getattr(pipeline, "momentum_transport", True)
     for stage in NT_CALL_ORDER:
         if stage in ("ntiedtke_prep", "ntiedtke_convert"):
+            continue
+        if not momentum and stage in NT_MOMENTUM_STAGES:
             continue
         if stage == "ntiedtke_cuascn":
             pipeline.reduce_llo3()
@@ -1351,6 +1387,14 @@ class NewTiedtke:
         """
         dt = float(_nt_model_dt(cfg))
         closure = bool(getattr(cfg, "ntiedtke_tiedtke_closure", False))
+        # Storm-intensity switches (native_options): lmfdudv and the deep
+        # adjustment-time factor.  Defaults are WRF's arithmetic.
+        momentum = bool(getattr(cfg, "ntiedtke_momentum_transport", True))
+        tau_factor = float(getattr(cfg, "ntiedtke_adjustment_time_factor", 1.0))
+        entr_factor = float(getattr(cfg, "ntiedtke_entrainment_factor", 1.0))
+        trig_factor = getattr(cfg, "ntiedtke_trigger_entrainment_factor", None)
+        trig_factor = entr_factor if trig_factor is None else float(trig_factor)
+        dd_factor = float(getattr(cfg, "ntiedtke_downdraft_factor", 1.0))
         # dt AND THE CLOSURE ARE PART OF THE KEY, not only the chunk shape.
         # Both are baked into the pipeline at construction (dt as the
         # kernels' delt, ztmst and the 3/(g dt) mass-flux caps, the closure
@@ -1363,7 +1407,8 @@ class NewTiedtke:
         # nothing here moves a bit; the key exists so that the first
         # carrier that does change it gets a rebuilt pipeline instead of
         # a stale one.
-        key = (ncol, nz, dt, closure)
+        key = (ncol, nz, dt, closure, momentum, tau_factor, entr_factor,
+               dd_factor, trig_factor)
         if self._pipeline is None or self._pipeline[0] != key:
             # RELEASE THE OLD ONE FIRST.  Assigning the new tuple over the
             # old held both workspaces live across the constructor, and at
@@ -1390,7 +1435,10 @@ class NewTiedtke:
             self._pipeline = None
             self._pipeline = (key, NtPipeline(
                 ncol=ncol, nz=nz, dt=dt, stepcu=1, itimestep=2,
-                tiedtke_closure=closure))
+                tiedtke_closure=closure, momentum_transport=momentum,
+                adjustment_time_factor=tau_factor,
+                entrainment_factor=entr_factor, downdraft_factor=dd_factor,
+                trigger_entrainment_factor=trig_factor))
         return self._pipeline[1]
 
     def __call__(self, *, atmosphere, fields, state, cfg):

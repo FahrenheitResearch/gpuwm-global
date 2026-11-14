@@ -172,6 +172,10 @@ STEP_OPERATORS = (
     "semilag_implicit",
     "diffusion",
     "mass_fixer",
+    # The dry-energy fixer ([repair] energy_fixer; marked only when on):
+    # its row is the uniform warming that restores the dynamics' deficit,
+    # so the bracket physics_first..energy_fixer nets the physics alone.
+    "energy_fixer",
     # The grid tracers' flux-form transport (2026-09-02): condensate moves
     # between columns here, so the latent and virtual-temperature terms of
     # the moist energy move with it.

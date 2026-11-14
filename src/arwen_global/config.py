@@ -21,6 +21,8 @@ from .constants import (
     SNAPSHOT_BUFFERS,
     DEFAULT_EULERIAN_STEP_RULE_FRACTION,
     EARTH_RADIUS_M,
+    DRY_TARGET_MASS_RELATIVE_DRIFT_FLOOR,
+    MASS_FIXER_TARGETS,
     RESEARCH_ACKNOWLEDGEMENT,
     RUN_SCHEMA,
 )
@@ -674,6 +676,29 @@ class ArwenGlobalConfig:
     # checkpoint and receipt bound to one -- stays byte-identical; any
     # other world joins the identity by its canonical settings.
     world: WorldSpec = EARTH_WORLD
+    # [repair] the two long-run conservation switches (2026-11-14), appended
+    # at the END with defaults so no positional index moves.  Both join the
+    # identity only when set, so every config hash written before they
+    # existed stays byte-identical.
+    #
+    # mass_fixer_target: what the mass fixer holds.  "total" (shipped) is
+    # the global-mean surface pressure; the physics changes the water at a
+    # fixed surface pressure, so the dry mass ps - g W then carries the
+    # whole swing of the planet's water (60 Pa over the T127 year run,
+    # LR-1).  "dry" holds global-mean ps - g W at the cold state's value.
+    #
+    # energy_fixer: restore the dry total energy int (cp T + K) dp/g +
+    # Phi_s ps/g across the dynamics (transport, implicit solve, diffusion
+    # and the mass fixer) as one uniform temperature increment.  The T127
+    # year run's in-situ ledger measured that bracket at -4.9 W/m2 every
+    # 30-day window, the LR-4 residual and the troposphere's 1 K/30 d.
+    mass_fixer_target: str = "total"
+    energy_fixer: bool = False
+    # vapour_fixer: restore the global vapour column across the same
+    # bracket by one uniform rescale of qv.  The adiabatic step creates
+    # 1-2e-4 kg/m2 of vapour (qv rides the semi-Lagrangian core with no
+    # mass fixer) and the water fixer took it off the surface stores.
+    vapour_fixer: bool = False
 
     @property
     def config_identity(self) -> dict[str, object]:
@@ -744,6 +769,13 @@ class ArwenGlobalConfig:
             del payload["gate_positivity_fixer_max_step_relative"]
         if payload["physics_split"] == "strang":
             del payload["physics_split"]
+        # The two long-run conservation switches join only when set.
+        if payload["mass_fixer_target"] == "total":
+            del payload["mass_fixer_target"]
+        if not payload["energy_fixer"]:
+            del payload["energy_fixer"]
+        if not payload["vapour_fixer"]:
+            del payload["vapour_fixer"]
         # The absorber's heat booking (on) leaves the identity as it was;
         # only a config that turns it off carries it.
         if payload["sponge_heat_booking"]:
@@ -1483,10 +1515,23 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
     semilag = semilag_options_from_table(semilag_table)
 
     repair = _table(raw, "repair")
-    _unknown(repair, {"mass_fixer", "water_fixer", "positivity_repair"}, "repair")
+    _unknown(repair, {"mass_fixer", "water_fixer", "positivity_repair",
+                      "mass_fixer_target", "energy_fixer", "vapour_fixer"}, "repair")
     mass_fixer = _boolean(repair.get("mass_fixer", True), "repair.mass_fixer")
     water_fixer = _boolean(repair.get("water_fixer", True), "repair.water_fixer")
     positivity = _boolean(repair.get("positivity_repair", True), "repair.positivity_repair")
+    mass_fixer_target = str(repair.get("mass_fixer_target", "total")).strip().lower()
+    if mass_fixer_target not in MASS_FIXER_TARGETS:
+        raise ValueError(
+            "repair.mass_fixer_target must be one of "
+            f"{', '.join(MASS_FIXER_TARGETS)}, got {mass_fixer_target!r}")
+    if mass_fixer_target != "total" and not mass_fixer:
+        raise ValueError(
+            "repair.mass_fixer_target = \"dry\" names what the mass fixer "
+            "holds, and repair.mass_fixer is false: a target with no fixer "
+            "would be ignored, so it is refused rather than dropped")
+    energy_fixer = _boolean(repair.get("energy_fixer", False), "repair.energy_fixer")
+    vapour_fixer = _boolean(repair.get("vapour_fixer", False), "repair.vapour_fixer")
 
     gates = _table(raw, "gates")
     _unknown(gates, {
@@ -1499,6 +1544,22 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
     gate_roundtrip = _finite(gates.get("transform_roundtrip_relative_linf", default_transform), "gates.transform_roundtrip_relative_linf")
     gate_parseval = _finite(gates.get("transform_parseval_relative_error", default_transform), "gates.transform_parseval_relative_error")
     gate_mass = _finite(gates.get("mass_relative_drift", 1.0e-9), "gates.mass_relative_drift")
+    if mass_fixer_target == "dry":
+        # The dry-mass row carries each step's half-step E - P at the output
+        # instant (constants.DRY_TARGET_MASS_RELATIVE_DRIFT_FLOOR), so a
+        # gate set for the total target's roundoff would fail on weather.
+        # Unset, the floor is the default; set tighter, it is refused by
+        # name rather than lifted behind the config's back.
+        if "mass_relative_drift" not in gates:
+            gate_mass = DRY_TARGET_MASS_RELATIVE_DRIFT_FLOOR
+        elif gate_mass < DRY_TARGET_MASS_RELATIVE_DRIFT_FLOOR:
+            raise ValueError(
+                "repair.mass_fixer_target = \"dry\" gates the dry-mass row "
+                "ps - g W, which carries each step's half-step E - P at the "
+                "output instant (1.3e-6 of the mass at T127): "
+                f"gates.mass_relative_drift = {gate_mass:g} would fail on the "
+                "weather, not on the fixer; set it to at least "
+                f"{DRY_TARGET_MASS_RELATIVE_DRIFT_FLOOR:g} or leave it unset")
     gate_water = _finite(gates.get("total_water_relative_drift", 1.0e-8), "gates.total_water_relative_drift")
     gate_physics_repair = gates.get("physics_water_repair_max_step_kg_m2")
     if gate_physics_repair is not None:
@@ -1738,6 +1799,9 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         semi_implicit_reference_surface_pressure_pa=implicit_ps_ref,
         semi_implicit_off_centring_weight=implicit_alpha,
         mass_fixer=mass_fixer,
+        mass_fixer_target=mass_fixer_target,
+        energy_fixer=energy_fixer,
+        vapour_fixer=vapour_fixer,
         water_fixer=water_fixer, positivity_repair=positivity,
         gate_transform_roundtrip=gate_roundtrip,
         gate_transform_parseval=gate_parseval,

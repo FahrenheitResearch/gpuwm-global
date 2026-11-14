@@ -52,6 +52,13 @@ Write both paths in full. A relative path is read from the config's own
 folder, and the copy of the config a run keeps in its output folder would
 then point somewhere else.
 
+Any of hold, anomaly, climatology and series may also carry the
+experimental, off-by-default mixed-layer cooling response
+(`mixed_layer_response = true`): a departure from the prescribed SST that
+answers the surface heat flux into a fixed mixed layer, so a held sea can
+cool under days of dry offshore wind instead of evaporating at its first
+rate (docs/ARWEN_GLOBAL_OCEAN_RESPONSE.md).
+
 ### The rules
 
 Write t for the elapsed time, C_s(t) and C_i(t) for the climatological SST
@@ -353,12 +360,42 @@ commands.
 
 ### The native options a long run sets
 
-A long run also sets three native options that a forecast leaves off, in
-`[physics] native_adapter_options`:
+A long run, and a coupled run (`docs/ARWEN_GLOBAL_OCEAN.md`), also sets
+six native options that a forecast leaves off, in `[physics]
+native_adapter_options`:
 
 ```toml
-native_adapter_options = { ..., snow_ageing = true, morrison_droplet_number = "land_ocean", radiation_liquid_radius = "wrf_relcalc" }
+native_adapter_options = { ..., snow_ageing = true, morrison_droplet_number = "land_ocean", radiation_liquid_radius = "wrf_relcalc", gf_shallow_buoyancy_from_cloud_base = true, gf_shallow_blqe_to_cloud_base = true, gf_shallow_depth_min_m = 500 }
 ```
+
+and the three conservation switches of the next section. The forecast
+configs that ship leave all of these off except one: from 0.2.3 the T255 and
+T383 forecast days carry `orographic_drag = "kim-gwdo"`, and a long run built
+from one of them keeps it (the 90-day runs of `docs/trade-shallow.md` ran
+with it).
+
+The last three are the Grell-Freitas shallow-arm switches of
+`docs/trade-shallow.md` (0.2.2, off by default). They vent the trade-wind
+cloud sheet the model reflects too much sunlight from. In the 90-day
+atmosphere-only arm from GDAS 2026-08-01 00Z (anomaly SST, kim-gwdo, the two
+cloud-radiation options above) the global excess of reflected shortwave over
+CERES read +3.5 / +5.4 / +4.5 W/m2 in August / September / October against
++15.0 / +15.9 / +14.2 without them, and the net at the top of the
+atmosphere -3.8 / -0.2 / +4.0 against -13.9 / -8.5 / -4.6 W/m2. In the
+coupled slab arm, on the Q-flux calibrated without them, the open-water heat
+flux less the calibration's read +3.1 W/m2 over days 2-30 and -3.5 over days
+30-60 against -8.8 and -12.4, and the open-water SST against GDAS at day 59
+-0.07 K against -0.30 K; part of that gain is the extra sunlight acting on a
+Q-flux tuned for less of it, and a calibration made with the switches on has
+not been run.
+They stay off for forecasts, because over the 16-start forecast scorecard
+they cost tropical skill at 72-120 h (T850 +0.04 to +0.08 K, 250 hPa wind
++0.22 to +0.24 m/s); and in the southern summer the depth minimum does not
+keep the Peru and Australian decks (a 30-day December twin: Peru -28.8
+against +8.5 W/m2 of excess). The page has the tables.
+
+The shallow-arm switches and the conservation switches below were each
+measured on their own; a long run with both sets on has not been run.
 
 `snow_ageing = true` carries Noah's snow age between land calls, so a pack
 that lies for weeks darkens as Noah intends instead of keeping its
@@ -380,6 +417,103 @@ first ten-day run below lost 21.7 W/m2 at the top of the atmosphere at a
 planetary albedo of about 0.39, against CERES-EBAF's 0.30 for November.
 Why these two and not the third is in `docs/albedo-fixes.md`, "The
 long-run set"; what they did over ten days is below.
+
+### The conservation switches a long run sets
+
+Three `[repair]` keys hold what the dynamics does not conserve on its own.
+Each is off by default, joins the config hash only when set, and leaves a
+run that names none of them byte-identical to the release before them. A
+long run and a coupled run set all three (0.2.3): with them LR-4's residual
+read 0.24 and 0.43 W/m2 over days 0-30 and 30-60 of 60 T127 days and -0.29
+W/m2 over 10 T255 days, under the 2 W/m2 at which the gate flags it, where
+it read 4.1 to 5.4 W/m2 without (numbers below). A forecast leaves them off:
+on two five-day T255 starts the skill was neutral, and the measurements are
+of long runs.
+
+```toml
+[repair]
+mass_fixer = true
+water_fixer = true
+positivity_repair = true
+mass_fixer_target = "dry"
+energy_fixer = true
+vapour_fixer = true
+```
+
+- `mass_fixer_target = "dry"`: the mass fixer holds the global-mean dry
+  surface pressure ps - g W instead of the total. The physics books water
+  at a fixed surface pressure, so under the total target every kilogram
+  per square metre the atmosphere's water gains or loses moved the dry
+  mass by g Pa: LR-1 read 60 Pa over the T127 year run, all of it the
+  swing of the planet's precipitable water. The receipt's mass-drift gate
+  reads the row the fixer holds. That row is read after the second physics
+  half, which books its half step's E - P at a fixed surface pressure, so
+  at an output instant it sits g (E - P) dt/2 off the target until the next
+  step re-anchors it: at most 1.33e-6 of the mass over 60 T127 days and
+  1.23e-6 over 10 T255 days (the 6-hourly dry-mass rows of every lease's
+  `diagnostics.jsonl`). Under the dry target `[gates]
+  mass_relative_drift` therefore defaults to 1e-5, and a config that sets
+  it tighter (the smoke's 1e-9, written for the total target) is refused
+  by name; the long-run configs' 1e-4 is kept. A branch
+  (`--branch-from-other-config`) from a run that held the other quantity
+  starts a new mass epoch at the restart state, recorded in the receipt's
+  `restart_targets`; without it the first step would take the whole
+  difference out at once (49 Pa from day 180 of the year run).
+- `energy_fixer = true`: the dry total energy int (cp T + K) dp/g +
+  Phi_s ps/g the state carries into the dynamics is restored after the
+  semi-Lagrangian step, the hyperdiffusion and the mass fixer by one
+  uniform temperature increment (a degree-zero theta offset per level,
+  weighted so the energy added equals the deficit). The in-situ ledger of
+  the T127 year run put that bracket at -4.9 W/m2 in every 30-day window
+  (the semi-Lagrangian ln ps gains mass, the mass fixer takes it back out,
+  the ln ps smoothing moves mass along the terrain): LR-4's residual.
+  Turning the ln ps smoothing off moves the loss to the mass fixer and
+  leaves it (-3.6 against -3.8 W/m2 over ten days), so the remedy is
+  global. It is not most of the troposphere's cold drift: over 60 T127
+  days the fixer takes 28-40% of the drift against GDAS away at 850, 500
+  and 200 hPa (numbers below); the rest is physical.
+  The increment is exact in float64. In float32 each level's degree-zero
+  coefficient rounds each step's addition to its own spacing (up to about
+  8% of it at T255, dt 300 s) without a bias, because the coefficient moves
+  by many spacings every step: the in-situ ledger's dynamics bracket reads
+  -0.01 W/m2 (T127) and -0.03 W/m2 (T255) with the fixer on.
+  Under the dry target the fixer's record (`energy_fixer_w_m2`, and the
+  ledger's dynamics bracket with it) also carries the enthalpy of the
+  mass the dry-mass fixer adds or removes to follow the physics' E - P,
+  about cp T = 2.5e5 J per kg/m2 of precipitable-water change (0.3
+  W/m2 for a 1 kg/m2 swing over ten days). Nothing in the ledger carries
+  that energy, so restoring it keeps the budget closed, but the row is not
+  the core's loss alone.
+- `vapour_fixer = true`: the vapour column is restored across the same
+  bracket by one uniform rescale of qv. Vapour rides the semi-Lagrangian
+  core spectrally with no mass fixer; the adiabatic step created 1-2e-4
+  kg/m2 of it a step, which the global water fixer then took off the
+  surface stores, leaving the atmosphere 0.5-1.0 W/m2 of latent energy
+  nothing supplied.
+
+With the three set against the same days without (fx/energy-mass, GDAS
+2026-08-01 00Z, slab ocean, float32):
+
+- T127, 60 days (dt 600 s): LR-4's residual 0.24 against 4.06 W/m2 over
+  days 0-30 and 0.43 against 4.50 over days 30-60; the dry-mass range
+  0.26 against 35.1 Pa; the water the global water fixer takes off the
+  surface stores 2.2e-5 against 1.9e-4 kg/m2 a step. Against what the
+  GDAS analyses themselves did from 2026-08-01 to 09-30, the global-mean
+  temperature at day 60 drifts -0.24 / -0.92 / -1.84 K at 850 / 500 / 200
+  hPa with the switches and -0.40 / -1.27 / -2.82 K without.
+- T255, 10 days (dt 300 s): LR-4's residual -0.29 against 5.44 W/m2
+  (-0.44 over the first five days), the dry-mass range 0.21 against 10.2
+  Pa, the water fixer's surface debit 1.3e-5 against 2.4e-4 kg/m2 a step.
+- Five-day T255 forecast from GDAS 2026-09-01 00Z, scored against GDAS:
+  NH Z500 error 22.36 / 52.70 m at 72 / 120 h against 22.46 / 53.10 m.
+- A 12 h T383 run with all three switches has the same live peak as
+  without (12.316 GiB on a 5090; pool held 13.99 against 14.48 GiB).
+- Float64: under the dry target the mass fixer's per-step offset also
+  carries the physics' E - P since the previous step: 1.1e-7 against
+  3.1e-8 under the total target on the T21 semi-Lagrangian CPU case over
+  1,500 m terrain, below the float64 per-step gate of 1e-6. A real-weather
+  float64 run under the dry target has not been measured. Float32 runs
+  read 2.8-3.5e-6 against their 2e-4.
 
 ## What has been measured
 
@@ -495,6 +629,7 @@ line before the options (136 of 136 arrays, same config hash).
   model's fluxes, and no aerosol.
 - The solar constant is WRF's 1370 W/m2 times the eccentricity factor.
 - Orographic gravity-wave drag is a native option, `orographic_drag =
-  "kim-gwdo"`, off by default; non-orographic drag is absent.  The only
+  "kim-gwdo"`, off by default and on in the shipped T255 and T383 forecast
+  days since 0.2.3; non-orographic drag is absent.  The only
   momentum sink near the model top otherwise is the zonal-mean drag of the
   top levels.

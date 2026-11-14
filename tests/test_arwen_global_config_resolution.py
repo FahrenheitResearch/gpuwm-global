@@ -85,7 +85,7 @@ def test_the_module_docstring_counts_the_configs_that_ship():
     words = {50: "fifty", 51: "fifty-one", 52: "fifty-two",
              53: "fifty-three", 54: "fifty-four", 55: "fifty-five",
              56: "fifty-six", 57: "fifty-seven", 58: "fifty-eight",
-             59: "fifty-nine"}
+             59: "fifty-nine", 60: "sixty", 61: "sixty-one"}
     shipped = configs_dir.list_configs()
     spectral = [name for name in shipped if name.startswith("global_spectral_")]
     globals_ = [name for name in shipped if name.startswith("arwen_global_")]

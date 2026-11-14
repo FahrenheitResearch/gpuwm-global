@@ -128,7 +128,7 @@ That builds the static surface fields, integrates the forecast, exports
 render-ready tapes and draws the product pictures, naming the stage it is in
 while the detail goes to the run's log.
 
-Fifty-nine experiments ship inside the package and resolve by bare name from
+Sixty experiments ship inside the package and resolve by bare name from
 any directory (`gpuwm-global configs` lists them); a path that exists always
 wins over a shipped name, so an edited copy runs.
 
@@ -153,6 +153,13 @@ archive.
 ```bash
 gpuwm-global statics arwen_global_gdas_t255_native_sl_si_24h --geog-root ~/WPS_GEOG
 ```
+
+The T255 and T383 forecast days run the kim-gwdo orographic drag (from
+0.2.3), which reads a second, smaller cache built from WPS_GEOG's
+`orogwd_10m`. This command builds it too, and `run` builds it when it is
+missing, staging `orogwd_10m` with `gpuwm fetch-geog` when the tree lacks it
+([docs/ARWEN_GLOBAL.md](docs/ARWEN_GLOBAL.md), "Orographic gravity-wave
+drag").
 
 **3. Run the day.** Nothing about memory is set: the door prices the card,
 chooses the latitude band count and decides which state slices to park on the
@@ -379,7 +386,7 @@ band counts 2 to 32, and 892 of 892 waist comparisons bit-exact on each card
 
 ## The doors
 
-One console script, 60 commands. `gpuwm-global <command> --help` prints every
+One console script, 64 commands. `gpuwm-global <command> --help` prints every
 option; [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) is the same surface on
 one page, generated from the parser.
 
@@ -390,6 +397,7 @@ one page, generated from the parser.
 | `statics` | build and cache the surface static fields for a truncation |
 | `surface-series` | build a dated SST, sea-ice and greenness series on a config's grid, from GDAS analyses or one GFS cycle's own forecast, for `run --surface-series` |
 | `climatology fetch`, `climatology build` | stage the public monthly SST and sea-ice climatology (NOAA OISST v2.1, 1991-2020; optionally the WOA18 mixed-layer depth), each file verified by size and SHA-256, and build it onto a config's grid as one byte-reproducible file |
+| `ocean build-grid`, `ocean build-init`, `ocean init-from-state`, `ocean run` | the experimental dynamic ocean (`[ocean] mode = "dynamic"`, off by default): build its grid from ETOPO 2022 and its start from NOAA GODAS and WOA23, and spin it up ocean-only under the GODAS fluxes ([docs/ARWEN_GLOBAL_DYNAMIC_OCEAN.md](docs/ARWEN_GLOBAL_DYNAMIC_OCEAN.md)) |
 | `export` | render-ready global lat-lon `wrfout` tapes from checkpoints (`export-wrfout` is an accepted alias of the same door) |
 | `render` | draw the products from a finished run through the Rust renderer |
 | `configs` | list the experiments that ship inside the package |

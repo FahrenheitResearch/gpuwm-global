@@ -245,7 +245,7 @@ class PersistentNativeState:
             # The snowpack's age since its last snowfall, seconds (WRF
             # SNOTIME): Noah's ALCALC advances it by the land step on a
             # snow-covered column, zeroes it when snow falls, and decays
-            # the snow albedo with it (noah.cu:155-170).  Carried here so
+            # the snow albedo with it (noah.cu:163-188).  Carried here so
             # the pack ages across calls; a temporary built afresh on
             # every call left it one land interval old forever, at its
             # fresh-snow albedo.  Zero is fresh snow: the age the analysed

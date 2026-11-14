@@ -152,7 +152,7 @@ class CategoryConvention:
     land-use set (ISWATER/ISLAKE/ISICE/ISURBAN) and WRF's namelist soil
     defaults (isoilwater/isoilice).  Noah's kernel indexes its tables with
     ``vegtyp - 1`` and ``soiltyp - 1`` and skips ``vegtyp == isice``
-    columns (noah.cu:976, :1056-1057), so a state whose categories belong
+    columns (noah.cu:992, :1072-1073), so a state whose categories belong
     to another section would read another class's parameters without any
     error: the native runtime refuses on a mismatch instead.
     """
@@ -236,7 +236,7 @@ SYNTHETIC_CONVENTION = CategoryConvention(
 def frozen_water_columns(sea_ice_fraction, xp=np):
     """The water columns the analysed sea ice freezes over: fraction at or
     above :data:`SEA_ICE_THRESHOLD`, evaluated in float32 like the kernel's
-    ``xice >= xice_threshold`` test (noah.cu:969)."""
+    ``xice >= xice_threshold`` test (noah.cu:985)."""
     return xp.asarray(sea_ice_fraction, dtype=xp.float32) >= xp.float32(SEA_ICE_THRESHOLD)
 
 
@@ -250,9 +250,9 @@ def xland_plane(land_fraction, sea_ice_fraction=None, xp=np):
     statics' water test (:func:`water_columns`) and the land-step skip
     mask are all this plane, so the columns whose categories say water
     are exactly the columns sfclay runs its water branch on, Noah skips
-    (noah.cu:968) and GF flags as water, and the columns whose categories
+    (noah.cu:984) and GF flags as water, and the columns whose categories
     say ice are exactly the columns sfclay runs as land and Noah skips as
-    ice (noah.cu:969).  ``sea_ice_fraction`` None is the ice-free planet:
+    ice (noah.cu:985).  ``sea_ice_fraction`` None is the ice-free planet:
     the plane is then bit-for-bit the pre-seeding construction.
     """
     plane = xp.asarray(1.0 + (1.0 - land_fraction), dtype=xp.float32)

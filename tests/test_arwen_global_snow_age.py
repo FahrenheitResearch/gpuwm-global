@@ -1,6 +1,6 @@
 """Noah's snow age is carried between land calls, checkpointed and restarted.
 
-Noah's ALCALC (WRF ``module_sf_noahlsm.F``; ``core/kernels/noah.cu:155-170``)
+Noah's ALCALC (WRF ``module_sf_noahlsm.F``; ``core/kernels/noah.cu:163-188``)
 decays the snow albedo with the pack's age since its last snowfall::
 
     snoalb1 = snoalb + lvcoef (0.85 - snoalb)
@@ -390,7 +390,11 @@ def test_snow_ageing_is_off_by_default_and_on_joins_the_identity():
         "367431fd86f9b0d7d1338d9fbcaf97ff62cada4cb4e249c2ccc658789cde1836")
     day = load_config(str(
         _shipped_configs() / "arwen_global_gdas_t255_native_sl_si_24h.toml"))
-    assert day.config_hash == (
+    # 0.2.3 turns the day's orographic drag on, its one change: without it
+    # the day hashes as 0.1.7's.
+    without_drag = {key: value for key, value in day.native_adapter_options.items()
+                    if key != "orographic_drag"}
+    assert replace(day, native_adapter_options=without_drag).config_hash == (
         "c7a000d28c206ace5f88312d92320f4c30e72f7f0eb6d6108587022d935b4bbf")
     assert carried_physics_arrays(native) == frozenset()
     on = replace(native, native_adapter_options={

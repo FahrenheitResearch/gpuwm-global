@@ -2430,6 +2430,7 @@ def _forecast(plan: RunPlan, cfg, config_path: Path, *,
     """
 
     from . import cli
+    from .physics.orographic_drag import prepare_orographic_statistics
     from .runner import run as run_forecast
 
     options = plan.run_options
@@ -2439,6 +2440,11 @@ def _forecast(plan: RunPlan, cfg, config_path: Path, *,
         latitude_bands=options.get("latitude_bands"),
         host_spill=options.get("host_spill"),
     )
+    # As ``cli._run`` does: the orographic drag's cache (and its WPS_GEOG
+    # dataset) is built before the card is priced, so a missing one is
+    # built, or refused in one sentence, before the run claims the card.
+    # A no-op when the cache is there or the drag is off.
+    prepare_orographic_statistics(cfg)
     sized, memory_plan = cli._size_the_run(lever_namespace, cfg, door)
     cli.write_run_sidecar(runner.run_dir, config_path)
 

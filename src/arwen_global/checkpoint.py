@@ -48,6 +48,7 @@ from .state import (
     SurfaceState,
 )
 from .ocean_coupler import CALIBRATION_ARRAYS, HELD_NET_FLUX, SLAB_ARRAYS
+from .ocean_response import RESPONSE_ARRAYS
 from .water import OCEAN_EXCHANGE_NAMES, OPEN_WATER_EVAPORATION_NAME
 
 #: Physics-namespace accounts that are float64 whatever the run's precision
@@ -59,7 +60,10 @@ from .water import OCEAN_EXCHANGE_NAMES, OPEN_WATER_EVAPORATION_NAME
 #: lost its last bits on the first card restart.
 FLOAT64_PHYSICS_ACCOUNTS = frozenset((
     *OCEAN_EXCHANGE_NAMES, OPEN_WATER_EVAPORATION_NAME,
-    *SLAB_ARRAYS, *CALIBRATION_ARRAYS, HELD_NET_FLUX))
+    *SLAB_ARRAYS, *CALIBRATION_ARRAYS, HELD_NET_FLUX, *RESPONSE_ARRAYS))
+#: The dynamic ocean's physics-state arrays (ocean_dyn.coupler.PREFIX),
+#: present only under [ocean] mode = "dynamic".
+DYNAMIC_OCEAN_PREFIX = "ocean_dyn_"
 
 TRACKER_KEYS = (
     "maximum_spectral_cfl",
@@ -1007,6 +1011,11 @@ def state_from_checkpoint(
                     # (water.OCEAN_EXCHANGE_DTYPE).
                     else value.dtype
                     if name.removeprefix("physics__") in FLOAT64_PHYSICS_ACCOUNTS
+                    # The dynamic ocean's arrays (ocean_dyn_*) keep the
+                    # dtype they were written in, float64 and float32 alike
+                    # (arwen_global.ocean_dyn.model.STATE_DTYPES), in every
+                    # run precision.
+                    or name.removeprefix("physics__").startswith(DYNAMIC_OCEAN_PREFIX)
                     else backend.float_dtype
                 ),
             )

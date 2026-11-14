@@ -293,3 +293,47 @@ moisture, condensate and heat rates for every kernel variant in its `VARIANTS`
 table. For the columns of the regime boxes it also writes the shallow stage's
 capture lanes: the exit code at every stage, `kbcon`, `dbyo`, `dbyt` and the
 closure members.
+
+## Longer runs and the forecast scorecard
+
+**90 days** (atmosphere only, the V1a anomaly+fix setup from GDAS 2026-08-01 00Z, all three switches). Compared with V1a, which has the albedo pair alone; over days 2-10 the two trees differ by 0.1 W/m2 globally.
+
+| | switches on | V1a | CERES |
+|---|---|---|---|
+| global albedo, Aug / Sep / Oct | 0.288 / 0.295 / 0.304 | 0.323 / 0.326 / 0.332 | 0.278 / 0.279 / 0.291 |
+| excess reflected SW over CERES (W/m2) | +3.5 / +5.4 / +4.5 | +15.0 / +15.9 / +14.2 | |
+| net TOA (W/m2) | -3.8 / -0.2 / +4.0 | -13.9 / -8.5 / -4.6 | |
+
+- **Regions, 90-day excess over CERES:**
+  - ocean 30S-30N +3.5 (+23.4 in V1a);
+  - trades SE Pacific / NE Pacific / S Indian: +4.5 / +21.9 / -8.3 (+47.6 / +40.9 / +38.5);
+  - 30N-60N +3.0 (+10.8);
+  - Southern Ocean 40-60S +17.0 (+19.1);
+  - Peru / Namibia / California decks: -59.5 / -37.2 / -37.6 (-55.9 / -40.0 / -16.5).
+- **Unchanged:** the temperature drift (T850 283.2 to 281.1 K in both), precipitable water (27.8 to 23.5-23.7 kg/m2) and the LR-4 energy residual (5.6-5.9 W/m2).
+
+**30 days from a northern-winter start** (GDAS 2025-12-16 00Z, on against off):
+- **Better:**
+  - global excess +5.8 against +16.3 W/m2, and ocean 30S-30N +3.3 against +26.0;
+  - SE Pacific trades -0.9 against +48.7, and Namibia +22 against +46;
+  - rain against GPCP: 30-day field RMSE 2.94 against 3.30 mm/day.
+- **Worse:** the Peru deck, -29 against +8.5. In austral summer the model's Peru plumes are 660-825 m deep, above the 500 m minimum, so the depth test does not keep the deck in that season.
+- **Little changed:** the Southern Ocean summer, +27.6 against +30.8.
+
+**Forecast skill** (16 starts, 120 h, against the GFS and IFS analyses):
+- **Extratropics:** neutral.
+- **Tropics:** slightly worse. T850 is +0.04 to +0.08 K at 72-120 h, and 250 hPa wind +0.22 to +0.24 m/s.
+- **No subset helps:** in the 10-day twins all three subsets move tropical T850 within 0.03 K of each other, so the cost comes from running the shallow arm at all, not from either guard.
+
+**Verdict for 0.2.3:** ship the three together, off by default in the forecast configs and on in the long-run and coupled configs. There the 10 W/m2 radiation gain decides the outcome, and the tropical 72-120 h skill matters less.
+
+**Coupled slab** (the r019 coupled-pair setup, with the same start and the same pair-physics Q-flux F_cal, plus the three switches, at day 59 against the old arm at the same day):
+
+| | switches on | old coupled arm |
+|---|---|---|
+| open-water SST minus GDAS (K), global / 10S-10N | -0.07 / -0.23 | -0.30 / -0.60 |
+| open-water flux minus F_cal (W/m2), days 2-30 / 30-60 | +3.1 / -3.5 | -8.8 / -12.4 |
+| net TOA (W/m2), days 30-60 | -0.7 | -9.2 |
+
+- **Effect:** the switches cut the slab's cold drift by about two thirds over the first two months.
+- **Caveat:** the F_cal is the pair calibration reused as-is, so part of the gain is extra sunlight acting on a Q tuned for less of it.

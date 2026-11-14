@@ -62,6 +62,7 @@ include RELEASE-NOTES-0.1.9.md
 include RELEASE-NOTES-0.2.0.md
 include RELEASE-NOTES-0.2.1.md
 include RELEASE-NOTES-0.2.2.md
+include RELEASE-NOTES-0.2.3.md
 # Which revision of the model's source this package carries.  A reader
 # of an sdist has the code and no way to place it without this.
 include SOURCE.md

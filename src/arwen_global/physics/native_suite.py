@@ -207,6 +207,16 @@ class ArwenCudaColumnSuite:
             ishallow=int(self.options.gf_ishallow),
             clos_choice=0,
             ntiedtke_tiedtke_closure=bool(self.options.ntiedtke_tiedtke_closure),
+            ntiedtke_momentum_transport=bool(self.options.ntiedtke_momentum_transport),
+            ntiedtke_adjustment_time_factor=float(
+                self.options.ntiedtke_adjustment_time_factor),
+            ntiedtke_entrainment_factor=float(
+                self.options.ntiedtke_entrainment_factor),
+            ntiedtke_downdraft_factor=float(
+                self.options.ntiedtke_downdraft_factor),
+            ntiedtke_trigger_entrainment_factor=(
+                None if self.options.ntiedtke_trigger_entrainment_factor is None
+                else float(self.options.ntiedtke_trigger_entrainment_factor)),
         )
 
     def _water_column(self, batch, persistent: PersistentNativeState | None = None,
@@ -239,7 +249,7 @@ class ArwenCudaColumnSuite:
         # dW_reservoir + dW_soil + dW_canopy + dW_snow + dW_outflow = 0 per
         # call.  Noah's runoff accumulators themselves are counted at zero:
         # SSTEP clips saturated soil into udrunoff and infiltration excess
-        # lands in sfcrunoff (noah.cu:548-564, 1518-1519), nothing in the
+        # lands in sfcrunoff (noah.cu:563-579, 1543-1544), nothing in the
         # column ever reads them back, and the land step books each priced
         # increment (max(store, 0) * land_fraction, the v3 weights) to the
         # cumulative outflow account at the moment it debits the reservoir

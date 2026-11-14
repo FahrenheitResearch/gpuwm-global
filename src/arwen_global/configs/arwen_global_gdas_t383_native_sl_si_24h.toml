@@ -63,10 +63,18 @@ surface_water_kg_m2 = 500.0
 # at both chunks.
 # The chunk is in the config hash, so a checkpoint written under 12,500
 # restarts under a config that says 12500.
+# radiation_interval_s is 3000 s since 0.2.3 (2100 s before): over eight
+# 120 h GDAS starts scored against the GFS analysis no metric was worse by
+# more than three times the round-off twin spread, and the run stepped
+# 1.067x faster on an RTX 5090 (1.17x in one 24 h run on an RTX 5070 Ti).
+# orographic_drag = "kim-gwdo" (WRF gwd_opt = 1), on since 0.2.3, as in the
+# T255 day, whose notes give what it measured there; its skill was measured
+# at T255 only.  The run door builds the sub-grid orography cache it reads
+# when it is missing; orographic_drag = "none" turns it off.
 [physics]
 mode = "arwen-native"
 native_adapter_name = "arwen-cuda-column-suite-v1"
-native_adapter_options = { acknowledgement = "device-pending-arwen-native-physics-v1", start_time_utc = "2026-09-01T00:00:00Z", radiation = "rrtmgp", radiation_interval_s = 2100.0, radiation_column_chunk = 5000, radiation_validation_mode = "fused", surface_layer = "sfclay", sfclay_option = 1, land_surface = "noah", land_surface_interval_s = 300.0, pbl = "ysu", ysu_topdown_pblmix = 1, microphysics = "morrison", morr_rimed_ice = 1, dx_m = 34700.0 }
+native_adapter_options = { acknowledgement = "device-pending-arwen-native-physics-v1", start_time_utc = "2026-09-01T00:00:00Z", radiation = "rrtmgp", radiation_interval_s = 3000.0, radiation_column_chunk = 5000, radiation_validation_mode = "fused", surface_layer = "sfclay", sfclay_option = 1, land_surface = "noah", land_surface_interval_s = 300.0, pbl = "ysu", ysu_topdown_pblmix = 1, microphysics = "morrison", morr_rimed_ice = 1, dx_m = 34700.0, orographic_drag = "kim-gwdo" }
 
 # Order 8 at 36 min (2026-09-04): the energy ledger read the truncation band
 # fed by the resolved cascade faster than the order 4 / 4 h drain removed it

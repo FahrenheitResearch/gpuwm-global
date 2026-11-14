@@ -108,6 +108,7 @@ from .upper_air_scorecard import (
     receipt_initial_analysis,
     receipt_start_utc,
     resolve_mapping,
+    surface_geopotential_cache_name,
     surface_geopotential_for_run,
 )
 
@@ -1452,8 +1453,7 @@ def _phi_for(run_dir: Path, mapping: str | None, cache_dir: Path | None, initial
                 raise ValueError(
                     f"{path}: SHA-256 {digest[:16]} is not the initial analysis the run receipt recorded"
                 )
-            nlat, nlon = int(receipt["transform"]["nlat"]), int(receipt["transform"]["nlon"])
-            cache = Path(cache_dir) / f"phi-surface-{digest[:16]}-{nlat}x{nlon}.npz"
+            cache = Path(cache_dir) / surface_geopotential_cache_name(digest, receipt)
             if cache.exists():
                 with np.load(cache, allow_pickle=False) as archive:
                     phi = np.array(archive["phi"])

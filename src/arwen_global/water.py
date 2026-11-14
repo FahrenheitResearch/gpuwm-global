@@ -12,7 +12,7 @@ NATIVE_SNOW_STORE_NAMES = ("noah_snow", "snow")
 # Noah's runoff accumulators are the water's LAST address inside the column
 # system: SSTEP saturation excess and subsurface drainage leave the soil
 # column into udrunoff, and infiltration excess leaves into sfcrunoff
-# (noah.cu:548-564, 1518-1519), and nothing in the column ever reads them
+# (noah.cu:563-579, 1543-1544), and nothing in the column ever reads them
 # back -- physically that water has left for the rivers.  The v3 ledger
 # counted them as held water at land_fraction pricing, which kept every
 # per-call closure exact but sequestered a monotone-growing store inside

@@ -541,10 +541,10 @@ class NativePhysicsRuntime:
 
         One construction for every kernel call and mask in the runtime, so
         the columns sfclay treats as water, the columns Noah skips as water
-        (noah.cu:968, xland >= 1.5) and the columns whose state the bridge
+        (noah.cu:984, xland >= 1.5) and the columns whose state the bridge
         holds across calls are bit-for-bit the same set, and the sea-ice
         columns are land to sfclay, YSU and the cumulus scheme while Noah
-        skips them as ice (noah.cu:969) and the frozen-surface step
+        skips them as ice (noah.cu:985) and the frozen-surface step
         integrates their skin.  The static fields are seeded with the same
         rule (statics.water_columns), so the water category sits on exactly
         these columns and the land and ice classes on the rest;
@@ -764,9 +764,9 @@ class NativePhysicsRuntime:
         """Refuse a surface state Noah would misread.
 
         The kernel indexes VEGPARM with ``vegtyp - 1`` and SOILPARM with
-        ``soiltyp - 1`` without a bounds check (noah.cu:1056-1057), skips
-        ``vegtyp == isice`` (noah.cu:976) and treats ``isurban`` specially
-        (noah.cu:1106): a category from another dataset, out of range, or
+        ``soiltyp - 1`` without a bounds check (noah.cu:1072-1073), skips
+        ``vegtyp == isice`` (noah.cu:992) and treats ``isurban`` specially
+        (noah.cu:1122): a category from another dataset, out of range, or
         an isice/isurban option from another dataset silently runs a
         column with another class's parameters.  A land column carrying
         the water category would be integrated with VEGPARM's water row
@@ -860,7 +860,7 @@ class NativePhysicsRuntime:
             / xp.maximum(f["land_rainbl"], xp.float32(1.0e-12)),
             "chs": f["chs"], "cqs2": f["cqs2"], "chs2": f["chs2"],
             "rib": f["br"],
-            # Percent, as VEGFRA/SHDMIN/SHDMAX are in WRF (noah.cu:994-998
+            # Percent, as VEGFRA/SHDMIN/SHDMAX are in WRF (noah.cu:1010-1014
             # divides by 100).
             "vegfra": 100.0 * surface.vegetation_fraction,
             "shdmin": 100.0 * surface.vegetation_fraction_min,
@@ -868,7 +868,7 @@ class NativePhysicsRuntime:
             "tmn": surface.deep_soil_temperature_k, "xland": xland,
             # The analysed sea-ice fraction (surface_seeding): the kernel
             # skips every column at or above its threshold as sea ice
-            # (noah.cu:969) and the frozen-surface step integrates the skin.
+            # (noah.cu:985) and the frozen-surface step integrates the skin.
             "xice": surface.sea_ice_fraction,
             "snoalb": surface.snow_albedo, "embck": surface.emissivity,
             "tsk": surface.temperature_k, "hfx": f["hfx"],
@@ -881,7 +881,7 @@ class NativePhysicsRuntime:
             "emiss": surface.emissivity,
             "znt": surface.roughness_m, "z0": surface.roughness_m.copy(),
             # The carried snow age: the kernel reads it, ages or zeroes it
-            # in ALCALC and writes it back (noah.cu:1033, 1497), and the
+            # in ALCALC and writes it back (noah.cu:1049, 1522), and the
             # write-back below keeps it for the next call.
             # With snow_ageing off it is rebuilt as zeros on every call, the
             # arithmetic of 0.1.5 and earlier, and nothing is written back.
@@ -982,6 +982,13 @@ class NativePhysicsRuntime:
         for name in NOAH_HELD_FLUX_FIELDS:
             f[name][...] = xp.where(land, f["noah_" + name], f[name])
 
+    def _snow_age_refresh_kwargs(self) -> dict:
+        """The launch keywords of the snow-age reset rule.  WRF's rule (the
+        default) passes none, so the call is the one every earlier release
+        made (and a launcher that predates the keyword still takes it)."""
+        rule = getattr(self.options, "snow_age_refresh", "any")
+        return {} if rule == "any" else {"snow_age_refresh": rule}
+
     def _land_step(self, batch, persistent):
         bucket = self._bucket(batch.time_s, self.options.land_surface_interval_s)
         due = bucket != int(persistent.metadata["last_land_bucket"])
@@ -1016,8 +1023,8 @@ class NativePhysicsRuntime:
             self._statics_checked = True
         xp = batch.xp
         # The kernel skips every xland >= 1.5 column before SFLX (open water;
-        # noah.cu:968), but its first call also writes the WRF driver's
-        # diagnostic fill into exactly those columns first (noah.cu:940-948,
+        # noah.cu:984), but its first call also writes the WRF driver's
+        # diagnostic fill into exactly those columns first (noah.cu:956-964,
         # module_sf_noahdrv.F:749-788 convention): smois = 1, tslb = 273.16,
         # smcrel = 1.  That fill is a constant stamped on columns the scheme
         # never integrates, not water that arrived from anywhere; if it
@@ -1034,9 +1041,9 @@ class NativePhysicsRuntime:
         # columns therefore carry their soil state across the call
         # unchanged.  The mask repeats _noah_fields' xland construction
         # bit-for-bit so it selects exactly the columns the kernel skipped:
-        # open water (noah.cu:968), sea ice (noah.cu:969, whose first-call
+        # open water (noah.cu:984), sea ice (noah.cu:985, whose first-call
         # fill stamps smois = smcrel = 1 and every call sh2o = 1) and land
-        # ice (noah.cu:976).
+        # ice (noah.cu:992).
         skipped = (self._xland(batch) >= xp.float32(1.5)) | self._frozen_columns(
             batch, persistent
         )
@@ -1057,6 +1064,7 @@ class NativePhysicsRuntime:
             rdlai2d=self.options.read_lai_2d,
             opt_thcnd=self.options.noah_thermal_conductivity_option,
             itimestep=int(persistent.metadata["native_calls"]) + 1,
+            **self._snow_age_refresh_kwargs(),
         )
         if preserved is not None:
             # The kernel wrote dev's soil arrays in place (they are the
@@ -1073,7 +1081,7 @@ class NativePhysicsRuntime:
         # WRF's surface_driver runs the LSM after sfclay and the PBL
         # driver reads ZNT afterwards, so on a land column YSU sees the
         # roughness Noah just set (VEGPARM Z0MIN/Z0MAX by green fraction,
-        # snow-buried; noah.cu:1486) on the same step.  The persistent
+        # snow-buried; noah.cu:1511) on the same step.  The persistent
         # 'znt' YSU reads was sfclay's output, which on land is its input,
         # the surface state's roughness BEFORE this call: the statics'
         # LANDUSE.TBL value on the first due call and Noah's previous one

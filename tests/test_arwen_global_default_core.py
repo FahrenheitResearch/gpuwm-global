@@ -149,6 +149,14 @@ def test_the_bare_door_config_is_the_arm_of_record_with_nothing_said():
     text = BARE.read_text(encoding="utf-8")
     for key in ("integrator", "dt_s", "[semilag]", "order =", "e_folding", "off_centring"):
         assert key not in text.replace("# ", "").split("[arwen_global]")[1], key
+    # The record turns the orographic drag on from 0.2.3 (a physics option,
+    # measured on the T255 forecast scorecard); the bare config is about the
+    # core and keeps 0.2.2's physics, so the record is compared without it.
+    options = dict(record.native_adapter_options)
+    assert options["orographic_drag"] == "kim-gwdo"
+    assert bare.native_adapter_options["orographic_drag"] == "none"
+    options["orographic_drag"] = "none"
+    record = dataclasses.replace(record, native_adapter_options=options)
     differing = [
         field.name for field in dataclasses.fields(bare)
         if getattr(bare, field.name) != getattr(record, field.name)

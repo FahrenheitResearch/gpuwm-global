@@ -70,7 +70,7 @@ over each hunk's engine-side lines and another over its carried-side lines. All
 37 carried files are measured that way, whatever their suffix; a pair either
 side of which does not decode as text has no lines to diff, so it is compared
 byte for byte instead and a difference there is one whole-file hunk.
-`src/arwen_global/data/engine-divergence.json` carries them, 912 at 0.2.2, with the
+`src/arwen_global/data/engine-divergence.json` carries them, 947 at 0.2.3 (912 at 0.2.2), with the
 class and decision of the row they belong to, and the engine line keys its own
 change lists by the engine-side hash, so the same difference has the same name
 on both sides. `tools/fingerprint_engine_divergence.py` documents the
@@ -124,6 +124,18 @@ normalisation exactly and is what recomputes it.
   (17,683 engine lines and 7,677 carried lines) to read, classify and
   date against the engine's public tags from v2.8.5 to v2.9.13. It was not
   done in the 0.2.2 cut.
+* **Where the rows stand at 0.2.3 (measured 2026-11-14), the same way.** The
+  New Tiedtke storm switches add `NTIEDTKE-PY-5` and `NTIEDTKE-CU-2` (21
+  hunks); four further hunks that also carry `NTIEDTKE-PY-4`'s and
+  `NTIEDTKE-CU-1`'s lines keep those names, five of those rows' hunks that
+  the switches absorbed are gone, and the line ranges of every
+  `core/ntiedtke.py`, `core/kernels/ntiedtke.cu`, `core/npref.py` and Noah
+  row were re-read from the measurement. The snow-age refresh
+  (`NOAH-CU-3`, `NOAH-PY-5`, `NPREF-18`) was measured on its branch and
+  its rows match the merged tree unchanged. Every other file is as 0.2.2
+  shipped it, and the 51 hunks with no row and 21 rows with no hunk above
+  are the same ones. The 2.9.13 re-baseline was not done in the 0.2.3 cut
+  either.
 * **This package:** the model source revision `a2a674a2757c2dfc70fc9a2b12b4412ba3b18fcd`
   of 2026-09-12, which is what `SOURCE.md` records and what `pyproject.toml`
   states beside the version.
@@ -299,10 +311,11 @@ notice that travels with them.
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
-| `NTIEDTKE-PY-1` | 1278-1278, 1281-1293, 1494-1495 | 1395-1395, after 1397, after 1564 | equal to engine | adaptation | owner 92e58c4ff, 2026-09-02 | nothing at the shipped default | **none** |
-| `NTIEDTKE-PY-2` | after 1087, 1352-1366, 1392-1393 | 1110-1124, 1456-1456, 1482-1489 | equal to engine | global-fix | owner 3d22c51cf, 2026-09-02; engine 5a6053b7a, 2026-09-27 | nothing, on either line | **none** |
-| `NTIEDTKE-PY-3` | 1452-1480, after 1496, 1515-1518 | 1549-1551, 1566-1568, after 1588 | equal to engine | global-fix | owner 92e58c4ff, 2026-09-02 | real when the lane is bound, nothing when it is not | **offer** |
-| `NTIEDTKE-PY-4` | after 62, after 225, 243-243, 250-250, 581-602, 604-607, after 668, after 723, after 754, 757-757, 764-767, 846-846, 857-857, 863-863, 870-870, 879-879, 886-886, 894-894, 901-901, 908-908, 917-917, 924-924, 932-932, 938-938, 946-946, 953-953, 959-959, 965-965, 971-971, 978-978, 987-987, 995-995, 1001-1002, 1004-1004, after 1062, 1093-1093, after 1104, after 1105, after 1109, after 1117, 1151-1151, 1169-1170, after 1172, after 1174, 1184-1188, after 1241, 1441-1441, 1444-1444, after 1497, after 1523 | 63-74, 238-239, 257-257, 264-267, 598-606, 608-613, 675-676, 732-733, 765-767, 770-772, 779-786, 865-865, 876-876, 882-882, 889-889, 898-898, 905-905, 913-913, 920-920, 927-927, 936-936, 943-943, 951-951, 957-957, 965-965, 972-972, 978-978, 984-984, 990-990, 997-997, 1006-1006, 1014-1014, 1020-1021, 1023-1023, 1082-1084, 1130-1133, 1145-1152, 1154-1154, 1159-1159, 1168-1169, 1203-1223, after 1240, 1243-1262, 1265-1271, after 1280, 1334-1358, 1537-1538, 1541-1541, 1570-1571, 1594-1594 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing at this package's settings | **none** |
+| `NTIEDTKE-PY-1` | 1314-1314, 1317-1329, 1542-1543 | 1395-1395, after 1397, after 1564 | equal to engine | adaptation | owner 92e58c4ff, 2026-09-02 | nothing at the shipped default | **none** |
+| `NTIEDTKE-PY-2` | after 1108, 1388-1411, 1437-1441 | 1110-1124, 1456-1456, 1482-1489 | equal to engine | global-fix | owner 3d22c51cf, 2026-09-02; engine 5a6053b7a, 2026-09-27 | nothing, on either line | **none** |
+| `NTIEDTKE-PY-3` | 1500-1528, after 1544, 1563-1566 | 1549-1551, 1566-1568, after 1588 | equal to engine | global-fix | owner 92e58c4ff, 2026-09-02 | real when the lane is bound, nothing when it is not | **offer** |
+| `NTIEDTKE-PY-4` | after 62, after 225, 243-243, 250-250, 581-602, 604-607, after 668, after 723, after 754, 757-757, 764-767, 846-846, 863-863, 870-870, 886-886, 894-894, 901-901, 908-908, 917-917, 924-924, 965-965, 938-938, 946-946, 953-953, 959-959, 971-971, 978-978, 987-987, 995-995, 1001-1002, 1004-1004, after 1071, 1114-1114, after 1125, after 1126, after 1130, after 1138, 1172-1172, 1190-1191, after 1193, after 1195, 1205-1209, 1489-1489, 1492-1492, after 1545, after 1571, 856-857, 878-879, after 1275 | 63-74, 238-239, 257-257, 264-267, 598-606, 608-613, 675-676, 732-733, 765-767, 770-772, 779-786, 865-865, 882-882, 889-889, 905-905, 913-913, 920-920, 927-927, 936-936, 943-943, 984-984, 957-957, 965-965, 972-972, 978-978, 990-990, 997-997, 1006-1006, 1014-1014, 1020-1021, 1023-1023, 1082-1084, 1130-1133, 1145-1152, 1154-1154, 1159-1159, 1168-1169, 1203-1223, after 1240, 1243-1262, 1265-1271, after 1280, 1537-1538, 1541-1541, 1570-1571, 1594-1594, 875-876, 897-898, 1332-1356 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing at this package's settings | **none** |
+| `NTIEDTKE-PY-5` | 892-892, 931-932, 1055-1060, 1062-1065, 1090-1101, 1240-1251, 1265-1265, 1268-1269 | 911-911, 950-951, 1074-1074, after 1075, after 1102, after 1310, after 1323, after 1325 | equal to engine | global-fix | package fx/storms, 2026-11-14 | nothing at the shipped default | **offer** |
 
 **`NTIEDTKE-PY-1`.** The cumulus workspace is bounded by one column-chunk option, whichever scheme fills the slot. With no cap the tile width is the engine's exactly, from constants equal on both sides. With a cap the domain is walked in more and narrower chunks; every stage is per column, so tendencies do not see the partition, except one launch scalar that is an OR over the chunk's columns, and the pipeline re-checks that hoist's precondition at the partition's own scope and refuses rather than passing a wrong scalar. A future engine change to the constructor signature or to the chunk walk needs these two regions re-applied, not dropped.
 
@@ -311,6 +324,8 @@ notice that travels with them.
 **`NTIEDTKE-PY-3`.** The engine fills the spacing array with one scalar for every column; this copy reads the driver's per-column spacing when it is present and falls back to the identical scalar fill otherwise. The spacing reaches the kernel at exactly one site, the scale factors, which multiply the deep closure's adjustment time and divide the shallow closure's mass flux. On a Gaussian grid the square root of the cell area at 60 degrees is about 0.707 of the equatorial value, so for a 50 km equatorial spacing the deep factor goes 1.665 to 1.470, about 13 percent on the adjustment time. Keep it here: the native suite runs on a grid whose zonal spacing shrinks with the cosine of latitude and this closure is scale aware. Offer it: the engine's own driver already publishes that lane and its other cumulus scheme already reads it, so this is the one scheme of the two that ignores a lane the engine already has. At 2.8.1 the engine fills its scalar spacing once for every chunk (`NTIEDTKE-PY-4`); this copy still hands each column its own.
 
 **`NTIEDTKE-PY-4`.** The engine's speed work on this scheme's driver: the per-chunk validation flag is reduced on the device into a mask the kernels read as a guard instead of a host synchronisation per chunk (`NTIEDTKE-CU-1` is the kernel half), eleven stages run as one launch above a column threshold through `gpuwm.core.ntiedtke_fused`, argument bindings are cached per stage, and the tile is capped at 512 columns per SM instead of borrowing the other cumulus scheme's constants. The fused path is an engine module this package does not carry and has not graded. This model's default cumulus scheme is the other one; take this only with a measurement on this package's own columns.
+
+**`NTIEDTKE-PY-5`.** Five experimental storm-intensity switches on New Tiedtke, all off by default and each in the config hash only when set away from its default under `cumulus = "ntiedtke"`: `ntiedtke_momentum_transport` (WRF's `lmfdudv`), and factors on the deep adjustment time, the organised entrainment constant (updraft), the deep test parcel's entrainment (unset follows the updraft's) and the downdraft. At the defaults the driver hands the kernel the engine's values and a 2 h T383 checkpoint was byte-identical to v0.2.1's. Three hunks that also carry `NTIEDTKE-PY-4`'s lines (engine 875-876, 897-898 and 1332-1356) keep that row's name. Measured to deepen Katrina, Ian and Sandy at T383 only at the cost of grid-point rain cells and Sandy's track; no value is recommended. `NTIEDTKE-CU-2` is the kernel half.
 
 ### `core/sfclay.py`
 
@@ -453,17 +468,20 @@ At 2.8.1 to 2.8.5 the engine's new driver options and structure (`PHYSICS-19`, `
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
 | `NOAH-PY-1` | after 378, 392-392 | 381-385, 399-399 | equal to carried | engine-fix | engine v2.8.2 (4c27749), 2026-10-02 | nothing on a shipped path | **pull** |
-| `NOAH-PY-2` | 439-441, after 444, 448-461 | 446-447, 451-459, 463-476 | equal to carried | engine-fix | engine v2.8.5 (3e2d273), 2026-10-03 | nothing numeric | **pull** |
-| `NOAH-PY-3` | 15-15, 469-469, after 477, 511-511 | 15-17, 538-539, 548-555, 589-598 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing at this package's settings | **none** |
-| `NOAH-PY-4` | after 462 | 478-531 | equal to carried | engine-fix | engine v2.8.2 (4c27749), 2026-10-02 | nothing in this package | **none** |
+| `NOAH-PY-2` | 451-453, after 456, 460-473 | 446-447, 451-459, 463-476 | equal to carried | engine-fix | engine v2.8.5 (3e2d273), 2026-10-03 | nothing numeric | **pull** |
+| `NOAH-PY-3` | 15-15, 482-483, after 498, 541-541 | 15-17, 539-539, 548-555, 589-598 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing at this package's settings | **none** |
+| `NOAH-PY-4` | after 474 | 478-531 | equal to carried | engine-fix | engine v2.8.2 (4c27749), 2026-10-02 | nothing in this package | **none** |
+| `NOAH-PY-5` | 408-419, 485-491, 500-506, 538-539 | after 414, after 540, after 556, after 587 | equal to engine | global-fix | package fx/land-cold, 2026-11-14 | nothing at the shipped default | **offer** |
 
 **`NOAH-PY-1`.** WRF's cold-start soil initialisation compares a stored FP32 soil temperature against the FP32 literal 273.149. This copy compares against the binary64 273.149, and the FP32 word nearest it is 273.148987, below it, so a level stored at exactly that word goes down the frozen branch where WRF takes the warm copy. The engine compares against `float(np.float32(273.149))`. Reached here only through `sh2o_init`, which no door calls and one test does, so no shipped number moves; the pull is one line and removes a wrong answer from carried code.
 
 **`NOAH-PY-2`.** The cache of uploaded land-surface tables was keyed by the identity of the parameter object and held a reference to it. Every run in one process loads its own parameter object, so every ensemble member or assimilation cycle left one more copy of the same tables on the card; the engine keys the cache by the values it uploads. Nothing numeric moves. The engine's version fills the cache through `gpuwm.core.device_cache`, so it carries the same floor condition as `RRTMGP-23`.
 
-**`NOAH-PY-3`.** The launcher takes the urban model's hand-over and chooses the kernel entry compiled with it; without one it launches the same `noah_column` as before. The docstring follows. This package runs no urban model. `NOAH-CU-2` is the kernel half.
+**`NOAH-PY-3`.** The launcher takes the urban model's hand-over and chooses the kernel entry compiled with it; without one it launches the same `noah_column` as before. The docstring follows. This package runs no urban model. `NOAH-CU-2` is the kernel half. The signature hunk here (carried 482-483) also carries `NOAH-PY-5`'s two keywords, because they sit where the engine has its `urban` keyword; a take of either re-applies the other.
 
 **`NOAH-PY-4`.** A device version of the cold-start liquid-water initialisation, compiled from an engine-only unit (`LOADER-4`). This package runs no cold-start soil initialisation from any door.
+
+**`NOAH-PY-5`.** The launcher half of `NOAH-CU-3`: the `snow_age_refresh` rule (`"any"`, WRF's, the default, or `"amount"`) and Noah-MP's SWEMX, checked before CuPy is imported and passed to the kernel as two arguments. At the default the kernel takes WRF's path and every word is unchanged.
 
 ### `core/morrison.py`
 
@@ -503,18 +521,19 @@ These rows, and the two of `core/kernels/terrain_drag.cu` below, are measured ag
 | `NPREF-2` | 1045-1046, 1051-1056, 1075-1083, 1123-1132, 1136-1136, after 1137, after 1139, 1390-1392, 1412-1415, 1948-1948, 2056-2057, 2105-2106, 2145-2145 | 1049-1049, after 1053, 1072-1075, 1115-1116, 1120-1120, 1122-1122, 1125-1125, after 1372, after 1391, 1924-1924, after 2025, 2073-2073, after 2110 | equal to engine | global-fix | owner bef189b1d, 2026-09-12 | the mirror half of MORRISON-CU-1 | **offer** |
 | `NPREF-3` | 4330-4330, 4499-4501, after 4512, after 4776, 4816-4816, 4829-4831, 4838-4838, 4867-4867 | 4394-4394, 4563-4565, 4577-4577, 4825-4830, 4870-4870, 4883-4885, 4892-4894, 4917-4918 | equal to carried | engine-fix | engine 3669990e8, 2026-09-04 | nothing in any field this mirror already returns | **none** |
 | `NPREF-4` | 4746-4759, 4762-4763, 4768-4769, 4847-4854, 4869-4869, 4876-4876 | 4811-4811, after 4813, after 4817, 4903-4904, after 4919, 4926-4926 | equal to engine | deliberate | owner c3f2de9b7, corrected by 47ea9ae89, both 2026-09-04 | nothing at the three original options | **refuse** |
-| `NPREF-5` | 6375-6376, 6378-6382, 6418-6420, 6783-6784, 6787-6788 | 6425-6425, after 6426, after 6461, after 6818, after 6820 | equal to engine | deliberate | owner 36cb7cd43, 2026-09-05 | nothing at the shipped default | **refuse** |
-| `NPREF-7` | 6578-6585, 6588-6600 | 6619-6636, after 6638 | neither | global-fix | owner 304177d6f, 2026-09-04; engine 4d523b793, same day | identical where the index is above one; the height differs in one corner | **offer** |
-| `NPREF-8` | 6611-6612 | after 6648 | equal to engine | global-fix | owner 304177d6f, 2026-09-04 | narrow but not empty | **offer** |
-| `NPREF-9` | 7466-7472, 7474-7475, 7481-7497, 7499-7502, 7516-7516, 7522-7527, 7530-7530, 7534-7534, 7549-7552, 7565-7566, 7568-7572, 7588-7588, 7590-7590 | after 7497, 7499-7499, after 7504, 7506-7508, 7522-7522, 7528-7531, 7534-7534, 7538-7538, 7553-7555, after 7567, 7569-7575, 7591-7591, 7593-7593 | equal to engine | global-fix | owner 50e109983, 2026-09-04 | up to 3.35 W/m2 of spurious absorption removed | **offer** |
-| `NPREF-10` | 7777-7777, 7782-7921, 7928-7931, 7945-7961, 7963-7964, 7996-7998, 8018-8020, 8051-8055, 8069-8079, 8081-8082, after 8083, 8085-8102 | 7780-7780, after 7784, 7791-7791, 7805-7806, after 7807, 7839-7840, 7860-7862, after 7892, after 7905, 7907-7908, 7910-7911, 7913-7917 | equal to engine | global-fix | owner 4bf9f3e94, 9cfc20654 and 984c1cc61, 2026-09-04; eaa150a42, 2026-09-04; f6999e233, 2026-09-05 | the mirror half of RRTMGP-10, RRTMGP-12 and RRTMGP-13 | **offer** |
-| `NPREF-11` | after 9362, 9364-9364, 9449-9450, 9463-9464, 9466-9468, 9470-9473, 9475-9475, 9503-9503 | 9178-9183, 9185-9185, 9270-9273, 9286-9289, 9291-9294, 9296-9299, 9301-9301, 9329-9329 | equal to carried | engine-fix | engine ab874b32e, 2026-09-04 | 1.23 percent on the shallow tendencies at a 90 s step | **pull** |
+| `NPREF-5` | 6391-6392, 6394-6398, 6434-6436, 6799-6800, 6803-6804 | 6425-6425, after 6426, after 6461, after 6818, after 6820 | equal to engine | deliberate | owner 36cb7cd43, 2026-09-05 | nothing at the shipped default | **refuse** |
+| `NPREF-7` | 6594-6601, 6604-6616 | 6619-6636, after 6638 | neither | global-fix | owner 304177d6f, 2026-09-04; engine 4d523b793, same day | identical where the index is above one; the height differs in one corner | **offer** |
+| `NPREF-8` | 6627-6628 | after 6648 | equal to engine | global-fix | owner 304177d6f, 2026-09-04 | narrow but not empty | **offer** |
+| `NPREF-9` | 7495-7501, 7503-7504, 7510-7526, 7528-7531, 7545-7545, 7551-7556, 7559-7559, 7563-7563, 7578-7581, 7594-7595, 7597-7601, 7617-7617, 7619-7619 | after 7497, 7499-7499, after 7504, 7506-7508, 7522-7522, 7528-7531, 7534-7534, 7538-7538, 7553-7555, after 7567, 7569-7575, 7591-7591, 7593-7593 | equal to engine | global-fix | owner 50e109983, 2026-09-04 | up to 3.35 W/m2 of spurious absorption removed | **offer** |
+| `NPREF-10` | 7806-7806, 7811-7950, 7957-7960, 7974-7990, 7992-7993, 8025-8027, 8047-8049, 8080-8084, 8098-8108, 8110-8111, after 8112, 8114-8131 | 7780-7780, after 7784, 7791-7791, 7805-7806, after 7807, 7839-7840, 7860-7862, after 7892, after 7905, 7907-7908, 7910-7911, 7913-7917 | equal to engine | global-fix | owner 4bf9f3e94, 9cfc20654 and 984c1cc61, 2026-09-04; eaa150a42, 2026-09-04; f6999e233, 2026-09-05 | the mirror half of RRTMGP-10, RRTMGP-12 and RRTMGP-13 | **offer** |
+| `NPREF-11` | after 9391, 9393-9393, 9478-9479, 9492-9493, 9495-9497, 9499-9502, 9504-9504, 9532-9532 | 9178-9183, 9185-9185, 9270-9273, 9286-9289, 9291-9294, 9296-9299, 9301-9301, 9329-9329 | equal to carried | engine-fix | engine ab874b32e, 2026-09-04 | 1.23 percent on the shallow tendencies at a 90 s step | **pull** |
 | `NPREF-12` | 3267-3267, 3319-3319, 3431-3431, 3452-3452, 3464-3464 | 3303-3303, 3355-3355, 3467-3467, 3488-3488, 3500-3500 | equal to carried | no-behaviour | engine 9a2f350e7, 2026-09-14 | nothing, comments only | **none** |
 | `NPREF-13` | after 2310 | 2276-2346 | not present | engine-fix | engine 72f18213d, 2026-09-16 | nothing in this package | **none** |
 | `NPREF-14` | 609-611, after 669 | 572-576, 635-673 | equal to carried | engine-fix | engine v2.8.2 (4c27749), 2026-10-02 | nothing in this package | **none** |
 | `NPREF-15` | 3516-3517, 3523-3523, 3540-3540, 3542-3542, 3551-3551, 3554-3554, 3559-3559, 3562-3562, 3570-3570, 3573-3573, 3626-3626, 3628-3629, 3633-3633, after 3647, 3649-3649, 3651-3651, 3760-3761, 3811-3811, 3819-3819 | 3552-3553, 3559-3559, 3576-3576, 3578-3581, 3590-3594, 3597-3600, 3605-3605, 3608-3610, 3618-3622, 3625-3628, 3681-3682, 3684-3685, 3689-3690, 3705-3705, 3707-3707, 3709-3709, 3818-3819, 3869-3872, 3880-3883 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01, and v2.8.2 (4c27749), 2026-10-02 | nothing in this package | **none** |
 | `NPREF-16` | 1323-1324, 1329-1331, 1335-1335, 1377-1377, 1418-1418, 1990-1990, 2009-2011, 2013-2015, 2109-2110, 2200-2200 | 1309-1309, 1314-1314, 1318-1318, 1360-1360, 1394-1394, 1966-1966, after 1984, after 1985, 2076-2076, 2165-2165 | equal to engine | global-fix | package fix/droplet-number, 2026-11-12 | nothing at the shipped default | **offer** |
-| `NPREF-17` | 7148-7155, 7176-7181, 7271-7272, 7693-7694 | after 7179, 7200-7200, 7290-7291, 7683-7684 | equal to engine | global-fix | package 9555906, 2026-11-13 | nothing for a layer inside the tables | **offer** |
+| `NPREF-17` | 7164-7171, 7192-7197, 7287-7288, 7709-7710 | after 7179, 7200-7200, 7290-7291, 7683-7684 | equal to engine | global-fix | package 9555906, 2026-11-13 | nothing for a layer inside the tables | **offer** |
+| `NPREF-18` | 4954-4960, 4966-4970, 5836-5836, 5963-5966, 5998-5999, 6163-6164, 6283-6284 | 5004-5005, 5011-5011, 5877-5877, after 6003, 6035-6035, 6199-6199, 6318-6318 | equal to engine | global-fix | package fx/land-cold, 2026-11-14 | nothing at the shipped default | **offer** |
 
 **`NPREF-1`.** The third-party notice for what this file transcribes. Its RTE+RRTMGP half matches the engine's own header for the same work; its AER half is the correction of RRTMGP-2, in the mirror rather than the driver, and applies to the engine's copy unchanged.
 
@@ -547,6 +566,7 @@ These rows, and the two of `core/kernels/terrain_drag.cu` below, are measured ag
 **`NPREF-16`.** The mirror half of `MORRISON-CU-4`: `np_morrison_column` takes the column's droplet number, WRF's 250 cm-3 by default, and both resets read it.
 
 **`NPREF-17`.** The mirror half of `RRTMGP-29` and `GAS-CU-2`: the float64 gas interpolation looks a layer deeper than the tables' deepest pressure up at it, the troposphere test keeps the true pressure, and both range checks accept layers to `RRTMGP_PLAY_CEILING_PA`, through one helper that mirrors the driver's `_play_bounds`.
+**`NPREF-18`.** The mirror half of `NOAH-CU-3`: `np_noah_column` and `_noah_sflx` take the snow-age refresh rule, ALCALC applies it, and under `"amount"` a column with no snow carries no age. At the default the arithmetic is the engine's.
 
 ### `core/kernels/__init__.py`
 
@@ -613,9 +633,12 @@ These rows, and the two of `core/kernels/terrain_drag.cu` below, are measured ag
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
-| `NTIEDTKE-CU-1` | 123-123, 128-128, after 236, 243-243, after 454, 461-461, after 534, 541-541, after 875, 882-882, 989-995, after 1044, after 1222, 1229-1229, after 1301, 1308-1308, after 1485, 1492-1492, after 1725, 1732-1732, after 1733, after 2175, 2182-2182, after 2281, 2288-2288, after 2437, 2444-2444, after 2551, 2558-2558, after 2739, 2746-2746, after 3035, 3042-3042, after 3126, 3133-3133, after 3263, 3270-3270, after 3347, 3354-3354, after 3465, 3472-3472, after 3588, 3595-3595, after 3692, 3699-3699, after 3787, 3794-3794 | 123-123, 128-129, 238-238, 245-245, 457-457, 464-464, 538-538, 545-545, 880-880, 887-887, 994-1008, 1058-1058, 1237-1237, 1244-1244, 1317-1317, 1324-1324, 1502-1502, 1509-1509, 1743-1743, 1750-1750, 1752-1753, 2196-2196, 2203-2203, 2303-2303, 2310-2310, 2460-2460, 2467-2467, 2575-2575, 2582-2582, 2764-2764, 2771-2771, 3061-3061, 3068-3068, 3153-3153, 3160-3160, 3291-3291, 3298-3298, 3376-3376, 3383-3383, 3495-3495, 3502-3502, 3619-3619, 3626-3626, 3724-3724, 3731-3731, 3820-3820, 3827-3827 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing at this package's settings | **none** |
+| `NTIEDTKE-CU-1` | 123-123, 128-128, after 236, 243-243, after 454, 461-461, after 534, 541-541, after 885, 892-892, 999-1005, after 1232, 1239-1239, after 1311, 1318-1318, after 1499, 1506-1506, after 1744, 1751-1751, after 1752, after 2197, 2204-2204, after 2303, 2310-2310, after 2463, 2470-2470, after 2579, 2586-2586, after 2767, 2774-2774, after 3063, 3070-3070, after 3154, 3161-3161, after 3291, 3298-3298, after 3375, 3382-3382, after 3493, 3500-3500, after 3616, 3623-3623, after 3720, 3727-3727, after 3815, 3822-3822, 1055-1055 | 123-123, 128-129, 238-238, 245-245, 457-457, 464-464, 538-538, 545-545, 880-880, 887-887, 994-1008, 1237-1237, 1244-1244, 1317-1317, 1324-1324, 1502-1502, 1509-1509, 1743-1743, 1750-1750, 1752-1753, 2196-2196, 2203-2203, 2303-2303, 2310-2310, 2460-2460, 2467-2467, 2575-2575, 2582-2582, 2764-2764, 2771-2771, 3061-3061, 3068-3068, 3153-3153, 3160-3160, 3291-3291, 3298-3298, 3376-3376, 3383-3383, 3495-3495, 3502-3502, 3619-3619, 3626-3626, 3724-3724, 3731-3731, 3820-3820, 3827-3827, 1058-1059 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing at this package's settings | **none** |
+| `NTIEDTKE-CU-2` | 770-770, 782-786, 879-883, 964-964, 1494-1497, 1591-1591, 1593-1593, 1739-1742, 1771-1773, 1877-1877, 2039-2039, 2458-2461, 2519-2521 | after 773, 785-785, after 877, 959-959, after 1499, 1594-1594, after 1595, after 1740, after 1771, 1875-1875, 2037-2037, after 2457, 2516-2516 | equal to engine | global-fix | package fx/storms, 2026-11-14 | nothing at the shipped default | **offer** |
 
 **`NTIEDTKE-CU-1`.** The kernel half of `NTIEDTKE-PY-4`: each stage kernel takes the device-side validation mask and returns early on a chunk already found invalid, the one stage that reads the flag reads it from the mask, and a per-trial scratch clear that inactive trials cannot observe moves to the final reset. Take it with its driver half or not at all.
+
+**`NTIEDTKE-CU-2`.** The kernel half of `NTIEDTKE-PY-5`: the storm switches arrive as kernel arguments (the momentum transport flag, the adjustment-time factor, the entrainment factors of the updraft and the test parcel, the downdraft factor), and at their defaults every expression is the engine's. One hunk that also carries `NTIEDTKE-CU-1`'s guard (engine 1058-1059) keeps that row's name.
 
 ### `core/kernels/sfclay.cu`
 
@@ -658,12 +681,15 @@ These rows, and the two of `core/kernels/terrain_drag.cu` below, are measured ag
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
-| `NOAH-CU-1` | 98-98, 169-169, 214-214, 230-230, 285-285, 422-422, 839-839, 850-850, 857-857 | 101-101, 172-172, 217-217, 233-233, 288-288, 425-425, 842-842, 853-853, 860-860 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | Blackwell cards only: at most one unit in the last place per constant division | **pull** |
-| `NOAH-CU-2` | 12-13, 866-866, 933-1527 | 12-16, 869-1605, 1672-1785 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01, and v2.8.2 (4c27749), 2026-10-02 | nothing at this package's settings | **none** |
+| `NOAH-CU-1` | 98-98, 184-184, 229-229, 245-245, 300-300, 437-437, 854-854, 865-865, 872-872 | 101-101, 172-172, 217-217, 233-233, 288-288, 425-425, 842-842, 853-853, 860-860 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | Blackwell cards only: at most one unit in the last place per constant division | **pull** |
+| `NOAH-CU-2` | 12-13, 881-881, 949-1552 | 12-16, 869-1605, 1672-1785 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01, and v2.8.2 (4c27749), 2026-10-02 | nothing at this package's settings | **none** |
+| `NOAH-CU-3` | 154-162, 166-167, 174-179, 946-946 | after 156, 160-160, 167-167, after 1669 | equal to engine | global-fix | package fx/land-cold, 2026-11-14 | nothing at the shipped default | **offer** |
 
 **`NOAH-CU-1`.** The same respelling as `SFCLAY-CU-4`, in this kernel, and the same decision for the same reason. The divisions inside the column body itself sit in `NOAH-CU-2`'s hunk.
 
-**`NOAH-CU-2`.** The column body becomes a template with the urban hand-over under `if constexpr`, so the default `noah_column` compiles from the statements it had; the engine measured a runtime-flag version moving default forecasts through changed multiply-add contraction on an RTX 5090. This package runs no urban model. Because the whole body moved into the template, this row's hunk also holds the body's division respellings; take those under `NOAH-CU-1`.
+**`NOAH-CU-2`.** The column body becomes a template with the urban hand-over under `if constexpr`, so the default `noah_column` compiles from the statements it had; the engine measured a runtime-flag version moving default forecasts through changed multiply-add contraction on an RTX 5090. This package runs no urban model. Because the whole body moved into the template, this row's hunk also holds the body's division respellings; take those under `NOAH-CU-1`. It also holds two statements of `NOAH-CU-3` (the bare-ground age reset and the ALCALC call with the rule), which a take of the template re-applies inside it.
+
+**`NOAH-CU-3`.** WRF's ALCALC sets the snow age to zero on any call that snows, of any amount. On this model a trace of snow reaches most snow-covered land on most land calls, so with `snow_ageing = true` the carried age hardly grew: in the 365-day T127 run, 79 % of the snow-covered land columns Noah integrates were under 0.01 day old on 2027-02-28 and every pack sat at its fresh-snow albedo. `snow_age_refresh = "amount"` takes the snowfall-amount refresh of Noah-MP's SNOW_AGE (DELS = dsnow / SWEMX, SWEMX = 1 kg/m2) and applies it to WRF's Livneh age, which still grows with no temperature factor; under it a column with no snow carries no age, as Noah-MP's TAUSS does. At the default (`"any"`) the kernel takes WRF's path and a T127 day is bit-identical to 0.2.1's in all 143 checkpoint arrays. The engine carries WRF's rule and is offered the option.
 
 ### `core/kernels/morrison.cu`
 
@@ -922,6 +948,14 @@ here is owed to this package; the list is what to send.
   and its BLQE closure to cloud base, as GSL's GFL has them, and a shallow
   cloud-depth minimum; all three off by default. Package branch
   `fix/trade-shallow`, 2026-11-13.
+* `NOAH-CU-3` with `NOAH-PY-5` and `NPREF-18`. A snow-age refresh by
+  snowfall amount (Noah-MP's DELS on WRF's Livneh age), so a trace of snow
+  no longer makes a weeks-old pack fresh, as an opt-in; nothing moves at the
+  default. Package branch `fx/land-cold`, 2026-11-14.
+* `NTIEDTKE-PY-5` with `NTIEDTKE-CU-2`. Five experimental New Tiedtke
+  storm-intensity switches, off by default, with what they measured on three
+  T383 storms; not a recommended setting. Package branch `fx/storms`,
+  2026-11-14.
 
 ## REFUSE
 

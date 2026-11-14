@@ -180,13 +180,57 @@ def apply_orographic_drag(statistics: OrographicStatistics | None, batch,
            sina=zero, cosa=one, dx=float(dx_m), dt=float(batch.dt_s))
 
 
+def config_turns_the_drag_on(cfg) -> bool:
+    """Whether ``cfg`` runs the native suite with the orographic drag on,
+    read off the config's own options (no suite is built)."""
+    if getattr(cfg, "physics_mode", None) != "arwen-native":
+        return False
+    options = getattr(cfg, "native_adapter_options", None) or {}
+    return str(options.get("orographic_drag", "none")) != "none"
+
+
+def prepare_orographic_statistics(cfg, grid=None, *, say=None):
+    """Build the drag's sub-grid orography cache for ``cfg`` if it is missing.
+
+    The run door calls this before it sizes the card, so a machine whose
+    land-surface statics predate the drag (or a runner that skips
+    ``statics`` once those exist) gets the cache built, and its WPS_GEOG
+    dataset staged, rather than a refusal on its first run
+    (:func:`arwen_global.orographic_statics.ensure_orographic_statistics`).
+    A no-op for a config without the drag, a synthetic planet, or a world
+    the drag is refused under (:func:`attach_orographic_statistics` says
+    why).  Returns the cache written, or None.
+    """
+    if not config_turns_the_drag_on(cfg):
+        return None
+    if getattr(getattr(cfg, "statics", None), "source", None) != "real":
+        return None
+    world = getattr(cfg, "world", None)
+    if world is not None and not world.is_earth and (
+            world.changes_terrain or world.changes_coast or world.is_invented):
+        return None
+    from ..orographic_statics import ensure_orographic_statistics
+
+    if grid is None:
+        from ..spectral.grid import GaussianGrid
+
+        grid = GaussianGrid.create(cfg.truncation, nlat=cfg.nlat, nlon=cfg.nlon,
+                                   dealias_factor=cfg.dealias_factor)
+    if say is None:
+        return ensure_orographic_statistics(cfg.statics, grid)
+    return ensure_orographic_statistics(cfg.statics, grid, say=say)
+
+
 def attach_orographic_statistics(adapter, cfg, grid=None):
     """Hand a native suite built from ``cfg`` its sub-grid orography.
 
     A no-op unless the suite's options turn the drag on.  With it on, the
     run needs real statics (the water mask and the grid come from them) and
-    the cache ``gpuwm-global statics CONFIG --orographic`` writes; either
-    missing is refused here, before the card is touched.  Returns the
+    the cache ``gpuwm-global statics CONFIG --orographic`` writes.  A
+    missing drag cache is built here (from the land cache's own WPS_GEOG
+    tree, staging ``orogwd_10m`` when that tree lacks it) if the run door
+    has not already built it; what cannot be built, or missing real
+    statics, is refused here, before the first step.  Returns the
     statistics attached, or None.
     """
     options = getattr(adapter, "options", None)
@@ -210,7 +254,8 @@ def attach_orographic_statistics(adapter, cfg, grid=None):
             "the sub-grid orography is built on the real planet's land mask, "
             "and a synthetic planet has neither terrain statistics nor that "
             "mask")
-    from ..orographic_statics import (load_orographic_statistics,
+    from ..orographic_statics import (ensure_orographic_statistics,
+                                      load_orographic_statistics,
                                       orographic_statistics_summary)
 
     if grid is None:
@@ -218,6 +263,7 @@ def attach_orographic_statistics(adapter, cfg, grid=None):
 
         grid = GaussianGrid.create(cfg.truncation, nlat=cfg.nlat, nlon=cfg.nlon,
                                    dealias_factor=cfg.dealias_factor)
+    ensure_orographic_statistics(cfg.statics, grid)
     fields, document = load_orographic_statistics(cfg.statics, grid)
     statistics = OrographicStatistics.from_cache(fields, document)
     summary = orographic_statistics_summary(fields, document)
@@ -624,6 +670,6 @@ def reference_launch_gwdo(atmosphere, du, dv, *, var, con, oa, ol, sina, cosa,
 __all__ = [
     "METADATA_KEY", "OROGRAPHIC_DRAG_SCHEMES", "OrographicStatistics",
     "SSO_FIELDS", "apply_orographic_drag", "attach_orographic_statistics",
-    "column_atmosphere",
+    "column_atmosphere", "config_turns_the_drag_on", "prepare_orographic_statistics",
     "reference_launch_gwdo", "stamp_identity",
 ]

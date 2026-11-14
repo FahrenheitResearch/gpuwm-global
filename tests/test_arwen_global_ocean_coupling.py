@@ -803,3 +803,18 @@ def test_a_held_run_is_not_branched_onto_the_slab_or_a_calibration(tmp_path, mon
     for name, target in (("slab", slab), ("calibration", calibration)):
         with pytest.raises(ValueError, match="keeps its own prognostic arrays"):
             run(target, tmp_path / name, restart=fork, branch_config=True)
+
+
+def test_dynamic_ocean_refuses_a_step_that_misses_the_hour_or_more_than_one_card():
+    """The coupler takes exactly 3600 s per coupling and one ocean per run:
+    dt_s = 135 (a shipped T255 config) crossed the hour at 3645 s and died
+    one model hour in; a run above one card would step one ocean per card."""
+    from arwen_global.runner import check_dynamic_ocean_run
+
+    for dt in (120.0, 150.0, 180.0, 225.0, 3600.0):
+        check_dynamic_ocean_run(SimpleNamespace(dt_s=dt, cards=1))
+    for dt in (135.0, 7200.0, 0.0, 1000.0):
+        with pytest.raises(ValueError, match="divide"):
+            check_dynamic_ocean_run(SimpleNamespace(dt_s=dt, cards=1))
+    with pytest.raises(ValueError, match="one card"):
+        check_dynamic_ocean_run(SimpleNamespace(dt_s=180.0, cards=2))
