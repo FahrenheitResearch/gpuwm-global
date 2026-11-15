@@ -233,6 +233,24 @@
 #define GF_SHALLOW_DEPTH_MIN_M 0
 #endif
 
+// GF_DEEP_EXPERIMENT: where the deep updraft's beta-pdf mass flux peaks.  0 (the
+// default, the oracle's only state) is WRF v4.6.1 word for word: the peak sits
+// 40 per cent of the way from the first-guess cloud top down to kstabi, so on a
+// tropical column the normalised flux climbs from 0.1 to 1 through the
+// moist-static-energy minimum, the plume that entrains that mass is
+// negatively buoyant aloft and the ktopkeep test lowers the cloud top.
+// Measured (T255 GDAS 2026-09-21 12Z, 24 h, |lat| <= 20): 85 per cent of deep
+// tops at or below 352 hPa (15 per cent at 293 hPa or above), GF heating
+// weighted to 554 hPa and under 0.1 K/day above 250 hPa.
+//   2 puts the peak at kstabi itself (lev_start 1).
+//   3 puts it at the level of the plume's maximum buoyancy, kklev, as the UFS
+//     CCPP cu_gf_deep.F90 get_zu_zd_pdf_fim does (tunning = p(kklev),
+//     clamped 0.02..0.95).
+//   4 is 3 with CCPP's deep entrainment rate, 1e-4 m-1.
+// A DECLARED DIVERGENCE from WRF v4.6.1 when non-zero.
+#ifndef GF_DEEP_EXPERIMENT
+#define GF_DEEP_EXPERIMENT 0
+#endif
 #ifndef GF_KMAX
 #define GF_KMAX 40
 #endif
@@ -928,12 +946,21 @@ __device__ void gfd_get_zu_zd_pdf(int draft, GfColC p, int kb, int kt,
     float tunning, beta;
     if (draft == 0) {
         float lev_start = GMIN(K_P9, FADD(K_P4, FMUL((float)csum, K_P013)));
+#if GF_DEEP_EXPERIMENT == 2
+        lev_start = K_ONE;
+#endif
         kb_adj = IMAX(kb, 2);
         tunning = FADD(p[kt], FMUL(FSUB(p[kpbli], p[kt]), lev_start));
         tunning = GMIN(K_P9,
                        FDIV(FSUB(tunning, p[kb_adj]), FSUB(p[kt], p[kb_adj])));
         tunning = GMAX(K_P2, tunning);
         beta = K_ONE_P3;
+#if GF_DEEP_EXPERIMENT == 3 || GF_DEEP_EXPERIMENT == 4
+        // UFS CCPP cu_gf_deep.F90 get_zu_zd_pdf_fim (up): the peak sits at the
+        // level of the plume's maximum buoyancy, kklev, handed in as kpbli.
+        tunning = GMIN(0.95f, FDIV(FSUB(p[kpbli], p[kb_adj]), FSUB(p[kt], p[kb_adj])));
+        tunning = GMAX(0.02f, tunning);
+#endif
     } else if (draft == 1) {
         tunning = GMIN(K_P8,
                        FDIV(FSUB(p[kpbli], p[kb_adj]), FSUB(p[kt], p[kb_adj])));
@@ -1049,8 +1076,13 @@ __device__ void gfd_rates_up_pdf_deep(int *ktop_io, int *ierr_io,
         *ktop_io = 0;
         return;
     }
+#if GF_DEEP_EXPERIMENT == 3 || GF_DEEP_EXPERIMENT == 4
+    gfd_get_zu_zd_pdf(0, p_cup, k22, kfinalzu, kklev, csum, K_P1, nz, ktf,
+                      fzu_override, zuo, pdf);
+#else
     gfd_get_zu_zd_pdf(0, p_cup, k22, kfinalzu, kstabi, csum, K_P1, nz, ktf,
                       fzu_override, zuo, pdf);
+#endif
     *ktop_io = ktop;
 }
 
@@ -1875,6 +1907,9 @@ __device__ void gfd_deep_column(
     float entr_rate = FSUB(K_ENTR_BASE,
                            FMUL(GMIN(K_TWENTY, (float)csum), K_ENTR_CSUM));
     if (xland1 == 0) entr_rate = K_ENTR_BASE;
+#if GF_DEEP_EXPERIMENT == 4
+    entr_rate = 1.0e-4f;  // UFS CCPP cu_gf_deep.F90: entr_rate(i)=1.e-4
+#endif
     float radius = FDIV(K_P2, entr_rate);
     float frh = GMIN(K_ONE,
                      FDIV(FDIV(FMUL(FMUL(K_PI314, radius), radius), dx), dx));

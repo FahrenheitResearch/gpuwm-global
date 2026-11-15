@@ -518,7 +518,17 @@ void sfclay_column(
     if (isfflx && !land) {
         z0out = fminf(0.0185f * new_ust * new_ust / G
                       + 0.11f * 1.5e-5f / new_ust, 2.85e-3f);
-        if (isftcflx != 0) {
+        if (isftcflx == 3) {
+            // COARE 3.5 open-water momentum roughness (Edson et al. 2013,
+            // JPO 43, 1589): Charnock alpha = 0.0017 U10N - 0.005 with U10N
+            // capped at 19 m/s as COARE 3.5 does and alpha floored at 0;
+            // U10N is the neutral 10 m wind of this call, u*/k ln(10/z0).
+            // Momentum roughness only: the scalar roughness is unchanged.
+            real u10n = fminf(new_ust / karman * logf(10.0f / z0), 19.0f);
+            real alpha = fmaxf(0.0017f * u10n - 0.005f, 0.0f);
+            z0out = fminf(alpha * new_ust * new_ust / G
+                          + 0.11f * 1.5e-5f / fmaxf(new_ust, 0.01f), 2.85e-3f);
+        } else if (isftcflx != 0) {
             real zw = fminf(powf(new_ust / 1.06f, 0.3f), 1.0f);
             real zn1 = 0.011f * new_ust * new_ust / G + 1.59e-5f;
             real zn2 = 10.0f * expf(-9.5f * powf(new_ust, -0.3333f))

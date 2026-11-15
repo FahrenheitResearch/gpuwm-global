@@ -76,10 +76,18 @@ are conserved to 2.0e-15, 2.9e-15 and 1.9e-16 relative over 1000
 random-forcing steps.  A wind-driven gyre in a flat box carries the Sverdrup
 transport within 2.1 % at mid-basin (gate 10 %; -20 % at 45N and -54 % at
 49N, next to the northern wall).  A front slumps with the eddy transport on,
-at no volume change.  The equatorial Kelvin wave FAILS its 3 % gate: it runs
-at 2.18 m/s against the first baroclinic mode's 2.05 m/s from the model's own
-levels (+6.6 %); the first Rossby wave runs at 0.61 m/s against 0.68 (-10.9 %,
-gate 5 %).
+at no volume change.  The equatorial Kelvin and Rossby waves pass their
+gates as `tools/ocean_dyn_gates.py` measures them since 0.2.4 (RTX 5090, 60
+days): the Kelvin crest fitted over days 10-40 runs +2.4 % against the
+first baroclinic mode's c1 = 2.046 m/s (gate 3 %), and the first Rossby
+crest +3.4 % against the n = 1 dispersion relation for the bump the test
+launches (gate 5 %); the amplitude falls from 4.0 to 2.75 K in 60 days.
+The model is the one that failed the earlier form of the gate (Kelvin
++6.6 %, Rossby -10.9 %): that form fitted days 5-25, when the crest still
+overlaps the 8-degree source bump (every window starting at day 10 or later
+reads +1.7 to +2.7 %), and held the Rossby crest to c1/3, the long-wave
+limit, which a bump only three deformation radii wide does not reach (its
+exact n = 1 crest moves at -13.8 % of c1/3 over days 10-40).
 
 **Spin-up from GODAS** (2026-07-02 to 08-01, GODAS fluxes), against GODAS on
 2026-08-01: Nino3.4 SST +0.23 K, tropical (10S-10N) SST bias +0.27 K (rms
@@ -170,23 +178,63 @@ with the dynamic ocean.
 - A free coupled ocean inherits the atmosphere's surface-flux bias (8-14
   W m-2 less into open water in long runs, measured with the slab).
 
-## Open problems (as shipped in 0.2.3)
+## Fixed in 0.2.4
+
+- **The stress the ocean receives is the stress the atmosphere loses.** The
+  coupler handed the ocean 1.2 u\*², about 8.5 % more momentum than YSU
+  removes from the lowest level.  It now hands over YSU's own sink,
+  rho u\*² (|V1|/wspd)² at the actual air density (`ysu.cu` 252 and
+  687-689), from a plane the surface layer writes after each call
+  (`pbl_surface_stress_n_m2`).  Only a dynamic-ocean run carries that plane;
+  every other run's namespace, checkpoints and arithmetic are unchanged.  The
+  daily stress product reports the same quantity.  Measured on the EUC at
+  140W: at most 0.001 m/s over days 16-20 of a paired restart.
+- **Stress, ice cover and the start's SST match take the plain overlap
+  mean.**  The conservative remap's spread residual, right for heat and fresh
+  water, is a uniform shift on an intensive field: at T255 the owned columns
+  cover 3.4445e14 m² against the wet ocean's 3.4717e14 m², so the spread
+  moved every wet cell by about -0.78 % of the field's global mean.  Heat,
+  fresh water and the ice-growth salt keep the spread, and it is still
+  booked.  In a 15-day coupled pair from 2026-08-01 the global open-water SST
+  bias against OISST moved by less than 0.005 K by day 10; the tropics
+  (10S-10N) read 0.01-0.04 K colder from day 1, because the old spread had
+  warmed the start's SST match by about 0.09 K at 29 C and hidden that much
+  of the coupled run's tropical cold bias.
+- **The wave gates** (Measured, above): the model is unchanged; the gate's
+  fitting window and its Rossby reference were wrong.
+
+## Open problems (as shipped in 0.2.4)
 
 The dynamic ocean ships experimental and off by default because these are
 not solved:
 
-- **The equatorial undercurrent collapses** in the coupled run: at 140W it
-  falls from 0.73 to 0.26 m/s over 30 days, against GODAS's 0.76 to 0.63.
-- **Two idealised gates fail**: the equatorial Kelvin wave runs +6.6 %
-  against a 3 % gate, and the first Rossby wave -10.9 % against 5 %.
+- **The equatorial undercurrent still weakens** in a coupled run from
+  2026-08-01: at 140W it falls from 0.73 to 0.26 m/s over 30 days (0.28
+  with 0.2.4's coupler and `sfclay_ocean_roughness = "coare35"`), against
+  GODAS's 0.76 to 0.63.  The ocean alone, from the same state, reproduces
+  it under the coupled run's own daily stress (0.31 m/s at day 30) and holds
+  0.61 under GODAS's, so the cause is the atmosphere's equatorial zonal
+  stress, not the coupling.  Against a matched reference (the same ocean
+  forced by GFS-analysis stress), six coupled starts from 2026-08-01 to
+  08-11 (with the coupler fix and COARE on) held 0.85-1.00 of the
+  reference's EUC at days 5 and 10 (means 0.97 and 0.93), and the two that reached day 20 held
+  0.88 and 0.92; that is short of the eight starts at day 20 the test asked
+  for.  ArWen makes the mid-August west-Pacific westerly burst only when it
+  starts 2-8 days before it, weaker than the analysis (area-mean peak +3.1
+  to +3.8 m/s against +4.9), and every start is 0.5-1.2 m/s too easterly
+  there over days 1-5.  The six starts share one El Nino month and one
+  burst.
 - **Wind-driven mixed-layer deepening** is 27 % too shallow against the
-  Kato-Phillips case (15 % gate); convective deepening passes.
-- **The remap spreads conservatively, not locally.** The conservative remap
-  between the ocean grid and the atmosphere's Gaussian grid may bias the SST
-  the atmosphere sees, the ice fraction and the stress near coasts and the ice
-  edge. Not measured and not changed; it needs a new coupled run to settle.
-- **The 30-day coupled run predates the last fixes** (the coupled restart and
-  the refusals below), so it shows stability, not those fixes.
+  Kato-Phillips case (15 % gate) on the model's 10 m levels; the
+  heat-conserving mixed depth is 10.9 % shallow, inside the gate, and
+  convective deepening passes.  The likely fix (LMD94 appendix D's enhanced
+  diffusivity at the interface below hbl) is not attempted.
+- **The 30-day coupled run predates the 0.2.4 fixes**, so it shows
+  stability, not those fixes.
+- **`sfclay_ocean_roughness = "coare35"` joins the physics identity,** so a
+  slab Q-flux calibrated under WRF's Charnock (every Q-flux file so far) is
+  refused with it on; a coupled run with COARE needs a Q-flux calibrated
+  with it.
 - **SST against OISST** on day 30 (2026-08-30): 60S-60N -0.82 K against the
   slab's -0.69 K, and 30N-60N -1.77 K against -1.04 K; 10S-10N -0.55 K
   against -0.78 K, and Nino-3.4 29.13 C against the slab's 28.26 C (OISST
@@ -196,5 +244,5 @@ not solved:
   than one card.
 - Cost: +11.6 % a step at T255 and +13.7 % at T383; the T383 day as 0.2.1
   shipped it (radiation every 2100 s, no drag) fit the 16 GB RTX 5070 Ti at
-  a card peak of 14,990 of 16,303 MiB.  0.2.3's T383 day was not measured
-  with the dynamic ocean.
+  a card peak of 14,990 of 16,303 MiB.  0.2.3's and 0.2.4's T383 days were
+  not measured with the dynamic ocean.

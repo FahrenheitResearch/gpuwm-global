@@ -23,6 +23,8 @@ CUMULUS_EXIT_THETA = "cumulus_exit_theta"
 CUMULUS_EXIT_QV = "cumulus_exit_qv"
 CUMULUS_EXIT_ARRAYS = (CUMULUS_EXIT_THETA, CUMULUS_EXIT_QV)
 CUMULUS_EXIT_TIME_KEY = "cumulus_exit_time_s"
+#: |tau| the PBL removes at the lowest level (N/m2): rho u*^2 (|V1|/wspd)^2.
+SURFACE_STRESS_PLANE = "pbl_surface_stress_n_m2"
 
 #: Noah's snow age (WRF SNOTIME, seconds since the column's last
 #: snowfall), carried between land calls and checkpointed.
@@ -216,6 +218,16 @@ class PersistentNativeState:
             ("effi", 5.0), ("effs", 10.0),
         ):
             self._array(name, v if name.startswith("eff") else s, fill)
+        # The magnitude of the surface stress the PBL removes from the
+        # lowest level (N/m2), YSU's own sink rho u*^2 (|V1|/wspd)^2 with
+        # rho = psfc / (R_d T1 (1 + ep1 qv1)) (ysu.cu:252,687), written
+        # after each surface-layer call so a coupled ocean receives exactly
+        # the momentum the atmosphere loses.  Only a namespace that already
+        # carries the plane keeps it: the dynamic ocean puts it there
+        # (ocean_dyn.coupler), so every other run's namespace, checkpoint
+        # and arithmetic are the ones it had before the plane existed.
+        if SURFACE_STRESS_PLANE in self.arrays:
+            self._array(SURFACE_STRESS_PLANE, s, 0.0)
         # Screen-level diagnostics (sfclay t2/th2/q2): seeded from the
         # lowest full level so a state exported before the first surface-
         # layer call still carries a finite value; the first call overwrites

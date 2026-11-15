@@ -4789,7 +4789,13 @@ def _np_sfclay_point(u, v, temp, qv, pressure, dz8w, psfc, tsk, znt,
     if isfflx and not land:
         znt_out = min(0.0185 * ust * ust / c.G + 0.11 * 1.5e-5 / ust,
                       2.85e-3)
-        if isftcflx != 0:
+        if isftcflx == 3:
+            # COARE 3.5 (Edson et al. 2013), the mirror of sfclay.cu.
+            u10n = min(ust / karman * np.log(10.0 / znt), 19.0)
+            alpha = max(0.0017 * u10n - 0.005, 0.0)
+            znt_out = min(alpha * ust * ust / c.G
+                          + 0.11 * 1.5e-5 / max(ust, 0.01), 2.85e-3)
+        elif isftcflx != 0:
             zw = min((ust / 1.06) ** 0.3, 1.0)
             zn1 = 0.011 * ust * ust / c.G + 1.59e-5
             zn2 = (10.0 * np.exp(-9.5 * ust ** (-0.3333))
@@ -4842,8 +4848,8 @@ def np_sfclay(u, v, t, qv, p, dz8w, psfc, tsk, znt, pblh, mavail,
     """
     if option not in (1, 91):
         raise ValueError(f"sfclay option must be 1 or 91, got {option}")
-    if isftcflx not in (0, 1, 2):
-        raise ValueError(f"isftcflx must be 0, 1, or 2, got {isftcflx}")
+    if isftcflx not in (0, 1, 2, 3):
+        raise ValueError(f"isftcflx must be 0, 1, 2 or 3, got {isftcflx}")
     if iz0tlnd not in (0, 1, 2, 3):
         raise ValueError(f"iz0tlnd must be 0, 1, 2, or 3, got {iz0tlnd}")
     if iz0tlnd == 3 and vegfra is None:
@@ -4951,7 +4957,8 @@ def _noah_snfrac(sneqv, snup, salp):
 
 
 def _noah_alcalc(alb, snoalb, embrd, sncovr, dt, snowng, snotime1,
-                 lvcoef, refresh="any", newsnow=0.0, swemx=1.0):
+                 lvcoef, refresh="any", newsnow=0.0, swemx=1.0,
+                 fresh="livneh", thaw=False, tsnow=0.0):
     """ALCALC: snow albedo (Livneh aging) + emissivity blend.
 
     ``refresh="amount"`` is Noah-MP's snowfall-amount refresh applied to the
@@ -4972,6 +4979,20 @@ def _noah_alcalc(alb, snoalb, embrd, sncovr, dt, snowng, snotime1,
     else:
         snotime1 = snotime1 + dt
         snoalb2 = snoalb1 * (snacca ** ((snotime1 / 86400.0) ** snaccb))
+    if fresh == "masked" or thaw:
+        # noah.cu noah_alcalc albrule: bit 2 (thaw) ages a pack whose skin is
+        # at the melting point on Livneh's ablation curve; bit 1 (masked)
+        # keeps snoalb as the fresh value and ages only the exposed fraction
+        # fexp of the cell, from 0.85.
+        if thaw and tsnow >= 273.16:
+            dec = 0.82 ** ((snotime1 / 86400.0) ** 0.46)
+        else:
+            dec = snacca ** ((snotime1 / 86400.0) ** snaccb)
+        if fresh == "masked":
+            fexp = min(max((snoalb - alb) / max(0.85 - alb, 1.0e-3), 0.0), 1.0)
+            snoalb2 = alb + fexp * (0.85 * dec - alb)
+        else:
+            snoalb2 = snoalb1 * dec
     snoalb2 = max(snoalb2, alb)
     albedo = alb + sncovr * (snoalb2 - alb)
     if albedo > snoalb2:
@@ -5833,7 +5854,8 @@ def _noah_sflx(ffrozp, dt, nsoil, sldpth, lwdn, soldn, solnet, sfcprs,
                shdfac, shdmin, shdmax, alb, snoalb, tbot, z0brd, cmc,
                t1, stc, smc, sh2o, snowh, sneqv, ch, xlai, snotime1,
                ribb, params, isurban, opt_thcnd, rdlai2d, usemonalb,
-               flags, snow_age_refresh="any", snow_age_swemx=1.0):
+               flags, snow_age_refresh="any", snow_age_swemx=1.0,
+               snow_fresh_albedo="livneh", snow_thaw_albedo=False):
     """SFLX: the unified Noah column update.  Mutates stc/smc/sh2o
     (lists); returns a dict of everything the WRF driver consumes plus
     the energy-identity diagnostics."""
@@ -5996,7 +6018,8 @@ def _noah_sflx(ffrozp, dt, nsoil, sldpth, lwdn, soldn, solnet, sfcprs,
         sncovr = min(sncovr, 0.98)
         albedo, emissi, snotime1 = _noah_alcalc(
             alb, snoalb, embrd, sncovr, dt, snowng, snotime1, lvcoef,
-            snow_age_refresh, prcp * dt, snow_age_swemx)
+            snow_age_refresh, prcp * dt, snow_age_swemx,
+            snow_fresh_albedo, snow_thaw_albedo, t1)
 
     # ---- surface thermal conductivity + first-guess soil heat flux
     df1 = _noah_tdfcnd(smc[0], quartz, smcmax, sh2o[0], bexp, psisat,
@@ -6161,7 +6184,8 @@ def _noah_sflx(ffrozp, dt, nsoil, sldpth, lwdn, soldn, solnet, sfcprs,
 def np_noah_column(col, params, dt, dzs, isurban=13, isice=15,
                    xice_threshold=0.5, frpcpn=False, usemonalb=False,
                    rdlai2d=False, opt_thcnd=1, snow_age_refresh="any",
-                   snow_age_swemx=1.0):
+                   snow_age_swemx=1.0,
+                   snow_fresh_albedo="livneh", snow_thaw_albedo=False):
     """Float64 mirror of one Noah column step: the WRF v4.6.1 driver
     ``lsm`` prep + ``SFLX`` + post-update, for a single (i, j).
 
@@ -6281,7 +6305,8 @@ def np_noah_column(col, params, dt, dzs, isurban=13, isice=15,
                    snoalb1, tbot, z0brd, cmc, t1, stc, smc, swc,
                    snowhk, sneqv, chk, xlai, snotime1, ribb, params,
                    isurban, opt_thcnd, rdlai2d, usemonalb, flags,
-                   snow_age_refresh, snow_age_swemx)
+                   snow_age_refresh, snow_age_swemx,
+                   snow_fresh_albedo, snow_thaw_albedo)
 
     # ---- driver post-SFLX state/flux updates
     out["lai"] = r["xlai"]

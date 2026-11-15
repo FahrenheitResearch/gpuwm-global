@@ -73,8 +73,8 @@ def _validate_options(option: int, isftcflx: int, iz0tlnd: int,
                       vegfra=None) -> None:
     if option not in (1, 91):
         raise ValueError(f"sfclay option must be 1 or 91, got {option}")
-    if isftcflx not in (0, 1, 2):
-        raise ValueError(f"isftcflx must be 0, 1, or 2, got {isftcflx}")
+    if isftcflx not in (0, 1, 2, 3):
+        raise ValueError(f"isftcflx must be 0, 1, 2 or 3, got {isftcflx}")
     if iz0tlnd not in (0, 1, 2, 3):
         raise ValueError(f"iz0tlnd must be 0, 1, 2, or 3, got {iz0tlnd}")
     if iz0tlnd == 3 and vegfra is None:

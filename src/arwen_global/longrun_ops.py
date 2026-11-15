@@ -388,10 +388,17 @@ def surface_stress(arrays: dict, ps) -> tuple[np.ndarray, np.ndarray] | None:
     if ps is None or any(arrays.get(name) is None for name in names):
         return None
     ust, u10, v10, t2, q2 = (np.asarray(arrays[name], dtype=np.float64) for name in names)
-    virtual = t2 * (1.0 + (1.0 / EPSILON - 1.0) * q2)
-    rho = np.asarray(ps, dtype=np.float64) / (DRY_AIR_GAS_CONSTANT * virtual)
     speed = np.hypot(u10, v10)
-    scale = np.divide(rho * ust * ust, speed, out=np.zeros_like(speed), where=speed > 0.0)
+    pbl = arrays.get("physics__pbl_surface_stress_n_m2")
+    if pbl is not None:
+        # the PBL's own sink, rho u*^2 (|V1|/wspd)^2, which the coupled
+        # ocean receives (native_runtime writes it after each surface layer)
+        magnitude = np.asarray(pbl, dtype=np.float64)
+    else:
+        virtual = t2 * (1.0 + (1.0 / EPSILON - 1.0) * q2)
+        rho = np.asarray(ps, dtype=np.float64) / (DRY_AIR_GAS_CONSTANT * virtual)
+        magnitude = rho * ust * ust
+    scale = np.divide(magnitude, speed, out=np.zeros_like(speed), where=speed > 0.0)
     return scale * u10, scale * v10
 
 

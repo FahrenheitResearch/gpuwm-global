@@ -250,6 +250,31 @@ def gate_cons(xp, args):
                     "N(0,0.1) N m-2); relative book residuals of the whole ocean"}
 
 
+def _rossby_crest_speed(c, half_width_deg, d0, d1):
+    """Westward speed (m/s) of the crest of a Gaussian exp(-(x/a)^2), a =
+    ``half_width_deg`` of equator, propagated as an n = 1 equatorial Rossby
+    wave (omega = -beta k / (k^2 + 3 beta / c)), crest found as the gate
+    finds it (parabola through the maximum) and fitted over days d0-d1."""
+    from arwen_global.ocean_dyn.grid import OMEGA, RADIUS
+
+    beta = 2.0 * OMEGA / RADIUS
+    n = 36000
+    dx = 2.0 * math.pi * RADIUS / n
+    x = (np.arange(n) - n // 2) * dx
+    a = math.radians(half_width_deg) * RADIUS
+    spec = np.fft.fft(np.exp(-(x / a) ** 2))
+    k = 2.0 * math.pi * np.fft.fftfreq(n, d=dx)
+    omega = -beta * k / (k * k + 3.0 * beta / c)
+    days = np.arange(int(d0), int(d1) + 1, dtype=float)
+    crest = []
+    for d in days:
+        e = np.real(np.fft.ifft(spec * np.exp(-1j * omega * d * 86400.0)))
+        i = int(np.argmax(e))
+        p, q, r = e[i - 1], e[i], e[(i + 1) % n]
+        crest.append(x[i] + 0.5 * (p - r) / (p - 2 * q + r) * dx)
+    return float(-np.polyfit(days, np.array(crest), 1)[0] / 86400.0)
+
+
 def gate_kelvin(xp, args):
     """Aquaplanet ocean 78S-65N flat 4000 m; a first-mode thermocline bump on
     the equator; measure the eastward Kelvin and westward Rossby speeds."""
@@ -314,13 +339,25 @@ def gate_kelvin(xp, args):
         x = np.array([t[key] for t in a]); tt = np.array([t["day"] for t in a])
         slope = np.polyfit(tt, x, 1)[0]  # deg/day
         return sign * slope * math.pi / 180.0 * R / 86400.0
-    ck = speed("kelvin_lon", 5, min(25, days), 1.0)
-    cr = -speed("rossby_lon", 10, min(40, days), 1.0)
+    # Both speeds from days 10-40.  Before day 10 the Kelvin crest still
+    # overlaps the 8-degree source bump (it is 17 degrees out at day 10) and
+    # its fitted speed is the source's adjustment, not the wave: days 5-25
+    # gave +6.6 %, every window from day 10 on +1.7 to +2.7 % (measured).
+    w0, w1 = 10, min(40, days)
+    ck = speed("kelvin_lon", w0, w1, 1.0)
+    cr = -speed("rossby_lon", w0, w1, 1.0)
     errk = (ck - c1) / c1
-    errr = (cr - c1 / 3.0) / (c1 / 3.0)
+    # The Rossby reference: c1/3 is the long-wave limit, but the bump is only
+    # 8 / 2.7 = 3 deformation radii wide, so its n = 1 Rossby crest moves
+    # slower.  The reference is that crest's speed under the exact n = 1
+    # dispersion relation omega = -beta k / (k^2 + 3 beta / c1), tracked and
+    # fitted over the same days as the model's.
+    cr_ref = _rossby_crest_speed(c1, 8.0, w0, w1)
+    errr = (cr - cr_ref) / cr_ref
     return {"pass": abs(errk) <= 0.03 and abs(errr) <= 0.05, "c1_modes_m_s": c1, "c2_m_s": c2,
             "kelvin_speed_m_s": ck, "kelvin_rel_err": errk, "rossby_speed_m_s": cr,
-            "rossby_rel_err": errr, "amplitude_day1": track[0]["kelvin_amp"],
+            "rossby_reference_m_s": cr_ref, "rossby_long_wave_limit_m_s": c1 / 3.0,
+            "rossby_rel_err": errr, "window_days": [w0, w1], "amplitude_day1": track[0]["kelvin_amp"],
             "amplitude_last": track[-1]["kelvin_amp"], "days": days, "track": track[::5]}
 
 

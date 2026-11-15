@@ -386,16 +386,21 @@ coupled slab arm, on the Q-flux calibrated without them, the open-water heat
 flux less the calibration's read +3.1 W/m2 over days 2-30 and -3.5 over days
 30-60 against -8.8 and -12.4, and the open-water SST against GDAS at day 59
 -0.07 K against -0.30 K; part of that gain is the extra sunlight acting on a
-Q-flux tuned for less of it, and a calibration made with the switches on has
-not been run.
+Q-flux tuned for less of it. A calibration made with the whole long-run
+recipe, switches on, is in "The Q-flux a long run reads" below.
 They stay off for forecasts, because over the 16-start forecast scorecard
 they cost tropical skill at 72-120 h (T850 +0.04 to +0.08 K, 250 hPa wind
 +0.22 to +0.24 m/s); and in the southern summer the depth minimum does not
 keep the Peru and Australian decks (a 30-day December twin: Peru -28.8
 against +8.5 W/m2 of excess). The page has the tables.
 
-The shallow-arm switches and the conservation switches below were each
-measured on their own; a long run with both sets on has not been run.
+The shallow-arm switches and the conservation switches below were first
+measured on their own. With both sets on (T127 slab from GDAS 2026-08-01
+00Z, the year file's F_cal as a declared reuse copy) days 0-30 read: TOA
+net -6.19 W/m2 against -17.64 for the year run, OLR 240.9 against 238.6,
+reflected shortwave 6.1 W/m2 over CERES-EBAF against 19.9 without the
+shallow-arm switches, LR-4's residual 0.53 W/m2, the dry-mass range 0.24
+Pa. "The Q-flux a long run reads" below has what that run's Q-flux lacks.
 
 `snow_ageing = true` carries Noah's snow age between land calls, so a pack
 that lies for weeks darkens as Noah intends instead of keeping its
@@ -514,6 +519,116 @@ With the three set against the same days without (fx/energy-mass, GDAS
   1,500 m terrain, below the float64 per-step gate of 1e-6. A real-weather
   float64 run under the dry target has not been measured. Float32 runs
   read 2.8-3.5e-6 against their 2e-4.
+
+### The Q-flux a long run reads, and what LR-9 measures
+
+A slab run whose SST stays near the climatology has, month by month, the
+top-of-atmosphere imbalance of the climatology run its Q-flux was
+calibrated with: F_cal returns to the ocean what the calibration's
+atmosphere took from it, so the slab holds and the planet's imbalance is
+the calibration physics' own. The T127 year run (year physics: the albedo
+pair, no shallow-arm switches, no conservation switches) shows it. Its
+30-day LR-9 windows read -17.6 (days 0-30, August), -8.1 (days 60-90,
+October), -4.3 and -5.0 (days 120-180, December-January), -15.9 and -16.8
+(days 300-360, June-July) W/m2, and the six-day
+calibrations of its own Q-flux file, climatology SST, days 3-6, read
+-18.5 (August), -12.6 (October), -6.6 / -6.0 (December, January), -16.3 /
+-19.2 (June, July). Month by month the two agree to within 0.4 to 5.0
+W/m2, not exactly (the widest are October, -8.1 against -12.6, and
+November, -4.1 against -9.1); over the year, the twelve calibrations
+average -11.32 against the year run's full-year mean of about -10.5. Its
+LR-9 failure (full-year mean outside [-4, 6]) is that physics' imbalance
+with a prescribed SST, not a drift of the ocean.
+
+Two consequences:
+
+- A long run with the 0.2.3 recipe needs a Q-flux calibrated with the
+  recipe. The guard refuses the year file ("a physics change needs a new
+  calibration"): the shallow-arm switches change the physics identity.
+  A run that reads the year file through a reuse copy (as the 0.2.2
+  coupled arm of `docs/trade-shallow.md` did) gets an F_cal 16 to 17 W/m2
+  lower, as an ocean mean, than the recipe's own from August to November:
+  -15.6 / -2.2 / +0.4 / +3.5 against +1.4 / +15.5 / +18.1 / +20.3 W/m2.
+  The recipe's file is made the documented way
+  ([ARWEN_GLOBAL_OCEAN.md](ARWEN_GLOBAL_OCEAN.md), "How F_cal is made"):
+  twelve six-day climatology runs with the recipe's config (2 days of
+  spin-up), from 2026-08-01, 09-01, 10-01, 11-10 18Z, 2025-12-16,
+  2026-01-16, 02-01, 03-01, 04-01, 05-01, 06-01 and 07-01, then
+  `gpuwm-global climatology qflux` over their day-6 checkpoints. A 30-day
+  slab run on it (August to November bins as in the twelve-start file)
+  against the same run on the reuse copy: TOA -6.29 against -6.19 W/m2,
+  the same, as the reading above says; the open-water skin temperature
+  292.95 to 292.84 K by day 29 against 292.97 to 293.00 K. On its own
+  calibration the ocean cools 0.11 K a month: after the first week the
+  run's atmosphere, which keeps cooling aloft (200 hPa 1.7 K under GDAS at
+  day 30), takes more heat from the ocean than the six-day calibrations
+  booked. Longer calibrations would book some of that drift into F_cal;
+  removing it is a physics question, not a calibration one.
+
+  **The recipe's Q-flux ships with 0.2.4**, so a slab run with the recipe
+  need not make its own. Two files are attached to the v0.2.4 GitHub
+  release: `qflux-t127-recipe-r5.npz` (the twelve-start file above,
+  14,187,518 B, SHA-256 `25be4a842fea0d1030b33e5896e394df2da6f7d88e4be5d809474f384918f15b`)
+  and `recipe-slab-t127.toml` (the 90-day T127 slab config it was
+  calibrated for, from GDAS 2026-08-01 00Z, with relative paths, SHA-256
+  `932b2a2d0a2cea9ec7968e90ddff837093c8bab261f1dd779408bf9b7b241155`). The
+  Q-flux names the climatology it was made against by SHA-256
+  (`16ab9a39c0f90a69c748f459919f9f088baaa3d8efb7820f590c8048fd9baead`),
+  and the documented tool rebuilds that file byte for byte:
+  `gpuwm-global climatology fetch --with-mld`, then
+  `gpuwm-global climatology build arwen_global_gdas_t127_native_sl_si_24h --with-mld --out climatology-t127-mld.npz`
+  (from the shipped T127 config, because the slab config cannot load until
+  its climatology exists). Measured on 0.2.4 (CPU, the T127 statics that
+  `gpuwm-global statics` builds): the climatology built that way has that
+  SHA-256, and the slab's guard accepts the Q-flux for
+  `recipe-slab-t127.toml` (grid, physics identity, climatology and all
+  twelve months). A config whose native options differ from the file's is
+  refused, as the guard is meant to; the calibration above is then the way
+  to make its own file.
+- LR-9 for a recipe can be read from its twelve calibrations, which cost
+  six model days each, before a year is run. TOA net over days 3-6 of
+  each, the recipe against the year physics on the same starts (W/m2):
+
+  | start | recipe | year physics |
+  |---|---|---|
+  | 08-01 | -7.34 | -18.50 |
+  | 09-01 | -3.71 | -14.13 |
+  | 10-01 | -2.00 | -12.63 |
+  | 11-10 18Z | +1.48 | -9.07 |
+  | 12-16 | +5.81 | -6.58 |
+  | 01-16 | +5.73 | -6.03 |
+  | 02-01 | +6.47 | -3.93 |
+  | 03-01 | +4.04 | -7.89 |
+  | 04-01 | +1.08 | -9.30 |
+  | 05-01 | -3.06 | -12.29 |
+  | 06-01 | -6.11 | -16.28 |
+  | 07-01 | -9.03 | -19.18 |
+
+  The twelve read -0.55 W/m2 on average, inside LR-9's [-4, 6], against
+  -11.32 for the year physics. The year physics' 09-01, 11-10, 02-01 and
+  03-01 values were measured afterwards on the 0.2.3 tree, because the
+  year job kept those four without their diagnostics; its 08-01 start
+  re-run on that tree reads -18.50, as the year job's did. The
+  gain is 9.2 to 12.4 W/m2 at every start (10.8 on average), nearly all of it reflected
+  sunlight (August: albedo 0.298 against 0.338, OLR 240.2 against 238.2).
+  It is the shallow-arm switches': the August start with the recipe less
+  those three reads -18.47, and less the three conservation switches
+  -7.21, so the two sets do not interact at the top of the atmosphere.
+  Recipe slab runs on the recipe's file, from six more starts, read
+  within 1.7 W/m2 of their month's calibration over their first 10 to 20
+  days: 12-16 +6.35 (days 0-10) against +5.81, 04-01 -0.10 (days 0-20)
+  against +1.08, 05-01 -3.80 against -3.06, 06-01 -5.94 against -6.11,
+  07-01 -7.66 (days 0-10) against -9.03, 10-01 -0.28 (days 0-10) against
+  -2.00. The August run on
+  the reuse copy, taken to day 90, reads -6.19 / -2.17 / +0.73 over days
+  0-30 / 30-60 / 60-90 against -7.34 / -3.71 / -2.00 for the August,
+  September and October calibrations: over three months the run climbs 1
+  to 2.7 W/m2 above them. In days 60-90 OLR matches the October
+  calibration (235.6-236.7 against 236.3) and the gap is absorbed
+  sunlight (236.6-237.5 against 234.3, albedo 0.307-0.315 against 0.314,
+  over later October days with more insolation).
+  These are T127, float32, one start per month: a planning figure for
+  LR-9, not the gate; no year has been run with the recipe.
 
 ## What has been measured
 

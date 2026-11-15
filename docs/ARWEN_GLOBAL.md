@@ -668,8 +668,17 @@ joining the config hash only when set) are
 run's excess of reflected sunlight over the tropical ocean from +30.1 to
 +7.9 W/m2 against CERES, in one case. A 30-day December run vented the
 trades too, but darkened the Peru deck from +8.5 to -28.8 W/m2.
-[trade-shallow.md](trade-shallow.md) has the cause and the runs. The adapter
-owns the top-to-surface reversal and the contiguous FP32 packing at the
+[trade-shallow.md](trade-shallow.md) has the cause and the runs. Two more
+on its deep arm (0.2.4, experimental, off by default, not recommended):
+`gf_momentum_transport` couples the deep arm's momentum transport as WRF
+does, and `gf_deep_experiment` (2, 3 or 4) moves where the deep mass flux
+peaks, which lifts the tropical cloud tops and removes the 300-200 hPa cold
+bias at 24 h but doubles the scheme's tropical rain and warms 700-500 hPa
+(the changelog has the numbers). At the surface, 0.2.4 adds
+`sfclay_ocean_roughness = "coare35"`, the COARE 3.5 open-water Charnock, and
+two Noah snow albedo options, `snow_fresh_albedo = "masked"` and
+`snow_thaw_albedo` ([ARWEN_GLOBAL_LEVEL5.md](ARWEN_GLOBAL_LEVEL5.md)); all
+three are off by default. The adapter owns the top-to-surface reversal and the contiguous FP32 packing at the
 boundary, and that conversion is part of its arithmetic identity. A native
 half step is all-or-nothing: the caller's exchange cannot be partially
 mutated if a later scheme fails.

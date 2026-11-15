@@ -164,7 +164,8 @@ __device__ static void noah_alcalc(real alb, real snoalb, real embrd,
                                    real sncovr, real dt, bool snowng,
                                    real& snotime1, real lvcoef,
                                    real& albedo, real& emissi,
-                                   int refresh, real newsnow, real swemx)
+                                   int refresh, real newsnow, real swemx,
+                                   int albrule, real tsnow)
 {
     const real snacca = 0.94f, snaccb = 0.58f;
     albedo = alb + sncovr * (snoalb - alb);
@@ -182,6 +183,32 @@ __device__ static void noah_alcalc(real alb, real snoalb, real embrd,
         snotime1 = snotime1 + dt;
         snoalb2 = snoalb1 * powf(snacca,
                                  powf(snotime1 / 86400.0f, snaccb));
+    }
+    if (albrule != 0) {
+        // albrule bit 2, snow_thaw_albedo: a pack whose surface is at the
+        // melting point (TSNOW = T1, as WRF passes it) ages on Livneh's
+        // ablation curve, SNTHWA ** (days ** SNTHWB) (Livneh et al. 2010
+        // after Bras 1990; WRF carries it commented out), not on the
+        // accumulation curve: wet snow coarsens and darkens much faster.
+        const real snthwa = 0.82f, snthwb = 0.46f;
+        real dec = ((albrule & 2) && tsnow >= 273.16f)
+            ? powf(snthwa, powf(snotime1 / 86400.0f, snthwb))
+            : powf(snacca, powf(snotime1 / 86400.0f, snaccb));
+        if (albrule & 1) {
+            // snow_fresh_albedo = "masked": the MODIS maximum snow albedo is the
+            // albedo of the whole cell under deep fresh snow, canopy included
+            // (Robinson and Kukla 1985; Barlage et al. 2005), so it is not lifted.
+            // It fixes the fraction of the cell that sees the snow surface,
+            // fexp = (snoalb - alb) / (0.85 - alb); only that surface ages, on
+            // Livneh's curve from 0.85, and the masking canopy keeps alb (the
+            // high-vegetation snow tile of IFS HTESSEL, which does not age).
+            real fexp = fminf(fmaxf((snoalb - alb)
+                                    / fmaxf(0.85f - alb, 1.0e-3f), 0.0f),
+                              1.0f);
+            snoalb2 = alb + fexp * (0.85f * dec - alb);
+        } else {
+            snoalb2 = snoalb1 * dec;
+        }
     }
     snoalb2 = fmaxf(snoalb2, alb);
     albedo = alb + sncovr * (snoalb2 - alb);
@@ -944,6 +971,7 @@ void noah_column(const int* __restrict__ ivgtyp,
                  int isice, real xice_threshold, int itimestep, int frpcpn,
                  int usemonalb, int rdlai2d, int opt_thcnd,
                  int snow_age_refresh, real snow_age_swemx,
+                 int snow_albedo_rule,
                  int ny, int nx)
 {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1208,7 +1236,7 @@ void noah_column(const int* __restrict__ ivgtyp,
         // prcp * dt / 1000 m of water equivalent when it snows)
         noah_alcalc(alb, snoalb1, embrd, sncovr, dt, snowng, snotime1,
                     lvcoef, albedo, emissi, snow_age_refresh, prcp * dt,
-                    snow_age_swemx);
+                    snow_age_swemx, snow_albedo_rule, t1);
     }
 
     // surface thermal conductivity + first-guess soil heat flux

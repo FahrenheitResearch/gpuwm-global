@@ -29,7 +29,7 @@ from . import frozen_surface
 from .native_state import (
     CUMULUS_DYNAMICS_QV_LANE, CUMULUS_DYNAMICS_THETA_LANE, CUMULUS_EXIT_QV,
     CUMULUS_EXIT_THETA, CUMULUS_EXIT_TIME_KEY, NOAH_SNOW_AGE,
-    PersistentNativeState, RADIATION_ACCUMULATORS,
+    PersistentNativeState, RADIATION_ACCUMULATORS, SURFACE_STRESS_PLANE,
 )
 from . import provenance
 from .surface_diagnostics import SOURCE_METADATA_KEY
@@ -664,6 +664,7 @@ class NativePhysicsRuntime:
             hfx=f["hfx"], qfx=f["qfx"],
             lakemask=lakemask,
             dx=self.options.dx_m,
+            isftcflx=3 if self.options.sfclay_ocean_roughness == "coare35" else 0,
             iz0tlnd=self.options.sfclay_iz0tlnd,
             # The statics' vegetation fraction (0..1), read by the kernel
             # only under sfclay_iz0tlnd = 3.
@@ -696,6 +697,21 @@ class NativePhysicsRuntime:
             f["ice_qfx"][...] = xp.where(frozen, f["qfx"], f["ice_qfx"])
         if self._partial_count:
             self._lead_tile_step(batch, persistent, module, dz, lakemask, vegfra)
+        if SURFACE_STRESS_PLANE in f:
+            # YSU's own momentum sink (ysu.cu:252 rho, :687-689 fric):
+            # rho u*^2 (|V1|/wspd)^2 from this call's u* and wspd and the
+            # lowest level's wind, temperature and humidity, so a coupled
+            # ocean takes exactly what the atmosphere's PBL removes (the
+            # gust terms in wspd remove less than rho u*^2).
+            u1 = xp.asarray(batch.arrays["u"][0], dtype=xp.float32)
+            v1 = xp.asarray(batch.arrays["v"][0], dtype=xp.float32)
+            t1 = xp.asarray(batch.arrays["temperature"][0], dtype=xp.float32)
+            q1 = xp.asarray(batch.arrays["qv"][0], dtype=xp.float32)
+            ps = xp.asarray(batch.arrays["p_half"][0], dtype=xp.float32)
+            ep1 = xp.float32(1.0 / (DRY_AIR_GAS_CONSTANT / 461.5) - 1.0)
+            rho = ps / (xp.float32(DRY_AIR_GAS_CONSTANT) * t1 * (xp.float32(1.0) + ep1 * q1))
+            ratio = xp.sqrt(u1 * u1 + v1 * v1) / xp.maximum(f["wspd"], xp.float32(1.0e-9))
+            f[SURFACE_STRESS_PLANE][...] = rho * f["ust"] * f["ust"] * ratio * ratio
         # znt is WRF inout: over water the kernel returns the Charnock
         # roughness of this call's friction velocity (sfclay.cu:479-480,
         # :504) and the next call starts from it.  The bridge stored that
@@ -987,7 +1003,13 @@ class NativePhysicsRuntime:
         default) passes none, so the call is the one every earlier release
         made (and a launcher that predates the keyword still takes it)."""
         rule = getattr(self.options, "snow_age_refresh", "any")
-        return {} if rule == "any" else {"snow_age_refresh": rule}
+        out = {} if rule == "any" else {"snow_age_refresh": rule}
+        fresh = getattr(self.options, "snow_fresh_albedo", "livneh")
+        if fresh != "livneh":
+            out["snow_fresh_albedo"] = fresh
+        if getattr(self.options, "snow_thaw_albedo", False):
+            out["snow_thaw_albedo"] = True
+        return out
 
     def _land_step(self, batch, persistent):
         bucket = self._bucket(batch.time_s, self.options.land_surface_interval_s)
@@ -1178,6 +1200,7 @@ class NativePhysicsRuntime:
             hfx=f["lead_hfx"], qfx=f["lead_qfx"],
             lakemask=lakemask, dx=self.options.dx_m,
             iz0tlnd=self.options.sfclay_iz0tlnd, vegfra=vegfra,
+            isftcflx=3 if self.options.sfclay_ocean_roughness == "coare35" else 0,
         )
         # The lead tile's own state and the composite it makes are written
         # ON THE PARTIAL COLUMNS ONLY: a tile that does not exist on a
@@ -1867,6 +1890,10 @@ class NativePhysicsRuntime:
                     extra["shallow_blqe_to_cloud_base"] = True
                 if self.options.gf_shallow_depth_min_m:
                     extra["shallow_depth_min_m"] = self.options.gf_shallow_depth_min_m
+                if self.options.gf_momentum_transport:
+                    extra["momentum_transport"] = True
+                if self.options.gf_deep_experiment:
+                    extra["deep_experiment"] = int(self.options.gf_deep_experiment)
             self._cumulus = getattr(module, class_name)(
                 column_chunk=self.options.cumulus_column_chunk, **extra
             )

@@ -832,6 +832,91 @@ divergence, and regional monthly means differ by up to 7 K either way.
 An autumn twin from 2026-10-01 moved the same albedo by 0.05
 but only 2-3 W/m2 of sunlight in October and November.
 
+How bright fresh snow is, and what ages, is the native option
+`snow_fresh_albedo` (it does not need `snow_ageing`):
+
+- `"livneh"`, the default, is WRF's ALCALC: the fresh-snow albedo is
+  `snoalb + LVCOEF (0.85 - snoalb)` with GENPARM's LVCOEF = 0.5, aged on
+  Livneh's curve `0.94 ** (days ** 0.58)`. `snoalb` is the MODIS maximum
+  snow albedo (Barlage et al. 2005; Robinson and Kukla 1985 before it): the
+  albedo of the whole cell under deep fresh snow, canopy included. The lift
+  puts a fresh pack above that observed maximum, most in forests: an
+  evergreen needleleaf cell (`snoalb` 0.39) starts at 0.62.
+- `"masked"` keeps `snoalb` as the fresh value. The fraction of the cell
+  that sees the snow surface is `fexp = (snoalb - alb) / (0.85 - alb)`
+  (`alb` the snow-free albedo); only that snow ages, on Livneh's curve from
+  0.85, and the rest of the cell keeps `alb`, as the high-vegetation snow
+  tile of IFS HTESSEL does. The snow cover fraction and the snow age are
+  unchanged. It joins the config identity; `"livneh"` leaves every hash and
+  the arithmetic as they were.
+
+`snow_thaw_albedo = true` ages a pack whose skin is at the melting point
+(TSNOW = T1 >= 273.16 K, as WRF passes it) on Livneh's ablation curve
+`0.82 ** (days ** 0.46)` instead of the accumulation curve (Livneh et al.
+2010 after Bras 1990; WRF's ALCALC carries this branch commented out). It
+works under either `snow_fresh_albedo` and joins the identity when true.
+Tests: `tests/test_arwen_global_snow_fresh_albedo.py` and
+`tests/test_arwen_global_snow_fresh_albedo_cuda.py`.
+
+What they measured, at T127 from the GDAS analysis of 2026-03-01 00Z for
+10 days, the land-cold twins' physics (`snow_ageing = true`,
+`snow_age_refresh = "amount"`, prescribed SST), each arm differing from the
+control in one option, against ERA5 March (surface albedo 1 - net SW /
+downward SW of 2016-2023; 2 m temperature of 1990-2019), days 5-10:
+
+| NH land 20-70N | control | `"masked"` | `snow_thaw_albedo` | both | ERA5 |
+|---|---|---|---|---|---|
+| surface albedo | 0.384 | 0.346 | 0.379 | 0.342 | 0.327 |
+| absorbed sunlight minus control | | +4.7 W/m2 | +0.3 W/m2 | +5.2 W/m2 | |
+| 2 m temperature minus control | | +0.93 K | +0.17 K | +0.94 K | |
+
+(the thaw arm ran on another card against its own control.) Siberia
+(50-70N, 60-140E) went from 0.569 to 0.444 against ERA5's 0.446 and warmed
+1.75 K; Canada (50-70N) from 0.596 to 0.476 against 0.497, +2.30 K. Over
+cells snow-covered in the control and in ERA5, NH land 40-75N, the albedo
+went from 0.614 to 0.500 against ERA5's 0.500; evergreen needleleaf forest
+0.538 to 0.351 (ERA5 0.402), mixed forest 0.531 to 0.353 (0.357), open
+shrub 0.640 to 0.546 (0.545), grass 0.670 to 0.601 (0.497), cropland 0.678
+to 0.591 (0.478). `"masked"` closes about two thirds of the albedo excess
+`"amount"` leaves; grass and cropland stay 0.1 above ERA5. One start: the
+temperature differences include weather, and NH land stays about 3 K below
+the 1990-2019 climatology with Siberia's albedo at ERA5's, so the rest of
+that cold is not the snow albedo. With both options off a 10-day T127 run
+is bit-identical to 0.2.3 (136 of 136 checkpoint arrays, every daily field).
+
+Two more starts, 15 days each, same physics, `"masked"` against the
+control on one RTX 5090, NH land 20-70N albedo (control / `"masked"` /
+ERA5 of the month) and 2 m temperature difference, days 0-7 and 7-14:
+
+| start | albedo days 0-7 | days 7-14 | dT2 days 0-7 / 7-14 |
+|---|---|---|---|
+| 2026-02-01 00Z | 0.359 / 0.335 / 0.332 | 0.369 / 0.339 / 0.332 | +0.31 / +0.34 K |
+| 2026-04-01 00Z | 0.347 / 0.322 / 0.300 | 0.346 / 0.320 / 0.300 | +0.36 / +0.31 K |
+
+NH land warms in every window of the three starts. In February the
+forests go below ERA5 (evergreen needleleaf 0.345 against 0.413, Canada
+0.425 against 0.498, days 7-14), so `"masked"` can overshoot where ERA5's
+forest snow albedo is high; ERA5 is a reference here, not truth. On the
+April start `snow_thaw_albedo` added 0.004 of albedo loss to `"masked"`
+(Siberia 0.337 against ERA5's 0.359), so it stays a separate switch.
+
+An independent check on three more starts (10 days, same physics, days
+0-5 and 5-10, NH land control / `"masked"` / ERA5): 2026-01-16 00Z 0.348 /
+0.327 / 0.318 and 0.353 / 0.329 / 0.318, +0.25 / +0.45 K; the same start on
+the shipped defaults (no snow ageing, RTX 4090) 0.358 / 0.334 and 0.372 /
+0.340, +0.28 / +0.39 K; 2026-11-10 18Z 0.308 / 0.301 / 0.274 and 0.318 /
+0.309 / 0.274, +0.05 / +0.07 K, where the excess is not the fresh-snow lift;
+2026-05-01 00Z (no ERA5 albedo for May in the reference) 0.303 to 0.293 and
+0.292 to 0.281, +0.10 / +0.15 K. The NH land mean hides an overshoot on
+short vegetation and in midwinter: wooded tundra snowy cells go from ERA5's
+value to below it (January 0.648 to 0.557 against 0.646, March 0.666 to
+0.603 against 0.651), Canada in January from 0.510 to 0.387 against 0.483,
+and evergreen needleleaf in January from 0.512 to 0.332 against 0.413. The
+masking reading of `snoalb` is a canopy argument, and IFS applies it to the
+high-vegetation tile only; restricting it to forest types is untested. With
+both options off the January and November runs are bit-identical to 0.2.3
+(136 of 136 checkpoint arrays; 351 and 318 daily fields).
+
 What the model assumes about the age:
 
 - The analysed pack at a cold start is fresh snow, with age zero. The

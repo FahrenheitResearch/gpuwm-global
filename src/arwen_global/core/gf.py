@@ -45,8 +45,11 @@ are about what the engine can hand it today):
    ``kernels/gf.cu:4428``.  Handing this adapter a pre-folded RTHFTEN
    would integrate the boundary layer and the sky twice.
 2. **Convective momentum tendencies.**  The kernel computes GF's
-   dudt/dvdt; :class:`CumulusResult` carries no momentum slots, so they
-   are not yet coupled.  WRF couples them; MPAS-A v8.4.1 does NOT
+   dudt/dvdt.  By default they are not coupled (the shipped seam);
+   ``momentum_transport=True`` (native option ``gf_momentum_transport``)
+   returns them as :class:`CumulusResult` ``rucuten``/``rvcuten``, which
+   the runtime integrates the way it does New Tiedtke's.  WRF couples
+   them; MPAS-A v8.4.1 does NOT
    (its cu_grell_freitas call carries no rucuten/rvcuten), so for the
    MPAS seam this is native parity, not a gap.
 3. **w on mass levels** is the KF-precedent average
@@ -113,7 +116,7 @@ def _gf_module(nz: int, updraft_only_when_downdraft_dry: bool = False,
                resolved_convergence_floor_percent: int = 100, *,
                shallow_buoyancy_from_cloud_base: bool = False,
                shallow_blqe_to_cloud_base: bool = False,
-               shallow_depth_min_m: int = 0):
+               shallow_depth_min_m: int = 0, deep_experiment: int = 0):
     """The compiled kernel for ``nz`` levels; with
     ``updraft_only_when_downdraft_dry`` the deep arm keeps running, without
     a downdraft, in the columns WRF's GFDRV rejects because their downdraft
@@ -133,7 +136,7 @@ def _gf_module(nz: int, updraft_only_when_downdraft_dry: bool = False,
                           resolved_convergence_floor_percent,
                           shallow_buoyancy_from_cloud_base=shallow_buoyancy_from_cloud_base,
                           shallow_blqe_to_cloud_base=shallow_blqe_to_cloud_base,
-                          shallow_depth_min_m=shallow_depth_min_m)
+                          shallow_depth_min_m=shallow_depth_min_m, deep_experiment=deep_experiment)
     if not defines:
         from arwen_global.core.kernels import load_module
 
@@ -148,7 +151,7 @@ def _gf_defines(nz: int, updraft_only_when_downdraft_dry: bool = False,
                 resolved_convergence_floor_percent: int = 100, *,
                 shallow_buoyancy_from_cloud_base: bool = False,
                 shallow_blqe_to_cloud_base: bool = False,
-                shallow_depth_min_m: int = 0) -> tuple[tuple[str, int], ...]:
+                shallow_depth_min_m: int = 0, deep_experiment: int = 0) -> tuple[tuple[str, int], ...]:
     """The integer defines :func:`_gf_module` compiles gf.cu with.  Every
     value is a positive integer, the only kind the define loader takes: a
     floor percent of 0 (no floor) is spelt GF_RESOLVED_CONVERGENCE_FLOOR_DISABLED
@@ -172,6 +175,8 @@ def _gf_defines(nz: int, updraft_only_when_downdraft_dry: bool = False,
         defines.append(("GF_SHALLOW_BLQE_TO_CLOUD_BASE", 1))
     if int(shallow_depth_min_m) > 0:
         defines.append(("GF_SHALLOW_DEPTH_MIN_M", int(shallow_depth_min_m)))
+    if int(deep_experiment) > 0:
+        defines.append(("GF_DEEP_EXPERIMENT", int(deep_experiment)))
     return tuple(defines)
 
 
@@ -306,8 +311,14 @@ class GrellFreitas:
                  resolved_convergence_floor_percent: int = 100,
                  shallow_buoyancy_from_cloud_base: bool = False,
                  shallow_blqe_to_cloud_base: bool = False,
-                 shallow_depth_min_m: int = 0):
+                 shallow_depth_min_m: int = 0,
+                 momentum_transport: bool = False, deep_experiment: int = 0):
         self._driver = None
+        self.deep_experiment = int(deep_experiment)
+        #: Couple the deep arm's momentum transport (dudt/dvdt, WRF's
+        #: RUCUTEN/RVCUTEN) as rucuten/rvcuten; False returns none, the
+        #: shipped seam.
+        self.momentum_transport = bool(momentum_transport)
         #: The shallow arm's cloud-top test integrates the plume's buoyancy
         #: from cloud base (MPAS v8.4.2 and GSL GFL), not from the source
         #: level (WRF v4.6.1, whose sum lets the sub-cloud deficit cancel the
@@ -471,7 +482,7 @@ class GrellFreitas:
                             self.resolved_convergence_floor_percent,
                             shallow_buoyancy_from_cloud_base=self.shallow_buoyancy_from_cloud_base,
                             shallow_blqe_to_cloud_base=self.shallow_blqe_to_cloud_base,
-                            shallow_depth_min_m=self.shallow_depth_min_m)
+                            shallow_depth_min_m=self.shallow_depth_min_m, deep_experiment=self.deep_experiment)
         fn = module.get_function("gf_gfdrv_stage")
         block = GF_BLOCK
         # Columns are packed in chunks of `column_chunk` (GF_COLUMN_CHUNK:
@@ -489,10 +500,14 @@ class GrellFreitas:
             ncol, gf_pack_columns(self.column_chunk, tile))
         ws = cp.empty(gf_workspace_floats(nz, tile), dtype=DTYPE)
         out_names = ("rthcuten", "rqvcuten", "rqccuten", "rqicuten")
+        if self.momentum_transport:
+            out_names = out_names + ("dudt", "dvdt")
         out = {name: cp.empty((nz, ncol), dtype=DTYPE) for name in out_names}
         raincv = cp.empty((ncol,), dtype=DTYPE)
         ierr_deep = cp.empty((ncol,), dtype=cp.int32)
         downdraft_dry_exit = cp.empty((ncol,), dtype=cp.int32)
+        ktop_deep = cp.empty((ncol,), dtype=cp.int32)
+        kbcon_deep = cp.empty((ncol,), dtype=cp.int32)
         reading_f = {name: cp.empty((ncol,), dtype=DTYPE)
                      for name in CLOSURE_READING_SCALARS}
         reading_i = {name: cp.empty((ncol,), dtype=cp.int32)
@@ -535,6 +550,8 @@ class GrellFreitas:
             raincv[lo:hi] = sca[:, _OUT_SCA.index("raincv")]
             ierr_deep[lo:hi] = isc[:, _OUT_ISCA.index("ierr_deep")]
             downdraft_dry_exit[lo:hi] = isc[:, _OUT_ISCA.index("downdraft_dry_exit")]
+            ktop_deep[lo:hi] = isc[:, _OUT_ISCA.index("ktop_deep")]
+            kbcon_deep[lo:hi] = isc[:, _OUT_ISCA.index("kbcon")]
             for name, arr in reading_f.items():
                 arr[lo:hi] = sca[:, _OUT_SCA.index(name)]
             for name, arr in reading_i.items():
@@ -556,6 +573,9 @@ class GrellFreitas:
             rqc = cp.ascontiguousarray(rqc + rqi)
             rqi = None
         rainc = cp.ascontiguousarray(raincv.reshape(ny, nx))
+        momentum = {}
+        if self.momentum_transport:
+            momentum = {"rucuten": grid("dudt"), "rvcuten": grid("dvdt")}
         # The deep routine's exit code per column (WRF's ierr; 0 where deep
         # convection ran) and the downdraft exit the updraft-only switch
         # overrode there (0 none, else 7 or 51), held for a caller that asks
@@ -567,6 +587,12 @@ class GrellFreitas:
             "gf_downdraft_dry_exit": cp.ascontiguousarray(
                 downdraft_dry_exit.reshape(ny, nx)),
         }
+        # The deep cloud top and base indices (1-based, bottom up; 0 where
+        # no deep cloud), diagnostic only.
+        self.last_column_diagnostics["gf_ktop"] = cp.ascontiguousarray(
+            ktop_deep.reshape(ny, nx))
+        self.last_column_diagnostics["gf_kbcon"] = cp.ascontiguousarray(
+            kbcon_deep.reshape(ny, nx))
         for name, arr in reading_f.items():
             self.last_column_diagnostics[f"gf_{name}"] = cp.ascontiguousarray(
                 arr.reshape(ny, nx))
@@ -576,7 +602,7 @@ class GrellFreitas:
 
         return CumulusResult(
             rthcuten=rthcuten, rqvcuten=rqvcuten, rqccuten=rqc,
-            rqicuten=rqi, rainc=rainc)
+            rqicuten=rqi, rainc=rainc, **momentum)
 
 
 __all__ = ["GrellFreitas", "CLOSURE_READING_SCALARS",

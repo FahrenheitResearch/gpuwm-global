@@ -117,9 +117,15 @@ class Remap:
             self._dev[key] = {n: xp.asarray(getattr(self, n)) for n in names}
         return self._dev[key]
 
-    def to_ocean(self, f, xp):
+    def to_ocean(self, f, xp, *, spread: bool = True):
         """``(g, residual)``: g on the ocean grid (0 off the wet cells) and
-        the spread global residual (units of f times m2)."""
+        the global residual (units of f times m2).  With ``spread`` (the
+        conserved exchanges: heat, fresh water, ice-growth salt) the residual
+        is spread evenly over the wet cells; without it (stress, ice cover,
+        a temperature to match) g is the plain overlap mean, because a
+        uniform offset of an intensive field is a bias everywhere: the owned
+        area is 0.78 % smaller than the wet area at T255, so the spread
+        shifts every cell by about -0.78 % of the field's global mean."""
         d = self.on(xp)
         f = xp.asarray(f, dtype=xp.float64)
         own = d["owned"]
@@ -134,7 +140,8 @@ class Remap:
         total_a = xp.sum(fm * d["area_a"])
         total_o = xp.sum(g * d["area_o"])
         residual = total_a - total_o
-        g = g + d["wet_o"] * (residual / self.wet_area_total)
+        if spread:
+            g = g + d["wet_o"] * (residual / self.wet_area_total)
         return g, residual
 
     def to_atmosphere(self, g, xp):

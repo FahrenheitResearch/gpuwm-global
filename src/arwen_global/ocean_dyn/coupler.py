@@ -62,6 +62,9 @@ OUTFLOW = "water_outflow_kg_m2"
 TAPE_PREFIX = PREFIX + "tape_"
 TAPE_NAMES = ("ssh_m", "u_m_s", "v_m_s", "hbl_m", "d20_m", "ohc300_j_m2")
 AIR_DENSITY = 1.2
+#: The PBL's own surface momentum sink (physics.native_state.SURFACE_STRESS_PLANE);
+#: AIR_DENSITY u*^2 is the fallback only for a physics suite that does not write it.
+PBL_STRESS = "pbl_surface_stress_n_m2"
 COUPLING_S = 3600.0
 
 
@@ -137,8 +140,10 @@ class DynamicOceanProvider(SlabProvider):
         skin = np.asarray(cold_surface["temperature_k"], dtype=np.float64)
         ice = np.asarray(cold_surface["sea_ice_fraction"], dtype=np.float64)
         open_owned = self.owned & ~(np.nan_to_num(ice) >= 0.5)
-        num, _ = self.remap.to_ocean(np.where(open_owned, skin - KELVIN, 0.0), np)
-        den, _ = self.remap.to_ocean(np.where(open_owned, 1.0, 0.0), np)
+        # (no residual spread: a spread offset in num and den biases the
+        # ratio by ~0.78 % of (T - the global mean), review finding 2)
+        num, _ = self.remap.to_ocean(np.where(open_owned, skin - KELVIN, 0.0), np, spread=False)
+        den, _ = self.remap.to_ocean(np.where(open_owned, 1.0, 0.0), np, spread=False)
         g = self.ogrid
         ok = g.wet & (den > 0.5)
         target = np.where(ok, num / np.where(ok, den, 1.0), theta[0])
@@ -156,6 +161,10 @@ class DynamicOceanProvider(SlabProvider):
         sst = self.remap.to_atmosphere(theta[0] + KELVIN, np)
         out[PREFIX + "sst_atm"] = np.where(self.owned, sst, 0.0)
         out[PREFIX + "fbot_atm"] = np.zeros(shape)
+        # The PBL's surface stress plane: the native suite writes it after
+        # each surface-layer call only where the namespace carries it, so
+        # only a dynamic-ocean run gains it.
+        out[PBL_STRESS] = np.zeros(shape, dtype=np.float32)
         for name, value in self._tape_planes(st, np).items():
             out[name] = np.asarray(value)
         self._sst_match = {"columns": int(ok.sum()), "mean_delta_k": float(
@@ -181,6 +190,13 @@ class DynamicOceanProvider(SlabProvider):
         if missing or METADATA_KEY not in state.physics_state.metadata:
             raise ValueError(f"{label} carries no dynamic-ocean state ({', '.join(missing[:4]) or METADATA_KEY} "
                              "missing); a restart must continue the ocean it was written with")
+        if PBL_STRESS not in state.physics_state.arrays:
+            # A checkpoint written before the plane existed (0.2.3 and
+            # earlier): seed it, as a cold start does, so the restarted run
+            # takes the PBL's own stress from its first surface-layer call.
+            shape = state.surface.temperature_k.shape
+            xp = _module_of(state.surface.temperature_k)
+            _put_array(state.physics_state, PBL_STRESS, xp.zeros(shape, dtype=xp.float32))
 
     # -- per step -------------------------------------------------------------
     def _precip_total(self, state, xp):
@@ -265,7 +281,13 @@ class DynamicOceanProvider(SlabProvider):
         u10 = plane("u10") if "u10" in arrays else zero
         v10 = plane("v10") if "v10" in arrays else zero
         speed = xp.maximum(xp.sqrt(u10 * u10 + v10 * v10), 1.0e-3)
-        stress = AIR_DENSITY * ust * ust
+        if PBL_STRESS in arrays:
+            # momentum conservation: the stress YSU removed from the lowest
+            # level, rho u*^2 (|V1|/wspd)^2 at the actual air density (the
+            # 10 m wind has the lowest level's direction)
+            stress = plane(PBL_STRESS)
+        else:
+            stress = AIR_DENSITY * ust * ust
         a_cov = xp.where(owned, new_frac, 0.0)
         taux = dt * (1.0 - a_cov) * stress * u10 / speed
         tauy = dt * (1.0 - a_cov) * stress * v10 / speed
@@ -308,17 +330,20 @@ class DynamicOceanProvider(SlabProvider):
         m = self.model(xp)
         rm = self.remap
 
-        def mean_on_ocean(name):
+        def mean_on_ocean(name, spread=True):
             value = xp.asarray(_resident(xp, physics.arrays[PREFIX + name]), dtype=xp.float64)
-            g, res = rm.to_ocean(value / acc_s, xp)
+            g, res = rm.to_ocean(value / acc_s, xp, spread=spread)
             return g, res
 
+        # Heat and fresh water are conserved exchanges: their residual is
+        # spread and booked.  Stress and ice cover are not: they take the
+        # plain overlap mean (review finding 2).
         q_ns, r_ns = mean_on_ocean("acc_heat_ns")
         q_sw, r_sw = mean_on_ocean("acc_heat_sw")
-        taux, _ = mean_on_ocean("acc_taux")
-        tauy, _ = mean_on_ocean("acc_tauy")
+        taux, _ = mean_on_ocean("acc_taux", spread=False)
+        tauy, _ = mean_on_ocean("acc_tauy", spread=False)
         fw, _ = mean_on_ocean("acc_fw")
-        ice, _ = mean_on_ocean("acc_ice")
+        ice, _ = mean_on_ocean("acc_ice", spread=False)
         growth, _ = rm.to_ocean(xp.asarray(_resident(xp, physics.arrays[PREFIX + "acc_ice_growth"]),
                                            dtype=xp.float64), xp)
         if abs(acc_s - m.p.dt) > 1.0e-6:

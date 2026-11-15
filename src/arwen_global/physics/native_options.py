@@ -119,6 +119,10 @@ class NativePhysicsOptions:
     # 0 the option joins the identity; at 0 no arithmetic changes and a
     # checkpoint keeps its hash.
     sfclay_iz0tlnd: int = 0
+    # Open-water momentum roughness: "wrf" the sfclay Charnock 0.0185,
+    # "coare35" the COARE 3.5 wind-dependent Charnock (Edson et al. 2013),
+    # sfclay.cu isftcflx 3.  Joins the identity only when not "wrf".
+    sfclay_ocean_roughness: str = "wrf"
     land_surface: str = "noah"
     land_surface_interval_s: float = 60.0
     pbl: str = "ysu"
@@ -282,6 +286,23 @@ class NativePhysicsOptions:
     # 770-1330 m (docs/trade-shallow.md).  0 (the default) is no test and
     # keeps every earlier identity; any other value joins the hash.
     gf_shallow_depth_min_m: int = 0
+    # Read only where cumulus="gf".  True couples the deep arm's convective
+    # momentum transport (gf.cu DL_dudt/DL_dvdt, the kernel's outu/outv after
+    # neg_check, WRF's RUCUTEN/RVCUTEN) into u and v on the lane New
+    # Tiedtke's momentum already uses.  WRF couples them for cu_physics=3;
+    # the kernel's outt already carries the dissipative heating of that
+    # same momentum loss (module_cu_gf_deep.F:1803-1821), so with False the
+    # column is heated by a kinetic-energy loss the wind never takes.
+    # False (the default) keeps every earlier identity.
+    gf_momentum_transport: bool = False
+    # Read only where cumulus="gf".  Where the deep updraft's mass flux peaks
+    # (gf.cu GF_DEEP_EXPERIMENT): 0 WRF v4.6.1 (the default, every earlier
+    # identity); 2 at kstabi; 3 at the plume's maximum-buoyancy level (UFS
+    # CCPP); 4 = 3 with CCPP's deep entrainment 1e-4.  Measured (round5
+    # tropics, T255, 24 h): every non-zero value lifts GF's cloud tops and
+    # removes the 300-200 hPa cold bias but doubles the scheme's tropical rain
+    # and warms 700-500 hPa by 0.4-0.8 K; experimental, not for default.
+    gf_deep_experiment: int = 0
     # Read only where cumulus="ntiedtke": True runs the New Tiedtke kernels
     # with classic Tiedtke's deep closure (the fixed 2400 s adjustment time
     # and the moisture-convergence first guess in place of the
@@ -309,6 +330,20 @@ class NativePhysicsOptions:
     # identity.  Experimental.  MEASURED (same Katrina case): 3.0 leaves the
     # 60 h storm where it was (1000 against 999 hPa): under quasi-equilibrium
     # a slower closure lets CAPE build until the same heating comes out.
+    # The other way it is the TROPICAL MID-LEVEL HEATING SWITCH.  Above
+    # dx = 15 km WRF's scale_fac = 1 + 1.33e-5 dx is 1.69 at T255's 52.1 km,
+    # and the day-one set (kim-gwdo + New Tiedtke) runs the tropics 0.2-0.4 K
+    # cold at 600-300 hPa against the GDAS analysis, about 5 m of tropical
+    # Z500 by 72 h.  MEASURED (T255 day-one config, GDAS 2026-09-25 00Z,
+    # 72 h, |lat| <= 20, against the GFS analysis; tropical Z500 bias /
+    # RMSE m, NH Z500 RMSE m): 1.0 -5.32 / 9.45 / 21.10; 0.5 -3.93 / 8.60 /
+    # 20.84; 0.25 -2.80 / 7.83 / 20.68; 0.2.2 (GF) +1.66 / 7.48 / 22.26.
+    # At 0.25 the 700-500 hPa layer is within 0.12 K of the analysis.
+    # Six starts at 120 h (d1's 09-14 ... 10-28): 0.25 takes the tropical
+    # Z500 RMSE from 14.35 to 12.62 m (0.2.2 10.95; 6/6 better than 1.0,
+    # 1/6 better than 0.2.2), bias -8.86 to -5.50 m, NH Z500 RMSE 43.64 to
+    # 44.34 m (0.2.2 47.81).  It halves the offset; it does not remove it,
+    # so it is NOT A RECOMMENDED SETTING YET.
     ntiedtke_adjustment_time_factor: float = 1.0
     # Read only where cumulus="ntiedtke".  Multiplies the organised
     # entrainment constant 1.75e-3 /m (Bechtold et al. 2008, the IFS
@@ -513,6 +548,26 @@ class NativePhysicsOptions:
     # forms on bare ground starts new.  Off ("any") keeps every hash and the
     # arithmetic bit for bit; "amount" joins the identity.
     snow_age_refresh: str = "any"
+    # The fresh-snow albedo of a snow-covered cell.  "livneh" (the default)
+    # is WRF's ALCALC: SNOALB1 = snoalb + LVCOEF (0.85 - snoalb), LVCOEF 0.5,
+    # aged on Livneh's curve.  snoalb is the MODIS maximum snow albedo
+    # (Barlage et al. 2005), the albedo of the whole cell under deep fresh
+    # snow, canopy included, so the lift puts a fresh pack above the
+    # observed maximum: an evergreen needleleaf cell (snoalb 0.39) starts
+    # at 0.62.  "masked" keeps snoalb as the fresh value and lets only the
+    # part of the cell that sees the snow surface age: fexp =
+    # (snoalb - alb) / (0.85 - alb) of the cell is snow on Livneh's curve
+    # from 0.85, the rest keeps the snow-free albedo alb (the masking
+    # canopy, as in the high-vegetation snow tile of IFS HTESSEL).  Off
+    # ("livneh") keeps every hash and the arithmetic bit for bit; "masked"
+    # joins the identity.
+    snow_fresh_albedo: str = "livneh"
+    # Livneh's ablation curve for a melting pack (TSNOW = T1 >= 273.16 K):
+    # albedo factor 0.82 ** (days ** 0.46) instead of the accumulation curve
+    # 0.94 ** (days ** 0.58) (Livneh et al. 2010 after Bras 1990; WRF's
+    # ALCALC carries the branch commented out, so every pack ages as a cold
+    # one).  Off keeps every hash and the arithmetic; true joins the identity.
+    snow_thaw_albedo: bool = False
     # Orographic gravity-wave drag (arwen_global.physics.orographic_drag):
     # "none" (the default) or "kim-gwdo", WRF's gwd_opt = 1, the KIM
     # orographic gravity-wave drag with flow blocking (Choi and Hong 2015),
@@ -613,8 +668,14 @@ class NativePhysicsOptions:
             del payload["gf_shallow_blqe_to_cloud_base"]
         if self.cumulus_scheme != "gf" or self.gf_shallow_depth_min_m == 0:
             del payload["gf_shallow_depth_min_m"]
+        if self.cumulus_scheme != "gf" or not self.gf_momentum_transport:
+            del payload["gf_momentum_transport"]
+        if self.cumulus_scheme != "gf" or self.gf_deep_experiment == 0:
+            del payload["gf_deep_experiment"]
         if self.sfclay_iz0tlnd == 0:
             del payload["sfclay_iz0tlnd"]
+        if self.sfclay_ocean_roughness == "wrf":
+            del payload["sfclay_ocean_roughness"]
         if self.radiation_between == "hold":
             # The held planes are the arithmetic every checkpoint before
             # the option carried.
@@ -625,6 +686,11 @@ class NativePhysicsOptions:
         if self.snow_age_refresh == "any":
             # WRF's reset: the arithmetic of every checkpoint before it.
             del payload["snow_age_refresh"]
+        if self.snow_fresh_albedo == "livneh":
+            # WRF's Livneh lift: the arithmetic of every checkpoint before it.
+            del payload["snow_fresh_albedo"]
+        if not self.snow_thaw_albedo:
+            del payload["snow_thaw_albedo"]
         if self.ozone == "rfmip-median":
             # The arithmetic every checkpoint before the option carried.
             del payload["ozone"]
@@ -794,6 +860,10 @@ class NativePhysicsOptions:
                     f"number in [{low:g}, {high:g}]")
         if not isinstance(self.gf_updraft_only_when_downdraft_dry, bool):
             raise ValueError("gf_updraft_only_when_downdraft_dry must be true or false")
+        if not isinstance(self.gf_momentum_transport, bool):
+            raise ValueError("gf_momentum_transport must be true or false")
+        if isinstance(self.gf_deep_experiment, bool) or self.gf_deep_experiment not in (0, 2, 3, 4):
+            raise ValueError("gf_deep_experiment must be 0, 2, 3 or 4")
         if not isinstance(self.snow_ageing, bool):
             raise ValueError("snow_ageing must be true or false")
         if self.snow_age_refresh not in {"any", "amount"}:
@@ -801,6 +871,13 @@ class NativePhysicsOptions:
                 "snow_age_refresh must be 'any' (WRF ALCALC: any snowfall makes "
                 "the pack new) or 'amount' (Noah-MP SNOW_AGE: by the new snow "
                 f"over 1 kg/m2), got {self.snow_age_refresh!r}")
+        if not isinstance(self.snow_thaw_albedo, bool):
+            raise ValueError("snow_thaw_albedo must be true or false")
+        if self.snow_fresh_albedo not in {"livneh", "masked"}:
+            raise ValueError(
+                "snow_fresh_albedo must be 'livneh' (WRF ALCALC: snoalb lifted "
+                "half way to 0.85) or 'masked' (snoalb is the fresh value, only "
+                f"the exposed snow ages), got {self.snow_fresh_albedo!r}")
         if self.snow_age_refresh != "any" and not self.snow_ageing:
             raise ValueError(
                 "snow_age_refresh = 'amount' needs snow_ageing = true: without "
@@ -847,6 +924,8 @@ class NativePhysicsOptions:
             raise ValueError("sfclay_option must be 1 or 91")
         if self.sfclay_iz0tlnd not in {0, 1, 2, 3} or isinstance(self.sfclay_iz0tlnd, bool):
             raise ValueError("sfclay_iz0tlnd must be 0, 1, 2 or 3")
+        if self.sfclay_ocean_roughness not in {"wrf", "coare35"}:
+            raise ValueError("sfclay_ocean_roughness must be wrf or coare35")
         if self.ysu_topdown_pblmix not in {0, 1}:
             raise ValueError("ysu_topdown_pblmix must be 0 or 1")
         # The mode table is the CARRIED contract's, and the kernel that

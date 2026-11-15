@@ -136,6 +136,18 @@ normalisation exactly and is what recomputes it.
   shipped it, and the 51 hunks with no row and 21 rows with no hunk above
   are the same ones. The 2.9.13 re-baseline was not done in the 0.2.3 cut
   either.
+* **Where the rows stand at 0.2.4 (measured 2026-11-15), the same way.** The
+  opt-in Grell-Freitas deep switches add `GF-PY-8` and `GF-CU-14` (six
+  hunks) and the COARE 3.5 mirror adds `NPREF-19` (one hunk). Five hunks
+  that also carry an existing row's lines keep that row's name
+  (`GF-PY-4`, `GF-CU-3`, `SFCLAY-PY-2`, `SFCLAY-CU-4`, `NPREF-4`), five of
+  those rows' hunks that the new code absorbed are gone, and the snow
+  albedo rules' new mirror hunk joins `NPREF-18`; the line ranges of every
+  `core/gf.py`, `core/kernels/gf.cu`, `core/sfclay.py`,
+  `core/kernels/sfclay.cu`, `core/npref.py` and Noah row were re-read from
+  the measurement. 955 rows. Every other file is as 0.2.3 shipped it, and
+  the 51 hunks with no row and 21 rows with no hunk above are the same
+  ones. The 2.9.13 re-baseline was not done in the 0.2.4 cut either.
 * **This package:** the model source revision `a2a674a2757c2dfc70fc9a2b12b4412ba3b18fcd`
   of 2026-09-12, which is what `SOURCE.md` records and what `pyproject.toml`
   states beside the version.
@@ -286,12 +298,13 @@ notice that travels with them.
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
 | `GF-PY-1` | 5-6 | 5-12 | equal to carried | deliberate | owner c9a5f2c88, 2026-09-12, keeps the block; engine c0ffc53b5, 2026-09-04, replaced its own copy | nothing by itself | **refuse** |
-| `GF-PY-2` | after 81 | 88-96 | equal to carried | deliberate | owner c9a5f2c88, 2026-09-12, keeps the block; engine c0ffc53b5, 2026-09-04, replaced its own copy | nothing on the shipped path | **refuse** |
-| `GF-PY-3` | 87-92, 94-137, 143-175 | 102-102, 104-111, 117-117 | equal to engine | adaptation | owner fca73b086, 2026-09-04; 957059111, 2090ac84a, e30f9fda6, c4a95bc61 and 58fd47304, 2026-09-05; package fix/trade-shallow, 2026-11-13 | nothing at the shipped defaults | **refuse** |
-| `GF-PY-4` | 227-265, 303-309, 311-360, 404-408, after 414, 417-417, 421-421, 426-445, 451-455, 459-459, 465-474, 477-489, 491-542, 545-552, 558-577, 582-584 | after 267, 305-305, after 306, 350-365, 372-372, 375-375, 379-379, 384-402, 408-418, 422-422, 428-441, 444-450, 452-458, 461-469, 475-479, 484-485 | equal to engine | adaptation | owner a74805618, 2026-09-01 | nothing | **offer** |
-| `GF-PY-5` | 390-390 | 336-336 | equal to carried | no-behaviour | engine 9a2f350e7, 2026-09-14 | nothing, docstring only | **none** |
-| `GF-PY-6` | 397-397, 399-400 | 343-344, 346-346 | equal to carried | engine-fix | engine v2.8.5 (3e2d273), 2026-10-03 | nothing at this package's settings | **none** |
-| `GF-PY-7` | 207-215 | 149-256 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing: the engine records every output word unchanged | **none** |
+| `GF-PY-2` | after 84 | 88-96 | equal to carried | deliberate | owner c9a5f2c88, 2026-09-12, keeps the block; engine c0ffc53b5, 2026-09-04, replaced its own copy | nothing on the shipped path | **refuse** |
+| `GF-PY-3` | 90-95, 97-140, 146-180 | 102-102, 104-111, 117-117 | equal to engine | adaptation | owner fca73b086, 2026-09-04; 957059111, 2090ac84a, e30f9fda6, c4a95bc61 and 58fd47304, 2026-09-05; package fix/trade-shallow, 2026-11-13 | nothing at the shipped defaults | **refuse** |
+| `GF-PY-4` | 232-270, 308-315, 317-371, 415-419, after 425, 428-428, 432-432, 437-456, 462-466, 470-470, 476-485, 488-500, 502-559, 562-569, 575-603, 605-610 | after 267, 305-305, after 306, 350-365, 372-372, 375-375, 379-379, 384-402, 408-418, 422-422, 428-441, 444-450, 452-458, 461-469, 475-479, 481-485 | equal to engine | adaptation | owner a74805618, 2026-09-01 | nothing | **offer** |
+| `GF-PY-5` | 401-401 | 336-336 | equal to carried | no-behaviour | engine 9a2f350e7, 2026-09-14 | nothing, docstring only | **none** |
+| `GF-PY-6` | 408-408, 410-411 | 343-344, 346-346 | equal to carried | engine-fix | engine v2.8.5 (3e2d273), 2026-10-03 | nothing at this package's settings | **none** |
+| `GF-PY-7` | 212-220 | 149-256 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing: the engine records every output word unchanged | **none** |
+| `GF-PY-8` | 48-52 | 54-55 | equal to engine | global-fix | package round5/tropics, 2026-11-14 | nothing at the shipped default | **offer** |
 
 **`GF-PY-1`.** The docstring of the cumulus driver. On the engine it dates and describes the engine's own gamma replacement; here it describes the gamma this package runs. No number moves. Refused with GF-CU-1, whose position it restates.
 
@@ -306,6 +319,8 @@ notice that travels with them.
 **`GF-PY-6`.** The engine's stochastically perturbed parameterisation for this scheme: four pattern channels clipped to [-1, 1] and a specialised kernel compiled through `gpuwm.core.spp_kernel_sources`. This package runs no stochastic physics and its door has no option that would reach it.
 
 **`GF-PY-7`.** The tile now assumes eight resident blocks per SM because the driver kernel carries launch bounds (`GF-CU-12`), measured by the engine at 10.85 ms against 11.53 per call on an 82-SM card with every output word unchanged; and a provenance type lets the engine's driver read this scheme's fresh outputs without a validation copy. Speed only. The carried cumulus scheme next door sizes its own tile from these constants, so the tile constant cannot be taken without the launch bound, or without checking the other scheme's workspace.
+
+**`GF-PY-8`.** The launcher half of `GF-CU-14`: `gf_momentum_transport` returns the deep arm's momentum tendencies (the kernel's `outu`/`outv`, WRF's RUCUTEN/RVCUTEN, which WRF couples and the shipped seam did not, though it already applied the matching dissipative heating) as `CumulusResult` `rucuten`/`rvcuten`, and `gf_deep_experiment` (0, 2, 3 or 4) compiles the kernel with the deep mass-flux-peak define; the deep cloud top and base indices are exported beside the closure reading. Both options are off by default and in the config hash only when set, so a default run compiles and launches the engine's text. The row holds the module docstring's hunk; the launch keywords sit in `GF-PY-4`'s chunk hunk (carried 605-610), which keeps that row's name. Measured (package branch round5/tropics, T255, 24 h, against the GFS analysis, 4 starts): the momentum transport takes tropical 250 hPa wind error from 3.79 to 3.71 m/s and makes Z500 worse (NH +0.08, tropics +0.11 m); experiment 2 removes the 300-200 hPa tropical cold bias (-0.73 to -0.08 K at 300 hPa) and doubles the scheme's tropical rain (2.5 to 5.4 mm/day) with 700-500 hPa 0.3-0.5 K too warm. Neither is a recommended setting; the engine is offered both as options.
 
 ### `core/ntiedtke.py`
 
@@ -332,7 +347,7 @@ notice that travels with them.
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
 | `SFCLAY-PY-1` | 7-8, after 35, 104-107, 120-123, 138-138, 145-146, 153-154, after 169, 175-177 | 7-9, 37-37, 98-101, 114-115, 128-128, 135-136, 143-146, 162-162, 168-170 | equal to carried | engine-fix | engine 3669990e8, 2026-09-04 | nothing to the 33 fields this model reads | **pull** |
-| `SFCLAY-PY-2` | 72-73, 78-86, 116-116, 125-125, 127-128, 130-130, 148-148, 158-158, 179-180 | 74-74, 79-80, 110-110, 117-117, after 118, 120-120, 138-138, 150-150, 172-172 | equal to engine | deliberate | owner c3f2de9b7, corrected by 47ea9ae89, both 2026-09-04 | nothing at the default | **refuse** |
+| `SFCLAY-PY-2` | 72-73, 116-116, 125-125, 127-128, 130-130, 148-148, 158-158, 179-180, 76-86 | 74-74, 110-110, 117-117, after 118, 120-120, 138-138, 150-150, 172-172, 77-80 | equal to engine | deliberate | owner c3f2de9b7, corrected by 47ea9ae89, both 2026-09-04 | nothing at the default | **refuse** |
 
 **`SFCLAY-PY-1`.** WRF's registry carries the momentum friction velocity as unconditional restart state and the surface-layer routine writes it on every column; the port never published it and the engine added it after the fork. It adds a 34th field to the output set, to the result type, to the allocator and to both signatures. Pull it as ONE change across this module, its kernel and the physics inventory: the launcher passes result pointers in the output set's order, so inserting the name at index 2 in the inventory without moving the kernel signature would write each field into the next one's slot all the way down, with nothing raising. The merged signature is thirteen read-only inputs, the vegetation fraction last, then eight inout fields.
 
@@ -468,10 +483,10 @@ At 2.8.1 to 2.8.5 the engine's new driver options and structure (`PHYSICS-19`, `
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
 | `NOAH-PY-1` | after 378, 392-392 | 381-385, 399-399 | equal to carried | engine-fix | engine v2.8.2 (4c27749), 2026-10-02 | nothing on a shipped path | **pull** |
-| `NOAH-PY-2` | 451-453, after 456, 460-473 | 446-447, 451-459, 463-476 | equal to carried | engine-fix | engine v2.8.5 (3e2d273), 2026-10-03 | nothing numeric | **pull** |
-| `NOAH-PY-3` | 15-15, 482-483, after 498, 541-541 | 15-17, 539-539, 548-555, 589-598 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing at this package's settings | **none** |
-| `NOAH-PY-4` | after 474 | 478-531 | equal to carried | engine-fix | engine v2.8.2 (4c27749), 2026-10-02 | nothing in this package | **none** |
-| `NOAH-PY-5` | 408-419, 485-491, 500-506, 538-539 | after 414, after 540, after 556, after 587 | equal to engine | global-fix | package fx/land-cold, 2026-11-14 | nothing at the shipped default | **offer** |
+| `NOAH-PY-2` | 460-462, after 465, 469-482 | 446-447, 451-459, 463-476 | equal to carried | engine-fix | engine v2.8.5 (3e2d273), 2026-10-03 | nothing numeric | **pull** |
+| `NOAH-PY-3` | 15-15, 491-494, after 509, 558-558 | 15-17, 539-539, 548-555, 589-598 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing at this package's settings | **none** |
+| `NOAH-PY-4` | after 483 | 478-531 | equal to carried | engine-fix | engine v2.8.2 (4c27749), 2026-10-02 | nothing in this package | **none** |
+| `NOAH-PY-5` | 408-428, 496-502, 511-521, 553-556 | after 414, after 540, after 556, after 587 | equal to engine | global-fix | package fx/land-cold, 2026-11-14 | nothing at the shipped default | **offer** |
 
 **`NOAH-PY-1`.** WRF's cold-start soil initialisation compares a stored FP32 soil temperature against the FP32 literal 273.149. This copy compares against the binary64 273.149, and the FP32 word nearest it is 273.148987, below it, so a level stored at exactly that word goes down the frozen branch where WRF takes the warm copy. The engine compares against `float(np.float32(273.149))`. Reached here only through `sh2o_init`, which no door calls and one test does, so no shipped number moves; the pull is one line and removes a wrong answer from carried code.
 
@@ -481,7 +496,7 @@ At 2.8.1 to 2.8.5 the engine's new driver options and structure (`PHYSICS-19`, `
 
 **`NOAH-PY-4`.** A device version of the cold-start liquid-water initialisation, compiled from an engine-only unit (`LOADER-4`). This package runs no cold-start soil initialisation from any door.
 
-**`NOAH-PY-5`.** The launcher half of `NOAH-CU-3`: the `snow_age_refresh` rule (`"any"`, WRF's, the default, or `"amount"`) and Noah-MP's SWEMX, checked before CuPy is imported and passed to the kernel as two arguments. At the default the kernel takes WRF's path and every word is unchanged.
+**`NOAH-PY-5`.** The launcher half of `NOAH-CU-3`: the `snow_age_refresh` rule (`"any"`, WRF's, the default, or `"amount"`) and Noah-MP's SWEMX, checked before CuPy is imported and passed to the kernel as two arguments. At the default the kernel takes WRF's path and every word is unchanged. The same launcher passes `snow_fresh_albedo` and `snow_thaw_albedo` as one more kernel argument (bit 1 masked, bit 2 thaw), checked before CuPy is imported; at their defaults the argument is 0 and a 10-day T127 run is bit-identical to 0.2.3.
 
 ### `core/morrison.py`
 
@@ -519,21 +534,22 @@ These rows, and the two of `core/kernels/terrain_drag.cu` below, are measured ag
 |---|---|---|---|---|---|---|---|
 | `NPREF-1` | 1-37 | after 0 | not present | global-fix | package cd407ae, 2026-09-12 | nothing | **offer** |
 | `NPREF-2` | 1045-1046, 1051-1056, 1075-1083, 1123-1132, 1136-1136, after 1137, after 1139, 1390-1392, 1412-1415, 1948-1948, 2056-2057, 2105-2106, 2145-2145 | 1049-1049, after 1053, 1072-1075, 1115-1116, 1120-1120, 1122-1122, 1125-1125, after 1372, after 1391, 1924-1924, after 2025, 2073-2073, after 2110 | equal to engine | global-fix | owner bef189b1d, 2026-09-12 | the mirror half of MORRISON-CU-1 | **offer** |
-| `NPREF-3` | 4330-4330, 4499-4501, after 4512, after 4776, 4816-4816, 4829-4831, 4838-4838, 4867-4867 | 4394-4394, 4563-4565, 4577-4577, 4825-4830, 4870-4870, 4883-4885, 4892-4894, 4917-4918 | equal to carried | engine-fix | engine 3669990e8, 2026-09-04 | nothing in any field this mirror already returns | **none** |
-| `NPREF-4` | 4746-4759, 4762-4763, 4768-4769, 4847-4854, 4869-4869, 4876-4876 | 4811-4811, after 4813, after 4817, 4903-4904, after 4919, 4926-4926 | equal to engine | deliberate | owner c3f2de9b7, corrected by 47ea9ae89, both 2026-09-04 | nothing at the three original options | **refuse** |
-| `NPREF-5` | 6391-6392, 6394-6398, 6434-6436, 6799-6800, 6803-6804 | 6425-6425, after 6426, after 6461, after 6818, after 6820 | equal to engine | deliberate | owner 36cb7cd43, 2026-09-05 | nothing at the shipped default | **refuse** |
-| `NPREF-7` | 6594-6601, 6604-6616 | 6619-6636, after 6638 | neither | global-fix | owner 304177d6f, 2026-09-04; engine 4d523b793, same day | identical where the index is above one; the height differs in one corner | **offer** |
-| `NPREF-8` | 6627-6628 | after 6648 | equal to engine | global-fix | owner 304177d6f, 2026-09-04 | narrow but not empty | **offer** |
-| `NPREF-9` | 7495-7501, 7503-7504, 7510-7526, 7528-7531, 7545-7545, 7551-7556, 7559-7559, 7563-7563, 7578-7581, 7594-7595, 7597-7601, 7617-7617, 7619-7619 | after 7497, 7499-7499, after 7504, 7506-7508, 7522-7522, 7528-7531, 7534-7534, 7538-7538, 7553-7555, after 7567, 7569-7575, 7591-7591, 7593-7593 | equal to engine | global-fix | owner 50e109983, 2026-09-04 | up to 3.35 W/m2 of spurious absorption removed | **offer** |
-| `NPREF-10` | 7806-7806, 7811-7950, 7957-7960, 7974-7990, 7992-7993, 8025-8027, 8047-8049, 8080-8084, 8098-8108, 8110-8111, after 8112, 8114-8131 | 7780-7780, after 7784, 7791-7791, 7805-7806, after 7807, 7839-7840, 7860-7862, after 7892, after 7905, 7907-7908, 7910-7911, 7913-7917 | equal to engine | global-fix | owner 4bf9f3e94, 9cfc20654 and 984c1cc61, 2026-09-04; eaa150a42, 2026-09-04; f6999e233, 2026-09-05 | the mirror half of RRTMGP-10, RRTMGP-12 and RRTMGP-13 | **offer** |
-| `NPREF-11` | after 9391, 9393-9393, 9478-9479, 9492-9493, 9495-9497, 9499-9502, 9504-9504, 9532-9532 | 9178-9183, 9185-9185, 9270-9273, 9286-9289, 9291-9294, 9296-9299, 9301-9301, 9329-9329 | equal to carried | engine-fix | engine ab874b32e, 2026-09-04 | 1.23 percent on the shallow tendencies at a 90 s step | **pull** |
+| `NPREF-3` | 4330-4330, 4499-4501, after 4512, after 4776, 4822-4822, 4835-4837, 4844-4844, 4873-4873 | 4394-4394, 4563-4565, 4577-4577, 4825-4830, 4870-4870, 4883-4885, 4892-4894, 4917-4918 | equal to carried | engine-fix | engine 3669990e8, 2026-09-04 | nothing in any field this mirror already returns | **none** |
+| `NPREF-4` | 4746-4759, 4762-4763, 4768-4769, 4875-4875, 4882-4882, 4851-4860 | 4811-4811, after 4813, after 4817, after 4919, 4926-4926, 4901-4904 | equal to engine | deliberate | owner c3f2de9b7, corrected by 47ea9ae89, both 2026-09-04 | nothing at the three original options | **refuse** |
+| `NPREF-5` | 6416-6417, 6419-6423, 6459-6461, 6824-6825, 6828-6829 | 6425-6425, after 6426, after 6461, after 6818, after 6820 | equal to engine | deliberate | owner 36cb7cd43, 2026-09-05 | nothing at the shipped default | **refuse** |
+| `NPREF-7` | 6619-6626, 6629-6641 | 6619-6636, after 6638 | neither | global-fix | owner 304177d6f, 2026-09-04; engine 4d523b793, same day | identical where the index is above one; the height differs in one corner | **offer** |
+| `NPREF-8` | 6652-6653 | after 6648 | equal to engine | global-fix | owner 304177d6f, 2026-09-04 | narrow but not empty | **offer** |
+| `NPREF-9` | 7520-7526, 7528-7529, 7535-7551, 7553-7556, 7570-7570, 7576-7581, 7584-7584, 7588-7588, 7603-7606, 7619-7620, 7622-7626, 7642-7642, 7644-7644 | after 7497, 7499-7499, after 7504, 7506-7508, 7522-7522, 7528-7531, 7534-7534, 7538-7538, 7553-7555, after 7567, 7569-7575, 7591-7591, 7593-7593 | equal to engine | global-fix | owner 50e109983, 2026-09-04 | up to 3.35 W/m2 of spurious absorption removed | **offer** |
+| `NPREF-10` | 7831-7831, 7836-7975, 7982-7985, 7999-8015, 8017-8018, 8050-8052, 8072-8074, 8105-8109, 8123-8133, 8135-8136, after 8137, 8139-8156 | 7780-7780, after 7784, 7791-7791, 7805-7806, after 7807, 7839-7840, 7860-7862, after 7892, after 7905, 7907-7908, 7910-7911, 7913-7917 | equal to engine | global-fix | owner 4bf9f3e94, 9cfc20654 and 984c1cc61, 2026-09-04; eaa150a42, 2026-09-04; f6999e233, 2026-09-05 | the mirror half of RRTMGP-10, RRTMGP-12 and RRTMGP-13 | **offer** |
+| `NPREF-11` | after 9416, 9418-9418, 9503-9504, 9517-9518, 9520-9522, 9524-9527, 9529-9529, 9557-9557 | 9178-9183, 9185-9185, 9270-9273, 9286-9289, 9291-9294, 9296-9299, 9301-9301, 9329-9329 | equal to carried | engine-fix | engine ab874b32e, 2026-09-04 | 1.23 percent on the shallow tendencies at a 90 s step | **pull** |
 | `NPREF-12` | 3267-3267, 3319-3319, 3431-3431, 3452-3452, 3464-3464 | 3303-3303, 3355-3355, 3467-3467, 3488-3488, 3500-3500 | equal to carried | no-behaviour | engine 9a2f350e7, 2026-09-14 | nothing, comments only | **none** |
 | `NPREF-13` | after 2310 | 2276-2346 | not present | engine-fix | engine 72f18213d, 2026-09-16 | nothing in this package | **none** |
 | `NPREF-14` | 609-611, after 669 | 572-576, 635-673 | equal to carried | engine-fix | engine v2.8.2 (4c27749), 2026-10-02 | nothing in this package | **none** |
 | `NPREF-15` | 3516-3517, 3523-3523, 3540-3540, 3542-3542, 3551-3551, 3554-3554, 3559-3559, 3562-3562, 3570-3570, 3573-3573, 3626-3626, 3628-3629, 3633-3633, after 3647, 3649-3649, 3651-3651, 3760-3761, 3811-3811, 3819-3819 | 3552-3553, 3559-3559, 3576-3576, 3578-3581, 3590-3594, 3597-3600, 3605-3605, 3608-3610, 3618-3622, 3625-3628, 3681-3682, 3684-3685, 3689-3690, 3705-3705, 3707-3707, 3709-3709, 3818-3819, 3869-3872, 3880-3883 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01, and v2.8.2 (4c27749), 2026-10-02 | nothing in this package | **none** |
 | `NPREF-16` | 1323-1324, 1329-1331, 1335-1335, 1377-1377, 1418-1418, 1990-1990, 2009-2011, 2013-2015, 2109-2110, 2200-2200 | 1309-1309, 1314-1314, 1318-1318, 1360-1360, 1394-1394, 1966-1966, after 1984, after 1985, 2076-2076, 2165-2165 | equal to engine | global-fix | package fix/droplet-number, 2026-11-12 | nothing at the shipped default | **offer** |
-| `NPREF-17` | 7164-7171, 7192-7197, 7287-7288, 7709-7710 | after 7179, 7200-7200, 7290-7291, 7683-7684 | equal to engine | global-fix | package 9555906, 2026-11-13 | nothing for a layer inside the tables | **offer** |
-| `NPREF-18` | 4954-4960, 4966-4970, 5836-5836, 5963-5966, 5998-5999, 6163-6164, 6283-6284 | 5004-5005, 5011-5011, 5877-5877, after 6003, 6035-6035, 6199-6199, 6318-6318 | equal to engine | global-fix | package fx/land-cold, 2026-11-14 | nothing at the shipped default | **offer** |
+| `NPREF-17` | 7189-7196, 7217-7222, 7312-7313, 7734-7735 | after 7179, 7200-7200, 7290-7291, 7683-7684 | equal to engine | global-fix | package 9555906, 2026-11-13 | nothing for a layer inside the tables | **offer** |
+| `NPREF-18` | 4960-4967, 4973-4977, 5857-5858, 5985-5988, 6020-6022, 6186-6188, 6307-6309, 4982-4995 | 5004-5005, 5011-5011, 5877-5877, after 6003, 6035-6035, 6199-6199, 6318-6318, after 5015 | equal to engine | global-fix | package fx/land-cold, 2026-11-14 | nothing at the shipped default | **offer** |
+| `NPREF-19` | 4792-4798 | 4846-4846 | equal to engine | global-fix | package round3/undercurrent, 2026-11-14 | nothing at the shipped default | **offer** |
 
 **`NPREF-1`.** The third-party notice for what this file transcribes. Its RTE+RRTMGP half matches the engine's own header for the same work; its AER half is the correction of RRTMGP-2, in the mirror rather than the driver, and applies to the engine's copy unchanged.
 
@@ -566,7 +582,9 @@ These rows, and the two of `core/kernels/terrain_drag.cu` below, are measured ag
 **`NPREF-16`.** The mirror half of `MORRISON-CU-4`: `np_morrison_column` takes the column's droplet number, WRF's 250 cm-3 by default, and both resets read it.
 
 **`NPREF-17`.** The mirror half of `RRTMGP-29` and `GAS-CU-2`: the float64 gas interpolation looks a layer deeper than the tables' deepest pressure up at it, the troposphere test keeps the true pressure, and both range checks accept layers to `RRTMGP_PLAY_CEILING_PA`, through one helper that mirrors the driver's `_play_bounds`.
-**`NPREF-18`.** The mirror half of `NOAH-CU-3`: `np_noah_column` and `_noah_sflx` take the snow-age refresh rule, ALCALC applies it, and under `"amount"` a column with no snow carries no age. At the default the arithmetic is the engine's.
+**`NPREF-18`.** The mirror half of `NOAH-CU-3`: `np_noah_column` and `_noah_sflx` take the snow-age refresh rule, ALCALC applies it, and under `"amount"` a column with no snow carries no age. At the default the arithmetic is the engine's. `_noah_alcalc` also mirrors `snow_fresh_albedo` and `snow_thaw_albedo` (the latter reads T1, passed from `_noah_sflx`); that hunk (carried 4982-4995) joins this row.
+
+**`NPREF-19`.** The mirror half of `SFCLAY-CU-4`'s COARE hunk: under `isftcflx = 3` (native option `sfclay_ocean_roughness = "coare35"`) the float64 sfclay mirror takes the COARE 3.5 wind-dependent Charnock coefficient, 0.0017 U10N - 0.005 floored at 0 with U10N capped at 19 m/s (Edson et al. 2013), in place of WRF's 0.0185. Off by default and in the config hash only when set; at the default the arithmetic is the engine's. The validator's acceptance of `isftcflx = 3` sits in `NPREF-4`'s hunk (carried 4851-4860), which keeps that row's name.
 
 ### `core/kernels/__init__.py`
 
@@ -592,18 +610,19 @@ These rows, and the two of `core/kernels/terrain_drag.cu` below, are measured ag
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
-| `GF-CU-1` | 14-14, 42-47, 49-54, 56-61, 679-685, 3088-3090, 3098-3104 | 14-15, 43-49, 51-57, 59-95, 576-583, 2859-2868, 2876-2879 | equal to carried | deliberate | owner c9a5f2c88, 2026-09-12, keeps the block; engine c0ffc53b5, 2026-09-04, replaced its own copy | taking the engine's would move the deep cloud-base mass flux by up to 7.3 percent | **refuse** |
-| `GF-CU-3` | 98-234 | after 131 | equal to engine | deliberate | owner bc62dcfdd and 4939f1c13, 2026-09-04; 957059111, 2026-09-05; package fix/trade-shallow, 2026-11-13 | nothing at the shipped defaults | **refuse** |
-| `GF-CU-4` | 1249-1260, 2297-2297, 2362-2375 | 1151-1151, after 2180, after 2244 | equal to engine | deliberate | owner 957059111, 2026-09-05 | nothing with the define off | **refuse** |
-| `GF-CU-5` | 2402-2402, 2433-2448, 2538-2538, 3006-3006, 3060-3061, 3074-3074 | after 2270, after 2300, 2390-2390, after 2779, 2833-2833, after 2845 | equal to engine | deliberate | owner bc62dcfdd and 4939f1c13, both 2026-09-04; 55aa34fb4, 2026-09-04 | nothing at the default | **refuse** |
-| `GF-CU-6` | 2958-2978, 4012-4015, 4018-4018, 4027-4027, 4044-4045, 4248-4248, 4250-4251, 4277-4279 | after 2752, after 3765, 3768-3768, after 3776, after 3792, after 3981, 3983-3983, 4008-4009 | equal to engine | deliberate | owner 957059111, 2026-09-05 | nothing with the define off, re-derived rather than assumed | **refuse** |
-| `GF-CU-7` | 1537-1538, 1561-1563, 1566-1567, 2835-2891, 2898-2898 | 1426-1426, after 1447, after 1449, after 2686, 2693-2693 | equal to engine | deliberate | owner 2090ac84a, e30f9fda6, c4a95bc61 and 58fd47304, all 2026-09-05 | nothing with the define off, re-derived rather than assumed | **refuse** |
-| `GF-CU-8` | 1391-1391, 1396-1396, 1440-1440, 1545-1545, 1768-1788, 1801-1802, 1809-1817, 2831-2831, 2925-2925, 3072-3072, 4071-4089, 4095-4109, 4263-4264, 4273-4273, 4379-4394, 4401-4404 | 1282-1282, after 1286, after 1329, after 1432, after 1641, after 1653, after 1659, 2683-2683, 2720-2720, 2844-2844, after 3827, after 3832, 3995-3995, 4004-4004, after 4108, after 4114 | equal to engine | adaptation | owner fca73b086, 2026-09-04; 957059111 and 58fd47304, 2026-09-05 | nothing, verified by reading every new access | **offer** |
-| `GF-CU-9` | after 4055, after 4057, after 4138, 4243-4243, 4269-4269 | 3803-3811, 3814-3814, 3870-3872, 3977-3977, 4000-4000 | equal to carried | deliberate | owner c9a5f2c88, 2026-09-12, keeps the block; engine c0ffc53b5, 2026-09-04, replaced its own copy | nothing on the shipped path | **refuse** |
-| `GF-CU-10` | 1594-1602 | 1476-1476 | equal to engine | global-fix | package, 2026-10-05 | the reported convective rain falls to the water the tendencies remove: 1.27 to 1.004 times it over the oracle capture's raining columns | **offer** |
-| `GF-CU-11` | 724-724, 726-726, 732-732, 747-747, 749-754, 768-780, 1933-1934, 1943-1943, 1953-1953, after 2013 | 622-622, 624-624, 630-630, 645-645, 647-654, 668-682, 1775-1792, 1801-1801, 1811-1811, 1872-1897 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing at the engine's settings, by its record | **none** |
-| `GF-CU-12` | 4113-4113 | 3836-3844 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing: the engine records every output word unchanged | **none** |
-| `GF-CU-13` | 3585-3590, 3611-3618, 3867-3874 | after 3359, after 3379, 3628-3628 | equal to engine | global-fix | package fix/trade-shallow d70f5b0, c16360d and 0816b4d, 2026-11-13 | nothing with the three defines at 0, the default | **offer** |
+| `GF-CU-1` | 14-14, 42-47, 49-54, 56-61, 697-703, 3123-3125, 3133-3139 | 14-15, 43-49, 51-57, 59-95, 576-583, 2859-2868, 2876-2879 | equal to carried | deliberate | owner c9a5f2c88, 2026-09-12, keeps the block; engine c0ffc53b5, 2026-09-04, replaced its own copy | taking the engine's would move the deep cloud-base mass flux by up to 7.3 percent | **refuse** |
+| `GF-CU-3` | 99-253 | after 132 | equal to engine | deliberate | owner bc62dcfdd and 4939f1c13, 2026-09-04; 957059111, 2026-09-05; package fix/trade-shallow, 2026-11-13 | nothing at the shipped defaults | **refuse** |
+| `GF-CU-4` | 1281-1292, 2332-2332, 2397-2410 | 1151-1151, after 2180, after 2244 | equal to engine | deliberate | owner 957059111, 2026-09-05 | nothing with the define off | **refuse** |
+| `GF-CU-5` | 2437-2437, 2468-2483, 2573-2573, 3041-3041, 3095-3096, 3109-3109 | after 2270, after 2300, 2390-2390, after 2779, 2833-2833, after 2845 | equal to engine | deliberate | owner bc62dcfdd and 4939f1c13, both 2026-09-04; 55aa34fb4, 2026-09-04 | nothing at the default | **refuse** |
+| `GF-CU-6` | 2993-3013, 4047-4050, 4053-4053, 4062-4062, 4079-4080, 4283-4283, 4285-4286, 4312-4314 | after 2752, after 3765, 3768-3768, after 3776, after 3792, after 3981, 3983-3983, 4008-4009 | equal to engine | deliberate | owner 957059111, 2026-09-05 | nothing with the define off, re-derived rather than assumed | **refuse** |
+| `GF-CU-7` | 1569-1570, 1593-1595, 1598-1599, 2870-2926, 2933-2933 | 1426-1426, after 1447, after 1449, after 2686, 2693-2693 | equal to engine | deliberate | owner 2090ac84a, e30f9fda6, c4a95bc61 and 58fd47304, all 2026-09-05 | nothing with the define off, re-derived rather than assumed | **refuse** |
+| `GF-CU-8` | 1423-1423, 1428-1428, 1472-1472, 1577-1577, 1800-1820, 1833-1834, 1841-1849, 2866-2866, 2960-2960, 3107-3107, 4106-4124, 4130-4144, 4298-4299, 4308-4308, 4414-4429, 4436-4439 | 1282-1282, after 1286, after 1329, after 1432, after 1641, after 1653, after 1659, 2683-2683, 2720-2720, 2844-2844, after 3827, after 3832, 3995-3995, 4004-4004, after 4108, after 4114 | equal to engine | adaptation | owner fca73b086, 2026-09-04; 957059111 and 58fd47304, 2026-09-05 | nothing, verified by reading every new access | **offer** |
+| `GF-CU-9` | after 4090, after 4092, after 4173, 4278-4278, 4304-4304 | 3803-3811, 3814-3814, 3870-3872, 3977-3977, 4000-4000 | equal to carried | deliberate | owner c9a5f2c88, 2026-09-12, keeps the block; engine c0ffc53b5, 2026-09-04, replaced its own copy | nothing on the shipped path | **refuse** |
+| `GF-CU-10` | 1626-1634 | 1476-1476 | equal to engine | global-fix | package, 2026-10-05 | the reported convective rain falls to the water the tendencies remove: 1.27 to 1.004 times it over the oracle capture's raining columns | **offer** |
+| `GF-CU-11` | 742-742, 744-744, 750-750, 765-765, 767-772, 786-798, 1968-1969, 1978-1978, 1988-1988, after 2048 | 622-622, 624-624, 630-630, 645-645, 647-654, 668-682, 1775-1792, 1801-1801, 1811-1811, 1872-1897 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing at the engine's settings, by its record | **none** |
+| `GF-CU-12` | 4148-4148 | 3836-3844 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | nothing: the engine records every output word unchanged | **none** |
+| `GF-CU-13` | 3620-3625, 3646-3653, 3902-3909 | after 3359, after 3379, 3628-3628 | equal to engine | global-fix | package fix/trade-shallow d70f5b0, c16360d and 0816b4d, 2026-11-13 | nothing with the three defines at 0, the default | **offer** |
+| `GF-CU-14` | 949-951, 958-963, 1079-1082, 1085-1085, 1910-1912 | after 832, after 838, after 953, after 955, after 1719 | equal to engine | global-fix | package round5/tropics, 2026-11-14 | nothing with the define at 0, the default | **offer** |
 
 **`GF-CU-1`.** The comment block and the library probe of the cumulus kernel, on the side of the gamma the kernel calls. The shape factor of the mass-flux profile is a ratio of three gamma functions, and the closure's difference of two nearly equal quantities turns one unit in the last place of it into up to 7.3 percent of the deep cloud-base mass flux, so which gamma the kernel calls is a physics choice. The gamma this package carries is its own work and the one the global model was graded with; the engine line's correctly rounded variant moves that shape factor on 68.17 percent of reachable tuning values (the engine line's own host-compiled enumeration of 2026-09-04, cited in full under LIBM-3) and is a numerics choice to grade against observations, not to pull. The number-moving definition is the shared header, LIBM-3.
 
@@ -629,6 +648,8 @@ These rows, and the two of `core/kernels/terrain_drag.cu` below, are measured ag
 
 **`GF-CU-13`.** Three opt-in changes to the shallow arm, each behind an integer define that defaults to zero, where the kernel compiles WRF v4.6.1's shallow arm word for word. `GF_SHALLOW_BUOYANCY_FROM_CLOUD_BASE` starts the cloud-top test's buoyancy integral `dbyt` at cloud base `kbcon` instead of at the source level (`module_cu_gf_sh.F:530`); GSL's GFL (`cu_gfl_sh_run`) and MPAS v8.4.2 (`CUP_gf_sh`) both start at cloud base, so WRF's sum is the odd one out, and it lets the sub-cloud deficit the parcel already crossed cancel the cloud layer's positive area. `GF_SHALLOW_BLQE_TO_CLOUD_BASE` sums the boundary-layer quasi-equilibrium closure's MSE source over `1..kbcon`, as GFL does, instead of `1..kpbl` (`module_cu_gf_sh.F:838`). `GF_SHALLOW_DEPTH_MIN_M` is this package's own: the deep arm's ierr 6 cloud-depth exit (`module_cu_gf_deep.F:949`) applied to the shallow cloud. They are reached only through the native options `gf_shallow_buoyancy_from_cloud_base`, `gf_shallow_blqe_to_cloud_base` and `gf_shallow_depth_min_m`. On the probe of a T255 August control WRF's arm exited on ierr 5 in 47 to 67 percent of the columns of the three trade-wind boxes, and under the first define 94 to 97 percent of those columns convected; in a 10-day twin the three together took the tropical ocean's excess of reflected sunlight over CERES from +30.1 to +7.9 W/m2 (`docs/trade-shallow.md`). One case, so the engine is offered the first two as the reference lines' own correction and the third as an option, not as a default. Measured against the 2.8.5 baseline this file is keyed to: three hunks, two pure insertions and one replaced loop bound, none on another row's lines.
 
+**`GF-CU-14`.** The kernel half of `GF-PY-8`. `GF_DEEP_EXPERIMENT` moves where the deep updraft's beta-pdf mass flux peaks: 0 (the default) compiles WRF v4.6.1's placement word for word, 40 % of the way down from the first-guess cloud top to `kstabi`; 2 puts the peak at `kstabi`; 3 at the plume's maximum-buoyancy level, as UFS CCPP's `cu_gf_deep` does; 4 is 3 with CCPP's deep entrainment rate 1e-4. The momentum tendencies `GF-PY-8` couples are the kernel's own `outu`/`outv`, unchanged. The define, its default and the comment that states the placements sit inside `GF-CU-3`'s hunk (carried 99-253), which keeps that row's name; this row is the five preprocessor-guarded insertions that apply them.
+
 ### `core/kernels/ntiedtke.cu`
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
@@ -644,10 +665,10 @@ These rows, and the two of `core/kernels/terrain_drag.cu` below, are measured ag
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
-| `SFCLAY-CU-1` | 10-13, 236-237, after 262, after 509, 544-544 | 10-13, 219-220, 246-246, 472-478, 513-514 | equal to carried | engine-fix | engine 3669990e8, 2026-09-04 | nothing to any existing output | **pull** |
+| `SFCLAY-CU-1` | 10-13, 236-237, after 262, after 509, 554-554 | 10-13, 219-220, 246-246, 472-478, 513-514 | equal to carried | engine-fix | engine 3669990e8, 2026-09-04 | nothing to any existing output | **pull** |
 | `SFCLAY-CU-2` | 15-31 | after 14 | equal to engine | no-behaviour | owner 9360aca3e, 2026-09-04 | nothing, comment only | **none** |
 | `SFCLAY-CU-3` | 472-492, 495-495, 500-500 | 456-456, after 458, after 462 | equal to engine | deliberate | owner c3f2de9b7, corrected by 47ea9ae89, both 2026-09-04 | nothing at the three original options | **refuse** |
-| `SFCLAY-CU-4` | 123-124, 135-136, 273-273, 275-275, 293-293, 299-299, 397-397, 399-399, 401-401, 429-429, 436-436, 513-513, 519-519, 522-523 | 106-107, 118-119, 257-257, 259-259, 277-277, 283-283, 381-381, 383-383, 385-385, 413-413, 420-420, 482-482, 488-488, 491-492 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | Blackwell cards only: at most one unit in the last place per constant division | **pull** |
+| `SFCLAY-CU-4` | 123-124, 135-136, 273-273, 275-275, 293-293, 299-299, 397-397, 399-399, 401-401, 429-429, 436-436, 513-513, 519-519, 521-533 | 106-107, 118-119, 257-257, 259-259, 277-277, 283-283, 381-381, 383-383, 385-385, 413-413, 420-420, 482-482, 488-488, 490-492 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | Blackwell cards only: at most one unit in the last place per constant division | **pull** |
 
 **`SFCLAY-CU-1`.** The kernel half of SFCLAY-PY-1: one inout pointer, three lines that read the previous value, form the raw wind speed and store the relaxation, and nothing else. Verified by reading the engine kernel: neither new local appears anywhere else. It is the friction velocity relaxation without the convective correction, without the wind speed's floor and without the land floor, which is why it is a separate field rather than a diagnostic. Inert for this model today, and the reason to take it is that it removes a permanent three-file drift at zero numeric cost.
 
@@ -681,15 +702,15 @@ These rows, and the two of `core/kernels/terrain_drag.cu` below, are measured ag
 
 | Row | Carried lines | Engine lines | Ancestor | Class | Commit | Numeric effect | Decision |
 |---|---|---|---|---|---|---|---|
-| `NOAH-CU-1` | 98-98, 184-184, 229-229, 245-245, 300-300, 437-437, 854-854, 865-865, 872-872 | 101-101, 172-172, 217-217, 233-233, 288-288, 425-425, 842-842, 853-853, 860-860 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | Blackwell cards only: at most one unit in the last place per constant division | **pull** |
-| `NOAH-CU-2` | 12-13, 881-881, 949-1552 | 12-16, 869-1605, 1672-1785 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01, and v2.8.2 (4c27749), 2026-10-02 | nothing at this package's settings | **none** |
-| `NOAH-CU-3` | 154-162, 166-167, 174-179, 946-946 | after 156, 160-160, 167-167, after 1669 | equal to engine | global-fix | package fx/land-cold, 2026-11-14 | nothing at the shipped default | **offer** |
+| `NOAH-CU-1` | 98-98, 185-211, 256-256, 272-272, 327-327, 464-464, 881-881, 892-892, 899-899 | 101-101, 172-172, 217-217, 233-233, 288-288, 425-425, 842-842, 853-853, 860-860 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01 | Blackwell cards only: at most one unit in the last place per constant division | **pull** |
+| `NOAH-CU-2` | 12-13, 908-908, 977-1580 | 12-16, 869-1605, 1672-1785 | equal to carried | engine-fix | engine v2.8.1 (d94f9ea), 2026-10-01, and v2.8.2 (4c27749), 2026-10-02 | nothing at this package's settings | **none** |
+| `NOAH-CU-3` | 154-162, 166-168, 175-180, 973-974 | after 156, 160-160, 167-167, after 1669 | equal to engine | global-fix | package fx/land-cold, 2026-11-14 | nothing at the shipped default | **offer** |
 
 **`NOAH-CU-1`.** The same respelling as `SFCLAY-CU-4`, in this kernel, and the same decision for the same reason. The divisions inside the column body itself sit in `NOAH-CU-2`'s hunk.
 
 **`NOAH-CU-2`.** The column body becomes a template with the urban hand-over under `if constexpr`, so the default `noah_column` compiles from the statements it had; the engine measured a runtime-flag version moving default forecasts through changed multiply-add contraction on an RTX 5090. This package runs no urban model. Because the whole body moved into the template, this row's hunk also holds the body's division respellings; take those under `NOAH-CU-1`. It also holds two statements of `NOAH-CU-3` (the bare-ground age reset and the ALCALC call with the rule), which a take of the template re-applies inside it.
 
-**`NOAH-CU-3`.** WRF's ALCALC sets the snow age to zero on any call that snows, of any amount. On this model a trace of snow reaches most snow-covered land on most land calls, so with `snow_ageing = true` the carried age hardly grew: in the 365-day T127 run, 79 % of the snow-covered land columns Noah integrates were under 0.01 day old on 2027-02-28 and every pack sat at its fresh-snow albedo. `snow_age_refresh = "amount"` takes the snowfall-amount refresh of Noah-MP's SNOW_AGE (DELS = dsnow / SWEMX, SWEMX = 1 kg/m2) and applies it to WRF's Livneh age, which still grows with no temperature factor; under it a column with no snow carries no age, as Noah-MP's TAUSS does. At the default (`"any"`) the kernel takes WRF's path and a T127 day is bit-identical to 0.2.1's in all 143 checkpoint arrays. The engine carries WRF's rule and is offered the option.
+**`NOAH-CU-3`.** WRF's ALCALC sets the snow age to zero on any call that snows, of any amount. On this model a trace of snow reaches most snow-covered land on most land calls, so with `snow_ageing = true` the carried age hardly grew: in the 365-day T127 run, 79 % of the snow-covered land columns Noah integrates were under 0.01 day old on 2027-02-28 and every pack sat at its fresh-snow albedo. `snow_age_refresh = "amount"` takes the snowfall-amount refresh of Noah-MP's SNOW_AGE (DELS = dsnow / SWEMX, SWEMX = 1 kg/m2) and applies it to WRF's Livneh age, which still grows with no temperature factor; under it a column with no snow carries no age, as Noah-MP's TAUSS does. At the default (`"any"`) the kernel takes WRF's path and a T127 day is bit-identical to 0.2.1's in all 143 checkpoint arrays. The engine carries WRF's rule and is offered the option. The same ALCALC carries two more off-by-default rules (round5/snow; measured for 0.2.4, their kernel lines sit in this row's hunks and in `NOAH-CU-1`'s carried 185-211, which keeps that row's name): `snow_fresh_albedo = "masked"` keeps the MODIS maximum snow albedo as the fresh value and ages only the exposed snow fraction `(snoalb - alb) / (0.85 - alb)` from 0.85, and `snow_thaw_albedo` takes Livneh's ablation curve, which WRF carries commented out, when T1 >= 273.16 K. At their defaults a 10-day T127 run is bit-identical to 0.2.3 (136 of 136 arrays).
 
 ### `core/kernels/morrison.cu`
 
@@ -956,6 +977,17 @@ here is owed to this package; the list is what to send.
   storm-intensity switches, off by default, with what they measured on three
   T383 storms; not a recommended setting. Package branch `fx/storms`,
   2026-11-14.
+* `GF-PY-8` with `GF-CU-14`. Grell-Freitas deep-arm momentum transport
+  coupled as WRF couples it, and three placements of the deep mass-flux
+  peak; off by default, experimental, not a recommended setting. Package
+  branch `round5/tropics`, 2026-11-14.
+* `NPREF-19` with `SFCLAY-CU-4`'s COARE hunk. The COARE 3.5 open-water
+  Charnock coefficient as an option; off by default. Package branch
+  `round3/undercurrent`, 2026-11-14.
+* `NOAH-CU-3`'s and `NPREF-18`'s snow albedo rules: the MODIS maximum as
+  the fresh-snow value with only the exposed snow ageing, and Livneh's
+  ablation curve for a melting pack; both off by default. Package branch
+  `round5/snow`, 2026-11-14.
 
 ## REFUSE
 

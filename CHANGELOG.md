@@ -1,5 +1,204 @@
 # Changelog
 
+## 0.2.4
+
+Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.2.3 did;
+proven against `gpuwm 2.9.13`.  `tools/measure_boundary.py` reads 242
+symbols across 72 modules with no gap, and all 50 engine seam files are
+pinned at 2.9.13.  The companion bundle carries ten Rust doors, unchanged
+from 0.2.0.  No shipped config changes: every config 0.2.3 shipped keeps
+its 0.2.3 hash, and the T255 forecast day writes 0.2.3's checkpoints byte
+for byte (Measured, below).  The fixes are to the experimental dynamic
+ocean, which is off by default.  Everything new is off by default too: an
+open-water roughness option, two snow albedo options, and two experimental
+Grell-Freitas deep-arm switches.
+
+### Fixed (the dynamic ocean, experimental and off by default)
+
+- The coupler hands the ocean the stress the PBL removes from the lowest
+  level, YSU's own sink rho u\*^2 (|V1|/wspd)^2 at the actual air density
+  (`ysu.cu` 252, 687-689), instead of 1.2 u\*^2, which gave the ocean about
+  8.5 % more momentum than the atmosphere lost.  The surface layer writes
+  the sink to a plane, `pbl_surface_stress_n_m2`, after each call, and the
+  daily stress product reports it.  Only a dynamic-ocean run carries the
+  plane (the coupler seeds it at a cold start, and on a restart from a
+  checkpoint that predates it); every other run's namespace, checkpoint
+  inventory and arithmetic are 0.2.3's.  Measured: the EUC at 140W moved by
+  at most 0.001 m/s over days 16-20 of a paired restart; on this tree a
+  T255 coupled run restarted at 2700 s and at 3600 s wrote the straight
+  run's 177 arrays at 7200 s byte for byte, the plane among them
+  (Measured, below).
+- Stress, ice cover and the start's SST match take the remap's plain
+  overlap mean.  The spread residual is a conserved-flux fix-up; on an
+  intensive field it is a uniform shift, at T255 about -0.78 % of the
+  field's global mean on every wet cell (owned columns 3.4445e14 m2 against
+  the wet ocean's 3.4717e14 m2).  Heat, fresh water and the ice-growth salt
+  keep the spread, still booked.  In a 15-day coupled pair from 2026-08-01
+  the global open-water SST bias against OISST moved by under 0.005 K to
+  day 10; the tropics read 0.01-0.04 K colder from day 1, because the old
+  spread had warmed the start's SST match by about 0.09 K at 29 C.
+- The Kelvin and Rossby gate (`tools/ocean_dyn_gates.py`) fits both crests
+  over days 10-40 and holds the Rossby crest to the n = 1 dispersion
+  relation for the bump it launches.  The model is unchanged.  The old gate
+  fitted days 5-25, when the Kelvin crest still overlaps the 8-degree
+  source bump (+6.6 %; every window from day 10 on reads +1.7 to +2.7 %),
+  and held the Rossby crest to c1/3, the long-wave limit, which a bump three
+  deformation radii wide does not reach (its exact crest moves at -13.8 % of
+  c1/3).  The 60-day gate run passes: Kelvin +2.4 % (gate 3 %), Rossby
+  +3.4 % (gate 5 %).
+- The coupled EUC over several starts (the round-3 single start mostly
+  measured whether a 10-20-day forecast catches one westerly burst):
+  against the same ocean forced by GFS-analysis stress, six coupled T255
+  starts from 2026-08-01 to 08-11, with the coupler fix and
+  `sfclay_ocean_roughness = "coare35"`, held 0.85-1.00 of the reference's
+  EUC at days 5 and 10 (means 0.97 and 0.93), and the two that reached day 20 held 0.88 and 0.92
+  (the test asked for eight at day 20).  From 2026-08-01 to day 30 it still
+  falls to 0.28 m/s (0.26 before).  The dynamic ocean stays experimental:
+  the open problems are in `docs/ARWEN_GLOBAL_DYNAMIC_OCEAN.md`.
+
+### Added (off by default)
+
+- sfclay: `sfclay_ocean_roughness = "coare35"` (native option, default
+  `"wrf"`, in the config hash only when set) takes the open-water momentum
+  roughness from the COARE 3.5 wind-dependent Charnock coefficient,
+  0.0017 U10N - 0.005 (Edson et al. 2013; `sfclay.cu` `isftcflx = 3` and
+  its float64 mirror), instead of WRF's 0.0185, which puts the open-ocean
+  drag above COARE at trade-wind speeds.  It cuts the equatorial drag by
+  about 14 %; the 10 m easterlies speed up by 2-5 % in reply, so the
+  equatorial stress falls by only 2-6 %, and the coupled EUC at 140W gains
+  about 0.03 m/s at day 20.  It joins the physics identity, so a slab
+  Q-flux calibrated without it is refused with it on.  Forecast scores
+  with it were not measured.
+- Noah: `snow_fresh_albedo = "masked"` (default `"livneh"`, in the config
+  hash only when set).  WRF's ALCALC lifts the MODIS maximum snow albedo
+  half way to 0.85 for fresh snow; that maximum is already the albedo of
+  the whole cell under deep fresh snow, canopy included, so a fresh
+  evergreen needleleaf cell sat at 0.62 against an observed maximum of
+  0.39.  `"masked"` keeps the maximum as the fresh value and ages only the
+  exposed snow fraction `(snoalb - alb) / (0.85 - alb)` on Livneh's curve
+  from 0.85.  T127, `snow_ageing` + `"amount"`, NH land 20-70N albedo
+  against ERA5, second week: 0.384 -> 0.346 (ERA5 0.327) from 2026-03-01,
+  0.369 -> 0.339 (0.332) from 2026-02-01, 0.346 -> 0.320 (0.300) from
+  2026-04-01, 0.353 -> 0.329 (0.318) from 2026-01-16; NH land 2 m
+  temperature up in every window of every start (+0.05 to +0.93 K).  It
+  overshoots where the canopy argument does not hold: in January wooded
+  tundra goes 0.648 -> 0.557 against ERA5's 0.646 and Canada 0.510 ->
+  0.387 against 0.483, and evergreen needleleaf forest overshoots in
+  January and February (0.512 -> 0.332 against 0.413 in January).  From
+  2026-11-10 it closes only about 20 % of the excess (0.318 -> 0.309
+  against 0.274), against 57-81 % from the late-winter and spring starts.
+  One start a month, ten to fifteen days each; no skill scores.  Not a
+  recommended default.
+- Noah: `snow_thaw_albedo = true` ages a pack whose skin is at the melting
+  point (T1 >= 273.16 K) on Livneh's ablation curve, which WRF carries
+  commented out.  Small: -0.004 to -0.006 NH land albedo in March and
+  April.
+
+### Added (experimental, not recommended)
+
+- Grell-Freitas: `gf_deep_experiment` (0, the default, is WRF v4.6.1;
+  2, 3 or 4) moves where the deep updraft's mass flux peaks.  WRF puts the
+  peak 40 % of the way down from the first-guess cloud top to the
+  saturated-MSE minimum, so the plume entrains most of its mass from
+  low-MSE air and its top is lowered: on a T255 day 85 % of tropical deep
+  tops sat at or below 352 hPa and GF's heating was weighted to 554-561
+  hPa, the cause of the 300-200 hPa tropical cold drift (-0.7 K at 300 hPa
+  against GDAS at 24 h).  2 puts the peak at that minimum, 3 at the
+  plume's maximum-buoyancy level (UFS CCPP), 4 is 3 with CCPP's deep
+  entrainment 1e-4.  Measured at T255 against the GFS analysis (round5
+  tropics and its check): 2 removes the 24 h cold bias (300 hPa -0.73 to
+  -0.08 K) and lowers NH Z500 error at 24 h on 8 of 8 starts (8.30 to
+  7.71 m), but that gain is the mean height lifted: with the bias removed
+  the error gets slightly worse (7.52 to 7.64 m, better on 2 of 8); it doubles the scheme's tropical rain (2.5 to
+  5.4 mm/day), makes 700-500 hPa 0.3-0.5 K too warm, worsens tropical T850
+  and 250 hPa wind on every start, and by 72 h turns the cold bias warm
+  (+0.33 K at 300 hPa, 5 starts).  3 and 4 lift the tops the same way and
+  warm 700-500 hPa more.  The diagnostic export carries the deep cloud top
+  and base indices beside the closure reading.
+- Grell-Freitas: `gf_momentum_transport = true` couples the deep arm's
+  convective momentum transport (WRF's RUCUTEN/RVCUTEN), which the shipped
+  seam did not, though it already applied the matching dissipative
+  heating.  T255, 24 h, 4 starts: tropical 250 hPa wind error 3.79 ->
+  3.71 m/s (4 of 4), Z500 worse on 4 of 4 (NH +0.08 m, tropics +0.11 m).
+- Both stay off: neither is a recommended setting.
+
+### Documentation
+
+- `docs/ARWEN_GLOBAL_LONG_RUNS.md`, "The Q-flux a long run reads, and
+  what LR-9 measures": the T127 year run's LR-9 failure (about -17 W/m2
+  at the end) is the year physics' imbalance with a prescribed SST,
+  carried into the slab by its Q-flux, not an ocean drift: its 30-day
+  windows track its own six-day calibrations to within 0.4-5.0 W/m2 a
+  month (August -17.6 against -18.5).  Twelve calibrations with the whole
+  0.2.3 long-run recipe (shallow-arm and conservation switches together)
+  read -0.55 W/m2 on average against -11.32 for the year physics on the
+  same twelve starts, inside LR-9's [-4, 6], and a long run with the
+  recipe needs a Q-flux calibrated with it.  The first runs with both
+  switch sets on are stated (days 0-30: TOA -6.19 against -17.64 W/m2;
+  six starts on the recipe's own Q-flux within 1.7 W/m2 of their month's
+  calibration).  LR-9 for the recipe itself (a year run) is not measured.
+- The recipe's Q-flux ships as a release file, not in the wheel:
+  `qflux-t127-recipe-r5.npz` (14,187,518 B, SHA-256 25be4a842fea0d10...)
+  and the T127 slab config it was calibrated for, `recipe-slab-t127.toml`,
+  are attached to the v0.2.4 GitHub release, and the long-run page gives
+  both SHA-256s.  Measured on 0.2.4: `gpuwm-global climatology build
+  arwen_global_gdas_t127_native_sl_si_24h --with-mld` rebuilt the
+  climatology the file names byte for byte (SHA-256 16ab9a39c0f90a69...),
+  and the slab's guard accepted the Q-flux for `recipe-slab-t127.toml` (grid, physics
+  identity, climatology, all twelve months).  The same file passes the
+  guard under 0.2.3, so 0.2.4 moves no physics identity.
+- `docs/ARWEN_GLOBAL_DYNAMIC_OCEAN.md`: what 0.2.4 fixed and the open
+  problems as shipped in 0.2.4.
+- New Tiedtke: the `ntiedtke_adjustment_time_factor` comment carries what
+  it measured on the day-one set's tropical cold offset (0.25 halves the
+  120 h tropical Z500 penalty on six starts and does not remove it).
+- `docs/CARRIED-PHYSICS-DIVERGENCE.md`: the rows re-keyed onto this tree
+  against gpuwm 2.8.5, as for 0.2.3; `GF-PY-8`, `GF-CU-14` and `NPREF-19`
+  are new, 955 rows.
+
+### Measured
+
+- On the 16 GB RTX 5070 Ti (shared with one other process at the
+  start of the lease), one card lease, 2026-11-14/15, GDAS 2026-09-01 00Z,
+  the shipped T255 day for 24 h under 0.2.3 (`0034b2b`) and under this
+  tree, each over gpuwm 2.9.13; checkpoints compared with
+  `tools/arwen_global_checkpoint_identity.py`:
+  - all nine checkpoints, steps 0 to 288, byte-identical (44 and 135
+    arrays, equal inventories, `self_sha256` equal), config hash
+    7b140980a546263e in both;
+  - 0.2.4 restarted from 0.2.3's step 144 wrote steps 180 to 288
+    byte-identical to 0.2.3's straight run (135 arrays);
+  - allocator live peak 6.72 GiB (0.2.3: 6.71), card peak 9,216 MiB
+    (9,086); every receipt gate passes.
+- On the same card, alone, the shipped T383 day (defaults: drag on,
+  radiation every 3000 s) for 24 h from the same analysis, 0.2.3 then 0.2.4
+  in one lease: all five checkpoints, steps 0 to 288, byte-identical (44
+  and 135 arrays), config hash 0b7d0643f1d964b2 in both; 1.724 s a step
+  (0.2.3 1.743 s, kernels already compiled for both); card peak 14,384 MiB
+  of 16,303 (0.2.3 14,152), allocator live peak 11.88 GiB in both; every
+  receipt gate passes.
+- Config hashes, every shipped config loaded under 0.2.3 and 0.2.4: 56
+  identical; the same four fixtures that did not load under 0.2.3 do not
+  load (`arwen_global_native_physics_bridge_example` and the three
+  `global_spectral_*` smokes).
+- The recipe Q-flux check (Documentation, above) ran on a Linux CPU.
+- Tests: from the installed 0.2.4 wheel, 3520 CPU tests pass with CuPy (90
+  skipped) and without (104 skipped); 0.2.3 was 3508 / 86 / 100.  The five
+  tools return 0 in both: `build_cli_reference.py --check`, doc examples
+  155 accepted and 0 refused, line endings 0 mixed, `measure_boundary` 242
+  symbols across 72 modules with no gap, `pin_engine_seam` 50/50.
+  `python -m build` and `twine check --strict` pass; `gpuwm-global doctor`
+  from the installed wheel reads version 0.2.4, 60 shipped configs, no
+  gaps.
+- The dynamic ocean, coupled at T255 on an RTX 4090 (shared), one
+  lease, this tree: the 30-day coupled run's config (GDAS 2026-08-01 00Z, the
+  spun-up GODAS ocean, slab Q-flux and drag on), straight to 7200 s against
+  runs stopped at 2700 s (inside a coupling hour, with partial sums in the
+  accumulators) and at 3600 s and restarted to 7200 s: both restarts wrote
+  the straight run's step 24 byte for byte (177 arrays, `self_sha256`
+  equal).  The checkpoint carries `pbl_surface_stress_n_m2`, written on
+  every column (up to 4.99 N/m2).  Card peak 8,206-9,994 MiB.
+
 ## 0.2.3
 
 Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.2.2 did;

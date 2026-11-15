@@ -106,6 +106,27 @@ def test_the_conservative_remap_is_exact():
     assert np.allclose(back[rm.has_a], 3.0, atol=1e-13)
 
 
+def test_an_intensive_field_is_remapped_without_the_spread_residual():
+    # Review finding 2: a uniform stress, ice cover or temperature must come
+    # out unchanged on every wet cell; the spread residual (owned area !=
+    # wet area) would shift it by a constant.
+    from arwen_global.ocean_dyn.remap import Remap
+    from arwen_global.spectral.grid import GaussianGrid
+
+    og = _tiny_grid()
+    gg = GaussianGrid.create(21)
+    rng = np.random.default_rng(2)
+    ocean = rng.uniform(size=(gg.nlat, gg.nlon)) < 0.8
+    rm = Remap(og, atm_lat_deg=np.rad2deg(gg.lat_rad), atm_weights=gg.quadrature_weights,
+               atm_nlon=gg.nlon, atm_ocean=ocean, radius_m=gg.radius_m)
+    f = np.full((gg.nlat, gg.nlon), 0.1)
+    plain, residual = rm.to_ocean(f, np, spread=False)
+    spread, _ = rm.to_ocean(f, np)
+    assert residual != 0.0
+    assert np.allclose(plain[og.wet], 0.1, rtol=0, atol=1e-15)
+    assert not np.allclose(spread[og.wet], 0.1, rtol=0, atol=1e-15)
+
+
 def _stratified(g):
     z = g.z_t_nom[:, None, None]
     T = 2.0 + 20.0 * np.exp(-z / 300.0) + np.zeros((g.nz, g.ny, g.nx))
@@ -313,6 +334,9 @@ def test_a_restarted_dynamic_run_reproduces_the_straight_run_bit_for_bit(
     assert arrays["physics__ocean_dyn_u"].dtype == np.float32
     b = arrays["physics__ocean_dyn_books"]
     assert b[BOOKS.index("steps")] == 3
+    # the PBL stress plane rides in the dynamic ocean's namespace (and only
+    # there: the native suite keeps it only where the namespace carries it)
+    assert arrays["physics__" + coupler.PBL_STRESS].dtype == np.float32
     _meta0, arrays0 = read_checkpoint(full / "arwen_global_step00000000.npz")
     assert not np.array_equal(arrays0["physics__ocean_dyn_theta"], arrays["physics__ocean_dyn_theta"])
 

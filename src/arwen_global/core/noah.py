@@ -415,6 +415,15 @@ def sh2o_init(smois, tslb, isltyp, params: NoahParams) -> np.ndarray:
 #: snow in kg/m2, and bare ground carries no age.  The albedo curve is still
 #: Livneh's.
 SNOW_AGE_REFRESH_RULES = {"any": 0, "amount": 1}
+#: ``"livneh"``: WRF ALCALC, the fresh-snow albedo snoalb + LVCOEF (0.85 - snoalb)
+#: aged on Livneh's curve.  ``"masked"``: snoalb (the MODIS maximum, canopy
+#: included) is the fresh value; fexp = (snoalb - alb) / (0.85 - alb) of the cell
+#: is snow aged on Livneh's curve from 0.85, the rest keeps alb.
+SNOW_FRESH_ALBEDO_RULES = {"livneh": 0, "masked": 1}
+#: ``snow_thaw_albedo``: a pack whose skin is at the melting point ages on
+#: Livneh's ablation curve 0.82 ** (days ** 0.46) instead of the accumulation
+#: curve 0.94 ** (days ** 0.58) (Livneh et al. 2010; commented out in WRF's
+#: ALCALC).  Bit 2 of the kernel's albedo-rule argument.
 #: Noah-MP MPTABLE SWEMX: the new snow (kg/m2) that fully covers old snow.
 SNOW_AGE_SWEMX_KG_M2 = 1.0
 
@@ -480,7 +489,9 @@ def launch_noah(dev: dict, params: NoahParams, dt: float, dzs,
                 usemonalb: bool = False, rdlai2d: bool = False,
                 opt_thcnd: int = 1, itimestep: int = 2,
                 snow_age_refresh: str = "any",
-                snow_age_swemx_kg_m2: float = SNOW_AGE_SWEMX_KG_M2) -> None:
+                snow_age_swemx_kg_m2: float = SNOW_AGE_SWEMX_KG_M2,
+                snow_fresh_albedo: str = "livneh",
+                snow_thaw_albedo: bool = False) -> None:
     """Run the ``noah_column`` kernel on device arrays (in place).
 
     ``snow_age_refresh`` is how a snowfall resets the pack's age (SNOTIME):
@@ -501,6 +512,10 @@ def launch_noah(dev: dict, params: NoahParams, dt: float, dzs,
         raise ValueError(
             f"snow_age_refresh must be one of {sorted(SNOW_AGE_REFRESH_RULES)}, "
             f"got {snow_age_refresh!r}")
+    if snow_fresh_albedo not in SNOW_FRESH_ALBEDO_RULES:
+        raise ValueError(
+            f"snow_fresh_albedo must be one of {sorted(SNOW_FRESH_ALBEDO_RULES)}, "
+            f"got {snow_fresh_albedo!r}")
     if not float(snow_age_swemx_kg_m2) > 0.0:
         raise ValueError("snow_age_swemx_kg_m2 must be positive")
 
@@ -537,6 +552,8 @@ def launch_noah(dev: dict, params: NoahParams, dt: float, dzs,
              np.int32(1 if rdlai2d else 0), np.int32(opt_thcnd),
              np.int32(SNOW_AGE_REFRESH_RULES[snow_age_refresh]),
              DTYPE(snow_age_swemx_kg_m2),
+             np.int32(SNOW_FRESH_ALBEDO_RULES[snow_fresh_albedo]
+                      | (2 if snow_thaw_albedo else 0)),
              np.int32(ny), np.int32(nx)]
     kern = get_kernel("noah", "noah_column")
     blocks = (ny * nx + _TPB - 1) // _TPB
