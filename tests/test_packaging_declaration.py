@@ -226,7 +226,7 @@ def _matches(relative: str, glob: str) -> bool:
 
 
 def test_the_configs_that_ship_are_the_ones_that_were_carved():
-    """60 experiments, and every one of them parses as TOML.
+    """61 experiments, and every one of them parses as TOML.
 
     Fifty-three came out of the engine's `configs/verify/` at the first cut;
     the fifty-fourth is the quickstart, which lived one directory up and was
@@ -241,11 +241,14 @@ def test_the_configs_that_ship_are_the_ones_that_were_carved():
     its side: the T255 forecast-day config with a `[world]` table appended,
     which is how a launcher that sets keys by pattern starts one.  The
     sixtieth is the day-one set: the T255 forecast-day config with the
-    kim-gwdo drag and New Tiedtke convection switched on.
+    kim-gwdo drag and New Tiedtke convection switched on.  The sixty-first
+    is the T1023 forecast day: the T533 semi-Lagrangian day at truncation
+    1023 with its departure gathers one field at a time, the departure-point
+    time extrapolation and the Newton trajectory solver.
     """
 
     configs = sorted((SRC / "configs").glob("*.toml"))
-    assert len(configs) == 60, [path.name for path in configs]
+    assert len(configs) == 61, [path.name for path in configs]
     families = {path.name.split("_")[0] for path in configs}
     assert families == {"arwen", "global"}, families
     for path in configs:

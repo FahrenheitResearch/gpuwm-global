@@ -1,0 +1,169 @@
+# T1023 L40 (1536 x 3072, about 13 km), the full native suite on the
+# semi-Lagrangian core at dt = 300 s, one forecast day from the GDAS
+# 2026-09-01 00Z analysis, written every six hours.  The T533 day
+# (arwen_global_gdas_t533_native_sl_si_24h) with the truncation, dx_m and
+# four [semilag] choices changed:
+#
+# - gather_batch = 1: the departure gathers run one field at a time instead of
+#   eight.  It changes no bit (the batch only groups the same gathers) and it
+#   is what lets the door fit this grid on one 96 GB card at one latitude band
+#   with nothing parked on the host.  MEASURED 2026-11-15 on one RTX PRO 6000
+#   (97,887 MiB), GDAS 2026-11-14 18Z, the full 24 h of this config (288
+#   steps, 3-hourly output): allocator live peak 81.21 GiB, pool peak 86.41
+#   GiB (the pool limit was lifted twice, by 1.42 GiB in all, above the
+#   figure the door priced from the 10-step run), 89,350 MiB on the card,
+#   9.57 s a step (45.9 min a model day), status pass.
+# - extrapolation = "settls_departure": the time extrapolation is read at the
+#   departure point (Hortal 2002) instead of the shipped arrival-point form.
+#   With the shipped "settls" the same T1023 run grew grid-scale stripes in
+#   the strong cold-sector flow of a NE Pacific low: 10 m wind
+#   second-difference rms in 39.5-48N 215-222.5E rose from 0.161 / 0.149 m/s
+#   (east-west / north-south) at 0 h to 0.621 / 0.497 at 3 h, and the
+#   spectral_top_decile_growth tripwire fired at steps 30 and 40.  With the
+#   departure form the same box read 0.066 / 0.087 m/s at 3 h, no tripwire
+#   fired in 24 h, and the level-13 top-decile energy stayed at or below
+#   0.0049 (0.0148 at step 40 with "settls").  From 9 h the box reads 0.39-0.56
+#   / 0.53-0.90 m/s again, but that is a field of grid-scale shower cells in
+#   the cold air (25-39 dBZ, 2-4 grid lengths), not the stripe pattern.
+# - trajectory_solver = "newton_ls", trajectory_iterations = 5: the Newton
+#   departure-point search globalized by a line search on the residual.  The
+#   plain "newton" (2 of 288 steps retried in the run above) refused the first
+#   step of this day with the orographic drag on, from GDAS 2026-11-15 06Z:
+#   0.0126 of a grid length still moving after 8 passes (limit 0.0100); its
+#   damping only halves and its gate reads the undamped step.
+#
+# The drain is the shipped one.  The departure form runs at any band count,
+# on one card or several (each card takes its neighbours' previous-level rows).
+[arwen_global]
+schema = "gpuwm.arwen-global-run/v1"
+name = "arwen-global-gdas-t1023-native-sl-si-24h"
+acknowledgement = "research-only-arwen-global-v1"
+backend = "cupy"
+precision = "float32"
+
+[grid]
+truncation = 1023
+dealias_factor = 1.5
+
+# The step is NOT bound by the advective Courant number on this core: the
+# semi-Lagrangian advection has no such bound, and the runner's CFL refusal is
+# replaced on this path by the trajectory fold gate (the minimum over the grid
+# of det(I -+ (dt/2) J) of the flow's own 3x3 Jacobian, refused below 0.2).  The advective
+# Courant number is still measured and written to the receipt every step.
+[time]
+dt_s = 300.0
+duration_s = 86400.0
+output_interval_s = 21600.0
+integrator = "sl_si"
+minimum_fold_determinant = 0.2
+
+[semilag]
+quasi_monotone = true
+trajectory_iterations = 5
+trajectory_solver = "newton_ls"
+extrapolation = "settls_departure"
+gather_batch = 1
+
+[vertical]
+coordinate = "surface_stretched"
+nlev = 40
+p_top_pa = 100.0
+
+# analysis_mapping is the packaged authority's BARE ID, not a path: the
+# resolver globs rw-wps-<id>-*.mapping.json under gpuwm/authorities and
+# requires exactly one match, so this spelling resolves from an installed
+# wheel as well as from a checkout root.
+[initial]
+mode = "analysis"
+analysis_grib = "cases/baseline-2026090100/gdas.t00z.pgrb2.0p25.f000"
+analysis_mapping = "gdas-global"
+surface_water_kg_m2 = 500.0
+# The model terrain is filtered at half amplitude at total degree 350
+# (arwen_global.spectral.orography_filter).  Unfiltered, the GDAS 0.25 degree
+# terrain puts a ripple on the 500 hPa height over the western mountains at
+# this truncation.  MEASURED 2026-11-15 on 12 h runs of the T1023 showpiece
+# recipe (this grid, core and suite, before the Grell-Freitas default D, with
+# the experimental k22 fallback on) from GDAS 2026-11-15 06Z, West box 35-48N
+# 125-105W, second differences of
+# the field sampled onto the GFS grid divided by GFS's own (east-west /
+# north-south; identical fields read about 0.76): Z500 3.62 / 2.98 at 9 h and
+# 4.21 / 3.90 at 15 h unfiltered, 1.80 / 1.58 at 12 h with n0 = 500 and
+# 1.22 / 0.96 with n0 = 350; 10 m wind 1.67 / 1.50 and 1.17 / 1.18
+# unfiltered, 0.89 / 0.67 with n0 = 350.  The NE Pacific Z500 control box,
+# on the model grid, read 0.26 / 0.30 and 0.22 / 0.29 m unfiltered and
+# 0.28 / 0.31 m with n0 = 350.  Cost: the highest terrain
+# in NV/UT/ID (37-45N 120-110W) falls from 3170 m to 2901 m, an rms change
+# of 74 m.  0.0 (or no line) is the unfiltered terrain.
+orography_filter_half_degree = 350.0
+
+# start_time_utc matches the ingested GDAS cycle (2026-09-01 00Z), so the
+# RRTMGP solar geometry runs on the analysis instant.  dx_m feeds sfclay its
+# grid-spacing-dependent branches and Grell-Freitas its scale-aware closure at
+# this grid's equatorial spacing; cumulus = "gf" is the adapter default
+# (shallow arm on), so it is not repeated in the options mapping.
+# radiation_column_chunk is the tree's own sizing for this truncation.
+# orographic_drag = "kim-gwdo" (WRF gwd_opt = 1), on from 0.2.5 as in the
+# T255 and T383 days (GFS, IFS and KIM all run orographic drag at 9-13 km).
+# MEASURED at T799 only (the shipped T799 day, GDAS 2026-11-15 06Z, 12 h,
+# against the GFS analysis valid 18Z): NH Z500 RMSE 11.57 -> 10.51 m, W250
+# 3.51 -> 3.47 m/s, T850 0.710 -> 0.669 K; the 500 hPa jet core over
+# OR/WA/ID 79.5 -> 77.3 kt on the 0.25 degree grid (GFS F012 77.5); the
+# same step wall and device peak (CHANGELOG 0.2.5).  orographic_drag =
+# "none" turns it off and brings back this day's hash before the default.
+[physics]
+mode = "arwen-native"
+native_adapter_name = "arwen-cuda-column-suite-v1"
+native_adapter_options = { acknowledgement = "device-pending-arwen-native-physics-v1", start_time_utc = "2026-09-01T00:00:00Z", radiation = "rrtmgp", radiation_interval_s = 1500.0, radiation_column_chunk = 5000, radiation_validation_mode = "fused", surface_layer = "sfclay", sfclay_option = 1, land_surface = "noah", land_surface_interval_s = 300.0, pbl = "ysu", ysu_topdown_pblmix = 1, microphysics = "morrison", morr_rimed_ice = 1, dx_m = 13000.0, orographic_drag = "kim-gwdo" }
+
+# The semi-Lagrangian core's own drain (config.SEMILAG_DIFFUSION_ORDER,
+# MEASURED 2026-09-07 on the dry T255 ladder): order 16 at 12 min at the
+# truncation on the six-point gather keeps 0.973 / 0.915 / 1.025 / 0.965 of
+# the Eulerian core's 500 hPa vorticity power at n = 61-120 / 121-180 /
+# 181-230 / 231-255, where the cubic gather at order 8 and 36 min kept
+# 0.835 / 0.576 / 0.474 / 0.502.
+[diffusion]
+enabled = true
+order = 16
+e_folding_time_s_at_truncation = 720.0
+preserve_degree = 1
+
+[semi_implicit]
+enabled = true
+weight = 1.0
+off_centring_weight = 0.55
+
+[repair]
+mass_fixer = true
+water_fixer = true
+positivity_repair = true
+
+[gates]
+transform_roundtrip_relative_linf = 1.0e-6
+transform_parseval_relative_error = 5.0e-7
+mass_relative_drift = 1.0e-4
+total_water_relative_drift = 1.0e-3
+# physics_water_repair gate, NATIVE-suite sizing (2026-09-01).  The
+# precision-wide 5e-4 envelope (runner._FIXER_ABSORPTION_LIMITS) was
+# measured on the reference suite, which has no kernel-internal closure
+# channel; the native suite has two -- Morrison's rainncv credited 1:1 to
+# the reservoir vs the actual column debit its fp32 process arithmetic
+# applies, and the post-kernel negative-species clamp (tolerance 1e-7 per
+# level-species; the creation ceiling is order 3e-3 kg/m2 at 20 levels and
+# the same order at 40, the column mass being the same) --
+# both genuine fp32 accumulation, NOT booking routes: the CPU repro
+# (water-repair-262, 2026-09-01, real model.step with verbatim-noah water
+# arithmetic, 217,800 column-calls of drip/melt/partition/evap/dew/qfx
+# forcing) put every booking route at <= 2 x 2^-14 = 1.22e-4 kg/m2, the
+# same ledger-summation floor the reference suite reads (~1e-4).
+# Measurement: day 1 of this config on the RTX 5090 (GDAS 2026-08-30 18Z,
+# 1440 steps) read max repair 0.00262451171875 kg/m2 = exactly 43 x 2^-14,
+# the fp32 quantum of the worst column's [512,1024) kg/m2 ledger total.
+# Sizing: 4 x that measured max = 0.010498046875 = 43 x 2^-12, which
+# admits the same 43-quantum excursion class on column totals up to the
+# 4096 kg/m2 binade (the convicted-era worst columns totalled ~1150,
+# where the class reads 5.25e-3) while staying 100x below the smallest
+# booking-route conviction at run scale (1.0943603515625, precip
+# double-entry, fixed 7d7b528d0) and 1e5 below the runoff-store
+# conviction (1072, fixed 89571245d) -- the unbooked-route breakage this
+# gate exists to catch.  Reference configs keep the 5e-4 envelope.
+physics_water_repair_max_step_kg_m2 = 0.010498046875

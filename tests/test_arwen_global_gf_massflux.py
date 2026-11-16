@@ -8,6 +8,8 @@ on the oracle fixture) live in tests/test_arwen_global_gf_massflux_cuda.py.
 """
 from __future__ import annotations
 
+from test_arwen_global_gf_default_d import gf_0_2_4
+
 from arwen_global.configs_dir import config_root as _shipped_configs
 import re
 import sys
@@ -190,10 +192,10 @@ def test_the_config_hash_separates_the_two_kernels_and_the_wrf_state_keeps_the_o
     # arm's hash is the one the lane's graded arms carried.
     from dataclasses import replace
 
-    assert replace(wrf, semi_implicit_scheme="external").config_hash == (
+    assert gf_0_2_4(replace(wrf, semi_implicit_scheme="external")).config_hash == (
         "367431fd86f9b0d7d1338d9fbcaf97ff62cada4cb4e249c2ccc658789cde1836"
     )
-    assert replace(on, semi_implicit_scheme="external").config_hash == (
+    assert gf_0_2_4(replace(on, semi_implicit_scheme="external")).config_hash == (
         "f69592f716b18b300ee40f59a1dabe43145120db537eeb98e3787d840c266149"
     )
 

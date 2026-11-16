@@ -342,23 +342,52 @@ class OceanOptions:
         return out
 
 
+def long_dated_run(cfg) -> bool:
+    """A dated run (from an analysis, on real statics) longer than
+    :data:`LONG_RUN_THRESHOLD_S`: the runs whose land follows the calendar
+    by default even when the sea is held."""
+    return (getattr(cfg, "initial_mode", None) == "analysis"
+            and getattr(getattr(cfg, "statics", None), "source", None) == "real"
+            and float(getattr(cfg, "duration_s", 0.0) or 0.0) > LONG_RUN_THRESHOLD_S)
+
+
 @dataclass(frozen=True)
 class LandOptions:
-    #: None: the ocean mode's default (daily under a rule or a series,
-    #: start under hold).
+    #: None: the default.  Daily under a rule or a series, and under hold on
+    #: a long dated run (:func:`long_dated_run`); start under hold on a
+    #: forecast of 16 days or less.
     greenness: str | None = None
 
-    def resolved(self, ocean: OceanOptions) -> str:
+    def resolved(self, ocean: OceanOptions, long_run: bool = False) -> str:
+        """``long_run``: the run is a :func:`long_dated_run`.  A held sea
+        held the vegetation, leaf area and background albedo at the start
+        date too until 0.2.5, so a run started on 1 March kept March
+        vegetation under a May sun; holding the sea says nothing about the
+        land, and a long run's land now follows the calendar.  A forecast of
+        16 days or less keeps the start, so every forecast config computes
+        what it did."""
         if self.greenness is not None:
             return self.greenness
-        return "start" if ocean.mode == "hold" else "daily"
+        if ocean.mode == "hold" and not long_run:
+            return "start"
+        return "daily"
 
-    def identity(self, ocean: OceanOptions) -> dict | None:
-        """Joins only when it states something the mode would not do."""
-        default = LandOptions().resolved(ocean)
-        if self.greenness is None or self.greenness == default:
+    def identity(self, ocean: OceanOptions, long_run: bool = False) -> dict | None:
+        """Joins only when it states something the mode would not do on a
+        forecast, so no config hash moved with the long-run default: a held
+        long run checkpointed under 0.2.4 restarts under 0.2.5 and its land
+        follows the calendar from the restart on.  On a long run
+        (``long_run``, :func:`long_dated_run`) a stated greenness that the
+        long-run default does not do joins too, so an explicit ``"start"``
+        on a held long run, which keeps the start's land, never shares a
+        hash with the default, which follows the calendar."""
+        if self.greenness is None:
             return None
-        return {"greenness": self.greenness}
+        if self.greenness != LandOptions().resolved(ocean):
+            return {"greenness": self.greenness}
+        if long_run and self.greenness != LandOptions().resolved(ocean, long_run=True):
+            return {"greenness": self.greenness}
+        return None
 
 
 @dataclass(frozen=True)
@@ -756,7 +785,7 @@ def _with_climatology(options: OceanOptions, table: dict, source_dir: Path) -> O
 
 
 __all__ = [
-    "GREENNESS_MODES", "LONG_RUN_THRESHOLD_S", "LandOptions", "OCEAN_MODES",
+    "GREENNESS_MODES", "LONG_RUN_THRESHOLD_S", "LandOptions", "OCEAN_MODES", "long_dated_run",
     "OceanOptions", "OutputOptions", "RESPONSE_MODES", "RULE_MODES", "SEA_ICE_MODES",
     "SLAB_TARGETS",
     "SeaIceOptions", "THERMODYNAMIC_NEW_ICE_THICKNESS_M",

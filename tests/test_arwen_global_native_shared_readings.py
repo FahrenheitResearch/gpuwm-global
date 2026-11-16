@@ -186,8 +186,8 @@ def test_a_reading_offered_for_another_batch_is_not_used():
 
 def flip_and_conversion_bits(xp, shape):
     """Inbound: ``ascontiguousarray(float32(x)[::-1]) / (1 - qv)``;
-    outbound: ``ascontiguousarray((r / (1 + r_v))[::-1])``, the chains
-    rel/0.1.6 ran, against the one-pass forms, ``array_equal``.  Shared
+    outbound: ``ascontiguousarray((r * d_in)[::-1])`` (d_in the inbound
+    dry fraction, fix/water-divisor), the two-pass chains, against the one-pass forms, ``array_equal``.  Shared
     with the device half in test_arwen_global_insitu_fused_capture."""
     from arwen_global.physics.native_batch import _flipped_quotient
 
@@ -203,10 +203,9 @@ def flip_and_conversion_bits(xp, shape):
         assert fused.dtype == chain.dtype == xp.float32
         assert fused.flags.c_contiguous
         assert bool(xp.array_equal(fused, chain)), dtype
-        moist = 1.0 + qv
-        chain_out = xp.ascontiguousarray((source.astype(xp.float32) / moist)[::-1])
+        chain_out = xp.ascontiguousarray((source.astype(xp.float32) * dry)[::-1])
         out = xp.empty(shape, dtype=xp.float32)
-        xp.divide(source.astype(xp.float32)[::-1], moist[::-1], out=out)
+        xp.multiply(source.astype(xp.float32)[::-1], dry[::-1], out=out)
         assert bool(xp.array_equal(out, chain_out)), dtype
 
 
@@ -219,11 +218,13 @@ def test_the_batch_returns_the_chain_bits():
     exchange = _exchange()
     batch = NativeColumnBatch.from_exchange(exchange, np)
     arrays = {name: value.copy() for name, value in batch.arrays.items()}
-    moist = 1.0 + np.asarray(arrays["qv"], dtype=np.float32)
+    # Outbound: q_x = r_x d_in, d_in the inbound dry fraction
+    # (native_batch docstring; fix/water-divisor).
+    dry = batch.dry_fraction.copy()
     returned = batch.global_prognostics(consume=True)
     for name in WATER_SPECIES:
         chain = np.ascontiguousarray(
-            (np.asarray(arrays[name], dtype=np.float32) / moist)[::-1])
+            (np.asarray(arrays[name], dtype=np.float32) * dry)[::-1])
         assert returned[name].flags.c_contiguous
         assert np.array_equal(returned[name], chain), name
     # Inbound, against the specification the module docstring states.

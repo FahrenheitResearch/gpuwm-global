@@ -323,3 +323,123 @@ def test_the_build_reads_a_real_checkpoint(tmp_path):
     assert abs(sum(q.coverage_days()) - 1.0) < 1.0e-12
     np.testing.assert_array_equal(q.latitude_deg, grid.latitude_deg)
     np.testing.assert_array_equal(q.longitude_deg, grid.longitude_deg)
+
+
+# ---------------------------------------------------------------------------
+# the second pass (ocean_qflux.second_pass): a known drift gives a known flux
+# ---------------------------------------------------------------------------
+
+def _second_pass_inputs(tmp_path, *, days=40, rate_k_day=-0.01):
+    """A flat climatology (290 K, no ice, 50 m), a base file of 5 W/m2 against
+    it, and one slab run's daily summaries whose open water cools by
+    ``rate_k_day`` a day from 2026-03-01; one column holds ice, one is land."""
+    import json
+
+    from arwen_global.surface_climatology import write_climatology
+
+    grid = _grid()
+    shape = _shape(grid)
+    ocean = np.ones(shape, dtype=bool)
+    ocean[0, 0] = False
+    planes = {"sst_k": np.full((12, *shape), 290.0), "sea_ice_fraction": np.zeros((12, *shape)),
+              "mixed_layer_depth_m": np.full((12, *shape), 50.0)}
+    clim = tmp_path / "clim.npz"
+    sha = write_climatology(clim, planes, ocean=ocean, latitude_deg=grid.latitude_deg,
+                            longitude_deg=grid.longitude_deg,
+                            provenance={"schema": "gpuwm.arwen-global-surface-climatology/v1"})
+    q = _qfile(grid, flux=np.full((12, *shape), 5.0),
+               provenance={"schema": QFLUX_SCHEMA, "physics_identity": PHYSICS,
+                           "climatology_sha256": sha})
+    base = tmp_path / "base.npz"
+    np.savez(base, calibration_flux_w_m2=q.flux_w_m2, coverage_s=q.coverage_s,
+             latitude_deg=q.latitude_deg, longitude_deg=q.longitude_deg,
+             provenance=np.array(json.dumps(q.provenance)))
+    run = tmp_path / "run" / "L1"
+    run.mkdir(parents=True)
+    day0 = datetime(2026, 3, 1, tzinfo=timezone.utc)
+    for k in range(days):
+        day = day0 + timedelta(days=k)
+        ice = np.zeros(shape)
+        ice[1, 1] = 0.5
+        np.savez(run / f"arwen_global_daily_{day:%Y-%m-%d}.npz",
+                 metadata=np.array(json.dumps({"day": f"{day:%Y-%m-%d}"})),
+                 skin_temperature_mean_k=np.full(shape, 290.3 + rate_k_day * k),
+                 sea_ice_fraction_mean=ice.astype(np.float32))
+    return grid, clim, base, tmp_path / "run"
+
+
+def test_the_second_pass_books_a_known_drift(tmp_path):
+    from arwen_global.ocean_slab import RHO_CP_SEAWATER_J_M3_K
+
+    _, clim, base, run = _second_pass_inputs(tmp_path)
+    out = tmp_path / "q2.npz"
+    assert main(["second-pass", str(base), "--climatology", str(clim), "--slab-run", str(run),
+                 "--out", str(out), "--relaxation-days", "none"]) == 0
+    q = load_qflux(out)
+    expected = 5.0 + RHO_CP_SEAWATER_J_M3_K * 50.0 * (-0.01 / 86400.0)  # -23.69 W/m2 lacking
+    record = q.provenance["second_pass"]
+    # 2 March to 9 April instants: February (from the March instants before the 16th), March, April
+    corrected = [m for m in range(12) if record["month_corrected_days"][m] > 0.0]
+    assert corrected == [1, 2, 3]
+    for month in corrected:
+        np.testing.assert_allclose(q.flux_w_m2[month][2:, 2:], expected, rtol=0.0, atol=1.0e-9)
+        assert q.flux_w_m2[month][0, 0] == 5.0  # land
+        assert q.flux_w_m2[month][1, 1] == 5.0  # the run's ice
+    assert (q.flux_w_m2[5] == 5.0).all()
+    np.testing.assert_array_equal(q.coverage_s, load_qflux(base).coverage_s)
+    assert q.provenance["physics_identity"] == PHYSICS
+
+
+def test_the_second_pass_adds_the_restoring_and_refuses(tmp_path):
+    from arwen_global.ocean_slab import RHO_CP_SEAWATER_J_M3_K
+
+    _, clim, base, run = _second_pass_inputs(tmp_path, rate_k_day=0.0)
+    out = tmp_path / "q2.npz"
+    assert main(["second-pass", str(base), "--climatology", str(clim), "--slab-run", str(run),
+                 "--out", str(out)]) == 0
+    # held 0.3 K above a 365-day restoring: the restoring took rho c h 0.3 / tau out of it
+    expected = 5.0 + RHO_CP_SEAWATER_J_M3_K * 50.0 * 0.3 / (365.0 * 86400.0)
+    np.testing.assert_allclose(load_qflux(out).flux_w_m2[2][2:, 2:], expected, rtol=0.0,
+                               atol=1.0e-9)
+    (next(run.rglob("arwen_global_daily_2026-03-10.npz"))).unlink()
+    assert main(["second-pass", str(base), "--climatology", str(clim), "--slab-run", str(run),
+                 "--out", str(out)]) == 2
+
+
+def test_the_second_pass_skips_a_runs_first_days(tmp_path):
+    import json
+
+    from arwen_global.ocean_slab import RHO_CP_SEAWATER_J_M3_K
+
+    _, clim, base, run = _second_pass_inputs(tmp_path)
+    # the start's own anomaly: 1 K above the steady drift on 1 March, gone by 11 March
+    for path in sorted(run.rglob("arwen_global_daily_*.npz")):
+        k = (datetime.strptime(path.name[19:29], "%Y-%m-%d") - datetime(2026, 3, 1)).days
+        if k < 10:
+            with np.load(path) as data:
+                fields = dict(data)
+            fields["skin_temperature_mean_k"] = fields["skin_temperature_mean_k"] + 0.1 * (10 - k)
+            np.savez(path, **fields)
+    steady = 5.0 + RHO_CP_SEAWATER_J_M3_K * 50.0 * (-0.01 / 86400.0)
+    args = ["second-pass", str(base), "--climatology", str(clim), "--slab-run", str(run),
+            "--relaxation-days", "none"]
+    whole, skipped = tmp_path / "whole.npz", tmp_path / "skipped.npz"
+    assert main(args + ["--out", str(whole)]) == 0
+    assert main(args + ["--out", str(skipped), "--skip-days", "10"]) == 0
+    # every day booked: the decay reads as heat lacking in March
+    assert load_qflux(whole).flux_w_m2[2][2, 2] < steady - 10.0
+    q = load_qflux(skipped)
+    record = q.provenance["second_pass"]
+    assert record["skip_days"] == 10
+    assert record["runs"][0]["booked_from"] == "2026-03-11"
+    assert record["runs"][0]["pairs_booked"] == 29
+    corrected = [m for m in range(12) if record["month_corrected_days"][m] > 0.0]
+    assert 2 in corrected
+    for month in corrected:
+        np.testing.assert_allclose(q.flux_w_m2[month][2:, 2:], steady, rtol=0.0, atol=1.0e-9)
+    # the default is the whole run, and its provenance carries no skip record
+    assert "skip_days" not in load_qflux(whole).provenance["second_pass"]
+    assert "booked_from" not in json.dumps(load_qflux(whole).provenance)
+    # a skip that leaves no pair is refused
+    assert main(args + ["--out", str(skipped), "--skip-days", "39"]) == 2
+    assert main(args + ["--out", str(skipped), "--skip-days", "-1"]) == 2

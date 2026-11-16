@@ -94,6 +94,7 @@ constant and that test are the record that the gate is quiet about them.
 from __future__ import annotations
 
 import ast
+import importlib.util
 from pathlib import Path
 import re
 import zipfile
@@ -101,6 +102,34 @@ import zipfile
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _private_names_module():
+    spec = importlib.util.spec_from_file_location(
+        "arwen_global_private_names", ROOT / "tools" / "private_names.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: THE PRIVATE NAMES THIS GATE REFUSES ARE NOT IN THIS FILE.
+#:
+#: THE BREAKAGE THIS PREVENTS (15 Nov 2026): this file used to spell the
+#: tool names, the personal name, the machine names and the private case it
+#: refuses, split across string literals so that its own rules would not
+#: read them.  It ships in the sdist, so the published source package
+#: carried every name on the list, and a scan of the built artefact that
+#: joins split literals read them whole.  They are read at run time from the
+#: private names file (`tools/private_names.py`); a rule that needs one runs
+#: where that file is and skips, with the reason, where it is not.
+PRIVATE_NAMES = _private_names_module()
+_PRIVATE = PRIVATE_NAMES.load()
+needs_private_names = pytest.mark.skipif(
+    _PRIVATE is None, reason=PRIVATE_NAMES.SKIP_REASON)
+
+
+def _alternation(names: tuple[str, ...]) -> str:
+    return "|".join(re.escape(name) for name in names)
 
 #: This file states every banned pattern as a literal, so it necessarily
 #: matches itself.  It is excluded by name rather than by a cleverness
@@ -392,15 +421,22 @@ def test_lane_vocabulary_tally_is_the_recorded_one() -> None:
 #: both lines went through every rule in this file untouched.  The
 #: alternative is the directory NAME rather than a path shape, because the
 #: two spellings measured share nothing else.
+#:
+#: The tool names and the directory name are read from the private names
+#: file; the commit trailer and the generic words are not names and stay.
+_TOOLING_NAMES = (PRIVATE_NAMES.strings(_PRIVATE, "tool_names")
+                  + PRIVATE_NAMES.strings(_PRIVATE, "tooling_dir"))
 _TOOLING = re.compile(
-    r"\b(claude|anthropic|chatgpt|openai|copilot|"
-    r"co-authored-by|subagents?|sub-agents?|superpowers)\b", re.IGNORECASE)
+    r"\b(" + "".join(re.escape(name) + "|" for name in _TOOLING_NAMES)
+    + r"co-authored-by|subagents?|sub-agents?)\b", re.IGNORECASE)
 
-#: A personal name, case-sensitive on purpose: lowercase "drew" is the
-#: past tense of "draw" and this package uses it in that sense (an ice
-#: pack drawing energy up through snow), so a case-insensitive rule here
-#: would fire on physics and catch nothing extra.
-_PERSONAL_NAME = re.compile(r"\bDrew\b")
+#: A personal name, case-sensitive on purpose: the same letters in lower
+#: case can be an ordinary English word, so a case-insensitive rule here
+#: would fire on prose and catch nothing extra.  Read from the private
+#: names file; None where it is not.
+_PERSONAL_NAMES = PRIVATE_NAMES.strings(_PRIVATE, "personal_names")
+_PERSONAL_NAME = (re.compile(r"\b(?:" + _alternation(_PERSONAL_NAMES) + r")\b")
+                  if _PERSONAL_NAMES else None)
 
 #: Home directories and private address space.  Both are the hex line's
 #: measured leak: a path that resolves on one machine, and a subnet
@@ -576,6 +612,7 @@ def test_no_tooling_names_reach_the_shipped_tree() -> None:
     )
 
 
+@needs_private_names
 def test_no_personal_name_reaches_the_shipped_tree() -> None:
     hits = _hits(shipped_scope(), _PERSONAL_NAME)
     assert hits == [], (
@@ -742,23 +779,31 @@ _PROCESS_REFERENCE = re.compile(
 #: noun as a leak is a flawed instrument, and the two conversational forms
 #: ("this session", "a previous session") carry the meaning the rule is for.
 #:
-#: IN: `agent[-_ ]scratch`.  Three measurement rows in `sizing.py` named the
-#: scratch directory the run happened to sit in, inside the wheel, and the
-#: prose pattern would not have matched them even where it ran.  They now
-#: name the host shape and the probe, which is what a reader can use.
+#: IN: the private scratch directory's name.  Three measurement rows in
+#: `sizing.py` named the scratch directory the run happened to sit in,
+#: inside the wheel, and the prose pattern would not have matched them even
+#: where it ran.  They now name the host shape and the probe, which is what
+#: a reader can use.  The directory's name is a private name, so its
+#: pattern is read from the private names file.
+_PRIVATE_FOLDERS = PRIVATE_NAMES.strings(_PRIVATE, "private_folder_patterns")
 _SHIPPED_PROCESS_REFERENCE = re.compile(
     r"\b(conversations?|chats?|this session|a previous session|"
-    r"the agent|an agent)\b|agent[-_ ]scratch", re.IGNORECASE)
+    r"the agent|an agent)\b" + "".join("|" + folder for folder in _PRIVATE_FOLDERS),
+    re.IGNORECASE)
 
 #: The machines the maintainer owns, by hostname.  Enforced in prose and,
 #: since 0.1.2, in everything that ships (see the test that names it).
-_MACHINE_NAME = re.compile(r"\b(weather-node-\d+|node-[1-9]\b)")
+#: Read from the private names file; None where it is not.
+_MACHINE_PATTERN = PRIVATE_NAMES.string(_PRIVATE, "machine_pattern")
+_MACHINE_NAME = re.compile(_MACHINE_PATTERN) if _MACHINE_PATTERN else None
 
 #: The private case whose working name reached eight docstrings in the
-#: carried physics of 0.1.1.  Spelled in pieces so the detector that lists
-#: case tokens (tools/check_case_token_leakage.py, exempt by name below)
-#: is the only other file that spells it whole.
-_PRIVATE_CASE = re.compile("(?i)" + "real" + "74")
+#: carried physics of 0.1.1.  Read from the private names file, as the
+#: detector that lists case tokens (tools/check_case_token_leakage.py) now
+#: reads it too; None where it is not.
+_PRIVATE_CASES = PRIVATE_NAMES.strings(_PRIVATE, "case_tokens")
+_PRIVATE_CASE = (re.compile("(?i)(?:" + _alternation(_PRIVATE_CASES) + ")")
+                 if _PRIVATE_CASES else None)
 
 #: The one file that must spell the case token: it is the detector that
 #: refuses the token in generic code positions.
@@ -815,7 +860,7 @@ def test_shipped_text_refers_to_no_process() -> None:
     """The scope is everything that ships, for the reason the words test gives.
 
     Measured 2026-09-10 with this rule on the prose alone: every page was
-    clean while three measurement rows inside `sizing.py` named an agent
+    clean while three measurement rows inside `sizing.py` named a private
     scratch directory, in a module that is inside every wheel.
     """
 
@@ -825,6 +870,7 @@ def test_shipped_text_refers_to_no_process() -> None:
         "to what the software does:" + chr(10) + "  " + (chr(10) + "  ").join(hits))
 
 
+@needs_private_names
 def test_no_shipped_file_names_a_private_machine() -> None:
     """A private hostname in anything that reaches a wheel or an sdist.
 
@@ -844,6 +890,7 @@ def test_no_shipped_file_names_a_private_machine() -> None:
         + "\n  ".join(hits))
 
 
+@needs_private_names
 def test_no_shipped_file_names_the_private_case() -> None:
     """A private case's working name in generic shipped text.
 
@@ -861,6 +908,7 @@ def test_no_shipped_file_names_the_private_case() -> None:
         "the reference configuration is instead:\n  " + "\n  ".join(hits))
 
 
+@needs_private_names
 def test_published_prose_names_no_machine() -> None:
     hits = _hits(prose_scope(), _MACHINE_NAME)
     assert hits == [], (
@@ -1006,12 +1054,8 @@ def test_the_patterns_still_match_what_they_are_written_to_match() -> None:
     """
 
     assert _TOOLING.search("Co-Authored-By: someone")
-    assert _TOOLING.search("docs/superpowers/plans/2026-07-14-x.md")
-    assert _TOOLING.search(".superpowers/sdd/a-root-cause.md")
     assert not _TOOLING.search("the agent-based ensemble")
     assert not _TOOLING.search("the super-cooled liquid powers the rime")
-    assert _PERSONAL_NAME.search("the name Drew appears here")
-    assert not _PERSONAL_NAME.search("the pack drew energy upward")
     assert _MACHINE_LOCATION.search("/home/user/runs")
     assert _MACHINE_LOCATION.search("C:" + chr(92) + "Users" + chr(92) + "x")
     assert _MACHINE_LOCATION.search("the 25 GbE at 10.250.0.4")
@@ -1025,11 +1069,9 @@ def test_the_patterns_still_match_what_they_are_written_to_match() -> None:
     assert _BANNED_WORDS.search("a load_bearing_wall variable")
     assert _EM_DASH.search("a clause — and another")
     assert not _EM_DASH.search("a clause - and another")
-    assert _MACHINE_NAME.search("measured on node-2")
-    assert not _MACHINE_NAME.search("the node count")
     assert _DEVELOPMENT_ORGANISATION.search("Lane `lane/da-ensemble` (2026-09-06)")
     assert _DEVELOPMENT_ORGANISATION.search("a tree at or after integration/2.7.0")
-    assert _DEVELOPMENT_ORGANISATION.search("charts under Downloads/evidence-gallery/x")
+    assert _DEVELOPMENT_ORGANISATION.search("charts under Downloads/charts/x")
     assert _DEVELOPMENT_ORGANISATION.search("recomputed by the refuter")
     assert _DEVELOPMENT_ORGANISATION.search("0.670 (the owner tip)")
     assert _DEVELOPMENT_ORGANISATION.search("recorded in the lane report")
@@ -1111,10 +1153,6 @@ def test_the_patterns_still_match_what_they_are_written_to_match() -> None:
     # includes the node names.
     assert _ALLOWED_HOST_VALUE.match("windows-amd64")
     assert _ALLOWED_HOST_VALUE.match("linux-x86_64")
-    assert not _ALLOWED_HOST_VALUE.match("weather-node-4")
-    assert not _ALLOWED_HOST_VALUE.match("node-2")
-    assert _PRIVATE_CASE.search("matching " + "REAL" + "74.")
-    assert not _PRIVATE_CASE.search("the reference WRF configuration")
     assert not _ALLOWED_HOST_VALUE.match("DESKTOP-A1B2C3D4")
     assert not _ALLOWED_HOST_VALUE.match("windows-11-0.0.00000-sp0")
     assert not _ALLOWED_HOST_VALUE.match("someones-laptop")
@@ -1127,6 +1165,48 @@ def test_the_patterns_still_match_what_they_are_written_to_match() -> None:
     assert _decode_member("<f8", bytes(8)) is None
     assert _decode_member("<i4", bytes(4)) is None
     assert "leak" in (_decode_member(None, "leak".encode("utf-16-le")) or "")
+
+
+@needs_private_names
+def test_the_private_rules_match_the_private_names() -> None:
+    """The self-test above, for the rules whose names are not in this file.
+
+    The strings are built from the private names file at run time, for the
+    reason the docstring above gives: a rule tested here against the real
+    name would publish it.  Each rule is exercised in both directions, and a
+    private names file that leaves a rule empty fails here rather than
+    turning the rule off.
+    """
+
+    tool_names = PRIVATE_NAMES.strings(_PRIVATE, "tool_names")
+    tooling_dir = PRIVATE_NAMES.string(_PRIVATE, "tooling_dir")
+    assert tool_names and tooling_dir and _PERSONAL_NAMES, (
+        "the private names file leaves the tooling or the personal-name rule empty")
+    for name in tool_names:
+        assert _TOOLING.search(f"written with {name.capitalize()} here"), name
+    assert _TOOLING.search(f"docs/{tooling_dir}/plans/2026-07-14-x.md")
+    assert _TOOLING.search(f".{tooling_dir}/sdd/a-root-cause.md")
+    for name in _PERSONAL_NAMES:
+        assert _PERSONAL_NAME.search(f"the name {name} appears here"), name
+        # Case-sensitive: the same letters in lower case are left alone.
+        assert not _PERSONAL_NAME.search(f"the pack {name.lower()} energy upward")
+    examples = PRIVATE_NAMES.strings(_PRIVATE, "machine_examples")
+    assert examples and _MACHINE_NAME is not None, (
+        "the private names file leaves the machine rule or its examples empty")
+    for host in examples:
+        assert _MACHINE_NAME.search(f"measured on {host}"), host
+        assert not _ALLOWED_HOST_VALUE.match(host), host
+    assert not _MACHINE_NAME.search("the node count")
+    assert _PRIVATE_CASE is not None, "the private names file names no private case"
+    for case in _PRIVATE_CASES:
+        assert _PRIVATE_CASE.search(f"matching {case.upper()}."), case
+    assert not _PRIVATE_CASE.search("the reference WRF configuration")
+    folders = PRIVATE_NAMES.strings(_PRIVATE, "private_folder_examples")
+    assert _PRIVATE_FOLDERS and folders, (
+        "the private names file leaves the private-folder rule or its examples empty")
+    for folder in folders:
+        assert _SHIPPED_PROCESS_REFERENCE.search(f"the run sat in {folder}/t383"), folder
+    assert not _SHIPPED_PROCESS_REFERENCE.search("a scratch array of 4 floats")
 
 
 def test_the_third_party_texts_are_exempt_by_name() -> None:

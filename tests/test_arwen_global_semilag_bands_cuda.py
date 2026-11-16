@@ -82,3 +82,56 @@ def test_the_device_escape_flag_widens_the_band_and_keeps_the_answer(
     assert model.semilag_halo_rows[0] == 1
     assert model.semilag_halo_rows[1] > 1, "no band escaped a one-row halo"
     assert narrow == reference
+
+
+def _run_cards(bands: int, steps: int, options, exchange=None):
+    host = SphericalHarmonicTransform.create(21, backend="numpy",
+                                             precision="float64")
+    device = SphericalHarmonicTransform.create(21, backend="cupy",
+                                               precision="float64")
+    if exchange is not None:
+        device.row_exchange = exchange
+    vertical = HybridCoordinate.pressure_blend(8, 100.0)
+    bundle = _to_device(_baroclinic(host, vertical, wind_m_s=35.0))
+    model = _model(device, vertical, bands=bands, exchange=exchange,
+                   options=options)
+    for _ in range(steps):
+        bundle, _metrics = model.step(bundle, 900.0)
+    atmosphere = bundle.atmosphere
+    out = {name: _digest(getattr(atmosphere, name))
+           for name in ("vorticity", "divergence", "theta",
+                        "log_surface_pressure", "qv")}
+    out.update({"tracer." + name: _digest(value)
+                for name, value in atmosphere.grid_tracers().items()})
+    return model, out
+
+
+@pytest.mark.parametrize("halo", (None, 1))
+def test_the_departure_form_on_two_cards_is_one_cards_bits_on_the_device(
+        monkeypatch, halo):
+    """settls_departure on two ranks over loopback TCP, on the device: the
+    previous level's reach crosses the wire as device arrays and the run
+    is the one-rank run bit for bit, behind the default halo and behind a
+    one-row halo whose escapes widen the reach."""
+    from test_arwen_global_semilag_bands import _loopback
+    from arwen_global import cards
+
+    options = SemiLagrangianOptions(extrapolation="settls_departure")
+    if halo is not None:
+        monkeypatch.setattr(step_module, "default_halo_rows",
+                            lambda nlat, dt, radius: halo)
+    _one, want = _run_cards(4, 3, options)
+    nlat = _one.transform.grid.nlat
+
+    def body(rank, transport):
+        session = cards.CardSession(transport, nlat, 4, weights=(1.0, 1.0))
+        model, got = _run_cards(4, 3, options,
+                                exchange=cards.RowExchange(session))
+        return got, model.semilag_halo_rows
+
+    out = _loopback(body, 2)
+    for rank in range(2):
+        got, halo_rows = out[rank]
+        assert got == want, f"rank {rank} moved"
+        if halo is not None:
+            assert halo_rows[1] > 1, "no band escaped a one-row halo"

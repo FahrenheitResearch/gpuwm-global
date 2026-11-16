@@ -11,6 +11,8 @@ layer below.
 """
 from __future__ import annotations
 
+from test_arwen_global_gf_default_d import gf_0_2_4
+
 from arwen_global.configs_dir import config_root as _shipped_configs
 from dataclasses import replace
 import hashlib
@@ -200,7 +202,7 @@ def test_the_candidate_is_selectable_by_name_with_its_own_identity(tmp_path):
     # The shipped config keeps its 40-level identity: selectable, not the default.
     assert forty.vertical_coordinate == "surface_stretched" and forty.vertical.nlev == 40
     if not JET_REFINED_T255_CONFIG_HASH.startswith("REPLACED"):
-        assert cfg.config_hash == JET_REFINED_T255_CONFIG_HASH
+        assert gf_0_2_4(cfg).config_hash == JET_REFINED_T255_CONFIG_HASH  # 0.2.4 GF (D, 0.2.5)
     # 47 under the name is refused through the loader too.
     coarse = tmp_path / "coarse.toml"
     coarse.write_text(_vertical_block(base_text, 'coordinate = "jet_refined"\nnlev = 47\n'), encoding="utf-8")

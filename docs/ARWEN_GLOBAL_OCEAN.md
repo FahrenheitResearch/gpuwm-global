@@ -271,6 +271,47 @@ ten days and later files from longer runs. A short calibration carries the
 weather of its days in F_cal: tens of W/m2 locally over ten days. That is
 the noise gate OC-4 sees, and it is stated with the measurement.
 
+**The second pass.** A six-day calibration books its first week's
+atmosphere. A long slab run's atmosphere goes on drifting for months, takes
+more heat from the ocean than the calibration booked, and the slab cools
+against the climatology. The standard remedy (the CESM slab ocean takes Q
+from the surface fluxes of a long run with the SST prescribed) is to book
+the long run's own fluxes, and the slab's books give them without another
+run. On an open-ocean column, with D = T - C,
+
+    F_open - F_cal = rho_w c_w h (dD/dt + D / tau_r)
+
+is the heat the run's atmosphere put into the ocean beyond F_cal.
+`gpuwm-global climatology qflux second-pass QFLUX --climatology NPZ
+--slab-run DIR [--slab-run DIR ...] --out FILE` reads it from each pair of
+a slab run's daily summaries (`arwen_global_daily_*.npz`, searched below
+DIR): D against the slab's own cubic at each day's 12 UTC, h the slab's
+woa18 depth, open water only (the run's and the climatology's ice below
+0.15 on both days). It deposits that flux with the month weights, a day's
+weight each, as a calibration deposits F, and adds sum / weight to F_cal
+where the runs' weight is at least two days. `--depth-bounds` and
+`--relaxation-days` must be the runs' own (default 10 200 and 365). The
+coverage, the grid and the calibration record stay the base file's, so the
+guard reads the new file as it read the base, and the provenance gains a
+`second_pass` record naming the base by SHA-256 and each run's days. The
+recipe's measurement is on the long-run page ("The Q-flux a long run
+reads").
+
+What it books is the flux at the runs' own SST, which sat up to 0.4 K under
+the climatology. At the climatology the atmosphere would draw more (the
+surface-flux feedback below), so a column that had settled cold is left a
+smaller drift, which a further pass would book. A run's first weeks also
+carry its start's own anomaly and the coupled spin-up decaying, and the
+pass books that as heat the ocean lacked. `--skip-days N` (default 0,
+every day booked) leaves each run's first N days out: a pair of summaries
+is booked only when its first day is at least N days after the run's
+first, and the `second_pass` record gains `skip_days` and each run's
+`booked_from` and `pairs_booked`. A skip that leaves a run no pair is
+refused. Only the months those days fed change: with two runs from 02-01
+and 08-01, `--skip-days 15` moves January, February, July and August
+(March by one day's weight) and leaves April to June and September to
+December bit for bit.
+
 ## Restoring
 
     R = rho_w c_w h(t) (T* - T) / tau_r

@@ -213,8 +213,13 @@ def test_no_open_water_column_starts_on_an_analysis_land_skin(tmp_path):
     assert open_water.any() and (~open_water).any()
     # Every open-water column starts on the analysis's own water.
     assert np.allclose(skin[open_water], WATER_SKIN_K, rtol=0.0, atol=1.0e-3)
-    # Land columns keep the analysis skin exactly as regridded.
-    assert np.array_equal(skin[~open_water], plain[~open_water].astype(skin.dtype))
+    # Land columns start on the analysis's own land skin (land_only_regrid,
+    # WPS SKINTEMP masked=both), never the sea blended in
+    # (tests/test_arwen_global_coastal_land_surface.py holds the blend).
+    assert np.allclose(skin[~open_water], LAND_SKIN_K, rtol=0.0, atol=1.0e-3)
+    soil = host(state.surface.soil_temperature_k)
+    assert np.allclose(soil[:, ~open_water], 300.0, rtol=0.0, atol=1.0e-3)
+    assert provenance["coastal_land_surface"]["land_columns"] > 0
     record = provenance["open_water_skin"]
     assert record["open_water_columns"] == int(open_water.sum())
     assert record["stencil_with_analysis_land"] > 0

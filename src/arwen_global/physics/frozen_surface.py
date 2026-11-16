@@ -54,7 +54,7 @@ cell's; the seeding lane's column charged those whole-cell fluxes to
 the ice, and the open water's heat loss (the leads sit at the freezing
 point, 15 to 20 K above a winter pack's air) was paid by the ice skin,
 which cooled until the extra conduction from the ocean balanced it
-(the ladder on the merged tip at f024: the Antarctic partial pack drew
+(the ladder on the merged tip at f024: the Antarctic partial pack pulled
 40 W/m2 up through the ice against the reference's 13, skin 2.3 K cold,
 the full pack 0.6 K).  The column now receives the fluxes of its own
 skin: the cell's flux corrected by the surface layer's own exchange
@@ -174,7 +174,7 @@ def sea_ice_layer_thickness(thickness_m, snow_depth_m, xp):
     snow depth insulates the ice as WRF's SFLX_SEAICE snowpack does (the
     earlier layout put a third of the ice in the second node and read a
     0.25 m snow cover as 0.10 m of snow over ice: the merged tip's full
-    Antarctic pack drew 20 W/m2 up through its snow against the
+    Antarctic pack pulled 20 W/m2 up through its snow against the
     reference's 15).  Bare ice keeps the skin node of at most the cap and
     the rest split evenly over the three nodes below."""
     ice = xp.clip(

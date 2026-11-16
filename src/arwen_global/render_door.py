@@ -55,7 +55,7 @@ CHECKPOINT_GLOB = "arwen_global_step*.npz"
 #: THESE ARE THE RENDERER'S OWN SLUGS, and they were read off its catalog for a
 #: global tape rather than invented (`gpuwm render TAPE --list-products`).  The
 #: first spelling of this default named `t2,wind10,precip,olr`, none of which is
-#: a slug the catalog carries, so a bare `gpuwm-global render` drew nothing at
+#: a slug the catalog carries, so a bare `gpuwm-global render` rendered nothing at
 #: all and said so only in the skipped list.  A default that renders nothing is
 #: a door that does not exist.  MEASURED 2026-09-07 against a T255 tape: these
 #: four report `renderable`, while `simulated_ir_satellite` (the outgoing

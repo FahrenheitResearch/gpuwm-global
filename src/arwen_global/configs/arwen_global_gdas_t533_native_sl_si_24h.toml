@@ -33,6 +33,10 @@ minimum_fold_determinant = 0.2
 [semilag]
 quasi_monotone = true
 trajectory_iterations = 3
+# The departure-point form of the time extrapolation (Hortal 2002): the
+# shipped "settls" reads it at the arrival point and puts grid-scale
+# divergent stripes across the fastest jets from T383 up (CHANGELOG 0.2.5).
+extrapolation = "settls_departure"
 
 [vertical]
 coordinate = "surface_stretched"
@@ -48,6 +52,16 @@ mode = "analysis"
 analysis_grib = "cases/baseline-2026090100/gdas.t00z.pgrb2.0p25.f000"
 analysis_mapping = "gdas-global"
 surface_water_kg_m2 = 500.0
+# The model terrain is filtered at half amplitude at total degree 350, the
+# same physical cut as the T799 and T1023 days
+# (arwen_global.spectral.orography_filter).  MEASURED 2026-11-15 on 12 h
+# runs of arwen_global_gdas_t533_native_sl_si_24h from GDAS 2026-11-15 06Z,
+# West box 35-48N 125-105W, Z500 second differences sampled onto the GFS
+# grid over GFS's own (identical fields read about 0.76): 1.91 / 1.66
+# unfiltered, 0.98 / 0.74 filtered at 12 h; the highest NV/UT/ID terrain
+# 3042 to 2836 m; West land 2 m temperature 0.09 K colder (RMS change
+# 0.54 K); Z500 against the GFS analysis at 12 h, NH RMSE 11.28 to 11.89 m.
+orography_filter_half_degree = 350.0
 
 # start_time_utc matches the ingested GDAS cycle (2026-09-01 00Z), so the
 # RRTMGP solar geometry runs on the analysis instant.  dx_m feeds sfclay its
@@ -55,10 +69,18 @@ surface_water_kg_m2 = 500.0
 # this grid's equatorial spacing; cumulus = "gf" is the adapter default
 # (shallow arm on), so it is not repeated in the options mapping.
 # radiation_column_chunk is the tree's own sizing for this truncation.
+# orographic_drag = "kim-gwdo" (WRF gwd_opt = 1), on from 0.2.5 as in the
+# T255 and T383 days (GFS, IFS and KIM all run orographic drag at 9-13 km).
+# MEASURED at T799 only (the shipped T799 day, GDAS 2026-11-15 06Z, 12 h,
+# against the GFS analysis valid 18Z): NH Z500 RMSE 11.57 -> 10.51 m, W250
+# 3.51 -> 3.47 m/s, T850 0.710 -> 0.669 K; the 500 hPa jet core over
+# OR/WA/ID 79.5 -> 77.3 kt on the 0.25 degree grid (GFS F012 77.5); the
+# same step wall and device peak (CHANGELOG 0.2.5).  orographic_drag =
+# "none" turns it off and brings back this day's hash before the default.
 [physics]
 mode = "arwen-native"
 native_adapter_name = "arwen-cuda-column-suite-v1"
-native_adapter_options = { acknowledgement = "device-pending-arwen-native-physics-v1", start_time_utc = "2026-09-01T00:00:00Z", radiation = "rrtmgp", radiation_interval_s = 1500.0, radiation_column_chunk = 5000, radiation_validation_mode = "fused", surface_layer = "sfclay", sfclay_option = 1, land_surface = "noah", land_surface_interval_s = 300.0, pbl = "ysu", ysu_topdown_pblmix = 1, microphysics = "morrison", morr_rimed_ice = 1, dx_m = 25000.0 }
+native_adapter_options = { acknowledgement = "device-pending-arwen-native-physics-v1", start_time_utc = "2026-09-01T00:00:00Z", radiation = "rrtmgp", radiation_interval_s = 1500.0, radiation_column_chunk = 5000, radiation_validation_mode = "fused", surface_layer = "sfclay", sfclay_option = 1, land_surface = "noah", land_surface_interval_s = 300.0, pbl = "ysu", ysu_topdown_pblmix = 1, microphysics = "morrison", morr_rimed_ice = 1, dx_m = 25000.0, orographic_drag = "kim-gwdo" }
 
 # The semi-Lagrangian core's own drain (config.SEMILAG_DIFFUSION_ORDER,
 # MEASURED 2026-09-07 on the dry T255 ladder): order 16 at 12 min at the

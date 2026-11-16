@@ -229,23 +229,47 @@ def evaluate(xp, *, coszen_now, coszen_ref, swdown_ref, gx, gg):
 # The runtime's entry point
 # ---------------------------------------------------------------------------
 
-def apply(batch, persistent, *, mode: str, start_time, due: bool) -> None:
+def current_sun(xp, latitude_deg, longitude_deg, valid_time, *,
+                world_sun=None, start_time=None):
+    """The cosine of the zenith angle the update evaluates its fit at.
+
+    Earth's (``world_sun`` None): :func:`cosine_zenith`, the statements it
+    always ran.  Another world's: the world sun the radiation call itself
+    runs under (``world.sun.WorldSun.cosine_zenith``, as
+    ``world.radiation`` hands it the driver's planes), on float32
+    latitude and longitude, with ``start_time`` for a day that is not 24
+    hours, so the fit's reference cosine (the call's own) and the current
+    one come from the same sun.
+    """
+    if world_sun is None:
+        return cosine_zenith(xp, latitude_deg, longitude_deg, valid_time)
+    lat = xp.asarray(latitude_deg, dtype=F)
+    lon = xp.asarray(longitude_deg, dtype=F)
+    return world_sun.cosine_zenith(
+        lat, lon, valid_time, xp=xp, dtype=F,
+        start_time=start_time).astype(F, copy=False)
+
+
+def apply(batch, persistent, *, mode: str, start_time, due: bool,
+          world_sun=None) -> None:
     """Rewrite the held shortwave planes at the current sun, in place.
 
     Called by ``native_runtime._radiation_step`` on every physics call
     under a mode other than ``"hold"``, after a due call has written its
     planes and before the heating is applied and the radiation integrals
     advance, so every reader of the planes and the integrals see the
-    updated values.
+    updated values.  ``world_sun`` is the runtime's world sun (None on
+    Earth): the current sun is the one the radiation calls run under
+    (:func:`current_sun`).
     """
     if mode == "hold":
         return
     xp = batch.xp
     arrays = persistent.arrays
     valid_time = start_time + timedelta(seconds=float(batch.time_s))
-    coszen_now = cosine_zenith(
+    coszen_now = current_sun(
         xp, batch.arrays["latitude_deg"], batch.arrays["longitude_deg"],
-        valid_time)
+        valid_time, world_sun=world_sun, start_time=start_time)
     swdown_ref = arrays["radbetween_swdown_ref"]
     coszen_ref = arrays["radbetween_coszen_ref"]
     gx = arrays["radbetween_gx"]
@@ -273,6 +297,7 @@ def apply(batch, persistent, *, mode: str, start_time, due: bool) -> None:
 
 __all__ = [
     "COSZEN_MIN", "DEFAULT_MODE", "MODES", "apply", "cosine_zenith",
+    "current_sun",
     "evaluate", "fit", "lit_ratio", "ratio_rule", "surface_arrays",
     "validate_mode", "volume_arrays",
 ]

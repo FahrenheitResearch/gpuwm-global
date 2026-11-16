@@ -52,7 +52,7 @@ Six pictures are in this folder; all 72 are in the evidence gallery under
 `<run stamp>/<domain>/<product>/<valid-day>/`, which is the layout the render
 door writes and nothing here rearranged.
 
-Eight products were asked for and all eight drew at every one of the nine
+Eight products were asked for and all eight rendered at every one of the nine
 forecast hours: `mslp_10m_winds`, `500mb_height_winds`, `2m_temperature`,
 `2m_dewpoint`, `850mb_temperature_height_winds`, `250mb_height_winds`,
 `precipitable_water`, `total_qpf`. The domain label the renderer stamps is
@@ -148,7 +148,7 @@ own orography.
 
 ### The reproducibility reading nobody asked for
 
-The mean sea level pressure picture this run drew at its step 0 is
+The mean sea level pressure picture this run rendered at its step 0 is
 **byte-identical** to `mslp-f000.png` above, `md5 b772960e…`. The two came
 from different runs on different days through different code: one exported by
 the forecast demo and drawn by the engine's render command, the other exported

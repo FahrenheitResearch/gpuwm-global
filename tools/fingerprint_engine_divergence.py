@@ -330,6 +330,12 @@ def hunks_for(carried_rel: str, engine_rel: str, root: Path) -> list[dict]:
 
 
 def measure() -> tuple[str, list[dict]]:
+    if not carve.PRIVATE_NAMES_LOADED:
+        # The carve's identity rules are applied to the engine side too, and
+        # without the private names they are empty, so every comment they
+        # rewrite would read as a difference that is not one.
+        raise SystemExit("fingerprint_engine_divergence: "
+                         + carve.PRIVATE_NAMES.SKIP_REASON)
     measured = engine_version()
     check_range(measured)
     root = engine_root()

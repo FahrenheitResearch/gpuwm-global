@@ -210,6 +210,7 @@ def departure_points(
     extrapolated: CartesianWind | None = None,
     window: BandWindow | None = None,
     defer_escape: bool = False,
+    solver: str = "fixed_point",
 ) -> tuple[Stencil, TrajectoryDiagnostics]:
     """Solve for the departure point of every arrival point of the grid.
 
@@ -259,12 +260,24 @@ def departure_points(
                     f"were built for {dtype}"
                 )
 
+    if solver not in TRAJECTORY_SOLVERS:
+        raise ValueError(
+            f"trajectory solver must be one of {TRAJECTORY_SOLVERS}, "
+            f"got {solver!r}")
+    newton = solver in ("newton", "newton_ls")
+    if newton and not _is_cupy(xp):
+        raise ValueError(
+            f"semilag.trajectory_solver = {solver!r} has a device kernel "
+            "only; the numpy path is the fixed-point specification")
     if _is_cupy(xp):
         from ._cuda import get_kernel
 
         band = "_band" if window is not None else ""
-        name = (f"sl_departure{band}_f32" if dtype == np.float32
-                else f"sl_departure{band}_f64")
+        stem = {"fixed_point": "sl_departure",
+                "newton": "sl_departure_newton",
+                "newton_ls": "sl_departure_newton_ls"}[solver]
+        name = (f"{stem}{band}_f32" if dtype == np.float32
+                else f"{stem}{band}_f64")
         kernel = get_kernel(name)
         xi = xp.empty(out_shape, dtype=dtype)
         phi = xp.empty(out_shape, dtype=dtype)
@@ -298,6 +311,11 @@ def departure_points(
                 np.int32(window.arrival.start), np.int32(window.lead),
                 window.escape,
             )
+        elif newton:
+            arguments = arguments + (
+                np.int32(0), np.int32(0), np.int32(0), np.int32(0),
+                xp.zeros(1, dtype=np.int32),
+            )
         kernel((blocks,), (threads,), arguments)
         if window is not None and not defer_escape:
             window.raise_if_escaped("departure-point search")
@@ -310,7 +328,113 @@ def departure_points(
     diagnostics = _trajectory_diagnostics(
         stencil, move_m, move_k, tables, dt_s, int(iterations)
     )
+    if _REPORT and _is_cupy(xp):
+        _report(wind, ex, tables, dt_s, int(iterations), solver, window,
+                stencil, move_m, move_k, diagnostics)
     return stencil, diagnostics
+
+
+#: The solvers of the departure-point equation.  "fixed_point" is the
+#: shipped pass and the default; "newton" solves the same equation through
+#: the same gather (kernels.cu, sl_departure_newton_body) and is opt-in;
+#: "newton_ls" is that Newton step globalized by a line search on the
+#: residual, its gate reading the Newton step at the returned point
+#: (kernels.cu, sl_departure_newton_ls_body): the form that converges at
+#: the 450-600 s steps where the other two stall.  Opt-in.
+TRAJECTORY_SOLVERS = ("fixed_point", "newton", "newton_ls")
+
+import os as _os
+import sys as _sys
+
+#: ARWEN_GLOBAL_TRAJECTORY_REPORT=<cells>: print where every search whose
+#: last move exceeded <cells> meridional lengths left its worst point, and
+#: ARWEN_GLOBAL_TRAJECTORY_REFERENCE=<n>: also its distance from an
+#: n-iteration Newton reference and an n-iteration fixed-point one.  A
+#: measuring instrument; it changes no result.
+_REPORT = float(_os.environ.get("ARWEN_GLOBAL_TRAJECTORY_REPORT", "0") or 0)
+_REFERENCE = int(_os.environ.get("ARWEN_GLOBAL_TRAJECTORY_REFERENCE", "0")
+                 or 0)
+
+
+def _report(wind, ex, tables, dt_s, iterations, solver, window, stencil,
+            move_m, move_k, diagnostics):
+    global _REPORT_BUSY
+    if diagnostics.move_max_cells <= _REPORT:
+        return
+    xp = tables.xp
+    nlat = tables.nlat
+    rows = slice(0, nlat) if window is None else window.arrival
+    cell = xp.asarray(meridional_grid_length_m(tables),
+                      dtype=move_m.dtype)[None, rows, None]
+    ratio = move_m / cell
+    flat = int(xp.argmax(ratio))
+    nlev, nrows, nlon = ratio.shape
+    k, j, i = flat // (nrows * nlon), (flat // nlon) % nrows, flat % nlon
+    jg = j + rows.start
+    lat = float(np.degrees(tables.lat_ext_host[jg + 2]))
+    lon = float(np.degrees(i * tables.dlam))
+    over = int(xp.count_nonzero(ratio > 0.01))
+    lj = j if window is None else j + window.lead
+    vx = float(wind.vx[k, lj, i]); vy = float(wind.vy[k, lj, i])
+    vz = float(wind.vz[k, lj, i]); s = float(wind.level_rate[k, lj, i])
+    speed = math.sqrt(vx * vx + vy * vy + vz * vz)
+    dk = float(stencil.level[k, j, i]) - k
+    line = (f"TRAJREPORT solver={solver} it={iterations} dt={dt_s:g} "
+            f"rows={rows.start}:{rows.stop} move_cells={diagnostics.move_max_cells:.4f} "
+            f"move_m={diagnostics.move_max_m:.1f} move_k_max={diagnostics.move_max_levels:.4f} "
+            f"over001={over} worst=(k={k},lat={lat:.3f},lon={lon:.3f}) "
+            f"speed={speed:.1f} level_rate={s:.3e} disp_k={dk:.3f} "
+            f"move_k_there={float(move_k[k, j, i]):.4f}")
+    if _REFERENCE > 0:
+        def _dist(a, b):
+            lat_a, lat_b = a.phi, b.phi
+            dl = 0.5 * (a.xi - b.xi) * tables.dlam
+            dp = 0.5 * (lat_a - lat_b)
+            hav = xp.sin(dp) ** 2 + xp.cos(lat_a) * xp.cos(lat_b) * xp.sin(dl) ** 2
+            return 2.0 * tables.radius_m * xp.arcsin(xp.sqrt(xp.clip(hav, 0.0, 1.0)))
+        if _REPORT_BUSY:
+            return
+        _REPORT_BUSY = True
+        try:
+            ref, ref_diag = departure_points(
+                wind, tables, dt_s, iterations=_REFERENCE,
+                extrapolated=ex, window=window, defer_escape=True,
+                solver="newton_ls")
+            line += (f" | ref=newton_ls{_REFERENCE} ref_move_cells="
+                     f"{ref_diag.move_max_cells:.2e}")
+            for cand, its in (("self", iterations), ("fixed_point", 3),
+                              ("fixed_point", 8), ("newton", 3),
+                              ("newton", 8), ("newton_ls", 3),
+                              ("newton_ls", 4), ("newton_ls", 8),
+                              ("fixed_point", _REFERENCE)):
+                if cand == "self":
+                    st, dg = stencil, diagnostics
+                else:
+                    st, dg = departure_points(
+                        wind, tables, dt_s, iterations=its, extrapolated=ex,
+                        window=window, defer_escape=True, solver=cand)
+                d = _dist(st, ref)
+                fl = int(xp.argmax(d))
+                kk, jj, ii = (fl // (nrows * nlon), (fl // nlon) % nrows,
+                              fl % nlon)
+                lat2 = float(np.degrees(tables.lat_ext_host[jj + rows.start + 2]))
+                lon2 = float(np.degrees(ii * tables.dlam))
+                n130 = int(xp.count_nonzero(d / cell > 0.01))
+                line += (f" | {cand}{its}: move_cells={dg.move_max_cells:.4f}"
+                         f" err_max_m={float(d.max()):.2f}"
+                         f" err_k_max={float(xp.max(xp.abs(st.level - ref.level))):.4f}"
+                         f" err_over_0.01cell={n130}"
+                         f" err_worst=(k={kk},lat={lat2:.2f},lon={lon2:.2f})")
+                del d
+                if cand != "self":
+                    del st
+            del ref
+        finally:
+            _REPORT_BUSY = False
+    print(line, file=_sys.stderr, flush=True)
+
+
+_REPORT_BUSY = False
 
 
 def _trajectory_diagnostics(
@@ -736,6 +860,10 @@ class LipschitzDiagnostics:
     #: the search reads at the DEPARTURE point: zero is a search with no
     #: unique solution
     fold_determinant_departure: float = 1.0
+    #: where each minimum sits (level, latitude, longitude), for the
+    #: refusal message only: not in as_dict, so no receipt changes
+    fold_where_arrival: str = ""
+    fold_where_departure: str = ""
 
     @property
     def fold_determinant(self) -> float:
@@ -1146,7 +1274,9 @@ def lipschitz(
               _d_dk(xp, _own(xp, rate[lo:hi], own))[take])
         return dvdx, dvdy, dvdk, ds
 
-    def fold(dvdx, dvdy, dvdk, ds, c):
+    where = {"departure": (2.0, ""), "arrival": (2.0, "")}
+
+    def fold(dvdx, dvdy, dvdk, ds, c, side=None, start=0):
         c = dtype.type(c)
         if fused_norms:
             det = _fold_kernel(xp)(
@@ -1160,6 +1290,16 @@ def lipschitz(
             det = _fold_reference(
                 xp, (dvdx, dvdy, dvdk), ds, sph, cph, sla, cla, c)
         out = float(xp.min(det))
+        if side is not None and out < where[side][0]:
+            # where the minimum sits: a measuring instrument for the
+            # refusal message, it changes no number the gate reads
+            flat = int(xp.argmin(det))
+            _, nr, nl = det.shape
+            kk, jj, ii = flat // (nr * nl), (flat // nl) % nr, flat % nl
+            lat_d = float(np.degrees(tables.lat_ext_host[jj + rows.start + 2]))
+            lon_d = float(np.degrees(ii * tables.dlam))
+            where[side] = (out, f"level {kk + start}, lat {lat_d:.2f}, "
+                                f"lon {lon_d:.2f}")
         del det
         return out
 
@@ -1193,9 +1333,11 @@ def lipschitz(
         # The departure side reads the current wind wherever the search
         # puts the departure point, so the minimum over every grid point
         # bounds it whichever point that is.
-        departure = min(departure, fold(dvdx, dvdy, dvdk, ds, +half))
+        departure = min(departure, fold(dvdx, dvdy, dvdk, ds, +half,
+                                        "departure", start))
         if extrapolated is None:
-            arrival = min(arrival, fold(dvdx, dvdy, dvdk, ds, -half))
+            arrival = min(arrival, fold(dvdx, dvdy, dvdk, ds, -half,
+                                        "arrival", start))
             del dvdx, dvdy, dvdk, ds
         else:
             # One chunk's derivatives at a time, so the peak is the one
@@ -1205,7 +1347,8 @@ def lipschitz(
             dvdx, dvdy, dvdk, ds = derivatives(
                 extrapolated, start, stop,
                 None if window is None else extrapolated_window)
-            arrival = min(arrival, fold(dvdx, dvdy, dvdk, ds, -half))
+            arrival = min(arrival, fold(dvdx, dvdy, dvdk, ds, -half,
+                                        "arrival", start))
             del dvdx, dvdy, dvdk, ds
 
     dt = float(dt_s)
@@ -1226,6 +1369,8 @@ def lipschitz(
         jacobian_balanced_s=bm,
         fold_determinant_arrival=arrival,
         fold_determinant_departure=departure,
+        fold_where_arrival=where["arrival"][1],
+        fold_where_departure=where["departure"][1],
     )
 
 
@@ -1266,6 +1411,7 @@ def converged_departure_points(
     extrapolated: CartesianWind | None = None,
     window: BandWindow | None = None,
     defer_escape: bool = False,
+    solver: str = "fixed_point",
 ) -> tuple[Stencil, TrajectoryDiagnostics]:
     """The departure points, converged or refused.
 
@@ -1282,6 +1428,7 @@ def converged_departure_points(
     stencil, diagnostics = departure_points(
         wind, tables, dt_s, iterations=int(iterations),
         extrapolated=extrapolated, window=window, defer_escape=defer_escape,
+        solver=solver,
     )
     if (diagnostics.move_max_cells > float(limit_cells)
             and int(iterations) < MAXIMUM_TRAJECTORY_ITERATIONS):
@@ -1289,7 +1436,7 @@ def converged_departure_points(
         stencil, diagnostics = departure_points(
             wind, tables, dt_s, iterations=MAXIMUM_TRAJECTORY_ITERATIONS,
             extrapolated=extrapolated, window=window,
-            defer_escape=defer_escape,
+            defer_escape=defer_escape, solver=solver,
         )
     convergence(diagnostics, limit_cells)
     return stencil, diagnostics
@@ -1339,7 +1486,9 @@ def refuse_trajectory_fold(
             f"arrival side and det(I + (dt/2) J) "
             f"{diagnostics.fold_determinant_departure:.4f} on the departure "
             f"side at dt = {diagnostics.dt_s:g} s, against a floor of "
-            f"{floor:.4f} (binding: {diagnostics.fold_side}); at zero two "
+            f"{floor:.4f} (binding: {diagnostics.fold_side}, at "
+            f"{diagnostics.fold_where_departure if diagnostics.fold_side == 'departure' else diagnostics.fold_where_arrival}"
+            "); at zero two "
             "arrival points share a departure point and the interpolation "
             "samples a folded field, which mislocates the flow silently.  "
             f"The deformation norms, reported and not gated, read "

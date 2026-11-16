@@ -25,19 +25,22 @@ def cupy():
 
 
 def _specification(xp, arrays):
-    moist = 1.0 + xp.asarray(arrays["qv"], dtype=xp.float64)
+    # NativeColumnBatch.atmospheric_water_kg_m2's numpy branch: species
+    # summed in WATER_SPECIES order, times the inbound dry fraction, times
+    # dp, over g (fix/water-divisor).
     total = 0
     for name in WATER_SPECIES:
-        total = total + xp.asarray(arrays[name], dtype=xp.float64) / moist
+        total = total + xp.asarray(arrays[name], dtype=xp.float64)
+    dry = xp.asarray(arrays["dry"], dtype=xp.float64)
     dp = xp.asarray(arrays["dp"], dtype=xp.float64)
-    return (total * dp / GRAVITY_M_S2).sum(axis=0)
+    return (total * dry * dp / GRAVITY_M_S2).sum(axis=0)
 
 
 def _fused(xp, arrays):
     out = xp.empty(arrays["dp"].shape, dtype=xp.float64)
     _column_water_kernel(xp)(
         arrays["qv"], arrays["qc"], arrays["qr"], arrays["qi"], arrays["qs"],
-        arrays["qg"], arrays["dp"], float(GRAVITY_M_S2), out,
+        arrays["qg"], arrays["dry"], arrays["dp"], float(GRAVITY_M_S2), out,
     )
     return out.sum(axis=0)
 
@@ -63,6 +66,8 @@ def test_column_water_kernel_matches_the_specification_bits(cupy, family, seed):
                 k, j, i = rng.integers(shape[0]), rng.integers(shape[1]), rng.integers(shape[2])
                 host[name][k, j, i] = np.float32(rng.random() * 5.0e-2)
     host["dp"] = (500.0 + 5000.0 * rng.random(shape)).astype(np.float32)
+    # The inbound dry fraction of a vapour field the kernel has since moved.
+    host["dry"] = (np.float32(1.0) - (rng.random(shape) * 3.0e-2).astype(np.float32))
     arrays = {name: cp.asarray(value) for name, value in host.items()}
     spec = _specification(cp, arrays)
     fused = _fused(cp, arrays)

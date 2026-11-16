@@ -100,19 +100,23 @@ The Gaussian grid a truncation implies is arithmetic, not a table:
 | T63 | 192 x 96 | 208.5 km | 630.4 km |
 | T255 | 768 x 384 | 52.1 km | 156.7 km |
 | T533 | 1602 x 801 | 25.0 km | 75.0 km |
+| T1023 | 3072 x 1536 | 13.0 km | 39.1 km |
 
 Spacing is `2 pi a / nlon` at `a = 6371.22 km`. The truncation wavelength
 is the isotropic convention `2 pi a / sqrt(n(n+1))` at `n = T`, which is
 the convention the instrument in
 [docs/arwen-global-effective-resolution.md](arwen-global-effective-resolution.md)
 reads spectra under; the T63 and T533 entries are quoted from it, and the
-T255 entry is the same formula at T = 255. Nothing on this page is quoted
+T255 and T1023 entries are the same formula at T = 255 and 1023. Nothing on this page is quoted
 in multiples of grid spacing. Where that document recomputes a superseded
 reading it uses the plainer isotropic `2 pi a / T`, which is 0.8 % longer
 at T63 and 0.09 % longer at T533; the one place this page quotes such a
 figure says so.
 
-T533 is the finest rung the model has run, and since 2026-09-06 the door
+T1023 is the finest rung the model has run: since 0.2.5 the shipped
+`arwen_global_gdas_t1023_native_sl_si_24h` runs its day on one 96 GB card
+at one latitude band with nothing parked (9.57 s a step on an RTX PRO 6000
+Blackwell; the config header has the measurement). Since 2026-09-06 the door
 sizes each rung against the card in front of it rather than refusing what
 does not fit resident: T383 runs on a 16 GB card and T533 on a 32 GB one,
 with nothing set (see Sizing). Vertically, the default is a
@@ -422,7 +426,10 @@ forecast it ran before under the config hash it had.
   reading in all four cases; 850 hPa temperature at 24 h and the tropics
   at 48 h were slightly worse. The CHANGELOG's 0.1.8 section has the
   numbers and [ARWEN_GLOBAL_FULL.md](ARWEN_GLOBAL_FULL.md) has the scheme.
-  Since 0.2.1 it runs on one card at any latitude-band count.
+  Since 0.2.1 it runs on one card at any latitude-band count, and since
+  0.2.5 on several cards too (each card takes its neighbours' rows of the
+  previous time level once a step; two cards return the one-card run bit
+  for bit).
 - `[semilag] extrapolation = "settls_residual_departure"` (experimental,
   0.2.1) takes only the residual half of that form and keeps the shipped
   trajectory. It removes the jet ripples the shipped form leaves at T383
@@ -430,7 +437,17 @@ forecast it ran before under the config hash it had.
   [ARWEN_GLOBAL_FULL.md](ARWEN_GLOBAL_FULL.md) defines) and costs skill
   there: over four 48 h T383 forecasts the northern-hemisphere 500 hPa
   height RMSE was 21.20 m against 20.38 m. At T255 it is neutral. The
-  default stays `settls`; the CHANGELOG's 0.2.1 section has the numbers.
+  option's default stays `settls`; the CHANGELOG's 0.2.1 section has the
+  numbers. Since 0.2.5 the shipped semi-Lagrangian configs from T383 up
+  state the full departure form, `settls_departure`: on four 120 h T383
+  forecasts it took the jet noise from about 1.0 to 0.2 m/s and the
+  tripwire fires from 9 to 0, with Z500 better or level (CHANGELOG 0.2.5).
+- `[semilag] trajectory_solver = "newton"` (opt-in, 0.2.5, device only,
+  absent from the identity at its default `"fixed_point"`) solves the
+  departure-point equation with the interpolant's own Jacobian, where the
+  shipped fixed-point pass can stall under rotation or strong vertical
+  shear ([ARWEN_GLOBAL_FULL.md](ARWEN_GLOBAL_FULL.md)). The T1023 day sets
+  it; it was not compared with the fixed-point pass there.
 
 Nothing in `[insitu]` enters the config hash.
 `tests/test_arwen_global_insitu_cadence_seconds.py` and
@@ -567,6 +584,35 @@ Model terrain is the spectrally resolved version of the analysis orography
 and surface pressure moves hypsometrically onto it, so the lowest layers
 stay hydrostatically consistent with the smoothed mountains.
 
+An experimental, off-by-default key filters that terrain further:
+`[initial] orography_filter_half_degree = n0` multiplies its spectral
+coefficients by `exp(-ln2 (n(n+1)/(n0(n0+1)))^2)` (half amplitude at total
+degree n0, degree 0 kept) before the surface pressure moves onto it, and
+the statics carry the filtered terrain. `0.0`, the default, is the
+unfiltered path above and leaves the config hash as it was; any other value
+must lie in `0 < n0 <= truncation`, joins the hash, and is named in the
+receipt's `initial.provenance.orography_filter`. Only an analysis start
+reads it; the analytic modes refuse the key.
+
+The semi-Lagrangian T533, T799 and T1023 days set it, at `350.0` each (the
+T533 configs on other cores, untested, do not). On the T1023 day
+(`arwen_global_gdas_t1023_native_sl_si_24h`), unfiltered, the
+GDAS 0.25 degree terrain puts a ripple on the 500 hPa height over the
+western mountains at that truncation. On 12 h T1023 runs from GDAS
+2026-11-15 06Z, the West box's (35-48N 125-105W) Z500 second-difference
+roughness against GFS's (sampled onto the GFS grid; identical fields read
+about 0.76) went from 3.62 / 2.98 at 9 h and 4.21 / 3.90 at 15 h
+(east-west / north-south) to 1.22 / 0.96 at 12 h, and the 10 m wind's from
+1.67 / 1.50 and 1.17 / 1.18 to 0.89 / 0.67. The cost is the highest
+terrain in NV/UT/ID (37-45N 120-110W), 3170 m down to 2901 m. Every other
+shipped config leaves the key at its default, so no other hash moved; each
+of the four with `orography_filter_half_degree = 0.0` is back to its hash
+before the default (`tests/test_arwen_global_orography_filter_defaults.py`).
+At T799 the same key brought that ratio to 1.12 / 0.86 at 12 h and
+1.31 / 1.10 at 24 h; at T533 from 1.91 / 1.66 to 0.98 / 0.74 at 12 h, for
+0.1 K colder West land 2 m temperature and 10-14 % less 0-12 h rain over
+the Andes and the Himalaya (CHANGELOG 0.2.5). Nothing below T533 sets it.
+
 Model levels above the analysis top (every level above 10 hPa on the IFS
 open-data start under the 1 hPa lid) take the analysis top temperature
 plus the ICAO standard atmosphere's change from the top pressure to the
@@ -668,13 +714,20 @@ joining the config hash only when set) are
 run's excess of reflected sunlight over the tropical ocean from +30.1 to
 +7.9 W/m2 against CERES, in one case. A 30-day December run vented the
 trades too, but darkened the Peru deck from +8.5 to -28.8 W/m2.
-[trade-shallow.md](trade-shallow.md) has the cause and the runs. Two more
-on its deep arm (0.2.4, experimental, off by default, not recommended):
-`gf_momentum_transport` couples the deep arm's momentum transport as WRF
-does, and `gf_deep_experiment` (2, 3 or 4) moves where the deep mass flux
-peaks, which lifts the tropical cloud tops and removes the 300-200 hPa cold
-bias at 24 h but doubles the scheme's tropical rain and warms 700-500 hPa
-(the changelog has the numbers). At the surface, 0.2.4 adds
+[trade-shallow.md](trade-shallow.md) has the cause and the runs. Since
+0.2.5 the deep arm runs the default D: `gf_deep_experiment = 7` (every WRF
+formula that reads the convective memory csum at csum = 39, where WRF's
+own lev_start reaches its 0.9 cap), `gf_deep_physics = 34` (two UFS CCPP
+pieces: the cloud-depth beta and the moisture-convergence closure members
+without WRF's divisor) and `gf_momentum_transport = true` (the deep arm's
+momentum transport, coupled as WRF couples it). Over 16 autumn and 16
+summer T255 starts to 120 h it improved 24 h scores in every region and
+tropical 250 hPa wind, sea-level pressure and rain beyond, at the cost of
+more negative tropical mean height and pressure biases (the changelog's
+0.2.5 section has the numbers). Stating 0, 0 and false brings back 0.2.4's
+Grell-Freitas and its config hashes. The other deep placements
+(`gf_deep_experiment` 2 to 6 and 8) and the other `gf_deep_physics` bits stay
+experimental and not recommended. At the surface, 0.2.4 adds
 `sfclay_ocean_roughness = "coare35"`, the COARE 3.5 open-water Charnock, and
 two Noah snow albedo options, `snow_fresh_albedo = "masked"` and
 `snow_thaw_albedo` ([ARWEN_GLOBAL_LEVEL5.md](ARWEN_GLOBAL_LEVEL5.md)); all
@@ -1501,7 +1554,12 @@ hold. The refusal names the ceiling, the run that died, and the one thing
 that lifts it: a ten-step probe of the shape at the recipe above, added to
 `DEVICE_PEAK_CALIBRATION` as a row. `run-plan --estimate` still prices the
 shape and carries the whole itemization; what is refused is starting a
-forecast on a number nothing has weighed.
+forecast on a number nothing has weighed. Since 0.2.5 two completed-plan
+rows measured on a 96 GB RTX PRO 6000 lift the refusal for exactly the
+plans that ran: T799 L40 at one band and the shipped gather batch, and
+T1023 L40 at one band with `[semilag] gather_batch = 1` (the shipped T1023
+day sets it). A row measured at a smaller gather batch never prices a run
+at a larger one, and every other shape above T383 is still refused.
 
 The term that decides everything below that is the Legendre tables: **cubic
 in truncation, and carrying no vertical levels at all**, so trimming

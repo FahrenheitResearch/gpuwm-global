@@ -64,6 +64,7 @@ include RELEASE-NOTES-0.2.1.md
 include RELEASE-NOTES-0.2.2.md
 include RELEASE-NOTES-0.2.3.md
 include RELEASE-NOTES-0.2.4.md
+include RELEASE-NOTES-0.2.5.md
 # Which revision of the model's source this package carries.  A reader
 # of an sdist has the code and no way to place it without this.
 include SOURCE.md
@@ -80,6 +81,10 @@ prune **/__pycache__
 # it, and neither helps anybody install or run this software.
 prune out
 prune runs
+
+# The private names file the provenance gates read (tools/private_names.py) is
+# never packaged, even when it sits in the tree a build is run from.
+exclude .private-names.json
 global-exclude *.npz
 global-exclude *.nc
 

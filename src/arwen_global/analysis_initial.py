@@ -23,6 +23,7 @@ from typing import NamedTuple
 
 import numpy as np
 
+from arwen_global.spectral.orography_filter import filter_orography_coefficients
 from arwen_global.spectral.vector import VorticityDivergenceOperator
 
 from .constants import GRAVITY_M_S2, KAPPA, REFERENCE_PRESSURE_PA
@@ -348,6 +349,16 @@ class CompositeFrame:
         self.fill = fill
         for name in ("mapping_sha256", "input_sha256", "source_cycle", "valid_time"):
             setattr(self, name, getattr(primary, name, None))
+        # What the snow product says of its own pack travels with the snow
+        # group: when the primary's snow is used, its bare sea ice
+        # (era5_analysis.Era5Frame: ERA5 carries no snow on its sea-ice
+        # points) stays true of the composite, so the seeding does not lay
+        # the primary's land snow onto the ice.  Snow taken from the fill
+        # states nothing and is read as GDAS is; a frame that does not say
+        # (GDAS) adds nothing.
+        if fill.get("groups", {}).get("snow", {}).get("source") == "primary":
+            if hasattr(primary, "snow_on_sea_ice"):
+                self.snow_on_sea_ice = primary.snow_on_sea_ice
 
 
 class _TargetGrid:
@@ -519,6 +530,77 @@ def open_water_skin_temperature(skin_src, land_src, regrid, open_water, *,
         ],
     }
     return skin, record
+
+
+def _unit_vectors(latitude_deg, longitude_deg):
+    lat, lon = np.broadcast_arrays(
+        np.deg2rad(np.asarray(latitude_deg, dtype=np.float64)),
+        np.deg2rad(np.asarray(longitude_deg, dtype=np.float64)))
+    return np.stack([np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon),
+                     np.sin(lat)], axis=-1)
+
+
+def land_only_regrid(values_src, land_src, regrid, target_land, *,
+                     source_latitude_deg, source_longitude_deg,
+                     target_latitude_deg, target_longitude_deg):
+    """A land field (soil temperature, soil water, the land skin) on the
+    run's land columns from the analysis's OWN land points only.
+
+    WPS reads these over the analysis land-sea mask (METGRID.TBL.ARW:
+    ST*/SM* masked=water, interp_mask=LANDSEA(0); SKINTEMP masked=both):
+    the bilinear weights renormalised over the stencil's land points,
+    ``regrid(where(land, v, 0)) / regrid(land)`` with ``land`` the source
+    points of ``land_src >= 0.5`` where the value is finite (GDAS TSOIL is
+    finite over sea ice, so the bitmap alone is not the land).  A target
+    land column whose stencil holds no analysis land reads the nearest
+    analysis land point (great-circle distance), metgrid's search for a
+    point with no valid source in reach.  ``values_src`` is one plane or a
+    layer stack on the source axes; ``target_land`` (the run's land
+    columns) is one plane on the target axes.
+
+    Returns ``(plane, weight, searched, unreached)``: the land-only value
+    on the target land columns that have one and NaN everywhere else; the
+    regridded land weight; the target land columns that had no analysis
+    land in their stencil; and those of them the search could not fill (a
+    layer with no analysis land at all).
+    """
+    values = np.asarray(values_src, dtype=np.float64)
+    land = (np.asarray(land_src, dtype=np.float64) >= 0.5) & np.isfinite(values)
+    weight = regrid(land.astype(np.float64))
+    target = np.broadcast_to(np.asarray(target_land, dtype=bool), weight.shape)
+    total = regrid(np.where(land, values, 0.0))
+    has_land = weight > 0.0
+    plane = np.where(target & has_land,
+                     total / np.where(has_land, weight, 1.0), np.nan)
+    need = target & ~has_land
+    searched = need.copy()
+    if need.any():
+        source_lat = np.asarray(source_latitude_deg, dtype=np.float64)
+        source_lon = np.asarray(source_longitude_deg, dtype=np.float64)
+        source_xyz = _unit_vectors(source_lat[:, None], source_lon[None, :])
+        target_xyz = _unit_vectors(
+            np.asarray(target_latitude_deg, dtype=np.float64)[:, None],
+            np.asarray(target_longitude_deg, dtype=np.float64)[None, :])
+        stack = values.reshape((-1,) + values.shape[-2:])
+        land_stack = land.reshape(stack.shape)
+        need_stack = need.reshape((-1,) + need.shape[-2:])
+        plane_stack = plane.reshape(need_stack.shape)
+        for layer in range(stack.shape[0]):
+            rows, cols = np.nonzero(need_stack[layer])
+            points = land_stack[layer]
+            if rows.size == 0 or not points.any():
+                continue
+            candidates = source_xyz[points]
+            candidate_values = stack[layer][points]
+            for start in range(0, rows.size, 32):
+                chunk = target_xyz[rows[start:start + 32], cols[start:start + 32]]
+                nearest = np.argmax(chunk @ candidates.T, axis=1)
+                plane_stack[layer, rows[start:start + 32], cols[start:start + 32]] = (
+                    candidate_values[nearest])
+                need_stack[layer, rows[start:start + 32], cols[start:start + 32]] = False
+        plane = plane_stack.reshape(plane.shape)
+        need = need_stack.reshape(need.shape)
+    return plane, weight, searched, need
 
 
 def _grow_over_primary_land(values: np.ndarray, land: np.ndarray, passes: int):
@@ -1321,9 +1403,15 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
     # surface_virtual_temperature for why the bottom source level is not
     # that air).
     phi_src = GRAVITY_M_S2 * terrain_src
-    phi_model = transform.backend.to_numpy(
-        transform.inverse(transform.forward(phi_src))
-    )
+    # [initial] orography_filter_half_degree (experimental, 0 = off): an
+    # isotropic spectral filter on the resolved terrain, half amplitude at
+    # degree n0, degree 0 kept (spectral.orography_filter).  The filtered
+    # terrain is the one the surface pressure moves onto and the statics
+    # carry; off returns the coefficients untouched.
+    orography_n0 = float(getattr(cfg, "orography_filter_half_degree", 0.0) or 0.0)
+    phi_spec = filter_orography_coefficients(
+        transform.forward(phi_src), transform, orography_n0)
+    phi_model = transform.backend.to_numpy(transform.inverse(phi_spec))
     ln_source = np.log(levels)
     virtual_surface = surface_virtual_temperature(
         temperature_src, humidity_src, ln_source, ps_src
@@ -1391,18 +1479,65 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
     soil_moisture_src = np.asarray(frame.fields["volumetric_soil_moisture"].values)
     if soil_temperature_src.ndim != 3 or soil_moisture_src.ndim != 3:
         raise ValueError("analysis soil fields must carry a layer dimension")
-    # GRIB soil fields are masked over water.  The fill happens in SOURCE
-    # space, before regridding, because bilinear weights would otherwise
-    # bleed NaN one cell inland along every coastline.
+    # The run's land columns, on the split the statics will hold the land
+    # fraction to (the crate's land mask for real statics, the regridded
+    # analysis mask for the synthetic planet), so the seeding's open-water
+    # test below and the land-only reads here name the same columns.
+    if cfg.statics.source == "real":
+        seeding_land_fraction = np.asarray(statics[0]["LANDMASK"], dtype=np.float64)
+    else:
+        seeding_land_fraction = land_fraction
+    target_land = seeding_land_fraction >= 0.5
+    # GRIB soil fields are masked over water.  The plain fill (skin over
+    # water, 0.25 soil water) stays on the water columns, where Noah never
+    # integrates the soil; a LAND column reads the analysis's own land
+    # points only (land_only_regrid, metgrid's masked=water), so a coastal
+    # column's soil is not blended with the sea surface temperature.
     skin_src = np.asarray(frame.fields["skin_temperature"].values)
-    soil_temperature_src = np.where(
+    land_src = frame.fields["land_fraction"].values
+    soil_temperature = regrid(np.where(
         np.isfinite(soil_temperature_src), soil_temperature_src, skin_src[None]
-    )
-    soil_moisture_src = np.where(
+    ))
+    soil_moisture = regrid(np.where(
         np.isfinite(soil_moisture_src), soil_moisture_src, 0.25
-    )
-    soil_temperature = regrid(soil_temperature_src)
-    soil_moisture = np.clip(regrid(soil_moisture_src), 0.0, 1.0)
+    ))
+    coastal_record = {
+        "rule": (
+            "land columns take soil temperature, soil water and skin "
+            "temperature over the analysis's own land points only "
+            "(land_fraction >= 0.5 and finite): bilinear weights "
+            "renormalised over the stencil's land points, and a stencil "
+            "with none reads the nearest analysis land point; water "
+            "columns keep the plain fill"
+        ),
+        "land_columns": int(np.count_nonzero(target_land)),
+    }
+    for name, plain, source in (
+            ("soil_temperature", soil_temperature, soil_temperature_src),
+            ("volumetric_soil_moisture", soil_moisture, soil_moisture_src),
+            ("skin_temperature", skin_temperature, skin_src)):
+        land_value, weight, searched, unreached = land_only_regrid(
+            source, land_src, regrid, target_land,
+            source_latitude_deg=frame.latitude, source_longitude_deg=frame.longitude,
+            target_latitude_deg=grid.latitude_deg, target_longitude_deg=grid.longitude_deg)
+        use = np.isfinite(land_value)
+        fixed = np.where(use, land_value, plain)
+        change = np.where(use, fixed - plain, 0.0)
+        coastal_record[name] = {
+            "stencil_with_analysis_water": int(np.count_nonzero(
+                use & (weight < 1.0 - 1.0e-12) & ~searched)),
+            "searched": int(np.count_nonzero(searched)),
+            "unreached_kept_plain_fill": int(np.count_nonzero(unreached)),
+            "largest_decrease": float(-min(0.0, float(change.min()))),
+            "largest_increase": float(max(0.0, float(change.max()))),
+        }
+        if name == "soil_temperature":
+            soil_temperature = fixed
+        elif name == "volumetric_soil_moisture":
+            soil_moisture = fixed
+        else:
+            skin_temperature = fixed
+    soil_moisture = np.clip(soil_moisture, 0.0, 1.0)
 
     # The source's soil layers reach Noah by DEPTH, not by position (GI-7):
     # each Noah layer is the depth-overlap mean of the source layers, the
@@ -1436,18 +1571,16 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
     # missing field refused by name).  The statics rulebook below puts
     # the ice class on the frozen columns and the snow-covered albedo on
     # the snowy land; Noah's store starts from the seeded snow.
-    if cfg.statics.source == "real":
-        # The crate's land mask is the split the resolved land fraction
-        # is held to (statics.consistent_land_fraction), so the seeding's
-        # open-water test names the same columns the runtime will.
-        seeding_land_fraction = np.asarray(statics[0]["LANDMASK"], dtype=np.float64)
-    else:
-        seeding_land_fraction = land_fraction
-    seeded = seed_surface_from_analysis(
+    # seeding_land_fraction (above): the crate's land mask is the split the
+    # resolved land fraction is held to (statics.consistent_land_fraction),
+    # so the seeding's open-water test names the same columns the runtime
+    # will.
+    seeded =seed_surface_from_analysis(
         frame, regrid, target_land_fraction=seeding_land_fraction,
         # ERA5 has no snow on its sea-ice points (era5_analysis.Era5Frame
         # says so); every other frame is read as GDAS is.
         snow_on_sea_ice=getattr(frame, "snow_on_sea_ice", True),
+        snow_density_floor=getattr(cfg, "analysis_snow_density", "analysis") == "wrf-floor",
     )
     # The frozen columns' heat conduction column (physics/frozen_surface)
     # lives in the four soil-temperature layers.  A sea-ice column starts
@@ -1540,6 +1673,9 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
         run_open_water,
         latitude_deg=grid.latitude_deg, longitude_deg=grid.longitude_deg,
     )
+    # Every other column starts from the cold start's own skin: the plain
+    # regrid on sea ice, the analysis's land points only on land.
+    open_water_skin = np.where(run_open_water, open_water_skin, skin_temperature)
     # Worlds (package 2.2): the world's sea temperature on the open-water
     # sea columns (inland lakes keep their own skin), after the cold start
     # has formed the analysis's own.  No world code runs on Earth or on a
@@ -1652,9 +1788,17 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
         "fill": _json_safe(getattr(frame, "fill", None)),
         "soil_water_floor": _json_safe(soil_water_floor),
         "open_water_skin": _json_safe(open_water_skin_record),
+        "coastal_land_surface": _json_safe(coastal_record),
         "soil_layers": _json_safe(soil_layers),
         "era5_completion": _json_safe(era5_completion),
     }
+    if orography_n0 > 0.0:
+        # Only a filtered start carries it: an unfiltered provenance has
+        # the key set it had before the option existed.
+        provenance["orography_filter"] = {
+            "half_degree": orography_n0,
+            "factor": "exp(-ln2*(n(n+1)/(n0(n0+1)))^2), degree 0 kept",
+        }
     if world_provenance is not None:
         # Absent for Earth: an Earth provenance has the key set it had
         # before worlds existed.

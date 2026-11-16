@@ -1,0 +1,43 @@
+{
+  "_what": "Config hashes before the Grell-Freitas default D (0.2.5): every shipped config that runs GF, with 0.2.4 hashes; the T1023 day is new in 0.2.5 and carries its hash before the flip.",
+  "hashes_0_2_4": {
+    "arwen_global_gdas_t127_native_sl_si_24h": "0b47bfd89e77ea70ca8a0700c986d93ee749cc0acf2030671e914f7bebbaa47b",
+    "arwen_global_gdas_t255_jet48_24h": "220778899653f3ce622f239e2ffb61a003acc854dd4038779eff9a188189c5e7",
+    "arwen_global_gdas_t255_native_24h": "8725961055eb61477f77dc6844ea26dd9bb864145a4c8e56efcc12dbd32f62e9",
+    "arwen_global_gdas_t255_native_24h_bare": "fc7ff1d5a8b9e7673e021eafd80ae358da61efe110a04dd004cae78ddc9372be",
+    "arwen_global_gdas_t255_native_closure_24h": "6a51bb72e5dae0bcd9bbdf3c4a505be8db1302e80113ebe9ba154975a316f080",
+    "arwen_global_gdas_t255_native_imex_24h": "dac0455626f723edec5e1a591aa9d6a3f6ef223ff73bbec946961170ddc9cf3a",
+    "arwen_global_gdas_t255_native_imex_24h_dt120": "5a44c479357f0ee0b0fc58d6ab71c9f847e2f0e9bf276ab3218250056b15af7b",
+    "arwen_global_gdas_t255_native_imex_24h_dt135": "63b31f6e6113f47468057129c28f30b8f9e24e40200de4b485f1aabc41b9c019",
+    "arwen_global_gdas_t255_native_imex_wall": "5706a4a4146977485635a16d8cd3ed952963a4e8d5d89ae63b09fb7e3d759753",
+    "arwen_global_gdas_t255_native_sl_si_24h": "7b140980a546263ea2be34cc145e0dedb68e16327898bff137debb3c87579713",
+    "arwen_global_gdas_t255_native_sl_si_24h_alpha050": "723d167dc347e335fa8de0ec9743379e16344b6247b88ce633129c3f075d4aaa",
+    "arwen_global_gdas_t255_native_sl_si_24h_alpha053": "c8e39f61633adcdda2a11f44a2705023f6c5dfa5d1ad6a3e93901ef425a96f92",
+    "arwen_global_gdas_t255_native_sl_si_24h_alpha060": "1823f34ad2a43b9572048b7b843eb3db0aad2a208f98595448cae9944c7696f4",
+    "arwen_global_gdas_t255_native_sl_si_24h_dt100": "ff5caaef1f329fad597a82df1013f9309a9f9b3c4ab55a2a2b93aee9394280c8",
+    "arwen_global_gdas_t255_native_sl_si_24h_dt200": "9b393eddc585770f063132892e2fd80abbd0e9f343bebecf40bc406071a06ce2",
+    "arwen_global_gdas_t255_native_sl_si_24h_dt450": "f49d01d2cca89b3e636641d0eddc4d9cb6a89b2f6b5e023ad9a21c67987193eb",
+    "arwen_global_gdas_t255_native_sl_si_24h_dt600": "0eac56ab9bc041411c24ac3be8781a1174771e4e2fc36fd42ee1dae79ae330b6",
+    "arwen_global_gdas_t255_native_sl_si_24h_fluxform": "43936c7443aebe67f034bfa78149ce6385a834461381a028516be1fa5cc4e5bf",
+    "arwen_global_gdas_t255_native_sl_si_6h": "fd55961fcf7ef441ab3d86ee12621e7f2ca0369c2471156db587b7f5777cfea4",
+    "arwen_global_gdas_t255_native_sl_si_6h_unclipped": "f4023374877affde91fa18c7f888fb635433bb7c273da6b89efeb734ea93c6b9",
+    "arwen_global_gdas_t255_native_sl_si_wall": "55344c0f6b8ee19c4c139c20c957bc0abbcf70b5198e8c5b36fad6195cca40de",
+    "arwen_global_gdas_t383_native_24h": "6f32b3255085ce4e93fd95abe35de0fd15026a364de7694cceba8c8a3bba357a",
+    "arwen_global_gdas_t383_native_imex_24h": "243cbf95d945a971f362b045fd56d6bf997d1f94d0335b5f1afee0565221fb5e",
+    "arwen_global_gdas_t383_native_imex_24h_dt80": "69f00ab2c7ce238c6378185483ecad2c60ff75c8881600c94dc937c712af6e86",
+    "arwen_global_gdas_t383_native_sl_si_24h": "0b7d0643f1d964b2237180c9403409450e7ae8bc2d5c2d6b34824dee18941579",
+    "arwen_global_gdas_t383_native_sl_si_wall": "393801d1727905445b808365ef2eaf44819e153dc88959b9b688aac6a3e10ec6",
+    "arwen_global_gdas_t533_native_24h": "1f85e23806a5410e76a9f414f227343236b394856cb80200d0b80aa92f79fd60",
+    "arwen_global_gdas_t533_native_imex_24h": "7e53869d4aa2fd04d8b7b4de87251761e2dd29ca4f87b0224c2bb9e95d597030",
+    "arwen_global_gdas_t533_native_sl_si_24h": "b287fdb4b6715535b19d0e6ac23c6d3992ae35bbfc8b0e75c5ba9dcf071219fe",
+    "arwen_global_gdas_t533_native_sl_si_wall": "4c9e2321a34f3b79376e1969e21ad4c9c473ec176209b1117693c6c40d8605bd",
+    "arwen_global_gdas_t63_native_sl_si_24h": "6f0648535b842c81a411fc690ed04d55e41cbcf2fefb37299ae10586670ab07a",
+    "arwen_global_gdas_t799_native_sl_si_wall": "07703038a907051bb83f1ed9814f528c8d19b332310002975d9bed6fb2f8f4de",
+    "arwen_global_level5_native_smoke": "7f15bc38ee586f6ace2b8edf4c5900375679ddd723ca0bcecc351bbbce27801d",
+    "arwen_global_world_t255_no_mountains": "626b85580121821b9ac4ef079d9bd8d15011d21f2aedcd5358e2285166386a15",
+    "arwen_global_world_t255_on_its_side": "0f6aac2c902216185ba85019116b897cb35557f170d0946033c938f277ea52ef"
+  },
+  "new_in_0_2_5_before_the_flip": {
+    "arwen_global_gdas_t1023_native_sl_si_24h": "7234d4025d96e9a9ce58de27891bea18364234e64d652b06c9f044dbebfa0bd6"
+  }
+}

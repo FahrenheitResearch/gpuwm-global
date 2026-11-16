@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import importlib.util
 import os
 import re
 import shutil
@@ -54,6 +55,30 @@ REPO = Path(__file__).resolve().parent.parent
 PACKAGE = REPO / "src" / "arwen_global"
 TESTS = REPO / "tests"
 SOURCE_MD = REPO / "SOURCE.md"
+
+
+def _private_names_module():
+    spec = importlib.util.spec_from_file_location(
+        "arwen_global_private_names", Path(__file__).resolve().with_name("private_names.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: THE PRIVATE NAMES THIS CARVE REWRITES OUT, read at run time.
+#:
+#: THE BREAKAGE THIS PREVENTS (15 Nov 2026): the identity rules below used to
+#: spell the hostnames, the private case and the tool names they remove,
+#: split across string literals so the tree's own gate would not read them.
+#: This file ships in the sdist, so the published source package carried
+#: every name the rules exist to keep out, and a scan that joins split
+#: literals read them whole.  They come from the private names file now
+#: (`tools/private_names.py`); without it the identity rules are empty and
+#: `main` refuses to cut, because a cut without them would carry the names
+#: into the package.
+PRIVATE_NAMES = _private_names_module()
+_PRIVATE = PRIVATE_NAMES.load()
+PRIVATE_NAMES_LOADED = _PRIVATE is not None
 
 # The units of the carve: a path in the source tree and where it lands here.
 # A directory maps to a directory, a file to a file.
@@ -267,25 +292,40 @@ CORE_WORDS: tuple[tuple[str, str], ...] = (
 #: applies this table to the engine side too, so the engine's own copies of
 #: the same comments do not become new differences.
 #:
-#: SPELLED IN PIECES, for the reason the words above are: the gate that reads
-#: the shipped tree matches these spellings, and this file ships in the sdist.
-_NODE = "no" + "de"
-_CASE = "real" + "74"
+#: READ FROM THE PRIVATE NAMES FILE, for the reason `PRIVATE_NAMES` above
+#: gives: the hostname, its long form and the case name are private names,
+#: and this file ships in the sdist.  Empty when the file is not here.
+_HOST = re.escape(PRIVATE_NAMES.string(_PRIVATE, "carried_host"))
+_HOST_ALIAS = re.escape(PRIVATE_NAMES.string(_PRIVATE, "carried_host_alias"))
+_CASES = PRIVATE_NAMES.strings(_PRIVATE, "case_tokens")
+_CASE = re.escape(_CASES[0]) if _CASES else ""
 
-CORE_IDENTITY: tuple[tuple[str, str], ...] = (
-    (rf"on {_NODE}-1 \(weather-{_NODE}-1, RTX 5070 Ti, ", "on an RTX 5070 Ti ("),
-    (rf"on {_NODE}-1 \(RTX 5070(\s+(?:\*\s+)?)Ti, ", r"on an RTX 5070\1Ti ("),
-    (rf"MEASURED on {_NODE}-1 at ", "MEASURED on an RTX 5070 Ti at "),
-    (rf"\({_NODE}-1, sm_120\)", "(RTX 5070 Ti, sm_120)"),
-    (rf"pinned against the {_CASE} WRF", "pinned against the reference WRF"),
-    (rf"matching {_CASE}\.", "matching the reference WRF configuration."),
-    (rf"the {_CASE}(?=\s+compatibility)", "the reference"),
-    (rf"formulation used by {_CASE}\.",
-     "formulation used by the reference configuration."),
-    (rf"the standard {_CASE} path", "the standard path"),
-    (rf"the frozen {_CASE} configuration", "the frozen reference configuration"),
-    (rf"For {_CASE}(?=\n)", "For the reference case"),
-)
+
+def _identity_rules() -> tuple[tuple[str, str], ...]:
+    rules: list[tuple[str, str]] = []
+    if _HOST and _HOST_ALIAS:
+        rules.append((rf"on {_HOST} \({_HOST_ALIAS}, RTX 5070 Ti, ", "on an RTX 5070 Ti ("))
+    if _HOST:
+        rules += [
+            (rf"on {_HOST} \(RTX 5070(\s+(?:\*\s+)?)Ti, ", r"on an RTX 5070\1Ti ("),
+            (rf"MEASURED on {_HOST} at ", "MEASURED on an RTX 5070 Ti at "),
+            (rf"\({_HOST}, sm_120\)", "(RTX 5070 Ti, sm_120)"),
+        ]
+    if _CASE:
+        rules += [
+            (rf"pinned against the {_CASE} WRF", "pinned against the reference WRF"),
+            (rf"matching {_CASE}\.", "matching the reference WRF configuration."),
+            (rf"the {_CASE}(?=\s+compatibility)", "the reference"),
+            (rf"formulation used by {_CASE}\.",
+             "formulation used by the reference configuration."),
+            (rf"the standard {_CASE} path", "the standard path"),
+            (rf"the frozen {_CASE} configuration", "the frozen reference configuration"),
+            (rf"For {_CASE}(?=\n)", "For the reference case"),
+        ]
+    return tuple(rules)
+
+
+CORE_IDENTITY: tuple[tuple[str, str], ...] = _identity_rules()
 
 #: The whole carried-text rule: the two words, then the identities.  One
 #: name for both because every caller (the carve, the device rule, the carve
@@ -444,11 +484,11 @@ CARRIED_PATH_FORBIDDEN: tuple[tuple[str, str], ...] = (
 #: does not take.  The sentence each is inside is about the physics, so what
 #: comes out is the citation and what stays is the claim.
 #:
-#: SPELLED IN PIECES, for the reason `CORE_PROSE` spells the two words in
-#: pieces: `tests/test_no_provenance.py` now stops that directory name
-#: reaching anything that ships, it reads the TREE rather than the intent,
-#: and this file ships in the sdist like everything else.
-_TOOLING_DIR = "super" + "powers"
+#: READ FROM THE PRIVATE NAMES FILE, for the reason `PRIVATE_NAMES` gives:
+#: the directory name is a private name and this file ships in the sdist.
+#: Without the file the two entries that need it are left out, and `main`
+#: refuses to cut.
+_TOOLING_DIR = PRIVATE_NAMES.string(_PRIVATE, "tooling_dir")
 
 #: A THIRD one names a SCRIPT on the source tree's working root, and it is
 #: the same class caught one round later: the two above were found by the
@@ -490,6 +530,11 @@ CORE_EXACT: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
       "    this package carries.  Nothing in this package's own door reaches it:",
       "    the native options admit the carried schemes only.  A lazy attribute",
       "    breaks that cycle without")),
+)
+
+#: The two entries that name the tooling directory, present only when the
+#: private names file is (see `_TOOLING_DIR`).
+_CORE_EXACT_PRIVATE: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ("core/physics.py",
      (f"#: (``docs/{_TOOLING_DIR}/plans/2026-07-14-gpuwm-phase3.md``: "
       '"constant',
@@ -504,6 +549,9 @@ CORE_EXACT: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
       "theta and"),
      ('        # "explicit-deposit-v1"; the G-LAKE lake-momentum root',
       "        # cause): the theta and")),
+) if _TOOLING_DIR else ()
+
+_CORE_EXACT_WORK_ROOT: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ("core/physics.py",
      (f"        # MEASURED the other direction ({_WORK_ROOT}/{_PROBE_SCRIPT}",
       "        # .py, 2026-08-16): 24,000 adversarial columns with entry "
@@ -514,6 +562,8 @@ CORE_EXACT: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
       "        # columns with entry TKE at or above the floor produced ZERO",
       "        # tke-confined non-finites.")),
 )
+
+CORE_EXACT = CORE_EXACT + _CORE_EXACT_PRIVATE + _CORE_EXACT_WORK_ROOT
 
 #: RRTMGP READS ITS TRACE-GAS AND OZONE CLIMATOLOGY FROM THE ENGINE'S TABLE.
 #:
@@ -1001,26 +1051,21 @@ VERBATIM_SUFFIXES = {".cu", ".cuh"}
 #: that was measured on the card rather than asserted (see the lane's
 #: kernel-image proof).  The engine's own copies are untouched, so a
 #: receipt written by the engine is unaffected.
-#: SPELLED IN PIECES, and the split is INSIDE the word rather than beside it:
-#: the gate that reads this tree matches on a word boundary, so a name broken
-#: at the dot is still the name.  This file ships in the sdist like every
-#: other, and a table that names what it removes must not become an instance
-#: of it.
-_TOOL = "cla" + "ude"
-#: SPLIT INSIDE THE WORD, every one of them, which is what the paragraph
-#: above says and what one of these rows did not do: the third name was
-#: broken at a word boundary, so its first four letters shipped as a word
-#: of their own and the tree's own process-language gate reported a hit
-#: on this file.  A table that names what it removes must not be an instance of
-#: it, at any of the boundaries a gate reads.
-_TOOL_NAMES = (_TOOL, "anthro" + "pic", "cha" + "tgpt", "open" + "ai",
-               "copi" + "lot")
+#: READ FROM THE PRIVATE NAMES FILE, for the reason `PRIVATE_NAMES` gives.
+#: Splitting the names across literals inside this file, which is what it
+#: did until 0.2.5, kept the tree's own gate quiet and still published every
+#: name in the sdist.  The first tool name is the one the glibc comment
+#: cites; without the file that row and the tool-name post-condition are
+#: left out, and `main` refuses to cut.
+_TOOL_NAMES = PRIVATE_NAMES.strings(_PRIVATE, "tool_names")
+_TOOL = _TOOL_NAMES[0] if _TOOL_NAMES else ""
 
-DEVICE_EXACT: tuple[tuple[str, str, str], ...] = (
+DEVICE_EXACT: tuple[tuple[str, str, str], ...] = ((
     ("glibc_flt32.cuh",
      "// (" + _TOOL.upper() + ".md: __fmaf_rn/__fmul_rn/__fadd_rn are "
      "NVIDIA-guaranteed",
      "// (__fmaf_rn/__fmul_rn/__fadd_rn are NVIDIA-guaranteed"),
+) if _TOOL else ()) + (
     # The engine's comment dates the wind-sector fix by the development
     # branch it landed on, which is not a name this package publishes
     # (tests/test_no_provenance.py); the release that still carried the old
@@ -1034,17 +1079,20 @@ DEVICE_EXACT: tuple[tuple[str, str, str], ...] = (
 #: rules above are the remedy; this is the post-condition, because a rule
 #: that stopped matching is indistinguishable from a clean tree and the
 #: source it reads is somebody else's to reword.
+_MACHINE_PATTERN = PRIVATE_NAMES.string(_PRIVATE, "machine_pattern")
+
 DEVICE_FORBIDDEN: tuple[tuple[str, str], ...] = (
     (rf"(?i)(?<![A-Za-z])({_FIRST}\w*|{_SECOND})(?![A-Za-z])",
      "a word this project does not publish"),
-    (r"(?i)\b(" + "|".join(_TOOL_NAMES) + r")\b",
-     "the name of a tool a file was written with"),
     (re.escape(_EM_DASH),
      "an em-dash, which this package's published text does not use"),
-    (rf"\b(weather-{_NODE}-\d+|{_NODE}-[1-9]\d*)\b",
-     "the name of a private machine"),
-    (rf"(?i){_CASE}", "a private case name"),
-)
+) + ((
+    (r"(?i)\b(" + "|".join(re.escape(name) for name in _TOOL_NAMES) + r")\b",
+     "the name of a tool a file was written with"),
+) if _TOOL_NAMES else ()) + ((
+    (_MACHINE_PATTERN, "the name of a private machine"),
+) if _MACHINE_PATTERN else ()) + tuple(
+    (rf"(?i){re.escape(case)}", "a private case name") for case in _CASES)
 
 
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
@@ -1453,6 +1501,10 @@ def main(argv: list[str] | None = None) -> int:
                              "this exists for resuming after a conflict")
     args = parser.parse_args(argv)
 
+    if not PRIVATE_NAMES_LOADED:
+        # A cut without the identity rules would carry the private names of
+        # the source tree's comments into this package.
+        parser.error("refusing to cut: " + PRIVATE_NAMES.SKIP_REASON)
     if not args.base:
         parser.error("no --from and no revision recorded in SOURCE.md")
     if not args.worktree:

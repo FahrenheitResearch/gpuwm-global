@@ -41,6 +41,7 @@ from .device_memory import (
 from .dynamics import MoistHybridModel
 from .initial_conditions import analytic_initial_state
 from .insitu.ledger import InsituLedger, insitu_owned_files
+from .boundary_options import long_dated_run
 from .longrun_gates import LONG_RUN_THRESHOLD_S, receipt_block as longrun_receipt_block
 from .physics import NativeArwenPhysicsBridge, ReferencePhysics
 from .pins import pins_hash, pins_receipt
@@ -1688,7 +1689,7 @@ class SurfaceServices:
         out = ocean.receipt()
         if ocean.implicit and ocean.mode == "hold":
             out["ocean_mode"] = "hold (implicit)"
-        out["greenness"] = self.cfg.land.resolved(ocean)
+        out["greenness"] = self.cfg.land.resolved(ocean, long_dated_run(self.cfg))
         if self.identity is not None:
             out["restart_identity"] = self.identity
         out["future_surface_records"] = 0 if ocean.mode != "series" else None
@@ -1719,7 +1720,7 @@ def _surface_services_for(cfg, model, cold) -> SurfaceServices:
     from .surface_boundary import SurfaceBoundary
 
     ocean = cfg.ocean
-    greenness_daily = cfg.land.resolved(ocean) == "daily"
+    greenness_daily = cfg.land.resolved(ocean, long_dated_run(cfg)) == "daily"
     rule = ocean.mode in ("anomaly", "climatology") or ocean.ice_mode in (
         "anomaly", "climatology")
     series = ocean.mode == "series"

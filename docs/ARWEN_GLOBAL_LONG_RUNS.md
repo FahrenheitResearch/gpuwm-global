@@ -11,7 +11,7 @@ this page says which.
 | class | after this change |
 |---|---|
 | predicted | atmosphere; Noah soil temperature and water, snowpack (with its age, under `snow_ageing = true`), canopy water; inland-lake skin; sea-ice column temperature |
-| prescribed by a stated rule | ocean SST and ocean sea-ice fraction (`[ocean]`, `[sea_ice]`); vegetation fraction, leaf area index and background albedo on land (`[land] greenness`, monthly climatology by date); ozone (CAM monthly); CO2, CH4 and N2O (the start year's NOAA GML means, or each call's valid year under `[radiation] ghg_year = "valid"`); solar geometry |
+| prescribed by a stated rule | ocean SST and ocean sea-ice fraction (`[ocean]`, `[sea_ice]`); vegetation fraction, leaf area index and background albedo on land (`[land] greenness`, monthly climatology by date, also under `mode = "hold"` on a run of more than 16 days); ozone (CAM monthly); CO2, CH4 and N2O (the start year's NOAA GML means, or each call's valid year under `[radiation] ghg_year = "valid"`); solar geometry |
 | held at the start | deep-soil temperature; the thickness of ice that exists at the start (new ice takes `new_ice_thickness_m`); lake ice fraction (a lake never freezes or thaws); aerosols (none); the ocean, under `mode = "hold"` |
 
 ## The ocean switch
@@ -190,8 +190,24 @@ from, have their own page, [ARWEN_GLOBAL_OCEAN.md](ARWEN_GLOBAL_OCEAN.md).
 `[land] greenness = "daily"` sets the vegetation fraction, leaf area index
 and background albedo on land to the statics' monthly climatologies once a
 model day. `"start"` keeps them at the start. The default is daily under a
-rule or a series and the start under `hold`, and the key enters the
-identity only where it says something the mode would not do.
+rule or a series, daily under `hold` on a long run (a dated analysis run of
+more than 16 days on real statics), and the start under `hold` on a
+forecast of 16 days or less. The key enters the identity only where it says
+something the mode would not do on a forecast, so the long-run default
+moved no config hash, and on a long run also where it says something the
+long-run default would not do: a stated `"start"` on a held run of more
+than 16 days hashes apart from the default, which follows the calendar.
+
+Until 0.2.5 the start was the default under `hold` whatever the length, so
+a held run from 1 March kept March vegetation, leaf area and background
+albedo under a May sun (round 9's jet report: a run from ERA5 1976-03-01,
+where the runner holds the sea of a project prepared before its long-run
+recipe). Holding the sea says nothing about the land. A held long run
+checkpointed under 0.2.4 restarts under 0.2.5 (its hash is the same) and its
+land follows the calendar from the restart on; `[land] greenness = "start"`
+keeps the old behaviour. A held long run that stated `"start"` under 0.2.4
+has a new hash in 0.2.5 (in 0.2.4 it shared the default's), so its 0.2.4
+checkpoint resumes only with `--branch-from-other-config`.
 
 The date read is the model day's start. Until this change the march read
 the instant of the first step it ran on, so a run started at 06, 12 or 18
@@ -562,16 +578,107 @@ Two consequences:
   calibration the ocean cools 0.11 K a month: after the first week the
   run's atmosphere, which keeps cooling aloft (200 hPa 1.7 K under GDAS at
   day 30), takes more heat from the ocean than the six-day calibrations
-  booked. Longer calibrations would book some of that drift into F_cal;
-  removing it is a physics question, not a calibration one.
+  booked. Over half a year it adds up: two slab runs on the twelve-start
+  file, from 2026-08-01 and 2026-02-01, 180 days each, cooled the open
+  ocean against the climatology from +0.18 K on day 1 to -0.34 K on day
+  179 (about 0.1 K a month from August to November) and by at most
+  0.17 K. Their TOA balanced: the twelve 30-day windows average
+  +0.02 W/m2.
 
-  **The recipe's Q-flux ships with 0.2.4**, so a slab run with the recipe
-  need not make its own. Two files are attached to the v0.2.4 GitHub
-  release: `qflux-t127-recipe-r5.npz` (the twelve-start file above,
-  14,187,518 B, SHA-256 `25be4a842fea0d1030b33e5896e394df2da6f7d88e4be5d809474f384918f15b`)
-  and `recipe-slab-t127.toml` (the 90-day T127 slab config it was
-  calibrated for, from GDAS 2026-08-01 00Z, with relative paths, SHA-256
-  `932b2a2d0a2cea9ec7968e90ddff837093c8bab261f1dd779408bf9b7b241155`). The
+  **The second pass books that heat** ([ARWEN_GLOBAL_OCEAN.md](ARWEN_GLOBAL_OCEAN.md),
+  "The second pass"), and a long run with the recipe should read the
+  corrected file. The procedure:
+
+  1. the twelve six-day calibrations and `gpuwm-global climatology qflux`,
+     as above (the first file);
+  2. two slab runs with the long-run config on the first file, from
+     02-01 and 08-01 00Z, 180 days or more each, so that every month has a
+     run in it (at T127 each is 18 ten-day leases of 7 to 9 minutes on a
+     free card);
+  3. `gpuwm-global climatology qflux second-pass FIRST.npz --climatology climatology-t127-mld.npz --slab-run FEB_RUN --slab-run AUG_RUN --out SECOND.npz`.
+
+  The two runs above changed the twelve-start file's F_cal, as an ocean
+  mean, by -2.1 W/m2 in January, -0.0 in February and -4.4 to -8.9 from
+  March to December (annual mean -5.9). The guard accepts the corrected
+  file for the same config. Slab runs on it from the same starts, 60 days
+  each, against the runs on the first file (open-ocean SST minus the
+  climatology in K; TOA net in W/m2 over days 1-29 and 30-59; T2m over
+  the ocean in K, days 30-59), measured:
+
+  | start, file | SST - clim, day 1 / 29 / 59 | TOA net | ocean T2m |
+  |---|---|---|---|
+  | 08-01, first | +0.176 / +0.108 / -0.042 | -6.49 / -2.62 | 290.239 |
+  | 08-01, second pass | +0.178 / +0.166 / +0.080 | -6.94 / -4.22 | 290.259 |
+  | 02-01, first | +0.006 / +0.001 / -0.058 | +5.58 / +2.05 | 289.943 |
+  | 02-01, second pass | +0.007 / +0.025 / -0.002 | +5.82 / +1.51 | 289.991 |
+
+  Over 58 days the drift falls from -0.218 to -0.098 K (August start) and
+  from -0.064 to -0.009 K (February start). The heat the open ocean
+  lacked by the slab's books, days 30-59, falls from 7.5 to 4.9 W/m2 and
+  from 6.9 to 1.2 W/m2. One pass does not remove it all: the corrected
+  ocean is warmer, its atmosphere draws more from it, and the planet
+  radiates more (TOA 0.5 to 1.6 W/m2 lower in days 30-59); a further pass
+  would book that. Global T2m differs by up to 0.2 K, all of it over land
+  and Antarctica (weather); over the ocean it is within 0.05 K. Three
+  limits: the runs being corrected are the runs the test starts from, so
+  this tests a systematic drift, not an independent year; a run's first
+  month carries its start's own anomaly decaying (the 2026-08-01 ocean
+  starts 0.18 K above the 1991-2020 climatology), which the pass books as
+  heat the ocean lacked; and late February reads half of March's
+  correction through the month weights (the February start warms 0.02 K
+  in its first month, where it did not drift on the first file). The
+  corrected file is attached to the v0.2.5 release (below).
+
+  **From starts the pass never saw**, the same comparison (GDAS 00Z
+  analyses of dates neither correcting run started from; open-ocean SST
+  minus the slab's climatology curve in K on days 0 / 29 / 59; the heat
+  the open ocean gained by the slab's books, negative where it lacked, and
+  TOA net, W/m2, days 0-29 / 30-59; T2m over the ocean in K, days 30-59),
+  measured:
+
+  | start, file | SST - clim, day 0 / 29 / 59 | ocean heat | TOA net | ocean T2m |
+  |---|---|---|---|---|
+  | 11-01, first | +0.262 / +0.132 / +0.020 | -8.45 / -12.52 | +2.16 / +2.89 | 289.954 |
+  | 11-01, second pass | +0.265 / +0.255 / +0.189 | +1.59 / -2.87 | +2.61 / +3.49 | 290.055 |
+  | 01-15, first | -0.029 / +0.002 / -0.037 | +1.85 / +0.18 | +5.27 / +4.33 | 289.890 |
+  | 01-15, second pass | -0.028 / +0.014 / +0.008 | +3.35 / +1.44 | +5.47 / +4.47 | 290.063 |
+  | 01-15, `--skip-days 15` | -0.028 / +0.016 / +0.007 | +5.23 / +2.08 | +5.05 / +3.93 | 289.925 |
+  | 05-01, first | +0.103 / +0.035 / -0.049 | -6.24 / -13.25 | -4.98 / -7.25 | 290.231 |
+  | 05-01, second pass | +0.104 / +0.079 / +0.031 | -1.57 / -3.82 | -4.97 / -7.70 | 290.391 |
+
+  From 11-01 the first file loses 0.242 K of the start's anomaly in 59
+  days and the second-pass file 0.076 K; the open ocean lacked 12.5 W/m2
+  in days 30-59 on the first file and 2.9 on the second pass. From 01-15
+  neither file drifts far: the first file ends 0.008 K under its day-0
+  value and the second-pass file 0.036 K over it (it gains 1.4 W/m2 in
+  days 30-59). From 05-01 the first file loses 0.152 K in 59 days and
+  the second-pass file 0.073 K; the open ocean lacked 13.3 and 3.8 W/m2
+  in days 30-59. `--skip-days 15`
+  ([ARWEN_GLOBAL_OCEAN.md](ARWEN_GLOBAL_OCEAN.md), "The second pass")
+  changes F_cal only in January to March and July to August, by at most
+  3 W/m2 as an ocean mean, and from 01-15 its run reads the second-pass
+  run's SST to 0.002 K on day 29 and 0.001 K on day 59 while its ocean
+  gains 1.9 and 0.6 W/m2 more (its January and February F_cal are lower,
+  in the months where the second pass already gains heat). The recipe
+  keeps step 3 without it.
+
+  **The recipe's second-pass Q-flux ships with 0.2.5**, so a slab run with
+  the recipe need not make its own. Two files are attached to the v0.2.5
+  GitHub release: `qflux-t127-r5-sp1.npz` (the second-pass file above,
+  14,191,518 B, SHA-256 `3a3f0c5cc3cdfe004c2f9c68f7711609f55f4e10c1d624bb3dd11f65cb145aff`)
+  and `recipe-slab-t127.toml` (the 90-day T127 slab config it was made
+  for, from GDAS 2026-08-01 00Z, with relative paths, naming that file and
+  stating the three Grell-Freitas options at their 0.2.4 values, since the
+  file was calibrated before the 0.2.5 default D and the guard binds it to
+  that physics, SHA-256
+  `c842a55f0903c019e0a5a58306d542f01ff2aa4f6d1b92732fbf2fff66aba7de`).
+  The attached file is the one the slab runs above read. Step 3 run on the
+  same inputs rebuilds the same arrays (SHA-256 `fc3c65c6...`): only the
+  provenance's `second_pass` record differs, where the tool also names the
+  runs' days and their summaries' SHA-256. The first file,
+  `qflux-t127-recipe-r5.npz` (14,187,518 B, SHA-256
+  `25be4a842fea0d1030b33e5896e394df2da6f7d88e4be5d809474f384918f15b`), stays
+  attached to the v0.2.4 release with the template that names it. The
   Q-flux names the climatology it was made against by SHA-256
   (`16ab9a39c0f90a69c748f459919f9f088baaa3d8efb7820f590c8048fd9baead`),
   and the documented tool rebuilds that file byte for byte:
@@ -580,11 +687,13 @@ Two consequences:
   (from the shipped T127 config, because the slab config cannot load until
   its climatology exists). Measured on 0.2.4 (CPU, the T127 statics that
   `gpuwm-global statics` builds): the climatology built that way has that
-  SHA-256, and the slab's guard accepts the Q-flux for
-  `recipe-slab-t127.toml` (grid, physics identity, climatology and all
-  twelve months). A config whose native options differ from the file's is
-  refused, as the guard is meant to; the calibration above is then the way
-  to make its own file.
+  SHA-256. Measured on 0.2.5 (CPU): the slab's guard accepts the attached
+  file and its tool-built twin for the attached template (grid, physics
+  identity, climatology and all twelve months), and refuses the first file
+  for v0.2.4's template, whose physics under 0.2.5 is the default D; a run
+  that keeps the first file states the same three Grell-Freitas lines. A config whose native options differ
+  from the file's is refused, as the guard is meant to; the calibration
+  above is then the way to make its own file.
 - LR-9 for a recipe can be read from its twelve calibrations, which cost
   six model days each, before a year is run. TOA net over days 3-6 of
   each, the recipe against the year physics on the same starts (W/m2):

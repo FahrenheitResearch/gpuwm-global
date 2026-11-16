@@ -12,7 +12,7 @@ from ``B_s`` join the ``N`` dynamic members inside the localised solve as
 one augmented perturbation matrix, so the control's gain is that of ONE
 positive-semidefinite covariance ``beta L o P_ens + (1 - beta) L o P_s``
 (Kretschmer, Hunt and Ott 2015, the climatologically augmented LETKF;
-Wang, Snyder and Hamill 2007 on the equivalence with the hybrid gain),
+Wang et al. 2007 on the equivalence with the hybrid gain),
 never several band analyses summed.
 
 The representation is the spectral-space form of Parrish and Derber

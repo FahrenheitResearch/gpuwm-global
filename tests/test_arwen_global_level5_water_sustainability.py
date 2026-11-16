@@ -111,7 +111,10 @@ class _InertGrellFreitas:
 
     def __init__(self, *, column_chunk=None,
                  updraft_only_when_downdraft_dry=False,
-                 resolved_convergence_closure=False):
+                 resolved_convergence_closure=False,
+                 momentum_transport=False, deep_experiment=0, deep_physics=0):
+                 # The 0.2.5 Grell-Freitas default D hands these three to the scheme;
+                 # the fake runs no plume, so it takes and ignores them.
         self.column_chunk = column_chunk
         self.updraft_only_when_downdraft_dry = updraft_only_when_downdraft_dry
         self.resolved_convergence_closure = resolved_convergence_closure
@@ -159,18 +162,15 @@ INTERVAL_S = 3600.0
 CANWAT_CAP = 0.5         # CMCMAX * 1000, the kernel's canopy capacity
 
 
-def _sustained_rain_modules(dp_bottom_up, target):
+def _sustained_rain_modules(dp_bottom_up, target, dry_now):
     """Noah consumes rainbl the way SFLX does at its simplest: canopy fills
     to the CMCMAX cap and everything else leaves as surface runoff -- a
     held destination and an exited destination, both booked.  Morrison
     removes exactly its reported precipitation from column vapor in the
-    ledger's metric -- specific humidity times dp/g, the model's
-    convention, converted at the kernel-side level through the bridge's
-    own helpers (fallout is water that LEFT the atmosphere)."""
-    from arwen_global.physics.native_batch import (
-        mixing_ratio_from_specific_humidity,
-        specific_humidity_from_mixing_ratio,
-    )
+    ledger's metric -- r_v d_in dp/g, the model's specific humidity at the
+    call's inbound dry fraction (``dry_now[0]``, set by the caller per call;
+    native_batch docstring), so the fallout leaves in mixing ratio
+    (fallout is water that LEFT the atmosphere)."""
 
     def launch_morrison(
         theta, qv, qc, qr, qi, qs, qg, nc, nr, ni, ns, ng,
@@ -185,18 +185,14 @@ def _sustained_rain_modules(dp_bottom_up, target):
         j, i = target
         g = np.float64(9.80665)
         remaining = np.float64(RAIN_PER_CALL)
-        species = {"qv": qv, "qc": qc, "qr": qr, "qi": qi, "qs": qs, "qg": qg}
         for k in range(qv.shape[0]):
             dp_k = np.float64(dp_bottom_up[k, j, i])
-            specific = specific_humidity_from_mixing_ratio(
-                {name: np.float64(arr[k, j, i]) for name, arr in species.items()}
-            )
-            take = min(specific["qv"] * dp_k / g, remaining)
+            dry_k = np.float64(dry_now[0][k, j, i])
+            r_v = np.float64(qv[k, j, i])
+            take = min(r_v * dry_k * dp_k / g, remaining)
             if take <= 0.0:
                 continue
-            specific["qv"] = specific["qv"] - take * g / dp_k
-            for name, value in mixing_ratio_from_specific_humidity(specific).items():
-                species[name][k, j, i] = F32(value)
+            qv[k, j, i] = F32(r_v - take * g / (dry_k * dp_k))
             remaining -= take
             if remaining <= 1.0e-9:
                 break
@@ -260,6 +256,7 @@ def test_sustained_heavy_rain_reservoir_bounded_and_runoff_booked_as_outflow():
     lf[j, i] = 1.0
 
     exchange0 = model._physics_exchange(state, INTERVAL_S)
+    dry_now = [None]
     dp_bottom_up = np.asarray(exchange0.dp, F32)[::-1].copy()
     suite = ArwenCudaColumnSuite(
         {
@@ -269,7 +266,7 @@ def test_sustained_heavy_rain_reservoir_bounded_and_runoff_booked_as_outflow():
             "land_surface_interval_s": INTERVAL_S,
         },
         array_module=np,
-        modules=_sustained_rain_modules(dp_bottom_up, (j, i)),
+        modules=_sustained_rain_modules(dp_bottom_up, (j, i), dry_now),
     )
 
     reservoir0 = float(np.asarray(exchange0.surface.water_kg_m2)[j, i])
@@ -286,6 +283,8 @@ def test_sustained_heavy_rain_reservoir_bounded_and_runoff_booked_as_outflow():
             _water_fields(exchange, exchange.dp),
             exchange.surface, exchange.physics_state,
         )
+        dry_now[0] = np.float32(1.0) - np.ascontiguousarray(
+            np.asarray(exchange.qv, F32)[::-1])
         result = suite.step(exchange)
         after = _conservation_total(
             _water_fields(result, exchange.dp),

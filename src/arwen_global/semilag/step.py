@@ -404,6 +404,7 @@ def _semilag_step_resident(model, atmosphere: MoistHybridState, dt_s: float,
             iterations=int(options.trajectory_iterations),
             limit_cells=options.trajectory_convergence_cells,
             extrapolated=arrival_wind,
+            solver=str(getattr(options, "trajectory_solver", "fixed_point")),
         )
         del departure_wind, arrival_wind
         surface = _surface_stencil(stencil, tables)
@@ -853,6 +854,56 @@ def _previous_wind_with_neighbour_rows(previous, exchange, xp, nlat: int):
     return RowTrajectory(first=lo, last=hi, nlat=nlat, arrays=arrays)
 
 
+def _previous_with_halo(previous, exchange, xp, nlat: int, width: int):
+    """The previous level on this card's rows and ``width`` rows either
+    side (clipped at the poles): what a band of a departure-side form reads
+    of it on its held rows.
+
+    Hortal's forms interpolate the previous level's wind and residual at
+    the departure point, so a band reads it on every row it holds, and a
+    band at a card's edge holds rows the neighbouring card computed.  All
+    seven planes of the level come over the wire once, as the bytes the
+    owning card wrote into it, so every held row carries the value a
+    one-card run holds there.  Up to the narrowest card's row count the
+    rows come from the two neighbours only (cards.CardSession
+    .exchange_halo); a wider reach, which only a halo escape asks for,
+    assembles the whole level (cards.CardSession.gather_rows).
+    """
+    own_first, own_last = int(previous.first), int(previous.last)
+    w = max(int(width), 1)
+    lo, hi = max(own_first - w, 0), min(own_last + w, nlat)
+    neighbours = w <= int(exchange.narrowest_rows())
+    arrays = {}
+    for name in TRAJECTORY_FIELDS:
+        value = previous.arrays[name]
+        if neighbours:
+            # Only the rows the reach covers are allocated: the card's own
+            # and ``w`` either side (the exchange is told where they start).
+            reach = xp.empty((*value.shape[:-2], hi - lo, value.shape[-1]),
+                             dtype=value.dtype)
+            reach[..., own_first - lo:own_last - lo, :] = value
+            exchange.halo(xp, reach, reach.ndim - 2, w,
+                          name=f"semilag_reach_{name}", origin=lo)
+            arrays[name] = reach
+        else:
+            whole = xp.zeros((*value.shape[:-2], nlat, value.shape[-1]),
+                             dtype=value.dtype)
+            whole[..., own_first:own_last, :] = value
+            exchange.fill_rows(xp, whole, whole.ndim - 2,
+                               name=f"semilag_reach_{name}")
+            arrays[name] = xp.ascontiguousarray(whole[..., lo:hi, :])
+            del whole
+    return RowTrajectory(first=lo, last=hi, nlat=nlat, arrays=arrays)
+
+
+def _holds(previous, rows: slice) -> bool:
+    """Whether ``previous`` (a whole level, or rows of one) holds ``rows``."""
+    if not isinstance(previous, RowTrajectory):
+        return True
+    return int(previous.first) <= int(rows.start) and \
+        int(rows.stop) <= int(previous.last)
+
+
 def _folded_lipschitz(bands, dt: float, reference_m: float, maxima,
                       minima):
     """:class:`LipschitzDiagnostics` from the folded per-second maxima and
@@ -930,7 +981,7 @@ class _BandResult:
 
     __slots__ = ("arrival_u", "arrival_v", "theta", "qv", "lnps",
                  "advected", "deficits", "trajectory", "water_rows",
-                 "lipschitz", "maxima", "stencil")
+                 "lipschitz", "maxima", "stencil", "width")
 
 
 def _band_pass(model, atmosphere, sources, mass_grid, window, *, tables,
@@ -948,7 +999,9 @@ def _band_pass(model, atmosphere, sources, mass_grid, window, *, tables,
     (``extrapolation = "settls_departure"`` past the start-up step) and
     ``departure_residual`` his residual (that form and
     ``"settls_residual_departure"``); each reads the previous time level
-    on every held row: one card only, where that level is held whole.
+    on every held row: whole on one card, and on several cards this card's
+    rows plus the reach the step took from the other cards
+    (:func:`_previous_with_halo`).
     """
     from ..dynamics import band_view
 
@@ -1050,6 +1103,7 @@ def _band_pass(model, atmosphere, sources, mass_grid, window, *, tables,
         search_wind, tables, dt,
         iterations=int(iterations),
         extrapolated=extrapolated, window=window, defer_escape=True,
+        solver=str(getattr(options, "trajectory_solver", "fixed_point")),
     )
     del extrapolated, search_wind, wind, vx, vy, vz
     surface = _surface_stencil(stencil, tables)
@@ -1276,21 +1330,16 @@ def _semilag_step_banded(model, atmosphere: MoistHybridState, dt_s: float,
     it; a departure point that leaves it is refused by name at the kernel
     (:class:`HaloEscape`) and the band is recomputed behind a halo twice as
     wide, up to the whole grid, which cannot escape.
+
+    THE PREVIOUS LEVEL.  Each card holds only its own rows of it.  The
+    shipped form reads it at the arrival point, so a card needs one row of
+    the wind from each neighbour for the fold gate.  The departure-side
+    forms read it at the departure point, on every row a band holds, so a
+    card takes all seven planes from its neighbours as wide as the halo,
+    once a step, and widens that reach (collectively, at the end of a
+    round of bands) when a band escapes past it.
     """
     options = model.semilag
-    exchange = model.pipeline.exchange
-    if (options.extrapolation in RESIDUAL_DEPARTURE_FORMS
-            and exchange is not None
-            and int(getattr(exchange, "world", 1)) > 1):
-        # Refused at every step, the start-up step included, so a run that
-        # cannot take the form stops at step 1 and not at step 2.
-        raise ValueError(
-            f"semilag.extrapolation = {options.extrapolation!r} runs on one "
-            "card: the departure-side form interpolates the previous time "
-            "level's residual across a band's halo, and on several cards "
-            "each card holds only its own rows of that level.  Run on one "
-            "card (any band count), or extrapolation = 'settls'."
-        )
     transform = model.transform
     backend = transform.backend
     xp = backend.xp
@@ -1393,11 +1442,22 @@ def _semilag_step_banded(model, atmosphere: MoistHybridState, dt_s: float,
     # The fold gate reads the extrapolated wind one row past each band, so
     # on several cards the previous level's wind needs the neighbouring
     # card's edge row (one row, three fields, at the step's start).
-    previous_wind = previous
-    if extrapolate and split:
+    halo = default_halo_rows(nlat, dt, transform.grid.radius_m)
+    # The departure-side forms read the previous level on every row a
+    # band holds (_band_pass), so on several cards each card takes the
+    # neighbours' rows of all seven planes once per step, as wide as the
+    # band halo; a band that escapes its halo past those rows waits for
+    # the round's end, when every card widens the reach to the widest any
+    # card asked for (_previous_with_halo) and runs its waiting bands.
+    reach = bool(split and departure_residual)
+    previous_wind = own_previous = previous
+    if reach:
+        previous = previous_wind = _previous_with_halo(
+            own_previous, exchange, xp, nlat, halo)
+    elif extrapolate and split:
         previous_wind = _previous_wind_with_neighbour_rows(
             previous, exchange, xp, nlat)
-    halo = default_halo_rows(nlat, dt, transform.grid.radius_m)
+    reached = {"width": halo, "previous": previous}
 
     def run_bands(iterations: int):
         """Every band this card owns, searched at ``iterations``."""
@@ -1424,60 +1484,95 @@ def _semilag_step_banded(model, atmosphere: MoistHybridState, dt_s: float,
         out.lipschitz_bands = []
         out.trajectory_bands = []
         out.widest = 0
-        for rows in pipeline.local_slices():
-            width = halo
-            while True:
-                held, _lead, _trail = pipeline.halo(rows, width)
-                window = tables.window(held, rows)
-                try:
-                    band = _band_pass(
-                        model, atmosphere, sources, mass_grid, window,
-                        tables=tables, options=options, previous=previous,
-                        previous_wind=previous_wind,
-                        extrapolate=extrapolate,
-                        gradient_waists=gradient_waists,
-                        lnps_gradient_waists=lnps_gradient_waists,
-                        linear_waist=linear_waist, increment=increment,
-                        riding=riding, limiter=limiter,
-                        want_deficit=want_deficit, keep_stencil=keep_stencil,
-                        iterations=iterations, order=order, batch=batch,
-                        dt=dt, scalar=scalar, departure=departure,
-                        departure_residual=departure_residual,
-                    )
-                    break
-                except HaloEscape:
-                    if held.start == 0 and held.stop == nlat:
-                        raise
-                    width = min(2 * width, nlat)
-            out.widest = max(out.widest, width)
-            out.uv_waist.fill_band(
-                rows.start, rows.stop, xp.stack([band.arrival_u, band.arrival_v]))
-            out.stack_waist.fill_band(
-                rows.start, rows.stop,
-                xp.concatenate([band.theta - theta_grid_offset, band.qv],
-                               axis=0))
-            out.lnps_waist.fill_band(rows.start, rows.stop, band.lnps)
-            mine = slice(rows.start - offset, rows.stop - offset)
-            for name, value in band.trajectory.items():
-                out.trajectory_rows[name][..., mine, :] = value
-            if riding:
-                for name, value in band.advected.items():
-                    out.advected[name][:, rows] = value
-                if want_deficit:
-                    for name, value in band.deficits.items():
-                        out.deficits[name][:, rows] = value
-                out.water.add_band(rows, band.water_rows)
-            if keep_stencil:
-                for whole, value in zip(out.stencil, band.stencil):
-                    whole[:, rows] = value
-            out.lipschitz_bands.append(band.lipschitz)
-            out.trajectory_bands.append(band.maxima)
-            del band
+        pending = [(rows, halo) for rows in pipeline.local_slices()]
+        while True:
+            waiting = []
+            for rows, width in pending:
+                band = _one_band(rows, width, iterations, waiting)
+                if band is not None:
+                    _lay_band(out, rows, band)
+                    del band
+            if not reach:
+                break
+            # Every card reaches the same verdict on the folded width, so
+            # every card takes part in the same exchanges in the same order,
+            # a card with nothing waiting included (it keeps folding zero
+            # until no card waits).
+            wanted = int(_fold_across_cards(exchange, xp, [
+                float(max((w for _r, w in waiting), default=0))])[0])
+            if wanted <= 0:
+                break
+            reached["width"] = max(reached["width"], wanted)
+            reached["previous"] = _previous_with_halo(
+                own_previous, exchange, xp, nlat, reached["width"])
+            pending = waiting
         out.trajectory_maxima = _fold_across_cards(exchange, xp, [
             _fold_max(getattr(d, name) for d in out.trajectory_bands)
             for name in _TRAJECTORY_MAXIMA
         ])
         return out
+
+    def _one_band(rows, width, iterations, waiting):
+        """One band, widened on every halo escape; ``None`` (and the band
+        added to ``waiting`` at the width it wants) when that width reads
+        previous-level rows this card has not been sent yet."""
+        while True:
+            held, _lead, _trail = pipeline.halo(rows, width)
+            if reach and not _holds(reached["previous"], held):
+                waiting.append((rows, width))
+                return None
+            window = tables.window(held, rows)
+            try:
+                band = _band_pass(
+                    model, atmosphere, sources, mass_grid, window,
+                    tables=tables, options=options,
+                    previous=reached["previous"] if reach else previous,
+                    previous_wind=(reached["previous"] if reach
+                                   else previous_wind),
+                    extrapolate=extrapolate,
+                    gradient_waists=gradient_waists,
+                    lnps_gradient_waists=lnps_gradient_waists,
+                    linear_waist=linear_waist, increment=increment,
+                    riding=riding, limiter=limiter,
+                    want_deficit=want_deficit, keep_stencil=keep_stencil,
+                    iterations=iterations, order=order, batch=batch,
+                    dt=dt, scalar=scalar, departure=departure,
+                    departure_residual=departure_residual,
+                )
+                band.width = width
+                return band
+            except HaloEscape:
+                if held.start == 0 and held.stop == nlat:
+                    raise
+                width = min(2 * width, nlat)
+
+    def _lay_band(out, rows, band):
+        """One finished band's rows into the step's outputs."""
+        out.widest = max(out.widest, band.width)
+        out.uv_waist.fill_band(
+            rows.start, rows.stop, xp.stack([band.arrival_u, band.arrival_v]))
+        out.stack_waist.fill_band(
+            rows.start, rows.stop,
+            xp.concatenate([band.theta - theta_grid_offset, band.qv],
+                           axis=0))
+        out.lnps_waist.fill_band(rows.start, rows.stop, band.lnps)
+        mine = slice(rows.start - offset, rows.stop - offset)
+        for name, value in band.trajectory.items():
+            out.trajectory_rows[name][..., mine, :] = value
+        if riding:
+            for name, value in band.advected.items():
+                out.advected[name][:, rows] = value
+            if want_deficit:
+                for name, value in band.deficits.items():
+                    out.deficits[name][:, rows] = value
+            out.water.add_band(rows, band.water_rows)
+        if keep_stencil:
+            for whole, value in zip(out.stencil, band.stencil):
+                whole[:, rows] = value
+        # Folded as maxima and minima (exact in any order), so a band that
+        # waited a round for a wider reach folds as one that did not.
+        out.lipschitz_bands.append(band.lipschitz)
+        out.trajectory_bands.append(band.maxima)
 
     configured = int(options.trajectory_iterations)
     limit = float(options.trajectory_convergence_cells)
@@ -1495,7 +1590,7 @@ def _semilag_step_banded(model, atmosphere: MoistHybridState, dt_s: float,
             done = run_bands(iterations)
     model.semilag_halo_rows = (halo, done.widest)
     del gradient_waists, lnps_gradient_waists, linear_waist, increment
-    del sources, mass_grid, previous_wind
+    del sources, mass_grid, previous_wind, reached, own_previous, previous
     uv_waist, stack_waist, lnps_waist = (
         done.uv_waist, done.stack_waist, done.lnps_waist)
     trajectory_rows = done.trajectory_rows

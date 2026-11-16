@@ -146,7 +146,8 @@ def snow_cover_flag(snow_water_kg_m2) -> np.ndarray:
 
 
 def seed_surface_from_analysis(frame, regrid, *, target_land_fraction,
-                               snow_on_sea_ice: bool = True) -> SeededSurface:
+                               snow_on_sea_ice: bool = True,
+                               snow_density_floor: bool = False) -> SeededSurface:
     """Seed sea ice and snow from an analysis ``frame`` onto the Gaussian
     grid through ``regrid`` (analysis_initial's periodic bilinear
     regridder).  ``target_land_fraction`` is the run's land fraction on
@@ -279,6 +280,22 @@ def seed_surface_from_analysis(frame, regrid, *, target_land_fraction,
     no_depth = (swe > 0.0) & (depth <= 0.0)
     derived_depth_cells = int(np.count_nonzero(no_depth))
     depth = np.where(no_depth, swe / DERIVED_SNOW_DENSITY_KG_M3, depth)
+    # Optional density floor (off by default).  GDAS's snow depth is not an
+    # independent measurement: the GFS surface cycle writes it as ten times
+    # the analysed water equivalent wherever its snow analysis updates the
+    # pack, so most of its snow-covered land reads exactly 100 kg m-3, a
+    # fresh-snow density (measured: 66-73 % of the snow-covered GDAS land
+    # cells of 2026-01-16, -01-21 and -03-01 lie within 1 % of 100).  Noah
+    # starts that pack twice as deep and half as conductive as a settled
+    # winter pack (Sturm et al. 2010: 190-310 kg m-3 by snow class), which
+    # insulates the skin from the soil.  The floor takes such a pack at
+    # WRF real.exe's own derived density (SNOWH = SNOW * 0.005, 200 kg m-3)
+    # and leaves every denser analysed pack as it is.
+    floored_depth_cells = 0
+    if snow_density_floor:
+        lighter = (swe > 0.0) & (depth > swe / DERIVED_SNOW_DENSITY_KG_M3)
+        floored_depth_cells = int(np.count_nonzero(lighter))
+        depth = np.where(lighter, swe / DERIVED_SNOW_DENSITY_KG_M3, depth)
 
     # Onto the Gaussian grid.
     ice_target = np.clip(regrid(ice), 0.0, 1.0)
@@ -376,6 +393,14 @@ def seed_surface_from_analysis(frame, regrid, *, target_land_fraction,
             "land_fraction": "static water fraction (real statics) or the analysis land mask (synthetic)",
         },
     }
+    if snow_density_floor:
+        # Only a run with the floor on says so; every other receipt is the
+        # bytes it was.
+        provenance["seeded_from_analysis"]["snow_depth_m"]["density_floor"] = {
+            "rule": "depth no deeper than SWE / 200 kg m-3 (WRF real.exe SNOWH = SNOW * 0.005)",
+            "floor_kg_m3": DERIVED_SNOW_DENSITY_KG_M3,
+            "floored_source_cells": floored_depth_cells,
+        }
     if bare_pack is not None:
         # Only an analysis without snow on its ice says so; a GDAS receipt
         # is the bytes it was.

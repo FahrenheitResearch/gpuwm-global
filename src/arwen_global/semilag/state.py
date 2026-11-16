@@ -100,12 +100,16 @@ class RowTrajectory:
     """The second time level of ONE CARD of a multi-card run: the rows it
     owns and nothing else.
 
-    The trajectory reads its previous level at the ARRIVAL point only (the
-    extrapolated flow and the extrapolated residual), and a card computes
-    the arrival points of its own rows, so a card never reads another
-    card's rows of it.  Holding the globe on every card would cost the
-    whole level P times over: 2.59 GiB a card at T799 L40 float32, twice
-    over while a step builds the next level beside the last.
+    The shipped trajectory reads its previous level at the ARRIVAL point
+    (the extrapolated flow and the extrapolated residual), and a card
+    computes the arrival points of its own rows, so it reads another
+    card's rows of it only for the fold gate's one row either side.  The
+    departure-side forms read it at the departure point, so the step takes
+    the neighbours' rows of it as wide as the band halo once a step
+    (semilag.step._previous_with_halo).  Holding the globe on every card
+    would cost the whole level P times over: 2.59 GiB a card at T799 L40
+    float32, twice over while a step builds the next level beside the
+    last.
 
     :meth:`whole` lays the rows into whole-grid arrays (zero elsewhere) for
     the readers that want the globe, the checkpoint first among them,

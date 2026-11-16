@@ -293,8 +293,10 @@ class NativePhysicsOptions:
     # the kernel's outt already carries the dissipative heating of that
     # same momentum loss (module_cu_gf_deep.F:1803-1821), so with False the
     # column is heated by a kinetic-energy loss the wind never takes.
-    # False (the default) keeps every earlier identity.
-    gf_momentum_transport: bool = False
+    # True is the default since 0.2.5 (one of the three settings of the
+    # Grell-Freitas default D, below); False, 0.2.4's arithmetic, leaves the
+    # identity, so a config that states it keeps its 0.2.4 hash.
+    gf_momentum_transport: bool = True
     # Read only where cumulus="gf".  Where the deep updraft's mass flux peaks
     # (gf.cu GF_DEEP_EXPERIMENT): 0 WRF v4.6.1 (the default, every earlier
     # identity); 2 at kstabi; 3 at the plume's maximum-buoyancy level (UFS
@@ -302,7 +304,30 @@ class NativePhysicsOptions:
     # tropics, T255, 24 h): every non-zero value lifts GF's cloud tops and
     # removes the 300-200 hPa cold bias but doubles the scheme's tropical rain
     # and warms 700-500 hPa by 0.4-0.8 K; experimental, not for default.
-    gf_deep_experiment: int = 0
+    # 7 (the default since 0.2.5, with gf_deep_physics = 34 and
+    # gf_momentum_transport = True: the Grell-Freitas default D) runs every
+    # WRF formula that reads the convective memory csum at csum = 39, where
+    # WRF's own lev_start reaches its 0.9 cap; 0, 0.2.4's arithmetic, leaves
+    # the identity.  CHANGELOG 0.2.5 has the 16-start scorecards.
+    gf_deep_experiment: int = 7
+    # Read only where cumulus="gf".  A bit set of the UFS CCPP deep-plume pieces
+    # that go with a deeper plume (gf.cu GF_DEEP_PHYS): 1 condensate
+    # detrainment c1d = 0.1 * up_massdetr; 2 cloud-depth-dependent beta;
+    # 4 CAPE-removal time from the kept cloud top; 8 ice phase of the deep
+    # precipitation (freezing heat where it forms, melting in the melting layer);
+    # 32 the moisture-convergence closure member is mconv (CCPP), not
+    # mconv / max(0.5, 1 - edt zd/zu) (WRF).
+    # 0 (the default) keeps every earlier identity; experimental.  Measured
+    # (round6 tropics, T255, with gf_deep_experiment = 2, 4 starts): 2 keeps
+    # the 300-200 hPa fix to 72 h (tropical T -0.08/-0.08/-0.17 K against
+    # GDAS, control -0.63/-0.65/-0.67) with tropical Z500 8.17 m against 8.41,
+    # but tropical T850 and W250 are worse on 4/4; 3 (= 1 + 2) cuts the GF
+    # rain spike but loses the upper-troposphere fix by 72 h; 1 (with
+    # experiment 2) cools the tropical 300-200 hPa layer 1.2-1.4 K more than
+    # the control by day 20 (T127, one start); 8 raises GF rain and degrades
+    # tropical Z500.  34 (= 2 + 32) is the default since 0.2.5 (D, above);
+    # 0, 0.2.4's arithmetic, leaves the identity.
+    gf_deep_physics: int = 34
     # Read only where cumulus="ntiedtke": True runs the New Tiedtke kernels
     # with classic Tiedtke's deep closure (the fixed 2400 s adjustment time
     # and the moisture-convergence first guess in place of the
@@ -672,6 +697,8 @@ class NativePhysicsOptions:
             del payload["gf_momentum_transport"]
         if self.cumulus_scheme != "gf" or self.gf_deep_experiment == 0:
             del payload["gf_deep_experiment"]
+        if self.cumulus_scheme != "gf" or self.gf_deep_physics == 0:
+            del payload["gf_deep_physics"]
         if self.sfclay_iz0tlnd == 0:
             del payload["sfclay_iz0tlnd"]
         if self.sfclay_ocean_roughness == "wrf":
@@ -862,8 +889,13 @@ class NativePhysicsOptions:
             raise ValueError("gf_updraft_only_when_downdraft_dry must be true or false")
         if not isinstance(self.gf_momentum_transport, bool):
             raise ValueError("gf_momentum_transport must be true or false")
-        if isinstance(self.gf_deep_experiment, bool) or self.gf_deep_experiment not in (0, 2, 3, 4):
-            raise ValueError("gf_deep_experiment must be 0, 2, 3 or 4")
+        if isinstance(self.gf_deep_experiment, bool) or self.gf_deep_experiment not in (0, 2, 3, 4, 5, 6, 7, 8):
+            raise ValueError("gf_deep_experiment must be 0 or 2 to 8")
+        # Only bits 1, 2, 4, 8 and 32 exist in gf.cu; any other bit compiled a
+        # kernel identical to the one without it under a different config hash.
+        if (isinstance(self.gf_deep_physics, bool) or not isinstance(self.gf_deep_physics, int)
+                or not 0 <= self.gf_deep_physics <= 47 or self.gf_deep_physics & 16):
+            raise ValueError("gf_deep_physics must be an integer bit set of 1, 2, 4, 8 and 32")
         if not isinstance(self.snow_ageing, bool):
             raise ValueError("snow_ageing must be true or false")
         if self.snow_age_refresh not in {"any", "amount"}:

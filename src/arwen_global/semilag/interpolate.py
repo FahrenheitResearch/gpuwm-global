@@ -233,6 +233,28 @@ def _entry_point(dtype, limiter: str, deficit: bool = False,
     return f"{family}_{tag}{_band_tag(band)}_{suffix}"
 
 
+def _source_block(xp, chunk):
+    """One launch's source block: the batch's fields stacked contiguously.
+
+    A batch of ONE contiguous field already is that block, so it is handed
+    to the kernel as a view with the batch axis prepended: the kernel reads
+    the same bytes at the same offsets the stacked copy would have held, so
+    every value is unchanged, and the copy is never allocated.  That is what
+    makes ``semilag.gather_batch = 1`` the low-memory setting its name says:
+    before it, a batch of one still copied its field.  MEASURED 2026-11-15
+    on an RTX PRO 6000, T1023 L40 at one band and the shipped batch of
+    eight: the card refused a 5,760 MiB request (eight 720 MiB volumes
+    stacked) after step 4 with the pool holding 90.19 GiB for 71.90 GiB in
+    use -- the stacked blocks are what fragment the pool at that size.
+    """
+    if len(chunk) == 1:
+        field = chunk[0]
+        flags = getattr(field, "flags", None)
+        if flags is not None and bool(flags.c_contiguous):
+            return field[None]
+    return xp.ascontiguousarray(xp.stack(chunk, axis=0))
+
+
 def _band_tag(band: bool) -> str:
     """The entry-point infix of the latitude-band form (kernels.cu, BAND)."""
     return "_band" if band else ""
@@ -353,7 +375,7 @@ def gather_batch(
         # (spill.resident is the identity for one already on the card).
         chunk = [resident(xp, field) for field in fields[start:start + int(batch)]]
         count = len(chunk)
-        src = xp.ascontiguousarray(xp.stack(chunk, axis=0))
+        src = _source_block(xp, chunk)
         del chunk
         dst = xp.empty((count, *stencil.shape), dtype=src.dtype)
         tail = (
@@ -443,7 +465,7 @@ def gather_linear_batch(fields: Sequence[Any], stencil: Stencil, *,
         chunk = [resident(xp, field)
                  for field in fields[start:start + int(batch)]]
         count = len(chunk)
-        src = xp.ascontiguousarray(xp.stack(chunk, axis=0))
+        src = _source_block(xp, chunk)
         del chunk
         dst = xp.empty_like(src)
         kernel((blocks,), (threads,), (

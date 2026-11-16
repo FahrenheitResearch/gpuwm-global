@@ -116,7 +116,8 @@ def _gf_module(nz: int, updraft_only_when_downdraft_dry: bool = False,
                resolved_convergence_floor_percent: int = 100, *,
                shallow_buoyancy_from_cloud_base: bool = False,
                shallow_blqe_to_cloud_base: bool = False,
-               shallow_depth_min_m: int = 0, deep_experiment: int = 0):
+               shallow_depth_min_m: int = 0, deep_experiment: int = 0,
+               deep_physics: int = 0):
     """The compiled kernel for ``nz`` levels; with
     ``updraft_only_when_downdraft_dry`` the deep arm keeps running, without
     a downdraft, in the columns WRF's GFDRV rejects because their downdraft
@@ -136,7 +137,8 @@ def _gf_module(nz: int, updraft_only_when_downdraft_dry: bool = False,
                           resolved_convergence_floor_percent,
                           shallow_buoyancy_from_cloud_base=shallow_buoyancy_from_cloud_base,
                           shallow_blqe_to_cloud_base=shallow_blqe_to_cloud_base,
-                          shallow_depth_min_m=shallow_depth_min_m, deep_experiment=deep_experiment)
+                          shallow_depth_min_m=shallow_depth_min_m, deep_experiment=deep_experiment,
+                          deep_physics=deep_physics)
     if not defines:
         from arwen_global.core.kernels import load_module
 
@@ -151,7 +153,8 @@ def _gf_defines(nz: int, updraft_only_when_downdraft_dry: bool = False,
                 resolved_convergence_floor_percent: int = 100, *,
                 shallow_buoyancy_from_cloud_base: bool = False,
                 shallow_blqe_to_cloud_base: bool = False,
-                shallow_depth_min_m: int = 0, deep_experiment: int = 0) -> tuple[tuple[str, int], ...]:
+                shallow_depth_min_m: int = 0, deep_experiment: int = 0,
+                deep_physics: int = 0) -> tuple[tuple[str, int], ...]:
     """The integer defines :func:`_gf_module` compiles gf.cu with.  Every
     value is a positive integer, the only kind the define loader takes: a
     floor percent of 0 (no floor) is spelt GF_RESOLVED_CONVERGENCE_FLOOR_DISABLED
@@ -177,6 +180,8 @@ def _gf_defines(nz: int, updraft_only_when_downdraft_dry: bool = False,
         defines.append(("GF_SHALLOW_DEPTH_MIN_M", int(shallow_depth_min_m)))
     if int(deep_experiment) > 0:
         defines.append(("GF_DEEP_EXPERIMENT", int(deep_experiment)))
+    if int(deep_physics) > 0:
+        defines.append(("GF_DEEP_PHYS", int(deep_physics)))
     return tuple(defines)
 
 
@@ -312,9 +317,12 @@ class GrellFreitas:
                  shallow_buoyancy_from_cloud_base: bool = False,
                  shallow_blqe_to_cloud_base: bool = False,
                  shallow_depth_min_m: int = 0,
-                 momentum_transport: bool = False, deep_experiment: int = 0):
+                 momentum_transport: bool = False, deep_experiment: int = 0,
+                 deep_physics: int = 0):
         self._driver = None
         self.deep_experiment = int(deep_experiment)
+        #: Bit set of CCPP deep-plume pieces (gf.cu GF_DEEP_PHYS); 0 = WRF.
+        self.deep_physics = int(deep_physics)
         #: Couple the deep arm's momentum transport (dudt/dvdt, WRF's
         #: RUCUTEN/RVCUTEN) as rucuten/rvcuten; False returns none, the
         #: shipped seam.
@@ -482,7 +490,8 @@ class GrellFreitas:
                             self.resolved_convergence_floor_percent,
                             shallow_buoyancy_from_cloud_base=self.shallow_buoyancy_from_cloud_base,
                             shallow_blqe_to_cloud_base=self.shallow_blqe_to_cloud_base,
-                            shallow_depth_min_m=self.shallow_depth_min_m, deep_experiment=self.deep_experiment)
+                            shallow_depth_min_m=self.shallow_depth_min_m, deep_experiment=self.deep_experiment,
+                            deep_physics=self.deep_physics)
         fn = module.get_function("gf_gfdrv_stage")
         block = GF_BLOCK
         # Columns are packed in chunks of `column_chunk` (GF_COLUMN_CHUNK:

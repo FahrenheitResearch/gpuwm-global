@@ -278,7 +278,7 @@ the tool after changing an option and commit what it writes.
 
 | option | what it does | default |
 |---|---|---|
-| `qflux_args` (positional) | CHECKPOINT [CHECKPOINT ...] --out NPZ [--smoothing-truncation N], read by arwen_global.ocean_qflux.main |  |
+| `qflux_args` (positional) | CHECKPOINT [CHECKPOINT ...] --out NPZ [--smoothing-truncation N], or second-pass QFLUX --climatology NPZ --slab-run DIR [--slab-run DIR ...] --out NPZ (F_cal corrected by long slab runs that read QFLUX), read by arwen_global.ocean_qflux.main |  |
 
 ## `gpuwm-global ocean`
 

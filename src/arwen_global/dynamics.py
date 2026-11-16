@@ -263,13 +263,16 @@ class _PhysicsSources:
     whole grid, and the accumulators the exchange filler and the water
     reading reduce through (dynamics.MoistHybridModel._physics_sources)."""
 
-    __slots__ = ("sources", "div_mass", "lat", "lon", "holes", "water_rows",
-                 "model_top_pa", "dt_s", "time_s")
+    __slots__ = ("sources", "div_mass", "grad_lnps", "lat", "lon", "holes",
+                 "water_rows", "model_top_pa", "dt_s", "time_s")
 
-    def __init__(self, *, sources, div_mass, lat, lon, holes, model_top_pa,
-                 dt_s, time_s):
+    def __init__(self, *, sources, div_mass, grad_lnps, lat, lon, holes,
+                 model_top_pa, dt_s, time_s):
         self.sources = sources
         self.div_mass = div_mass
+        # (east, north) grad ln ps, two whole planes: the exchange's
+        # pressure velocity reads it (vertical.pressure_velocity).
+        self.grad_lnps = grad_lnps
         self.lat = lat
         self.lon = lon
         self.holes = holes
@@ -281,6 +284,7 @@ class _PhysicsSources:
     def release(self) -> None:
         self.sources = None
         self.div_mass = None
+        self.grad_lnps = None
 
 
 class _GridAssembler:
@@ -2975,6 +2979,9 @@ class MoistHybridModel:
         nlat, nlon = self.transform.grid.shape
         sources = self.grid_sources(bundle.atmosphere, only=self._PHYSICS_GRID_KEYS)
         _spectral, div_mass = self._mass_flux_sources(sources)
+        # Two planes, taken whole once like the momentum step's; the bands
+        # read their own rows.
+        grad_lnps = self.transform.gradient(bundle.atmosphere.log_surface_pressure)
         lat = self.transform.backend.asarray(
             self.transform.grid.latitude_deg[:, None], dtype=dtype
         )
@@ -2995,7 +3002,8 @@ class MoistHybridModel:
         ).mean())
         del top
         return _PhysicsSources(
-            sources=sources, div_mass=div_mass, lat=lat, lon=lon,
+            sources=sources, div_mass=div_mass, grad_lnps=grad_lnps,
+            lat=lat, lon=lon,
             holes=self._column_hole_accumulators(),
             model_top_pa=model_top_pa, dt_s=float(dt_s),
             time_s=float(bundle.time_s),
@@ -3048,13 +3056,25 @@ class MoistHybridModel:
             )
         ps.water_rows.add_band(rows, band_rows)
         del band_rows
-        # The pressure velocity on the half levels, diagnosed from the
-        # same continuity closure rhs() integrates with.  The native
-        # suite's cumulus scheme reads it as w = -omega/(rho g); nothing
-        # else in the exchange changes, so a suite that never reads it
-        # sees bit-identical input.
-        _dm, _ps_t, omega = self._mass_flux_band(ps.div_mass, rows)
-        del _dm, _ps_t
+        # The pressure velocity omega = Dp/Dt on the half levels.  The
+        # continuity closure rhs() integrates with gives eta-dot dp/d-eta,
+        # the flux THROUGH the hybrid interfaces, pinned to zero at the
+        # surface: handed over alone it showed the cumulus schemes no
+        # orographic ascent at all.  The interfaces' own motion,
+        # B (dps/dt + ps V . grad ln ps), is added here for the exchange
+        # only (vertical.pressure_velocity); transport keeps the flux.  The
+        # native suite's cumulus scheme reads it as w = -omega/(rho g);
+        # nothing else in the exchange reads it.
+        _dm, ps_t, mass_flux = self._mass_flux_band(ps.div_mass, rows)
+        del _dm
+        surface_ps = g["ps"] if "ps" in g else g["p_half"][-1]
+        omega = self.vertical.pressure_velocity(
+            mass_flux, ps_t, surface_ps, g["u"], g["v"],
+            band_view(xp, ps.grad_lnps[0], rows),
+            band_view(xp, ps.grad_lnps[1], rows),
+            self.transform.backend,
+        )
+        del ps_t, mass_flux, surface_ps
         surface = SurfaceState(**{
             member: resident(xp, getattr(bundle.surface, member), rows)
             for member in SURFACE_ARRAY_NAMES
@@ -4098,8 +4118,28 @@ class MoistHybridModel:
                 mark("physics_first", first.atmosphere)
                 mark("positivity_first", first.atmosphere)
         else:
-            with prof.section("physics_first"):
-                first, first_physics = self._apply_physics_half(bundle, half)
+            # The first half consumes the step's INPUT namespace on the same
+            # terms the second half consumes the first half's (below): the
+            # forecast loop never reads a state after stepping it
+            # (release_input_namespace, set by runner.run only), and the
+            # input namespace is dropped right after this half anyway.  So
+            # on a resident run the suite works on it in place rather than
+            # beside a deep copy.  Memory only, same bits: every write
+            # lands where the copy's would have.  MEASURED 2026-11-15 on an
+            # RTX PRO 6000, T1023 L40 one band: the copy was 8.58 GiB of
+            # the 88.47 GiB live peak, which sat inside this half's
+            # radiation call.
+            consume_first = (self.release_input_namespace
+                             and len(self.pipeline) == 1
+                             and hasattr(self.physics, "consume_input_namespace"))
+            if consume_first:
+                self.physics.consume_input_namespace = True
+            try:
+                with prof.section("physics_first"):
+                    first, first_physics = self._apply_physics_half(bundle, half)
+            finally:
+                if consume_first:
+                    self.physics.consume_input_namespace = False
             if (self.release_input_namespace
                     and first.physics_state is not bundle.physics_state
                     and bundle.physics_state.arrays):
@@ -4117,6 +4157,28 @@ class MoistHybridModel:
                     schema=bundle.physics_state.schema, arrays={},
                     metadata=bundle.physics_state.metadata,
                 )
+            if (self.release_input_namespace
+                    and first.atmosphere is not bundle.atmosphere
+                    and not (self.semi_lagrangian
+                             and self.semilag.physics_coupling != "advected")):
+                # The input ATMOSPHERE is dead weight on the same terms: the
+                # forecast loop never reads it again, and from here on this
+                # step reads only its step and time (the pre-physics hold
+                # below, the one later reader, is a coupling the shipped
+                # "advected" does not take, and it keeps the state then).
+                # Its ten grid tracers and its spectral fields otherwise sit
+                # through the dynamics beside the first half's ten and the
+                # advected ten.  The bundle's atmosphere is REPLACED, not
+                # mutated, so any other holder of the input state keeps it
+                # whole.  Memory only, same bits.  MEASURED 2026-11-15 on an
+                # RTX PRO 6000, T1023 L40 one band: the one-band live peak
+                # (87.37 GiB) sat in the tracer mass fixer with thirty
+                # levelled tracer volumes live, ten of them this input's.
+                from dataclasses import replace as _replace
+
+                bundle.atmosphere = _replace(
+                    bundle.atmosphere,
+                    **{name: None for name in (*SPECTRAL_FIELDS, *GRID_TRACERS)})
             if mark is not None:
                 mark("physics_first", first.atmosphere)
             with prof.section("positivity_first"):
@@ -4423,6 +4485,21 @@ class MoistHybridModel:
             moment_max = band_moment if moment_max is None else max(
                 moment_max, band_moment)
             del g
+        # On several cards the loop above ran only this card's bands, so
+        # each extremum is this card's rows until it is folded across the
+        # cards.  Unfolded, a two-card T1023 run's rank 0 wrote max wind
+        # 84.419 m/s to its log and receipt where the globe (and rank 1, and
+        # the one-card run of the same state) read 92.345.  A maximum is
+        # exact in any order and a minimum folds as the maximum of its
+        # negative, so the folded readings are the one-card run's bits.
+        exchange = self.pipeline.exchange
+        if exchange is not None and int(getattr(exchange, "world", 1)) > 1:
+            folded = exchange.fold(np, np.asarray(
+                [speed_max, -t_min, t_max, condensate_max, moment_max],
+                dtype=np.float64), "max", name="diagnostics_extrema")
+            speed_max, t_min, t_max, condensate_max, moment_max = (
+                float(value) for value in np.asarray(folded).reshape(-1))
+            t_min = -t_min
         ps = host(sources.pressure["ps"])
         stores = total_water_column(
             bundle, None, xp, atmospheric=atmospheric.plane

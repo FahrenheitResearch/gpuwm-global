@@ -10,6 +10,8 @@ production truncations through
 """
 from __future__ import annotations
 
+from test_arwen_global_gf_default_d import gf_0_2_4
+
 from arwen_global.configs_dir import config_root as _shipped_configs
 from dataclasses import replace
 from pathlib import Path
@@ -60,7 +62,8 @@ def test_shipped_config_hashes_do_not_move_with_the_memory_table():
     for path, expected in SHIPPED_CONFIG_HASHES.items():
         if not Path(path).exists():
             pytest.skip(f"{path} is not in this tree")
-        assert load_config(path).config_hash == expected, path
+        # Pinned before the 0.2.5 Grell-Freitas default D: compared at 0.2.4's GF.
+        assert gf_0_2_4(load_config(path)).config_hash == expected, path
 
 
 def test_the_defaults_are_the_shipped_engine_values():

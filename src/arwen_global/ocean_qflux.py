@@ -452,9 +452,216 @@ def load_qflux(path) -> QFluxFile:
                      provenance=provenance)
 
 
+#: A run's open water for the second pass: run and climatology ice below this.
+SECOND_PASS_ICE_BELOW = 0.15
+#: The smallest combined month weight, in days, on which a column's F_cal is corrected.
+SECOND_PASS_MIN_DAYS = 2.0
+
+
+def _daily_summary(path):
+    """``(day 00 UTC, skin K float64, sea-ice fraction float64)`` of one daily summary."""
+    from datetime import datetime, timezone
+
+    with np.load(path, allow_pickle=False) as data:
+        metadata = json.loads(str(data["metadata"]))
+        skin = np.asarray(data["skin_temperature_mean_k"], dtype=np.float64)
+        ice = np.asarray(data["sea_ice_fraction_mean"], dtype=np.float64)
+    day = datetime.strptime(metadata["day"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return day, skin, ice
+
+
+def second_pass(base, *, climatology, runs, out, depth_bounds_m=(10.0, 200.0),
+                relaxation_days: float | None = 365.0, skip_days: int = 0) -> dict:
+    """Write ``out``: the Q-flux file ``base`` with F_cal corrected by long slab
+    runs that read it; return the new provenance.
+
+    In a slab run, per open-ocean column (ocean_slab), rho c h dT/dt = F_open +
+    Q + R with Q = rho c h dC/dt - F_cal and R = rho c h (C - T) / tau, so with
+    D = T - C the run's atmosphere put in
+
+        F_open - F_cal = rho c h (dD/dt + D / tau)
+
+    more than the calibration booked.  Each run (a folder searched for its
+    ``arwen_global_daily_*.npz`` summaries, consecutive days) gives that flux
+    from each pair of daily means, D's change over the day at the instant
+    between them (C the slab's own cubic at each day's 12 UTC, h the slab's
+    woa18 depth clamped to ``depth_bounds_m``), on the climatology's ocean
+    columns where the run's and the climatology's ice are below
+    :data:`SECOND_PASS_ICE_BELOW` on both days; it is deposited with the month
+    weights (:func:`deposit`, a day's weight).  The runs' sums and weights add,
+    and F_cal + sum / weight replaces F_cal where the weight is at least
+    :data:`SECOND_PASS_MIN_DAYS` days.  Coverage, grid and the calibration
+    record are the base file's, so a run's guard reads the file as it read
+    the base.  ``relaxation_days`` and ``depth_bounds_m`` must be the runs'
+    own ``slab_relaxation_days`` and ``slab_depth_bounds_m`` (slab_depth =
+    "woa18").
+
+    ``skip_days`` (default 0: every pair is booked) leaves out each run's
+    first ``skip_days`` days: a pair is booked only when its first day is at
+    least ``skip_days`` after the run's first summary, so a start's own
+    anomaly decaying towards the slab's equilibrium is not booked as heat the
+    file lacks."""
+    if int(skip_days) != skip_days or skip_days < 0:
+        raise QFluxRefused(f"skip_days must be a whole number of days >= 0, not {skip_days}")
+    skip_days = int(skip_days)
+    from .ocean_slab import (RHO_CP_SEAWATER_J_M3_K, SlabParameters, _smooth_climatology,
+                             mixed_layer_depth)
+    from .surface_climatology import interpolate, load_climatology
+
+    q = load_qflux(base)
+    clim = load_climatology(climatology)
+    if q.provenance.get("climatology_sha256") != clim.sha256:
+        raise QFluxRefused(
+            f"{base} was calibrated against the climatology {q.provenance.get('climatology_sha256')}"
+            f" and {climatology} is {clim.sha256}; the second pass reads the runs against the "
+            "climatology the file was made with")
+    if clim.mixed_layer_depth_m is None:
+        raise QFluxRefused(f"{climatology} carries no mixed_layer_depth_m (build it --with-mld)")
+    params = SlabParameters(depth="woa18", depth_bounds_m=tuple(depth_bounds_m),
+                            relaxation_days=relaxation_days)
+    tau = None if params.relaxation_days is None else params.relaxation_days * SECONDS_PER_DAY
+    ocean = clim.ocean & ~clim.lake
+    total = np.zeros_like(q.flux_w_m2)
+    weight = np.zeros_like(q.flux_w_m2)
+    records = []
+    for run in runs:
+        files: dict = {}
+        for path in sorted(Path(run).rglob("arwen_global_daily_*.npz")):
+            files.setdefault(path.name, path)
+        names = sorted(files)
+        if len(names) < 2:
+            raise QFluxRefused(f"{run}: fewer than two daily summaries (arwen_global_daily_*.npz)")
+        run_sum = np.zeros_like(total)
+        run_weight = np.zeros_like(total)
+        previous = None
+        first = None
+        booked = 0
+        for name in names:
+            day, skin, ice = _daily_summary(files[name])
+            first = day if first is None else first
+            if skin.shape != ocean.shape:
+                raise QFluxRefused(f"{files[name]} is on a {skin.shape} grid, not the "
+                                   f"climatology's {ocean.shape}")
+            noon = day + timedelta(hours=12)
+            delta = skin - _smooth_climatology(clim.sst_k, noon, np, derivative=False)
+            if previous is not None:
+                day0, delta0, ice0 = previous
+                if day - day0 != timedelta(days=1):
+                    raise QFluxRefused(f"{run}: the daily summaries jump from {day0:%Y-%m-%d} "
+                                       f"to {day:%Y-%m-%d}")
+            if previous is not None and day0 - first >= timedelta(days=skip_days):
+                booked += 1
+                depth = mixed_layer_depth(clim, day, params, ocean, np)
+                clim_ice = interpolate(clim.sea_ice_fraction, day, np).astype(np.float64)
+                columns = (ocean & (ice0 < SECOND_PASS_ICE_BELOW) & (ice < SECOND_PASS_ICE_BELOW)
+                           & (np.nan_to_num(clim_ice, nan=1.0) < SECOND_PASS_ICE_BELOW)
+                           & np.isfinite(delta0) & np.isfinite(delta) & (depth > 0))
+                rate = (delta - delta0) / SECONDS_PER_DAY
+                restoring = 0.0 if tau is None else 0.5 * (delta0 + delta) / tau
+                flux = np.where(columns, RHO_CP_SEAWATER_J_M3_K * depth * (rate + restoring), 0.0)
+                deposit(run_sum, run_weight, flux_w_m2=flux, columns=columns, when=day,
+                        dt_s=SECONDS_PER_DAY, xp=np)
+            previous = (day, delta, ice)
+        if booked == 0:
+            raise QFluxRefused(f"{run}: {len(names)} daily summaries leave no pair to book "
+                               f"after skipping {skip_days} days")
+        total = total + run_sum
+        weight = weight + run_weight
+        record = {"folder": Path(run).name, "first_day": names[0][19:29],
+                  "last_day": names[-1][19:29], "days": len(names),
+                  "summaries_sha256": hashlib.sha256(
+                      "".join(_sha256_file(files[n]) for n in names).encode()).hexdigest()}
+        if skip_days:
+            record["booked_from"] = f"{first + timedelta(days=skip_days):%Y-%m-%d}"
+            record["pairs_booked"] = booked
+        records.append(record)
+    corrected = (weight >= SECOND_PASS_MIN_DAYS * SECONDS_PER_DAY) & np.isfinite(q.flux_w_m2)
+    change = np.where(corrected, total / np.where(corrected, weight, 1.0), 0.0)
+    flux = np.where(corrected, q.flux_w_m2 + change, q.flux_w_m2)
+    provenance = dict(q.provenance)
+    provenance["second_pass"] = _plain({
+        "base_sha256": q.sha256,
+        "depth": "woa18", "depth_bounds_m": list(params.depth_bounds_m),
+        "relaxation_days": params.relaxation_days,
+        "ice_below": SECOND_PASS_ICE_BELOW, "min_days": SECOND_PASS_MIN_DAYS,
+        "runs": records,
+        "month_corrected_days": [round(float(np.max(np.where(corrected[m], weight[m], 0.0)))
+                                       / SECONDS_PER_DAY, 6) for m in range(MONTHS)],
+        "rule": ("calibration_flux_w_m2 = the base file's F_cal + sum / weight where the runs' "
+                 "weight is at least min_days and F_cal is defined, else the base's; the sum "
+                 "deposits rho_w c_w h (dD/dt + D / tau) of each pair of a slab run's daily "
+                 "means (D = skin - the climatology's cubic, open water: run and climatology "
+                 "ice below ice_below) with the month weights, a day's weight each: the heat "
+                 "the run's atmosphere put into the open ocean beyond the base's F_cal"),
+    })
+    if skip_days:
+        # only when set, so a default build stays byte-identical to one made before the option
+        provenance["second_pass"]["skip_days"] = skip_days
+    arrays = {
+        "calibration_flux_w_m2": np.ascontiguousarray(flux, dtype=np.float64),
+        "coverage_s": np.ascontiguousarray(q.coverage_s, dtype=np.float64),
+        "latitude_deg": np.ascontiguousarray(q.latitude_deg, dtype=np.float64),
+        "longitude_deg": np.ascontiguousarray(q.longitude_deg, dtype=np.float64),
+        "provenance": np.array(_canonical(provenance)),
+    }
+    _write_npz(Path(out), arrays)
+    return provenance
+
+
+def _second_pass_main(argv) -> int:
+    parser = argparse.ArgumentParser(
+        prog="gpuwm-global climatology qflux second-pass",
+        description="Correct a Q-flux file by long slab runs that read it: F_cal gains the "
+                    "heat the runs' atmosphere put into the open ocean beyond it, from "
+                    "their daily summaries (docs/ARWEN_GLOBAL_OCEAN.md, the second pass).")
+    parser.add_argument("base", metavar="QFLUX", help="the Q-flux file the runs read")
+    parser.add_argument("--climatology", required=True, metavar="NPZ",
+                        help="the climatology the file was calibrated against (--with-mld)")
+    parser.add_argument("--slab-run", dest="runs", action="append", required=True,
+                        metavar="DIR", help="a slab run's folder (its daily summaries are "
+                                            "searched below it); repeat for each run")
+    parser.add_argument("--out", required=True, metavar="FILE", help="the .npz to write")
+    parser.add_argument("--depth-bounds", nargs=2, type=float, default=[10.0, 200.0],
+                        metavar=("LOWER", "UPPER"),
+                        help="the runs' slab_depth_bounds_m (default 10 200)")
+    parser.add_argument("--relaxation-days", default="365",
+                        help="the runs' slab_relaxation_days, or none (default 365)")
+    parser.add_argument("--skip-days", type=int, default=0, metavar="N",
+                        help="leave out each run's first N days, so the start's own anomaly "
+                             "decaying is not booked (default 0: book every day)")
+    args = parser.parse_args(argv)
+    days = None if args.relaxation_days == "none" else float(args.relaxation_days)
+    try:
+        provenance = second_pass(args.base, climatology=args.climatology, runs=args.runs,
+                                 out=args.out, depth_bounds_m=args.depth_bounds,
+                                 relaxation_days=days, skip_days=args.skip_days)
+    except (QFluxRefused, ValueError) as error:
+        print(f"climatology qflux second-pass: refused: {error}")
+        return 2
+    path = Path(args.out)
+    record = provenance["second_pass"]
+    print("climatology qflux second-pass: " + "; ".join(
+        f"{r['folder']} {r['first_day']}..{r['last_day']} ({r['days']} d"
+        + (f", booked from {r['booked_from']}" if "booked_from" in r else "") + ")"
+        for r in record["runs"]))
+    print("climatology qflux second-pass: corrected days (largest over the columns): "
+          + ", ".join(f"{name[:3]} {days:g}" for name, days in
+                      zip(_MONTH_NAMES, record["month_corrected_days"])))
+    print(f"climatology qflux second-pass: {path} ({path.stat().st_size:,} B, SHA-256 "
+          f"{_sha256_file(path)})")
+    return 0
+
+
 def main(argv=None) -> int:
     """``gpuwm-global climatology qflux CHECKPOINT [CHECKPOINT ...] --out
-    FILE [--smoothing-truncation N]``: the arguments after ``qflux``."""
+    FILE [--smoothing-truncation N]``: the arguments after ``qflux``; or
+    ``qflux second-pass QFLUX --climatology NPZ --slab-run DIR [...] --out
+    FILE`` (:func:`second_pass`)."""
+    import sys
+
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "second-pass":
+        return _second_pass_main(argv[1:])
     parser = argparse.ArgumentParser(
         prog="gpuwm-global climatology qflux",
         description="Write the slab ocean's heat-flux correction file "
@@ -495,4 +702,5 @@ def main(argv=None) -> int:
 __all__ = [
     "CALIBRATION_KEYS", "DEFAULT_SPINUP_DAYS", "MONTHS", "QFLUX_SCHEMA", "QFluxFile",
     "QFluxRefused", "build_qflux", "deposit", "load_qflux", "main", "months_needed",
+    "second_pass",
 ]

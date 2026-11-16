@@ -658,6 +658,40 @@ class HybridCoordinate:
         omega[-1] = 0.0
         return omega, residual
 
+    def pressure_velocity(self, mass_flux_half, ps_t, ps, u, v,
+                          dlnps_east, dlnps_north, backend):
+        """The pressure velocity omega = Dp/Dt (Pa/s) on the half levels.
+
+        ``mass_flux_half`` is :meth:`continuity`'s eta-dot dp/d-eta, the
+        mass flux THROUGH the hybrid interfaces, which is zero at the top
+        and at the surface whatever the flow.  The air's own pressure
+        velocity adds the motion of the interfaces themselves (Simmons and
+        Burridge 1981; IFS documentation Part III):
+
+            omega_{k+1/2} = B_{k+1/2} (dps/dt + ps V . grad ln ps)
+                            + (eta-dot dp/d-eta)_{k+1/2}
+
+        so uniform flow up a slope has omega = -rho g V . grad h at the
+        ground.  ``u, v`` are the full-level winds (m/s); the half level
+        takes the mean of the two layers it separates, the surface the
+        bottom layer's and the top the top layer's (B is zero there on a
+        pressure lid).  ``dlnps_east, dlnps_north`` are grad ln ps per
+        metre.  Transport keeps :meth:`continuity`'s flux; this is what a
+        column scheme that reads omega must be handed.
+        """
+        xp = backend.xp
+        b = backend.asarray(self.b_half, dtype=backend.float_dtype)
+        advection = u * dlnps_east[None] + v * dlnps_north[None]
+        half = xp.empty_like(mass_flux_half)
+        half[0] = advection[0]
+        half[-1] = advection[-1]
+        half[1:-1] = 0.5 * (advection[:-1] + advection[1:])
+        half *= ps[None]
+        half += ps_t[None]
+        half *= b[:, None, None]
+        half += mass_flux_half
+        return half
+
     @staticmethod
     def mass_per_area(dp):
         return dp / GRAVITY_M_S2

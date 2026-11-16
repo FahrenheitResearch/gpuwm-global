@@ -69,11 +69,13 @@ NLEV = 40
 
 #: The shipped step's counts per step (numpy, T21, L40, sl_si, reference
 #: physics, Strang split, in-situ ledger on): the read-step-cost census.
-SHIPPED_CALLS, SHIPPED_PLANES = 61, 2573
+#: 0.2.5 adds 4 calls and 4 planes a step (measured): the cumulus pressure
+#: velocity's grad ln ps, taken once per physics call (fix/cumulus-omega).
+SHIPPED_CALLS, SHIPPED_PLANES = 65, 2577
 #: The same step with both switches on: as many calls, and 2 x 40 +
 #: 3 x 2 x 40 fewer planes (the unread pair and the vorticity halves of the
 #: three mass-flux analyses).
-DIET_CALLS, DIET_PLANES = 61, 2253
+DIET_CALLS, DIET_PLANES = 65, 2257
 
 _CONFIG = """
 [arwen_global]

@@ -128,7 +128,7 @@ That builds the static surface fields, integrates the forecast, exports
 render-ready tapes and draws the product pictures, naming the stage it is in
 while the detail goes to the run's log.
 
-Sixty experiments ship inside the package and resolve by bare name from
+Sixty-one experiments ship inside the package and resolve by bare name from
 any directory (`gpuwm-global configs` lists them); a path that exists always
 wins over a shipped name, so an edited copy runs.
 
@@ -485,7 +485,7 @@ and drawn by `gpuwm-global` in one command:
 
 ![2 m temperature at the third analysis](docs/demo/analysis-t2m-f003.png)
 
-The mean sea level pressure picture that same run drew at its own step 0 is
+The mean sea level pressure picture that same run rendered at its own step 0 is
 byte-identical to the forecast demo's, `md5 b772960e…`, from a different run
 on a different day through a different export and a different render call
 (MEASURED 2026-09-07).

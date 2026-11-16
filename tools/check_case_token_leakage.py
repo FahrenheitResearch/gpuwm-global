@@ -111,17 +111,33 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import json
 import re
 import sys
 from pathlib import Path
 from typing import Sequence
 
+
+def _private_case_tokens() -> tuple[str, ...]:
+    """The private case names, from the private names file at run time.
+
+    A private case's working name is a private name: this file ships in the
+    sdist, so it is read from `tools/private_names.py`'s file rather than
+    spelled here, and is simply not checked on a machine without that file.
+    """
+
+    spec = importlib.util.spec_from_file_location(
+        "arwen_global_private_names", Path(__file__).resolve().with_name("private_names.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return tuple(token.lower() for token in module.strings(module.load(), "case_tokens"))
+
+
 # Tokens naming one case or one forcing source.  Matched case-insensitively.
 # Purely numeric tokens are only a violation when glued into a longer
 # identifier (``case1974``); a bare year inside a date literal is not.
-CASE_TOKENS: tuple[str, ...] = (
-    "real74",
+CASE_TOKENS: tuple[str, ...] = _private_case_tokens() + (
     "hrrr",
     "ohio",
     "oklahoma",

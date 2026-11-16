@@ -1799,7 +1799,8 @@ class CardSession:
             _slice_rows(buffer, axis, r0, r1)[...] = piece
         return buffer
 
-    def exchange_halo(self, xp, buffer, axis: int, width: int, *, name: str = "halo"):
+    def exchange_halo(self, xp, buffer, axis: int, width: int, *, name: str = "halo",
+                      origin: int = 0):
         """ Fill the ``width`` rows either side of this card's row range.
 
         The meridional tracer sweep reads ``q[j-2 .. j+2]`` through its van
@@ -1844,6 +1845,11 @@ class CardSession:
                 "rows.  Use fewer cards, more rows, or a smaller sub-step "
                 "count"
             )
+        # ``origin`` is the grid row at the buffer's first row: a buffer that
+        # carries only this card's rows and the window either side of them
+        # (origin = first - width, clipped at the pole) instead of the whole
+        # latitude axis.
+        first, last = first - int(origin), last - int(origin)
         sends = {}
         recv_shapes = {}
         if self.rank > 0:
@@ -2182,14 +2188,24 @@ class RowExchange:
     def owned_rows(self) -> tuple[int, int]:
         return self.session.local_rows()
 
+    def narrowest_rows(self) -> int:
+        """The fewest rows any rank owns: the widest halo :meth:`halo`
+        takes from the two neighbours alone (the same verdict on every
+        rank, since every rank holds the whole assignment)."""
+        session = self.session
+        return min(b - a for a, b in
+                   (session.rows_of_rank(r) for r in range(session.world)))
+
     def fill_rows(self, xp, buffer, axis: int, *, name: str = "rows"):
         return self.session.gather_rows(xp, buffer, axis, name=name)
 
     def fold(self, xp, value, op: str, *, name: str = "fold"):
         return self.session.fold_associative(xp, value, op, name=name)
 
-    def halo(self, xp, buffer, axis: int, width: int, *, name: str = "halo"):
-        return self.session.exchange_halo(xp, buffer, axis, width, name=name)
+    def halo(self, xp, buffer, axis: int, width: int, *, name: str = "halo",
+             origin: int = 0):
+        return self.session.exchange_halo(xp, buffer, axis, width, name=name,
+                                          origin=origin)
 
     def gather_partials(self, xp, local, *, name: str = "partial"):
         return self.session.gather_partials(xp, local, name=name)

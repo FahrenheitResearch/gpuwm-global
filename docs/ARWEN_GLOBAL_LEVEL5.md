@@ -968,7 +968,7 @@ carries too warm evaporates at that rate for the whole forecast. GDAS carried
 Lake Tana (11.9 N, 37.5 E) at 304.8 to 305.1 K at all eight cycles of
 2026-09-29 and 2026-09-30, 9.2 K above the 2 m air temperature the same
 analyses carry over that water averaged over the eight cycles, and held for a
-240 h T255 forecast that column drew about 22 kg/m2 a day from its surface
+240 h T255 forecast that column took about 22 kg/m2 a day from its surface
 reservoir. So a lake column (`statics.lake_columns`, WRF's LAKEMASK rule:
 open water whose lake share in the statics' land-use fractions beats its
 ocean share; the statics carry the share as the surface member
@@ -1008,6 +1008,108 @@ bit-for-bit the pre-seeding construction. The instrument is calibrated by
 analyses in both hemispheres and both latitude orderings. Checkpoints
 written before the seeding carry no sea-ice planes; the reader fills zero
 ice and records the absence.
+
+#### Snow pack density at the cold start (`analysis_snow_density`)
+
+GDAS's snow depth is not an independent measurement. The GFS surface cycle
+writes it as ten times the analysed water equivalent wherever its snow
+analysis updates the pack: on the 2026-01-16, 01-21 and 03-01 00Z analyses,
+66-73 % of the snow-covered land cells read within 1 % of 100 kg m-3, a
+fresh-snow density (the median is 100.2, the 99th percentile 200). Seeded
+as it stands, that pack starts Noah twice as deep as a 200 kg m-3 pack and
+with Noah's CSNOW at 0.128 instead of 0.215 W/m/K, so its thermal resistance
+is about 3.4 times larger; settled winter packs are 190-310 kg m-3 by snow
+class (Sturm et al. 2010). `[initial] analysis_snow_density = "wrf-floor"`
+starts any pack lighter than WRF real.exe's derived density (SNOWH = SNOW *
+0.005, 200 kg m-3, the seeding's own rule for a cell without a depth) at
+that depth; denser analysed packs, the water equivalent and the cover are
+untouched. The default `"analysis"` is the old rule, stays out of the config
+identity, and writes the same checkpoints byte for byte (the branch tree at
+defaults against rel/0.2.3, one T127 day from 2026-01-16 00Z on the same
+card: 44/44 arrays of the initial checkpoint and 136/136 of the day-1
+checkpoint identical).
+
+Measured, T127 with the land-cold long-run physics (jan-fix: snow ageing
+with the `"amount"` refresh, kim-gwdo, anomaly ocean), against GDAS 00Z of
+the same date over land (model and GDAS land, land ice out). The control's
+day-1 cold is at the surface, not in the column: NH land 20-70N T2 -1.07 /
+-1.08 / -1.42 K from the Jan 16 / Feb 1 / Mar 1 starts while T925 is
++0.32 / +0.19 / -0.07 K, and Siberia (50-70N, 60-140E) T2 -2.72 / -2.79 /
+-3.65 K with T925 +0.45 / -0.39 / -0.23 K. Siberia's inversion (T925 - T2)
+is 3.8 / 3.5 / 4.2 K stronger than GDAS's, its skin 3.4-5.1 K colder, and its
+first soil layer 0.4 K warmer: the pack holds the soil's heat away from the
+skin. With `"wrf-floor"` (one change, same card, same starts), days 1-6:
+
+| start | NH land T2 bias, day 1 / 3 / 6 | NH land T2 RMSE, day 1 / 3 / 6 | Siberia T2 bias, day 1 / 3 / 6 | Siberia inversion excess, day 1 / 3 / 6 |
+|---|---|---|---|---|
+| 2026-01-16 control | -1.07 / -0.75 / -0.72 K | 3.56 / 4.32 / 5.33 K | -2.72 / -1.38 / -1.11 K | 3.76 / 3.40 / 4.36 K |
+| 2026-01-16 floor | -0.29 / -0.06 / -0.04 K | 3.29 / 4.20 / 5.28 K | -0.42 / +0.83 / +1.24 K | 1.43 / 1.41 / 2.21 K |
+| 2026-02-01 control | -1.08 / -0.87 / -0.37 K | 3.32 / 4.66 / 6.97 K | -2.79 / -2.38 / -3.56 K | 3.50 / 2.80 / 2.60 K |
+| 2026-02-01 floor | -0.42 / -0.22 / -0.01 K | 2.99 / 4.40 / 6.71 K | -0.82 / +0.02 / -2.04 K | 1.24 / 0.67 / 1.43 K |
+| 2026-03-01 control | -1.42 / -1.37 / -3.15 K | 3.58 / 4.53 / 7.50 K | -3.65 / -3.36 / -4.74 K | 4.19 / 3.70 / 5.67 K |
+| 2026-03-01 floor | -0.88 / -0.89 / -2.70 K | 3.18 / 4.14 / 6.97 K | -1.60 / -1.45 / -2.94 K | 2.08 / 1.70 / 3.77 K |
+
+NH land is 20-70N; the inversion excess is the model's T925 - T2 minus
+GDAS's, over land below 950 hPa. The floor lowers NH land T2 RMSE in every
+window of the three starts (22 daily windows: days 1-6, 1-10, 1-6), and the gain holds: the
+February pair, run 10 days, reads NH land T2 -1.74 against -1.41 K and RMSE
+8.62 against 7.75 K at day 10. A fourth start (2025-12-16, 5 days) reads
+NH land T2 -0.54 / -0.90 / -1.11 K at days 1 / 3 / 5 for the control and
++0.04 / -0.32 / -0.53 K with the floor, RMSE 3.37 / 4.22 / 6.06 against
+3.19 / 3.90 / 5.87 K. The shipped T255 forecast config (kim-gwdo, no snow
+ageing), 2026-01-16, 3 days: NH land T2 -1.13 / -1.06 / -1.02 K against
+-0.35 / -0.29 / -0.32 K, RMSE 3.19 / 3.45 / 3.83 against 2.91 / 3.30 / 3.69
+K, and Siberia RMSE 4.43 / 4.67 / 4.64 against 3.58 / 4.24 / 4.43 K; from
+2026-03-01: NH land T2 -1.53 / -1.63 / -1.83 K against -0.98 / -1.10 /
+-1.29 K, RMSE 3.30 / 3.66 / 4.47 against 2.86 / 3.22 / 3.98 K, Siberia RMSE
+5.12 / 6.00 / 7.29 against 3.67 / 4.56 / 5.79 K.
+Canada is the region it can overshoot: its inversion excess goes from +1.1
+to -0.5 K at day 1 of the December start and its T2 bias from -0.05 to
++1.43 K, though its RMSE still falls (4.50 to 4.14 K). Restart: under
+`"wrf-floor"`, two days straight and one day plus a restart from the day-1
+checkpoint write the same day-2 checkpoint (136/136 arrays). After day 3 the weather takes over (the March
+control's Europe is -10 K at day 6 with T925 -10 K: a synoptic miss, not the
+surface). What the floor leaves in Siberia, day means against GDAS's 0-6 h
+averages: the downward longwave is low under the same cloud fraction, by 10.4
+W/m2 on day 0-1 of the January start (161.8 against 172.2, cloud 0.80
+against 0.82) and under 3 W/m2 from day 2, but by 8.7-14.6 W/m2 on every day
+0-6 of the March start; the model's winter clouds there are thin ice (the
+control at Jan 17-19 00Z: liquid path 1-2 g/m2, liquid plus ice 11-14 g/m2,
+against GDAS's cloud water 17-31 g/m2). In March the upward shortwave is
+9-18 W/m2 above GDAS's: the snow albedo excess, which this option does not
+touch. The thermal
+roughness of the surface layer (`sfclay_iz0tlnd = 3`, the GFS form) on top
+of the floor moved NH land T2 by -0.09 to 0.00 K over days 1-4 of two
+starts and is not part of it; neither is the MM5 surface layer
+(`sfclay_option = 91`), which made NH land T2 0.18 K colder and its RMSE
+worse on days 1 and 2 of the January start. The floor acts at the cold
+start only: a run that grows its own packs (the year run from August) is
+not changed by it, and those packs are light too (Siberia's median bulk
+density 166 kg m-3 at the start of March in that run, 131 at day 75 of the
+October 1 twin).
+
+It ships off, because the forecast scorecard is mixed. The shipped T255
+forecast config to 120 h from nine autumn starts (2026-10-13, 10-17, 10-21,
+10-24 12Z, 10-28, 11-01, 11-04 12Z, 11-06 and 11-08 00Z unless marked),
+against the GFS analysis valid at each lead, the default against the floor,
+with the number of starts on which the floor is better:
+
+| metric | change with the floor | floor better |
+|---|---|---|
+| NH land T2 bias, 24-96 h | +0.13 to +0.20 K, toward the analysis | 9 of 9 at every lead |
+| NH land T2 RMSE, 24 / 48 / 120 h | -0.03 K at 120 h | 5 / 4 / 8 of 9 |
+| NH Z500 bias-removed RMSE, 72 / 120 h | -0.05 / +0.12 m | 7 / 5 of 9 |
+| SH Z500 bias-removed RMSE, 120 h | +0.38 m | 4 of 9 |
+| NH MSLP RMSE, 24 / 48 / 72 h | +0.010 / +0.013 / +0.017 hPa | 1 of 9 at each |
+| Canada T2 RMSE, 24 h | +0.075 K | 1 of 9 |
+
+The bias gain is robust; the RMSE gain is a day-5 effect of 0.03 K, and the
+small MSLP and Canada costs hold their sign. In December Canada overshoots:
+T127 from 2025-12-16, 72 h, Canada (50-70N, 140-60W) T2 bias -0.28 K for
+the control and +1.13 K with the floor, the inversion over the pack going
+from too strong (+0.5 to +1.8 K over GDAS) to too weak (-0.3 to -1.1 K), in
+forest and open land alike. GDAS's snow on sea ice reads 330 kg m-3, so the
+floor leaves it alone.
 
 ### Pure fail-closed configuration
 

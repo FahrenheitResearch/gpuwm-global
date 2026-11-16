@@ -43,6 +43,11 @@ CUMULUS_RATE_FIELDS = (
     ("rqccuten", "qc"), ("rqicuten", "qi"),
 )
 REQUIRED_CUMULUS_RATES = ("rthcuten", "rqvcuten")
+# The cumulus rain guard: the applied rates' rain on the model's mass and
+# the measured column loss are the same water, apart from the float32
+# rounding of the updated species (at most 2^-24 of each per level, so of
+# the column's water); refused beyond four times that (_apply_cumulus_result).
+CUMULUS_RAIN_CLOSURE_RELATIVE = 4.0 * 2.0 ** -24
 # Module and class of each cumulus option's scheme callable; all share the
 # GrellFreitas seam's interface (constructor column_chunk=, bind_driver,
 # __call__(atmosphere=, fields=, state=, cfg=)).
@@ -455,7 +460,8 @@ class NativePhysicsRuntime:
             with profiler_of(self).section("radiation_between"):
                 radiation_between.apply(
                     batch, persistent, mode=between,
-                    start_time=self.options.start_time, due=due)
+                    start_time=self.options.start_time, due=due,
+                    world_sun=self.world_sun)
         heating = persistent.arrays["rad_rthratenlw"] + persistent.arrays[
             "rad_rthratensw"
         ]
@@ -652,7 +658,13 @@ class NativePhysicsRuntime:
         vegfra = xp.ascontiguousarray(
             xp.asarray(batch.surface.vegetation_fraction, dtype=xp.float32)
         )
-        lakemask = batch.xp.zeros(batch.surface_shape, dtype=batch.xp.float32)
+        # WRF's LAKEMASK (module_sf_sfclay.F:459, sf_sfclayrev.F90:283):
+        # the 0.98 sea-salt reduction of the saturation vapour pressure is
+        # for open water that is not a lake.  The inland lakes are the
+        # columns statics.lake_columns names (the same set the lake step
+        # integrates); every other column keeps 0.
+        lakemask = xp.ascontiguousarray(
+            self._lake_columns(batch).astype(xp.float32))
         result = module.sfclay(
             batch.arrays["u"][0], batch.arrays["v"][0],
             batch.arrays["temperature"][0], batch.arrays["qv"][0],
@@ -1466,7 +1478,7 @@ class NativePhysicsRuntime:
         9.2 K above the 2 m air over it; held for a 240 h T255 forecast,
         the column evaporated about 22 kg/m2 a day (published estimates of
         the lake's open-water evaporation are about 4 to 5 mm a day) and
-        drew its surface reservoir toward the refusal "native physics
+        pulled its surface reservoir toward the refusal "native physics
         water closure exceeds the explicit surface reservoir", about 23
         days out.
 
@@ -1833,15 +1845,16 @@ class NativePhysicsRuntime:
         removed, MEASURED in the model's metric exactly as the Morrison
         and YSU bookings are (audit 2026-09-01 NB-3), so the suite's
         closure sees the atmosphere and the reservoir move together.  The
-        rain that reaches the surface is ONE number: the scheme's RAINCV
-        (kg/m2 this call) up to the water the call removed.  It feeds both
+        rain that reaches the surface is ONE number: the water the
+        scheme's applied rates took out of the column, priced on the
+        model's mass (kg/m2 this call), refused unless it equals the
+        measured loss to the float32 rounding of the update.  It feeds both
         the physics-state RAINC the render tape exports and the land
         bucket Noah is forced with (WRF RAINBL = RAINCV + RAINNCV,
-        module_surface_driver.F:1566), so a scheme that reports more rain
-        than its rates take out of the column neither hands the land water
-        the atmosphere did not lose nor draws it on the maps; what it
-        reported beyond that is a diagnostic of the call
-        (``cumulus_rain_withheld_kg_m2``).  RAINNC stays the microphysics
+        module_surface_driver.F:1566), so the land receives exactly the
+        water the atmosphere lost and the maps draw it; the scheme's own
+        RAINCV, priced on the kernel's mass, is a diagnostic of the call
+        (``cumulus_rain_reported_kg_m2``).  RAINNC stays the microphysics
         accumulators alone, WRF's own split.  Momentum rates, when the
         scheme carries them, integrate into u and v like the others.
         """
@@ -1894,6 +1907,8 @@ class NativePhysicsRuntime:
                     extra["momentum_transport"] = True
                 if self.options.gf_deep_experiment:
                     extra["deep_experiment"] = int(self.options.gf_deep_experiment)
+                if self.options.gf_deep_physics:
+                    extra["deep_physics"] = int(self.options.gf_deep_physics)
             self._cumulus = getattr(module, class_name)(
                 column_chunk=self.options.cumulus_column_chunk, **extra
             )
@@ -1929,6 +1944,14 @@ class NativePhysicsRuntime:
         # the other schemes are handed the batch's own water arrays, so
         # their before is read fresh.
         column_before = self._water_before(batch, reuse=reuse_water)
+        # The scheme's rain on the model's mass: minus the column integral
+        # of its applied water increments, each priced r d_in dp / g as the
+        # ledger prices the species (native_batch docstring).  This is the
+        # kernel output converted consistently: the increments are the
+        # numbers that moved the water, taken in the float32 the update
+        # adds, so the integral and the measured change below differ only
+        # by the float32 rounding of the updated species.
+        rain_model = None
         for name, target in CUMULUS_RATE_FIELDS:
             rate = getattr(result, name, None)
             if rate is None:
@@ -1937,15 +1960,42 @@ class NativePhysicsRuntime:
                 raise ValueError(
                     f"cumulus {name} shape {tuple(rate.shape)} != {shape}"
                 )
-            batch.arrays[target] += step * xp.asarray(rate, dtype=xp.float32)
+            increment = step * xp.asarray(rate, dtype=xp.float32)
+            batch.arrays[target] += increment
+            if target in WATER_SPECIES:
+                taken = -batch.column_integral_kg_m2(increment)
+                rain_model = taken if rain_model is None else rain_model + taken
+            del increment
         batch.arrays["temperature"] = xp.ascontiguousarray(
             batch.arrays["theta"] * batch.arrays["exner"]
         )
-        # What the scheme's applied rates took out of the column, in the
-        # model's metric: the reservoir is credited with it, and it is also
-        # the most rain the land surface can receive from this call (below).
-        removed = column_before - self._water_after(batch)
+        # What the scheme's applied rates took out of the column, MEASURED
+        # in the model's metric: the reservoir is credited with it.
+        column_after = self._water_after(batch)
+        removed = column_before - column_after
         self._credit_reservoir(batch, removed)
+        # The guard: the rates' rain and the measured loss are the same
+        # water, so they agree to the float32 rounding of the update, at
+        # most 2^-24 of each updated species per level, so 2^-24 of the
+        # column's water; refused beyond 4 times that.  A disagreement is
+        # water moved by a route the rates do not carry (a scheme writing
+        # the batch's arrays itself), which no rain number may paper over.
+        if rain_model is None:
+            rain_model = xp.zeros(batch.surface_shape, dtype=xp.float64)
+        closure = xp.abs(rain_model - removed)
+        closure_excess = closure - CUMULUS_RAIN_CLOSURE_RELATIVE * xp.abs(column_after)
+        closure_readings = xp.stack([
+            xp.max(closure), xp.max(closure_excess),
+            xp.mean(closure, dtype=xp.float64)])
+        closure_readings = np.asarray(
+            xp.asnumpy(closure_readings) if hasattr(xp, "asnumpy")
+            else closure_readings)
+        if bool(closure_readings[1] > 0.0):
+            raise FloatingPointError(
+                "cumulus rain from the applied rates disagrees with the "
+                f"measured column loss by {float(closure_readings[0]):.3e} "
+                "kg/m2, beyond the float32 rounding of the update"
+            )
         momentum = {
             name: getattr(result, name, None) for name, _ in CUMULUS_MOMENTUM_FIELDS
         }
@@ -1975,11 +2025,17 @@ class NativePhysicsRuntime:
                     f"cumulus rainc shape {tuple(rainc.shape)} != {batch.surface_shape}"
                 )
             increment = xp.maximum(xp.asarray(rainc, dtype=xp.float32), 0.0)
-            # The rain that reached the surface is the scheme's rain only up
-            # to the water its rates removed, and it is ONE number for the
-            # land bucket and for RAINC.
+            # The rain that reached the surface is the water the scheme's
+            # applied rates took out of the column, priced on the model's
+            # mass (``rain_model`` above, held to the measured loss by the
+            # guard), and it is ONE number for the land bucket and for
+            # RAINC.  The scheme's own RAINCV is a diagnostic of the call
+            # (``cumulus_rain_reported_kg_m2``): its pricing is the
+            # kernel's, not the model's.
             #
-            # WHAT THIS CAP NOW CLOSES.  It was installed for GP-1 (audit
+            # WHY NOT THE SCHEME'S RAINCV.  Until fix/water-divisor the
+            # rain was RAINCV capped at the measured loss (installed for
+            # GP-1, audit
             # 2026-10-05): Grell-Freitas's deep arm added the downdraft
             # evaporation the detrained water could not supply to the rain
             # instead of subtracting it (WRF module_cu_gf_deep.F:3348), so
@@ -1990,13 +2046,26 @@ class NativePhysicsRuntime:
             # core/kernels/gf.cu, and the cap no longer stands in for it:
             # MEASURED 2026-10-05 on the fixed kernel the same day withholds
             # 2.9 percent of the reported rain globally and 1.9 percent over
-            # land, the kernel's mixing-ratio water metric against the
-            # model's specific-humidity one (the oracle capture reads 1.025
-            # in the model's metric).  That remainder is real water the
-            # atmosphere did not lose, so the cap stays as the closure of
-            # the metric gap, and for any scheme in the slot that reports
-            # more rain than its rates remove.  Converting the kernel's
-            # rates and rain into the model's metric would retire it.
+            # land.  About half of that was the bridge, not the kernel: the
+            # outbound conversion divided by the post-kernel 1 + r_v, so
+            # the vapour GF condensed read back as about q_v times itself
+            # of new water and the measured removal came out short (fixed
+            # in fix/water-divisor, native_batch docstring).  MEASURED
+            # 2026-11-15, T255 GDAS 2026-09-01 00Z 24 h at the shipped
+            # defaults, 16 sampled half-calls: withheld/reported 2.83 ->
+            # 1.56 percent, reported/removed 1.0291 -> 1.0159.  What it
+            # withholds now is the kernel's own metric and is not water:
+            # gf.cu prices its rain as sum dr dp / g, the moist layer mass
+            # taken as dry air, where the column lost sum dr d_in dp / g,
+            # so its rain exceeds the water that left by about the
+            # condensing levels' q_v (plus the 0.35 percent of its cup
+            # pressures against the model interfaces,
+            # test_arwen_global_gf_rain_budget_cuda).  So the rain is now
+            # priced from the rates themselves on the model's mass and the
+            # cap is gone: nothing is withheld beyond round-off, and the
+            # guard above refuses anything more.  MEASURED the same T255
+            # day: rain beyond the measured loss 0.0006 percent of the
+            # reported rain, landed/removed 1.0000003.
             # Before the GP-1 fix:  Forced with the reported number, Noah's stores
             # gained water that never left the atmosphere and the surface
             # reservoir paid for it (a Texas column lost 143 kg/m2 of
@@ -2004,18 +2073,23 @@ class NativePhysicsRuntime:
             # convective rain that never left the air (660 kg/m2 against
             # 288 removed on a Colombian column over 240 h), and the water
             # budget's E = net + P read the same excess as evaporation.
-            # What the scheme reported beyond the removed water is kept as
-            # this call's diagnostic, never as rain.
-            landed = xp.minimum(
-                increment,
-                xp.maximum(xp.asarray(removed, dtype=xp.float32), xp.float32(0.0)),
-            )
+            # What the scheme reported differently is kept as this call's
+            # diagnostic, never as rain.  A column the rates moistened on
+            # net receives no rain (the reservoir pays, as booked above).
+            landed = xp.maximum(rain_model, 0.0).astype(xp.float32)
             f[CONVECTIVE_RAIN_ACCUMULATOR] += landed
             f["land_rainbl"] += landed
             rain_books = {
                 "rain_reported_kg_m2": float(xp.mean(increment, dtype=xp.float64)),
-                "rain_withheld_kg_m2": float(xp.mean(increment - landed, dtype=xp.float64)),
+                "rain_kg_m2": float(xp.mean(landed, dtype=xp.float64)),
+                # The rain beyond the measured loss: round-off only.
+                "rain_withheld_kg_m2": float(xp.mean(
+                    xp.maximum(landed - xp.maximum(removed, 0.0), 0.0),
+                    dtype=xp.float64)),
                 "water_removed_kg_m2": float(xp.mean(removed, dtype=xp.float64)),
+                # Mean |rates' rain - measured loss| (the guard holds the
+                # largest to round-off); a column mean, merged as one.
+                "rain_closure_kg_m2": float(closure_readings[2]),
             }
         else:
             rain_books = {}
@@ -2112,8 +2186,13 @@ class NativePhysicsRuntime:
         # O(q) -- 1-2% of a burst, above the repair gate on a 1 kg/m2 event
         # -- so it feeds the accumulators and the land buckets Noah is
         # forced with, not the closure (audit 2026-09-01 NB-3).  Column
-        # interior conversions conserve mixing-ratio water, so fallout is
-        # the only change measured here.
+        # interior conversions conserve mixing-ratio water, and the metric
+        # prices r_x at the batch's INBOUND dry fraction (native_batch
+        # docstring), so they conserve this reading too and fallout is the
+        # only change measured here.  (Until fix/water-divisor the metric
+        # divided by the post-kernel 1 + r_v, under which condensation
+        # itself read as about q_v times the condensate of new water, and
+        # this sentence was false.)
         total = xp.maximum(f["rainncv"], 0.0)
         snow = xp.minimum(xp.maximum(f["snowncv"], 0.0), total)
         graupel = xp.minimum(xp.maximum(f["graupelncv"], 0.0), total - snow)

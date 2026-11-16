@@ -10,8 +10,23 @@ EP2*e/(p-e).  Handing q to them as if it were r read every saturation test
 dry by q_v^2 -- 2.0% at q = 0.02, 1.0% at 0.01, a dry bias across the
 tropical boundary layer (audit 2026-09-01 NB-3).  This module converts at
 the bridge boundary, r_x = q_x / (1 - q_v) inbound for every water species
-and q_x = r_x / (1 + r_v) outbound, so the kernels see mixing ratio while
-the model keeps its convention.  Number concentrations stay per kg of
+and q_x = r_x * (1 - q_v_in) outbound, so the kernels see mixing ratio while
+the model keeps its convention.
+
+The outbound factor is the INBOUND dry fraction d = 1 - q_v_in, held on
+the batch (``NativeColumnBatch.dry_fraction``), not 1 / (1 + r_v) of the
+returned vapour.  The physics call keeps dp fixed, so a layer's dry-air
+mass d dp / g is fixed through it and every species' mass is r_x d dp / g.
+Dividing by the post-kernel 1 + r_v instead re-priced every species
+against a dry mass that changes with the vapour: a pure vapour-to-
+condensate change, which conserves sum_x r_x, raised sum_x q_x dp / g by
+about q_v times the condensed amount (one column on the CPU, 2026-11-15:
++0.151 kg/m2 on 10.04 kg/m2 condensed, 1.50%), so the rain books stopped
+matching the atmosphere's loss.  With d held, a kernel that conserves
+mixing-ratio water conserves the model's ledger to round-off and fallout
+of F kg per kg of dry air is exactly F d dp / g in that ledger.  When the
+kernel changes nothing the return trip is r = q / d, q' = r d: one float32
+rounding each way, as the 1 / (1 + r_v) form was.  Number concentrations stay per kg of
 moist air: the dycore rebuilds an untouched moment as raw + tendency so it
 round-trips exactly, and a per-kg-of-dry-air rescale would turn that exact
 round-trip into a one-ulp walk per call for a 2% shift in the implied mean
@@ -24,7 +39,7 @@ compare like with like on both sides of every kernel call.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..constants import (
     DRY_AIR_GAS_CONSTANT,
@@ -42,6 +57,9 @@ from .exchange import PhysicsExchange
 #: The fused column-water kernel, one entry per (module, DEVICE).  See
 #: :func:`~arwen_global.spectral.backend.device_cache_key`; gate CARD-1.
 _COLUMN_WATER_KERNEL: dict[tuple, object] = {}
+#: The fused column-increment kernel (cumulus rain on the model's mass),
+#: one entry per (module, DEVICE), as above.
+_COLUMN_INCREMENT_KERNEL: dict[tuple, object] = {}
 
 
 def staged_surface(xp, surface):
@@ -85,9 +103,12 @@ def staged_physics_state(xp, physics_state):
 
 
 def _column_water_kernel(xp):
-    """``(sum_x r_x / (1 + r_v)) dp / g`` per cell in float64, fused.
+    """``(sum_x r_x) d_in dp / g`` per cell in float64, fused.
 
-    Specification: the numpy branch of
+    ``d_in`` is the batch's inbound dry fraction
+    (:attr:`NativeColumnBatch.dry_fraction`), the layer's fixed dry-air
+    share of dp; see the module docstring for why it is not 1 / (1 + r_v)
+    of the current vapour.  Specification: the numpy branch of
     :meth:`NativeColumnBatch.atmospheric_water_kg_m2`.  ``-fmad=false``
     keeps each multiply and add rounded separately, as the ufunc chain
     rounds them; the species order is ``WATER_SPECIES``.
@@ -97,23 +118,41 @@ def _column_water_kernel(xp):
     if kernel is None:
         kernel = xp.ElementwiseKernel(
             "float32 qv, float32 qc, float32 qr, float32 qi, float32 qs, "
-            "float32 qg, float32 dp, float64 gravity",
+            "float32 qg, float32 dry, float32 dp, float64 gravity",
             "float64 out",
             """
-            const double moist = 1.0 + (double)qv;
             double total = 0.0;
-            total = total + (double)qv / moist;
-            total = total + (double)qc / moist;
-            total = total + (double)qr / moist;
-            total = total + (double)qi / moist;
-            total = total + (double)qs / moist;
-            total = total + (double)qg / moist;
-            out = total * (double)dp / gravity;
+            total = total + (double)qv;
+            total = total + (double)qc;
+            total = total + (double)qr;
+            total = total + (double)qi;
+            total = total + (double)qs;
+            total = total + (double)qg;
+            out = total * (double)dry * (double)dp / gravity;
             """,
-            "arwen_native_column_water",
+            "arwen_native_column_water_dry",
             options=("-fmad=false",),
         )
         _COLUMN_WATER_KERNEL[key] = kernel
+    return kernel
+
+
+def _column_increment_kernel(xp):
+    """``increment d_in dp / g`` per cell in float64, fused: the
+    specification is the numpy branch of
+    :meth:`NativeColumnBatch.column_integral_kg_m2`; ``-fmad=false`` as
+    in :func:`_column_water_kernel`."""
+    key = device_cache_key(xp)
+    kernel = _COLUMN_INCREMENT_KERNEL.get(key)
+    if kernel is None:
+        kernel = xp.ElementwiseKernel(
+            "float32 increment, float32 dry, float32 dp, float64 gravity",
+            "float64 out",
+            "out = (double)increment * (double)dry * (double)dp / gravity;",
+            "arwen_native_column_increment",
+            options=("-fmad=false",),
+        )
+        _COLUMN_INCREMENT_KERNEL[key] = kernel
     return kernel
 
 
@@ -143,9 +182,22 @@ def mixing_ratio_from_specific_humidity(species):
 
 
 def specific_humidity_from_mixing_ratio(species):
-    """r -> q = r / (1 + r_v), the exact inverse of the conversion above."""
+    """r -> q = r / (1 + r_v), the exact inverse of the conversion above.
+
+    The inverse of ONE state's conversion only: across a physics call that
+    moves vapour, the model's metric is :func:`specific_humidity_at_dry_fraction`
+    with the inbound dry fraction (module docstring).
+    """
     moist = 1.0 + species["qv"]
     return {name: value / moist for name, value in species.items()}
+
+
+def specific_humidity_at_dry_fraction(species, dry):
+    """r -> q = r * d for every per-kg water field, d the INBOUND dry
+    fraction 1 - q_v_in: the bridge's outbound conversion, under which a
+    physics call that conserves mixing-ratio water at fixed dp conserves
+    sum_x q_x dp / g (module docstring)."""
+    return {name: value * dry for name, value in species.items()}
 
 
 @dataclass
@@ -168,6 +220,21 @@ class NativeColumnBatch:
     #: The model-top pressure the exchange read over the whole grid
     #: (PhysicsExchange.model_top_pa), or None to take this batch's own.
     model_top_pa: float | None = None
+    #: The inbound dry fraction d = 1 - q_v_in per cell (float32, native
+    #: order), the divisor the inbound conversion used and the factor of
+    #: the outbound one and of the ledger (module docstring).  Fixed for
+    #: the batch's life: it is the layer's dry-air share of dp, which no
+    #: step of a physics call changes.  A batch built directly from mixing
+    #: ratios (None here) takes 1 / (1 + r_v) of the vapour it is built
+    #: with, the same dry fraction of the state as handed in.
+    dry_fraction: object = field(default=None, repr=False)
+
+    def __post_init__(self):
+        if self.dry_fraction is None and "qv" in self.arrays:
+            xp = self.xp
+            qv = xp.asarray(self.arrays["qv"], dtype=xp.float32)
+            self.dry_fraction = xp.ascontiguousarray(
+                xp.float32(1.0) / (xp.float32(1.0) + qv))
 
     @classmethod
     def from_exchange(cls, exchange: PhysicsExchange, xp) -> "NativeColumnBatch":
@@ -237,6 +304,9 @@ class NativeColumnBatch:
                 arrays[name] = xp.ascontiguousarray(qv / dry)
                 continue
             arrays[name] = _flipped_quotient(xp, getattr(exchange, name), dry)
+        # The divisor stays on the batch: it is the outbound factor and the
+        # ledger's (module docstring).
+        dry_fraction = xp.ascontiguousarray(dry)
         del qv, dry
         for index, name in enumerate(NUMBER_MOMENTS):
             step = len(WATER_SPECIES) + index + 1
@@ -283,6 +353,7 @@ class NativeColumnBatch:
                   else (int(exchange.band[0]), int(exchange.band[1]))),
             model_top_pa=(None if exchange.model_top_pa is None
                           else float(exchange.model_top_pa)),
+            dry_fraction=dry_fraction,
         )
 
     @property
@@ -297,53 +368,80 @@ class NativeColumnBatch:
         return self.xp.ascontiguousarray(value[::-1])
 
     def specific_humidities(self, dtype=None) -> dict[str, object]:
-        """The batch's water species in the model's convention (unreversed)."""
+        """The batch's water species in the model's convention (unreversed):
+        q_x = r_x d_in, the outbound conversion (module docstring)."""
         xp = self.xp
         dtype = xp.float32 if dtype is None else dtype
-        return specific_humidity_from_mixing_ratio(
-            {name: xp.asarray(self.arrays[name], dtype=dtype) for name in WATER_SPECIES}
+        return specific_humidity_at_dry_fraction(
+            {name: xp.asarray(self.arrays[name], dtype=dtype) for name in WATER_SPECIES},
+            xp.asarray(self.dry_fraction, dtype=dtype),
         )
 
     def atmospheric_water_kg_m2(self):
-        """Column water in the model's metric, sum_x q_x dp / g, in float64.
+        """Column water in the model's metric, sum_x q_x dp / g, in float64,
+        with q_x = r_x d_in (the outbound conversion; module docstring).
 
         Every reservoir booking and the suite's closure read this, so a
         kernel-side change measured here is exactly what the model's own
         ledger (water.py atmospheric_water_column on the returned specific
         humidities) will see, up to the float32 cast of the return trip.
+        Because d_in dp / g is the layer's fixed dry-air mass, a kernel
+        that conserves mixing-ratio water leaves this reading unchanged to
+        round-off, and fallout reads here as exactly the water that left.
         """
         xp = self.xp
         if hasattr(xp, "ElementwiseKernel"):
             # One fused pass on the device: the same float64 chain as the
-            # numpy specification below (1 + r_v; 0 + r_qv / moist, + r_qc
-            # / moist, ... in WATER_SPECIES order; times dp, over g) with
+            # numpy specification below (0 + r_qv, + r_qc, ... in
+            # WATER_SPECIES order; times d_in, times dp, over g) with
             # multiply-add contraction off, so every rounding sits where
             # the specification rounds.  The species reduction over levels
             # stays the backend's own sum.  Why: the specification streams
-            # six float32 volumes through six float64 temporaries per
-            # call and the runtime calls this eight times per physics
-            # call; the fused pass reads the seven inputs once.
+            # six float32 volumes through float64 temporaries per call and
+            # the runtime calls this up to eight times per physics call;
+            # the fused pass reads the eight inputs once.
             out = xp.empty(self.arrays["dp"].shape, dtype=xp.float64)
             _column_water_kernel(xp)(
                 self.arrays["qv"], self.arrays["qc"], self.arrays["qr"],
                 self.arrays["qi"], self.arrays["qs"], self.arrays["qg"],
-                self.arrays["dp"], float(GRAVITY_M_S2), out,
+                self.dry_fraction, self.arrays["dp"], float(GRAVITY_M_S2), out,
             )
             return out.sum(axis=0)
-        # The species sum is accumulated one float64 species at a time in
-        # the order and association ``sum()`` over the specific-humidity
-        # dict used (0 + q_qv, + q_qc, ...; each q_x = r_x / (1 + r_v) in
-        # float64), so the bits are the same while at most one converted
-        # species is live instead of six (2.3 GiB at T533 with 40 levels,
-        # on a function the runtime calls seven times per physics call).
-        # This numpy chain is the specification of the fused kernel above.
-        moist = 1.0 + xp.asarray(self.arrays["qv"], dtype=xp.float64)
+        # The species sum is accumulated one float64 species at a time
+        # (0 + r_qv, + r_qc, ... in WATER_SPECIES order), so at most one
+        # converted species is live instead of six (2.3 GiB at T533 with
+        # 40 levels).  This numpy chain is the specification of the fused
+        # kernel above.
         total = 0
         for name in WATER_SPECIES:
-            total = total + xp.asarray(self.arrays[name], dtype=xp.float64) / moist
-        del moist
+            total = total + xp.asarray(self.arrays[name], dtype=xp.float64)
+        dry = xp.asarray(self.dry_fraction, dtype=xp.float64)
         dp = xp.asarray(self.arrays["dp"], dtype=xp.float64)
-        return (total * dp / GRAVITY_M_S2).sum(axis=0)
+        return (total * dry * dp / GRAVITY_M_S2).sum(axis=0)
+
+    def column_integral_kg_m2(self, increment):
+        """``sum_k increment_k d_in dp_k / g`` per column in float64: one
+        water species' float32 increment (native order) priced on the
+        model's mass exactly as :meth:`atmospheric_water_kg_m2` prices the
+        species, so a scheme's applied increments integrate to the change
+        that reading measures, up to the float32 rounding of the update.
+        One fused pass on the device (one float64 volume, as the ledger's
+        own), the same chain in numpy."""
+        xp = self.xp
+        increment = xp.asarray(increment, dtype=xp.float32)
+        if hasattr(xp, "ElementwiseKernel"):
+            out = xp.empty(increment.shape, dtype=xp.float64)
+            _column_increment_kernel(xp)(
+                increment, self.dry_fraction, self.arrays["dp"],
+                float(GRAVITY_M_S2), out,
+            )
+            return out.sum(axis=0)
+        return (
+            increment.astype(xp.float64)
+            * xp.asarray(self.dry_fraction, dtype=xp.float64)
+            * xp.asarray(self.arrays["dp"], dtype=xp.float64)
+            / GRAVITY_M_S2
+        ).sum(axis=0)
 
     def global_prognostics(self, *, consume: bool = False) -> dict[str, object]:
         """The batch's prognostics back in the model's order and convention.
@@ -352,12 +450,12 @@ class NativeColumnBatch:
         made, for a caller that is done with the batch: the fourteen
         copies otherwise stood beside the fourteen originals (2.67 GiB
         each at T533 float32) at the end of every physics call.  Same
-        values either way: q_x = r_x / (1 + r_v) per species with the
-        shared divisor formed first, then the level flip.
+        values either way: q_x = r_x d_in per species (d_in the inbound
+        dry fraction; module docstring), then the level flip.
         """
         xp = self.xp
         arrays = self.arrays
-        moist = 1.0 + xp.asarray(arrays["qv"], dtype=xp.float32)
+        dry = xp.asarray(self.dry_fraction, dtype=xp.float32)
 
         def take(name):
             return arrays.pop(name) if consume else arrays[name]
@@ -365,17 +463,20 @@ class NativeColumnBatch:
         out = {}
         for name in ("u", "v", "theta"):
             out[name] = self.to_global(take(name))
-        # The quotient and the level flip in one pass (one elementwise
-        # divide reading both operands flipped and writing a contiguous
-        # result): the same float32 divide per element as dividing and
-        # then flipping, without the intermediate volume.
-        moist_flipped = moist[::-1]
+        # The product and the level flip in one pass (one elementwise
+        # multiply reading both operands flipped and writing a contiguous
+        # result): the same float32 multiply per element as multiplying
+        # and then flipping, without the intermediate volume.
+        dry_flipped = dry[::-1]
         for name in WATER_SPECIES:
             value = xp.asarray(take(name), dtype=xp.float32)
             result = xp.empty(value.shape, dtype=xp.float32)
-            xp.divide(value[::-1], moist_flipped, out=result)
+            xp.multiply(value[::-1], dry_flipped, out=result)
             out[name] = result
             del value
+        del dry, dry_flipped
+        if consume:
+            self.dry_fraction = None
         for name in NUMBER_MOMENTS:
             out[name] = self.to_global(take(name))
         return out
@@ -390,6 +491,9 @@ class NativeColumnBatch:
                 raise ValueError(f"native batch {name} shape mismatch")
             if value.dtype != self.xp.float32 or not value.flags.c_contiguous:
                 raise TypeError(f"native batch {name} must be contiguous float32")
+        dry = self.dry_fraction
+        if dry is None or tuple(dry.shape) != shape:
+            raise ValueError("native batch dry_fraction shape mismatch")
         if tuple(self.arrays["p_half"].shape) != (shape[0] + 1, *shape[1:]):
             raise ValueError("native batch p_half shape mismatch")
         omega = self.arrays.get("omega_half")
@@ -402,5 +506,6 @@ __all__ = [
     "staged_physics_state",
     "staged_surface",
     "mixing_ratio_from_specific_humidity",
+    "specific_humidity_at_dry_fraction",
     "specific_humidity_from_mixing_ratio",
 ]

@@ -247,9 +247,40 @@
 //     CCPP cu_gf_deep.F90 get_zu_zd_pdf_fim does (tunning = p(kklev),
 //     clamped 0.02..0.95).
 //   4 is 3 with CCPP's deep entrainment rate, 1e-4 m-1.
+//   5 the GEOS GF2020 deep profile (Freitas et al. 2021): peak at
+//     pmaxzu = 0.8 (psur - 100) + 0.12 p(kt) hPa, beta 1.9 (GF_DEEP_PHYS & 2
+//     still replaces beta when set).
+//   6 lev_start = 0.9, the cap of WRF's own min(0.9, 0.4 + 0.013 csum)
+//     (the saturated convective-memory value), in place of 0.4.
+//   7 every WRF formula that reads the convective memory csum takes csum = 39,
+//     the value where lev_start reaches its 0.9 cap: lev_start 0.9, over water
+//     edtmax = max(0.1, 0.4 - 0.015 csum) = 0.1, downdraft beta 0.02, over land
+//     entr_rate = 7e-5 - 3e-6 min(20, csum) = 1e-5 (module_cu_gf_deep.F).
+//   8 the same with csum = 20, where edtmax and entr_rate saturate (lev_start 0.66).
 // A DECLARED DIVERGENCE from WRF v4.6.1 when non-zero.
 #ifndef GF_DEEP_EXPERIMENT
 #define GF_DEEP_EXPERIMENT 0
+#endif
+// GF_DEEP_PHYS: a bit set of deep-plume pieces from the UFS CCPP
+// cu_gf_deep.F90 (GSL GF 2021+) that go with a deeper plume.  0 (the default,
+// the oracle's only state) is WRF v4.6.1 word for word.
+//   1 condensate detrainment: c1d(k) = clwdet * up_massdetr(k-1), clwdet = 0.1,
+//     above kbcon+1 (cup_up_moisture, "clw detrainment profile that depends on
+//     mass detrainment and in-cloud clw/ice"), in place of WRF's constant
+//     c1 = 0.001 m-1; the detrained part leaves as cloud condensate (dellaqc),
+//     not as rain.
+//   2 the deep updraft's beta depends on cloud depth: beta = 1.3 + (1 -
+//     depth/1200 hPa) (get_zu_zd_pdf_fim, draft 1).
+//   4 the ECMWF-closure CAPE-removal time is the depth of the cloud kept
+//     (ktop) over wmean, at least 720 s (CCPP), not the first-guess ktopdby.
+//   8 the ice phase of the deep precipitation: freezing heat where the solid
+//     part forms, the same heat taken back in the melting layer (see the
+//     GF_DEEP_PHYS & 8 block in gfd_deep_column).
+//  32 the moisture-convergence closure member is mconv (CCPP
+//     cup_forcing_ens_3d), not mconv / max(0.5, 1 - edt zd/zu) (WRF).
+// A DECLARED DIVERGENCE from WRF v4.6.1 when non-zero.
+#ifndef GF_DEEP_PHYS
+#define GF_DEEP_PHYS 0
 #endif
 #ifndef GF_KMAX
 #define GF_KMAX 40
@@ -948,6 +979,8 @@ __device__ void gfd_get_zu_zd_pdf(int draft, GfColC p, int kb, int kt,
         float lev_start = GMIN(K_P9, FADD(K_P4, FMUL((float)csum, K_P013)));
 #if GF_DEEP_EXPERIMENT == 2
         lev_start = K_ONE;
+#elif GF_DEEP_EXPERIMENT == 6
+        lev_start = K_P9;  // WRF's own cap, min(0.9, 0.4 + 0.013 csum) at csum >= 39
 #endif
         kb_adj = IMAX(kb, 2);
         tunning = FADD(p[kt], FMUL(FSUB(p[kpbli], p[kt]), lev_start));
@@ -960,6 +993,22 @@ __device__ void gfd_get_zu_zd_pdf(int draft, GfColC p, int kb, int kt,
         // level of the plume's maximum buoyancy, kklev, handed in as kpbli.
         tunning = GMIN(0.95f, FDIV(FSUB(p[kpbli], p[kb_adj]), FSUB(p[kt], p[kb_adj])));
         tunning = GMAX(0.02f, tunning);
+#endif
+#if GF_DEEP_EXPERIMENT == 5
+        // GEOS GF2020 (Freitas et al. 2021; ConvPar_GF2020.F90 itest = 20,
+        // HEI_UPDF_DP h = 0.40 land and ocean): the deep peak sits at
+        // pmaxzu = (psur - 100)(1 - h/2) + 0.6 p(kt) h/2 and beta = 2.1 - h/2
+        // = 1.9.  p is p_cup here, so p[1] is psur.  Pressure-space kratio as
+        // the rest of this function (GEOS uses the level index).
+        {
+            float pmaxzu = FADD(FMUL(FSUB(p[1], 100.0f), 0.8f), FMUL(FMUL(0.6f, p[kt]), 0.2f));
+            tunning = GMIN(0.95f, FDIV(FSUB(pmaxzu, p[kb_adj]), FSUB(p[kt], p[kb_adj])));
+            tunning = GMAX(0.02f, tunning);
+            beta = 1.9f;
+        }
+#endif
+#if (GF_DEEP_PHYS & 2)
+        beta = FADD(1.3f, FSUB(K_ONE, FDIV(FSUB(p[kb_adj], p[kt]), 1200.0f)));
 #endif
     } else if (draft == 1) {
         tunning = GMIN(K_P8,
@@ -1475,8 +1524,19 @@ __device__ void gfd_cup_forcing_ens_3d(float *closure_n_io, int xland1,
     xff[9] = xff[7];
     xff[15] = xff[7];
     {
+#if (GF_DEEP_PHYS & 32)
+        // UFS CCPP cu_gf_deep.F90 cup_forcing_ens_3d: xff_ens3(7) = mconv,
+        // the /max(0.5, 1 - edt zd/zu) of WRF v4.6.1 commented out, so the
+        // moisture-convergence member rains the column's moisture
+        // convergence, not up to twice it.
+        const float v = mconv;
+        xff[7] = v; xff[8] = v; xff[9] = v; xff[15] = v;
+        // The diagnostic reports the divisor the members were built with.
+        *mconv_den_out = K_ONE;
+#else
         const float v = FDIV(mconv, den);
         xff[7] = v; xff[8] = v; xff[9] = v; xff[15] = v;
+#endif
     }
     forcing[3] = xff[8];
 
@@ -1836,7 +1896,13 @@ __device__ void gfd_deep_column(
 {
     const int ktf = nz;
     const int kte = nz;
+#if GF_DEEP_EXPERIMENT == 7
+    const int csum = 39;  // WRF's convective memory at saturation (lev_start 0.9)
+#elif GF_DEEP_EXPERIMENT == 8
+    const int csum = 20;  // WRF's convective memory where edtmax and entr_rate saturate
+#else
     const int csum = 0;
+#endif
     const int dicycle = 1;
     reading->xmb_request = K_ZERO; reading->xmb = K_ZERO;
     reading->xmb_floor = K_ZERO; reading->floor_fraction = K_ZERO;
@@ -1910,7 +1976,17 @@ __device__ void gfd_deep_column(
 #if GF_DEEP_EXPERIMENT == 4
     entr_rate = 1.0e-4f;  // UFS CCPP cu_gf_deep.F90: entr_rate(i)=1.e-4
 #endif
+#if GF_DEEP_EXPERIMENT == 7 || GF_DEEP_EXPERIMENT == 8
+    // The scale-aware radius, frh and sig come from the csum-0 rate
+    // (radius = 0.2 / 7e-5 = 2.9 km); the reduced land rate acts on the
+    // plume only.  WRF resets cactiv to 0 each step, so no reference driver
+    // runs this formula at csum 20 or 39: there the 20 km radius caps frh at
+    // 0.9 for every dx below 37.4 km, sig falls to sig_thresh and every
+    // moist land column exits with ierr 231.
+    float radius = FDIV(K_P2, K_ENTR_BASE);
+#else
     float radius = FDIV(K_P2, entr_rate);
+#endif
     float frh = GMIN(K_ONE,
                      FDIV(FDIV(FMUL(FMUL(K_PI314, radius), radius), dx), dx));
     if (frh > K_FRH_THRESH) {
@@ -2494,6 +2570,15 @@ __device__ void gfd_deep_column(
     GfCol clw_all = GFWS_AT(gfws, 65);
     GfCol qch_s = GFWS_AT(gfws, 66);
     float pwavo = K_ZERO, psum = K_ZERO, psumh = K_ZERO;
+#if (GF_DEEP_PHYS & 1)
+    // CCPP cu_gf_deep.F90: c1d = 0 (init), then c1d(k) = clwdet *
+    // up_massdetr(k-1) for k > kbcon+1 inside the cup_up_moisture sweep; the
+    // same c1d then sets dellaqc below ktop.
+    if (ierr == 0) {
+        for (int k = 0; k < GF_KP; k++) c1d[k] = K_ZERO;
+        for (int k = kbcon + 2; k <= ktop; k++) c1d[k] = FMUL(0.1f, upmd[k - 1]);
+    }
+#endif
     gfd_cup_up_moisture(&ierr, zo_cup, p_cup, kbcon, ktop, dbyo, xland1, qo,
                         gammao_cup, zuo, qeso_cup, k22, qo_cup, zqexec, ccn,
                         rho, c1d, tn_cup, upme, upmd, nz, qco, qrco, pwo,
@@ -2537,6 +2622,11 @@ __device__ void gfd_deep_column(
     float wmean = K_WMEAN;
     if (ierr == 0) {
         tau_ecmwf = FDIV(FSUB(zo_cup[ktopdby], zo_cup[kbcon]), wmean);
+#if (GF_DEEP_PHYS & 4)
+        // CCPP: the Bechtold et al. (2008) CAPE-removal time over the cloud
+        // the scheme keeps (ktop, after ktopkeep), not the first guess, >= 720 s.
+        tau_ecmwf = GMAX(720.0f, FDIV(FSUB(zo_cup[ktop], zo_cup[kbcon]), wmean));
+#endif
         tau_ecmwf = FMUL(tau_ecmwf,
                          FADD(K_TAU_A,
                               FMUL(K_TAU_B, FDIV(dx, K_THOUSAND))));
@@ -2705,6 +2795,64 @@ __device__ void gfd_deep_column(
                 e_dn2);
         }
     }
+#if (GF_DEEP_PHYS & 8)
+    // The ice phase of the deep plume's precipitation (UFS CCPP melt_glac,
+    // Freitas et al. 2021): precipitation formed where the environment is
+    // below 0 C is partly solid, p_liq_ice = ((T - 250.16)/23)^2 between
+    // 250.16 and 273.16 K; it releases its freezing heat (xlf) at the level
+    // it forms and takes it back where it melts, in CCPP's melting layer
+    // (274.16 K < T < 276.16 K, weight m(1-m), m = ((T - 272.16)/4)^2; when no
+    // layer falls in it, the first layer warmer than 273.16 K below the
+    // freezing level).  Only the surviving precipitation (after the
+    // downdraft's evaporation, CCPP pwo_eff) melts, and the melted amount
+    // equals the solid amount formed, so the column's enthalpy is unchanged
+    // and the heating moves up.
+    if (ierr == 0) {
+        float tsolid = K_ZERO, wsum = K_ZERO;
+        int kmelt0 = 0;
+        for (int k = 1; k <= ktop; k++) {
+            float dpk = FMUL(K_HUNDRED, FSUB(po_cup[k], po_cup[k + 1]));
+            float tk = tn[k];
+            float pli = (tk <= 250.16f) ? K_ZERO
+                      : (tk < 273.16f) ? FMUL(FDIV(FSUB(tk, 250.16f), 23.0f),
+                                              FDIV(FSUB(tk, 250.16f), 23.0f))
+                      : K_ONE;
+            float eff = FMUL(K_HALF, FADD(FADD(pwo[k], pwo[k + 1]),
+                                          FMUL(edto, FADD(pwdo[k], pwdo[k + 1]))));
+            float sol = FMUL(FSUB(K_ONE, pli), GMAX(K_ZERO, eff));
+            dellah[k] = FADD(dellah[k], FDIV(FMUL(FMUL(0.333e6f, sol), K_G), dpk));
+            tsolid = FADD(tsolid, sol);
+        }
+        for (int k = 1; k < ktf; k++) {
+            float tk = tn[k];
+            float m = (tk <= 274.16f) ? K_ZERO
+                    : (tk < 276.16f) ? FMUL(FDIV(FSUB(tk, 272.16f), 4.0f),
+                                            FDIV(FSUB(tk, 272.16f), 4.0f))
+                    : K_ONE;
+            wsum = FADD(wsum, FMUL(m, FSUB(K_ONE, m)));
+            if (tk > 273.16f && tn[k + 1] <= 273.16f && kmelt0 == 0) kmelt0 = k;
+        }
+        if (tsolid > K_ZERO) {
+            for (int k = 1; k < ktf; k++) {
+                float dpk = FMUL(K_HUNDRED, FSUB(po_cup[k], po_cup[k + 1]));
+                float share;
+                if (wsum > K_ZERO) {
+                    float tk = tn[k];
+                    float m = (tk <= 274.16f) ? K_ZERO
+                            : (tk < 276.16f) ? FMUL(FDIV(FSUB(tk, 272.16f), 4.0f),
+                                                    FDIV(FSUB(tk, 272.16f), 4.0f))
+                            : K_ONE;
+                    share = FDIV(FMUL(m, FSUB(K_ONE, m)), wsum);
+                } else {
+                    share = (k == kmelt0) ? K_ONE : K_ZERO;
+                }
+                if (share > K_ZERO)
+                    dellah[k] = FSUB(dellah[k],
+                                     FDIV(FMUL(FMUL(0.333e6f, FMUL(share, tsolid)), K_G), dpk));
+            }
+        }
+    }
+#endif
     CAPL(LEV_dellu, dellu);
     CAPL(LEV_dellv, dellv);
     CAPL(LEV_dellah, dellah);

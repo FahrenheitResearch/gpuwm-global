@@ -100,6 +100,11 @@ needs_baseline_engine = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def measured():
     tool = _load_tool()
+    if not tool.carve.PRIVATE_NAMES_LOADED:
+        # The carve's identity rules are read from the private names file;
+        # without it the engine side is not rewritten the way the carried
+        # side was, and every rewritten comment would read as a difference.
+        pytest.skip(tool.carve.PRIVATE_NAMES.SKIP_REASON)
     version, rows = tool.measure()
     return tool, version, rows
 

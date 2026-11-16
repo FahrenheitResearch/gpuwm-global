@@ -415,3 +415,28 @@ def test_a_finer_offset_fill_places_every_layer_and_a_planted_spike_where_they_b
     assert snow["source"] == "fill"
     assert "assumed_snow_free_points" not in snow
     assert snow.get("coastal_filled_points", {}).get("snow_water_equivalent", 0) == 0
+
+
+def test_a_composite_keeps_the_snow_products_bare_sea_ice():
+    """An ERA5 primary (no snow on its sea ice, ``snow_on_sea_ice = False``)
+    completed from a fill keeps that statement when the snow group is its
+    own, so the cold start does not lay its land snow onto the ice; snow
+    taken from the fill states nothing and is read as GDAS is, and a frame
+    that says nothing (GDAS) adds nothing."""
+    frame = _synthetic_frame()
+    soil = ("soil_temperature", "volumetric_soil_moisture")
+    primary, secondary = _split(frame, drop=soil)
+    primary.snow_on_sea_ice = False
+    own = fill_frame(primary, secondary, primary_label="P", fill_label="F")
+    assert own.fill["groups"]["snow"]["source"] == "primary"
+    assert own.snow_on_sea_ice is False
+
+    primary, secondary = _split(frame)
+    primary.snow_on_sea_ice = False
+    filled = fill_frame(primary, secondary, primary_label="P", fill_label="F")
+    assert filled.fill["groups"]["snow"]["source"] == "fill"
+    assert getattr(filled, "snow_on_sea_ice", True) is True
+
+    gdas, secondary = _split(frame, drop=soil)
+    plain = fill_frame(gdas, secondary, primary_label="P", fill_label="F")
+    assert not hasattr(plain, "snow_on_sea_ice")

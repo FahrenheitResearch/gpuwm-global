@@ -12,6 +12,8 @@ carries the core's own drain written out.
 """
 from __future__ import annotations
 
+from test_arwen_global_gf_default_d import gf_0_2_4
+
 from arwen_global.configs_dir import config_root as _shipped_configs
 import dataclasses
 from pathlib import Path
@@ -140,7 +142,10 @@ def test_the_config_of_record_s_identity_did_not_move_with_the_default():
     assert cfg.dt_s == 90.0 == default_eulerian_step_s(255, cfg.maximum_cfl)
     assert cfg.diffusion_order == 8 and cfg.diffusion_efold_s == 2160.0
     assert cfg.semi_implicit_off_centring_weight == 0.5
-    assert cfg.config_hash == IMEX_RECORD_CONFIG_HASH
+    # The record was certified at 0.2.4's Grell-Freitas; under the 0.2.5 default D
+    # its hash moves, and the three 0.2.4 values bring the certified one back.
+    assert cfg.config_hash != IMEX_RECORD_CONFIG_HASH
+    assert gf_0_2_4(cfg).config_hash == IMEX_RECORD_CONFIG_HASH
 
 
 def test_the_bare_door_config_is_the_arm_of_record_with_nothing_said():

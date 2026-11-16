@@ -964,6 +964,10 @@ def _config_snapshot(cfg, config_path: Path) -> dict[str, Any]:
             "analysis_mapping": cfg.analysis_mapping,
             "analysis_fill_grib": cfg.analysis_fill_grib,
             "analysis_fill_mapping": cfg.analysis_fill_mapping,
+            # Only a plan with the snow density floor on names it, so every
+            # default plan document is the bytes it was.
+            **({"analysis_snow_density": cfg.analysis_snow_density}
+               if getattr(cfg, "analysis_snow_density", "analysis") != "analysis" else {}),
         },
         "statics": {
             "source": cfg.statics.source,

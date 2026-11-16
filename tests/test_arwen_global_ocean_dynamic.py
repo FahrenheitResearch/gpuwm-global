@@ -18,6 +18,8 @@ the run notes; these are the parts a CPU checks in seconds:
 """
 from __future__ import annotations
 
+from test_arwen_global_gf_default_d import gf_0_2_4
+
 from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
@@ -202,6 +204,15 @@ CHANGED_IN_0_2_3 = {
     "arwen_global_gdas_t255_native_sl_si_24h.toml",
     "arwen_global_gdas_t383_native_sl_si_24h.toml",
 }
+#: The shipped semi-Lagrangian configs from T383 up whose hash 0.2.5 moves on
+#: purpose: they take extrapolation = "settls_departure" (the T383 day was
+#: already in the set above).
+CHANGED_IN_0_2_5 = {
+    "arwen_global_gdas_t383_native_sl_si_wall.toml",
+    "arwen_global_gdas_t533_native_sl_si_24h.toml",
+    "arwen_global_gdas_t533_native_sl_si_wall.toml",
+    "arwen_global_gdas_t799_native_sl_si_wall.toml",
+}
 
 
 def test_every_shipped_config_hash_is_the_one_v0_2_1_wrote():
@@ -215,12 +226,13 @@ def test_every_shipped_config_hash_is_the_one_v0_2_1_wrote():
 
     pinned = json.loads((Path(__file__).parent / "data" / "ocean_dynamic_config_hashes.json")
                         .read_text())
-    assert CHANGED_IN_0_2_3 <= set(pinned)
+    assert CHANGED_IN_0_2_3 | CHANGED_IN_0_2_5 <= set(pinned)
     for name, digest in pinned.items():
-        if name in CHANGED_IN_0_2_3:
+        if name in CHANGED_IN_0_2_3 | CHANGED_IN_0_2_5:
             assert load_config(config_root() / name).config_hash != digest, name
         else:
-            assert load_config(config_root() / name).config_hash == digest, name
+            # pinned before the 0.2.5 Grell-Freitas default D: compared at 0.2.4's GF
+            assert gf_0_2_4(load_config(config_root() / name)).config_hash == digest, name
 
 
 def test_the_parser_refuses_dynamic_keys_without_the_mode(tmp_path):

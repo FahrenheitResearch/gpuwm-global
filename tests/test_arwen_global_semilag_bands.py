@@ -309,19 +309,169 @@ def test_band_sl_3_the_departure_form_bands_the_same(bands, limited, form):
     assert _inventory(ms, shipped) != got
 
 
+def _cards_inventory(model, bundle, session, nlat):
+    """The checkpoint's hashes of a card's run: the atmosphere, and the
+    second time level assembled from every card's rows (as
+    runner._card_gather_of does before hashing)."""
+    inventory = _inventory(model, bundle)
+    for name, value in model.trajectory_state().arrays().items():
+        whole = cards.gather_named_arrays(
+            session, {name: np.asarray(value)}, nlat,
+            model.transform.grid.nlon)[name]
+        inventory["trajectory." + name] = _digest(whole)
+    return inventory
+
+
+class _NarrowExchange(cards.RowExchange):
+    """A row exchange that declares one-row cards, so every reach past one
+    row goes through the whole-level gather instead of the neighbours."""
+
+    def narrowest_rows(self) -> int:
+        return 1
+
+
+@pytest.mark.parametrize("weights", ((1.0, 1.0), (3.0, 1.0)))
 @pytest.mark.parametrize("form", ("settls_departure",
                                   "settls_residual_departure"))
-def test_the_departure_form_is_refused_on_several_cards_by_name(form):
+def test_band_sl_4_the_departure_form_on_two_cards_is_one_cards_bits(
+        monkeypatch, form, weights):
+    """Hortal's form, whole or its residual half, on two cards over
+    loopback TCP: each card takes its neighbours' rows of the previous
+    level once a step, and the run is one card's run bit for bit (every
+    array the checkpoint hashes and every metric) over steps that read a
+    previous level."""
     options = SemiLagrangianOptions(extrapolation=form)
-    nlat = _transform().grid.nlat
+    bands = 4
+    one_model, one, one_trace = _run(bands, 3, options=options)
+    want = _inventory(one_model, one)
+    nlat = one_model.transform.grid.nlat
+    reaches = []
+    original = step_module._previous_with_halo
+
+    def counting(previous, exchange, xp, nlat_, width):
+        reaches.append(int(width))
+        return original(previous, exchange, xp, nlat_, width)
+
+    monkeypatch.setattr(step_module, "_previous_with_halo", counting)
 
     def body(rank, transport):
-        session = cards.CardSession(transport, nlat, 4, weights=(1.0, 1.0))
+        session = cards.CardSession(transport, nlat, bands, weights=weights)
         exchange = cards.RowExchange(session)
-        _run(4, 1, exchange=exchange, options=options)
+        model, bundle, trace = _run(bands, 3, exchange=exchange,
+                                    options=options)
+        held = model.trajectory_held()
+        first, last = model.pipeline.local_rows()
+        assert isinstance(held, RowTrajectory)
+        assert (held.first, held.last) == (first, last)
+        return (_cards_inventory(model, bundle, session, nlat), trace,
+                model.pipeline.local_slices())
 
-    with pytest.raises(ValueError, match="runs on one card"):
-        _loopback(body, 2)
+    out = _loopback(body, 2)
+    for rank in range(2):
+        inventory, trace, local = out[rank]
+        differing = sorted(k for k in want if want[k] != inventory[k])
+        assert not differing, f"rank {rank} moved {differing}"
+        assert trace == one_trace, f"rank {rank} metrics moved"
+        assert len(local) < bands, "a card ran every band"
+    # The exchange ran: once a step past the start-up step, on each card.
+    assert len(reaches) >= 2 * 2, reaches
+    # And it is the departure form that ran on the cards.
+    shipped_model, shipped, _t = _run(bands, 3)
+    assert _inventory(shipped_model, shipped) != want
+
+
+@pytest.mark.parametrize("narrow", (False, True))
+def test_band_sl_4_an_escaped_band_widens_the_reach_on_two_cards(
+        monkeypatch, narrow):
+    """A one-row halo on two cards: bands escape it, the bands at a card's
+    edge escape past the previous-level rows the card was sent, wait for
+    the round's end, and every card widens the reach to the widest any
+    card asked for.  The answer is one card's, bit for bit.  ``narrow``
+    sends every widened reach through the whole-level gather (the path a
+    reach wider than a neighbour's rows takes) instead of the two
+    neighbours."""
+    options = SemiLagrangianOptions(extrapolation="settls_departure")
+    bands = 4
+    one_model, one, one_trace = _run(bands, 3, options=options)
+    want = _inventory(one_model, one)
+    nlat = one_model.transform.grid.nlat
+    monkeypatch.setattr(step_module, "default_halo_rows",
+                        lambda nlat_, dt, radius: 1)
+    reaches = []
+    gathered = []
+    original = step_module._previous_with_halo
+
+    def counting(previous, exchange, xp, nlat_, width):
+        reaches.append(int(width))
+        return original(previous, exchange, xp, nlat_, width)
+
+    monkeypatch.setattr(step_module, "_previous_with_halo", counting)
+    kind = _NarrowExchange if narrow else cards.RowExchange
+    fill = kind.fill_rows
+
+    def watched_fill(self, xp, buffer, axis, *, name="rows"):
+        if name.startswith("semilag_reach_"):
+            gathered.append(name)
+        return fill(self, xp, buffer, axis, name=name)
+
+    monkeypatch.setattr(kind, "fill_rows", watched_fill)
+
+    def body(rank, transport):
+        session = cards.CardSession(transport, nlat, bands,
+                                    weights=(1.0, 1.0))
+        exchange = kind(session)
+        model, bundle, trace = _run(bands, 3, exchange=exchange,
+                                    options=options)
+        return (_cards_inventory(model, bundle, session, nlat), trace,
+                model.semilag_halo_rows)
+
+    out = _loopback(body, 2)
+    for rank in range(2):
+        inventory, trace, halo_rows = out[rank]
+        assert halo_rows[0] == 1
+        assert halo_rows[1] > 1, "no band escaped a one-row halo"
+        differing = sorted(k for k in want if want[k] != inventory[k])
+        assert not differing, f"rank {rank} moved {differing}"
+        assert trace == one_trace, f"rank {rank} metrics moved"
+    assert 1 in reaches
+    assert max(reaches) > 1, f"the reach never widened: {reaches}"
+    if narrow:
+        assert gathered, "no widened reach went through the gather"
+    else:
+        assert not gathered, "a neighbour-wide reach went through the gather"
+
+
+@pytest.mark.parametrize("width", (1, 8, 9, 31))
+def test_the_reach_is_the_whole_levels_rows_at_any_width(width):
+    """:func:`step._previous_with_halo` hands a card the whole level's
+    rows ``width`` either side of its own, from the neighbours up to the
+    narrowest card's rows (8 here) and from the whole-level gather past
+    them."""
+    nlat, nlon, nlev = 32, 12, 3
+    rng = np.random.default_rng(7)
+    whole = {
+        name: rng.standard_normal(
+            (nlat, nlon) if name in step_module.TRAJECTORY_SURFACE_FIELDS
+            else (nlev, nlat, nlon))
+        for name in step_module.TRAJECTORY_FIELDS
+    }
+
+    def body(rank, transport):
+        session = cards.CardSession(transport, nlat, 4, weights=(3.0, 1.0))
+        exchange = cards.RowExchange(session)
+        assert exchange.narrowest_rows() == 8
+        first, last = session.local_rows()
+        own = RowTrajectory(first=first, last=last, nlat=nlat, arrays={
+            name: np.ascontiguousarray(value[..., first:last, :])
+            for name, value in whole.items()})
+        got = step_module._previous_with_halo(own, exchange, np, nlat, width)
+        lo, hi = max(first - width, 0), min(last + width, nlat)
+        assert (got.first, got.last) == (lo, hi)
+        for name, value in whole.items():
+            assert np.array_equal(got.arrays[name], value[..., lo:hi, :]), name
+        return True
+
+    assert _loopback(body, 2) == {0: True, 1: True}
 
 
 def test_band_sl_3_the_additive_fixer_bands_the_same():
@@ -427,6 +577,41 @@ def test_band_sl_4_cards_return_one_cards_bits(world, bands, weights):
         assert len(local) < bands, "a card ran every band"
     owned = sorted(s.start for rank in range(world) for s in out[rank][2])
     assert owned == [s.start for s in one_model.pipeline.slices()]
+
+
+def test_band_sl_4_the_output_readings_on_two_cards_are_one_cards():
+    """The output step's readings (MoistHybridModel.diagnostics) on two
+    cards are the one-card run's, every key, on every rank.
+
+    The readings loop over the bands a card owns, so before the fold each
+    extremum was that card's rows: on a two-card T1023 run30 (2026-11-15)
+    rank 0 logged max wind 84.419 m/s, rank 1 and the one-card run 92.345,
+    over one state.  At weights (3, 1) card 1 owns one polar quarter and
+    the jet is on card 0, so an unfolded maximum differs on card 1."""
+    bands = 4
+    one_model, one, _ = _run(bands, 2)
+    want = one_model.diagnostics(one)
+    nlat = one_model.transform.grid.nlat
+
+    def body(rank, transport):
+        session = cards.CardSession(transport, nlat, bands,
+                                    weights=(3.0, 1.0))
+        exchange = cards.RowExchange(session)
+        model, bundle, _trace = _run(bands, 2, exchange=exchange)
+        first, last = model.pipeline.local_rows()
+        u = np.asarray(model.grid_state(bundle.atmosphere, only=("u", "v"))["u"])
+        own = float(np.abs(u[:, first:last]).max())
+        return model.diagnostics(bundle), own
+
+    out = _loopback(body, 2)
+    # The case does put the extremum on one card only: card 1's own rows
+    # read a smaller wind than the globe.
+    assert out[1][1] < 0.9 * want["maximum_wind_m_s"]
+    for rank in (0, 1):
+        got = out[rank][0]
+        assert sorted(got) == sorted(want)
+        differing = sorted(k for k in want if got[k] != want[k])
+        assert not differing, f"rank {rank} read {differing}"
 
 
 # ------------------------------------------------------------ MG-6, the sizer

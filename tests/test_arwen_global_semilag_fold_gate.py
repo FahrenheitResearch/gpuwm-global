@@ -9,6 +9,8 @@ folds is refused by name.
 """
 from __future__ import annotations
 
+from test_arwen_global_gf_default_d import gf_0_2_4
+
 import math
 from pathlib import Path
 
@@ -349,7 +351,7 @@ def test_a_default_config_keeps_its_hash(tmp_path):
         ("arwen_global_gdas_t255_native_sl_si_24h.toml",
          "7b140980a546263ea2be34cc145e0dedb68e16327898bff137debb3c87579713"),
     ):
-        assert load_config(root / name).config_hash == digest, name
+        assert gf_0_2_4(load_config(root / name)).config_hash == digest, name  # 0.2.4 GF (D, 0.2.5)
     # The T255 day's 0.2.3 hash is its 0.2.2 hash plus the orographic drag:
     # without the drag it reads c7a000d2..., the digest before 0.2.3.
     import dataclasses
@@ -357,7 +359,7 @@ def test_a_default_config_keeps_its_hash(tmp_path):
     day = load_config(root / "arwen_global_gdas_t255_native_sl_si_24h.toml")
     options = {key: value for key, value in day.native_adapter_options.items()
                if key != "orographic_drag"}
-    assert dataclasses.replace(day, native_adapter_options=options).config_hash == (
+    assert gf_0_2_4(dataclasses.replace(day, native_adapter_options=options)).config_hash == (
         "c7a000d28c206ace5f88312d92320f4c30e72f7f0eb6d6108587022d935b4bbf")
     identity = _load(tmp_path).config_identity
     assert identity["maximum_lipschitz"] == 0.75

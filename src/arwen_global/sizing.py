@@ -244,6 +244,10 @@ SEMILAG_INTEGRATOR_NAMES = ("sl_si",)
 #: out inside this gather at 15.96 GB, with the physics banded.
 SEMILAG_GATHER_STACKS = 3
 SEMILAG_GATHERED_FIELDS = 11
+#: semilag.options.SemiLagrangianOptions.gather_batch's shipped value,
+#: mirrored so the sizer imports no core (a row without a ``gather_batch``
+#: key was measured at it).
+SEMILAG_DEFAULT_GATHER_BATCH = 8
 #: The levelled arrays the BANDED sl_si step holds whole beside its bands
 #: (semilag.step._semilag_step_banded): the advected grid tracers, which the
 #: bands fill row by row and the mass fixer reads as a globe, plus the
@@ -1209,6 +1213,13 @@ class GlobalMemoryEstimate:
     #: bytes) is freed before the atmosphere steps, so it is not added; the
     #: T383 16 GB gate measures that.  Appended last.
     ocean_dynamic_bytes: int = 0
+    #: ``semilag.gather_batch``: fields per semi-Lagrangian gather launch.
+    #: Part of the allocation pattern a completed-plan row was measured at
+    #: (a batch of eight stacks 5,760 MiB blocks at T1023 L40 and a batch
+    #: of one stacks none), so a row measured at a smaller batch never
+    #: prices a run at a larger one (:func:`completed_plan_ceiling`).
+    #: Appended last.
+    semilag_gather_batch: int = SEMILAG_DEFAULT_GATHER_BATCH
 
     @property
     def resident_bytes(self) -> int:
@@ -1492,6 +1503,10 @@ def estimate_global_memory(cfg) -> GlobalMemoryEstimate:
             semilag_banded_held_arrays(cfg) * nlev * points * itemsize
             if str(getattr(cfg, "integrator", "")).lower() in SEMILAG_INTEGRATOR_NAMES
             else 0),
+        semilag_gather_batch=int(
+            getattr(getattr(cfg, "semilag", None), "gather_batch",
+                    SEMILAG_DEFAULT_GATHER_BATCH)
+            or SEMILAG_DEFAULT_GATHER_BATCH),
     )
 
 
@@ -3668,6 +3683,67 @@ COMPLETED_PLAN_PEAKS = (
                "this card runs, which the door refused at 18.30 GiB of "
                "card before this row and the exact-shape ratio existed",
     },
+    # THE 96 GB CARD, MEASURED 2026-11-15 on an RTX PRO 6000 Blackwell
+    # (97,887 MiB) to itself under the card lock, nvidia-smi every second.
+    # Before these rows the door refused every truncation above T383 as
+    # unweighed and priced T1023 at 99.94 GiB live and 129.46 GiB of card at
+    # one band; both shapes ran their ten steps at one band with nothing
+    # parked.  They are rows of THIS plan and this card class: they lift
+    # the above-the-fitted-domain refusal only for the exact plan
+    # (completed_plan_is_exact, measured_card_row) on a card with the
+    # measured figure free, and the fitted model is untouched, so every
+    # other shape -- the 16 GB card's T383 plans included -- is priced as
+    # it was.  card_bytes_measured is the nvidia-smi peak while the run held
+    # the card alone (its context inside it).
+    {
+        "label": "T799 L40 on the semi-Lagrangian core, one band, nothing parked, 5,000-column chunk, the 96 GB card",
+        "truncation": 799, "nlat": 1200, "nlon": 2400, "nlev": 40,
+        "precision": "float32", "core": "semilag",
+        "radiation_column_chunk": 5_000,
+        "bands": 1, "spill_slices": (),
+        "peak_used_bytes": 55_980_469_248, "held_bytes": 68_197_230_592,
+        "pool_limit_bytes": 68_197_230_592,
+        "card_bytes_measured": 65_984 * 1024 * 1024,
+        "measured_on": "2026-11-15",
+        "device": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+        "run": "ten steps of the GDAS 2026-11-14 18Z T799 config at dt 150 "
+               "(radiation at steps 0 and 6, checkpoints at 0 and 10) at one "
+               "band with nothing parked on the hires/memory tree at "
+               "bbfba77 (the shipped gather batch of eight), the card to "
+               "itself: status pass, 52.14 GiB live, 63.51 held (x1.2182), "
+               "65,984 MiB on the card, 7.17 s a step under an allocator-"
+               "site hook (the instrument, not the plan); the door had "
+               "priced 60.44 GiB live and 78.58 GiB of card",
+    },
+    {
+        # AT A GATHER BATCH OF ONE (gather_batch below): the shipped batch
+        # of eight stacks 5,760 MiB blocks at this shape, and on the tree
+        # before this row they fragmented the one-band pool until the card
+        # refused one after step 4 (90.19 GiB held, 71.90 GiB in use), so a
+        # config at the shipped batch is not priced by this run.
+        "label": "T1023 L40 on the semi-Lagrangian core, one band, nothing parked, 5,000-column chunk, gather batch 1, the 96 GB card",
+        "truncation": 1023, "nlat": 1536, "nlon": 3072, "nlev": 40,
+        "precision": "float32", "core": "semilag",
+        "radiation_column_chunk": 5_000,
+        "bands": 1, "spill_slices": (), "gather_batch": 1,
+        "peak_used_bytes": 83_832_583_168, "held_bytes": 91_295_965_184,
+        "pool_limit_bytes": 91_295_965_184,
+        "card_bytes_measured": 87_928 * 1024 * 1024,
+        "measured_on": "2026-11-15",
+        "device": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+        "run": "ten steps of the GDAS 2026-11-14 18Z T1023 config at dt 300 "
+               "(radiation at steps 0 and 6, checkpoints at 0 and 10) at one "
+               "band with nothing parked and semilag.gather_batch = 1 on the "
+               "hires/memory tree at a9daa53, the card to itself: status "
+               "pass, 78.08 GiB live, 85.03 GiB the most the pool held "
+               "(x1.089), 87,928 MiB on the card, 10.39 s a step under an "
+               "allocator-site hook (the instrument, not the plan).  The "
+               "tree before (3d5abed) at one band and the shipped batch read "
+               "87.37 GiB live and was refused 5,760 MiB by the card after "
+               "step 4; the door had priced 99.94 GiB live and 129.46 GiB "
+               "of card, and the eight-band plan with the host tier it "
+               "chose ran 20.6 to 22.6 s a step",
+    },
 )
 
 
@@ -3704,6 +3780,10 @@ def completed_plan_ceiling(estimate, bands: int, slices) -> dict | None:
         # streamed run's peak bounds nothing that holds them.
         and (bool(getattr(estimate, "streaming", False))
              or not bool(row.get("streaming", False)))
+        # A larger gather batch stacks larger blocks than the row's run
+        # did, so a row measured at a smaller batch bounds nothing above
+        # it (GlobalMemoryEstimate.semilag_gather_batch).
+        and _gather_batch_of(estimate) <= _gather_batch_of(row)
     ]
     if not rows:
         return None
@@ -3730,7 +3810,46 @@ def completed_plan_is_exact(estimate, bands: int, slices, row) -> bool:
             and bool(row.get("streaming", False))
             == bool(getattr(estimate, "streaming", False))
             and str(row.get("device_allocator", "default"))
-            == str(getattr(estimate, "device_allocator", "default")))
+            == str(getattr(estimate, "device_allocator", "default"))
+            and _gather_batch_of(row) == _gather_batch_of(estimate))
+
+
+def _smaller_gather_batch_hint(estimate, free_bytes) -> str:
+    """`` A measured plan of this shape fits at gather_batch N ...``: the
+    way past the unweighed-shape refusal when a run of this very shape was
+    measured at a SMALLER semi-Lagrangian gather batch (which changes no
+    bits) and its card figure fits what is free; ``""`` otherwise."""
+
+    want = _gather_batch_of(estimate)
+    rows = [
+        row for row in COMPLETED_PLAN_PEAKS
+        if same_grid(row, estimate.truncation, grid_shape_of(estimate))
+        and int(row["nlev"]) == int(estimate.nlev)
+        and str(row["precision"]) == str(getattr(estimate, "precision", "float32"))
+        and str(row["core"]) == _estimate_core(estimate)
+        and _gather_batch_of(row) < want
+        and row.get("card_bytes_measured")
+        and int(row["card_bytes_measured"]) <= int(free_bytes or 0)
+    ]
+    if not rows:
+        return ""
+    row = min(rows, key=lambda r: int(r["card_bytes_measured"]))
+    return (f"  A run of this shape WAS measured at [semilag] gather_batch = "
+            f"{_gather_batch_of(row)} ({row['label']}, "
+            f"{int(row['card_bytes_measured']) / GIB:.2f} GiB of card, "
+            f"{row['device']}, {row['measured_on']}); the batch changes no "
+            f"bits, so setting it in the config admits that plan.")
+
+
+def _gather_batch_of(item) -> int:
+    """The semi-Lagrangian gather batch a row was measured at, or an
+    estimate (or a stand-in) prices; the shipped batch when it says none."""
+
+    if isinstance(item, dict):
+        value = item.get("gather_batch", SEMILAG_DEFAULT_GATHER_BATCH)
+    else:
+        value = getattr(item, "semilag_gather_batch", SEMILAG_DEFAULT_GATHER_BATCH)
+    return int(value or SEMILAG_DEFAULT_GATHER_BATCH)
 
 
 def measured_card_row(estimate, bands, slices) -> dict | None:
@@ -4025,6 +4144,8 @@ def run_memory_gate(cfg, *, probe=None, neighbours=None) -> dict:
                       f"{measured['measured_on']})")
     elif not plan.fits:
         plan_text += _measured_plan_hint(estimate, free, cfg)
+    if unfitted:
+        unfitted += _smaller_gather_batch_hint(estimate, free)
     if plan.fits:
         plan_text += pool_limit_text(plan, estimate, measured)
     return {

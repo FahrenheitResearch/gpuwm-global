@@ -359,7 +359,9 @@ def _add_climatology_arguments(parser) -> None:
                       "byte-reproducible .npz, docs/ARWEN_GLOBAL_OCEAN.md")
     qflux.add_argument("qflux_args", nargs=argparse.REMAINDER, metavar="ARGS",
                        help="CHECKPOINT [CHECKPOINT ...] --out NPZ "
-                            "[--smoothing-truncation N], read by "
+                            "[--smoothing-truncation N], or second-pass QFLUX "
+                            "--climatology NPZ --slab-run DIR [--slab-run DIR ...] --out NPZ "
+                            "(F_cal corrected by long slab runs that read QFLUX), read by "
                             "arwen_global.ocean_qflux.main")
 
 

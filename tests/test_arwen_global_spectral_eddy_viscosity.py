@@ -8,6 +8,8 @@ is the record config with one table changed.
 """
 from __future__ import annotations
 
+from test_arwen_global_gf_default_d import gf_0_2_4
+
 import math
 from pathlib import Path
 
@@ -262,7 +264,7 @@ def test_the_shipped_configs_keep_their_hashes_and_the_hyperdiffusion(relative, 
     # source tree's spelling so the pinned hashes read the same in both.
     cfg = load_config(config_root() / Path(relative).name)
     assert cfg.diffusion_closure == DEFAULT_DIFFUSION_CLOSURE
-    assert cfg.config_hash.startswith(pinned)
+    assert gf_0_2_4(cfg).config_hash.startswith(pinned)  # pinned at 0.2.4's GF (D, 0.2.5)
     identity = cfg.config_identity
     for key in ("diffusion_closure", "closure_plateau", "closure_cusp_amplitude",
                 "closure_cusp_decay", "closure_eddy_prandtl", "closure_tail_degrees"):

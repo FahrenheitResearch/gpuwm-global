@@ -111,7 +111,7 @@ gpuwm-global go arwen_global_gdas_t255_native_sl_si_24h --outdir out/day
 - One observation at the exact pole refused the whole analysis. It is rejected
   by name now, and nothing else is.
 - A bare render call named products the renderer's catalogue does not carry and
-  drew nothing while reporting success.
+  rendered nothing while reporting success.
 - The forecast command wrote no `status.json`, so a workspace driving a
   day-long integration had a growing log to scrape and no answer to what
   stage it was in.

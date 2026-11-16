@@ -1,6 +1,6 @@
 """The experiment TOMLs that ship inside the wheel, and how a name resolves.
 
-Sixty configurations travel with this package: the fifty-seven
+Sixty-one configurations travel with this package: the fifty-eight
 ``arwen_global_*`` experiments (two of them, ``arwen_global_world_*``, carry
 a ``[world]`` table and run on another planet) and the three
 ``global_spectral_*`` dry-core cases.  The count is stated here and nowhere else that a reader meets it;

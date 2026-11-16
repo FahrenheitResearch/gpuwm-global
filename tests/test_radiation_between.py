@@ -262,3 +262,82 @@ def test_a_restarted_suite_continues_bit_for_bit():
         np.testing.assert_array_equal(
             np.asarray(resumed.physics_state.arrays[name]), np.asarray(value), err_msg=name)
     np.testing.assert_array_equal(resumed.theta, straight[2].theta)
+
+
+# ---------------------------------------------------------------------------
+# Another world's sun (audit 2026-11-15): the update follows the sun the
+# radiation calls run under, and Earth keeps the statements it always ran.
+# ---------------------------------------------------------------------------
+
+def test_earths_current_sun_is_the_earth_statements_bit_for_bit():
+    lat = np.linspace(-90.0, 90.0, 73, dtype=F)[:, None] * np.ones((1, 144), F)
+    lon = np.ones((73, 1), F) * np.arange(0.0, 360.0, 2.5, dtype=F)[None, :]
+    for when in (START, datetime(2026, 6, 21, 12, 0, tzinfo=timezone.utc),
+                 datetime(2026, 12, 21, 7, 13, 5, tzinfo=timezone.utc)):
+        np.testing.assert_array_equal(
+            rb.current_sun(np, lat, lon, when, start_time=START),
+            rb.cosine_zenith(np, lat, lon, when))
+
+
+def _audit_apply(world_sun):
+    """One surface-mode update at 2026-06-21 12Z on the prime meridian at
+    60 N, 60 S and 70 S, after the call 300 s earlier wrote its planted
+    1000 * coszen under the same sun (the radiation's)."""
+    start = datetime(2026, 6, 21, 0, 0, tzinfo=timezone.utc)
+    lat = np.asarray([[60.0, -60.0, -70.0]], F)
+    lon = np.zeros((1, 3), F)
+    call = rb.current_sun(np, lat, lon, start + timedelta(hours=12) - timedelta(seconds=300),
+                          world_sun=world_sun, start_time=start)
+    zero = np.zeros((1, 3), F)
+    persistent = SimpleNamespace(arrays={
+        "coszen": call, "swdown": (F(SWDOWN_SCALE) * np.maximum(call, F(0.0))).astype(F),
+        "gsw": zero.copy(), **{name: zero.copy() for name in rb.SURFACE_ARRAYS}})
+    batch = SimpleNamespace(
+        xp=np, time_s=12 * 3600.0,
+        arrays={"latitude_deg": lat, "longitude_deg": lon},
+        surface=SimpleNamespace(albedo=np.full((1, 3), 0.2, F)))
+    rb.apply(batch, persistent, mode="surface", start_time=start, due=True,
+             world_sun=world_sun)
+    return persistent.arrays["swdown"][0]
+
+
+def test_a_world_sun_moves_the_surface_shortwave_between_calls():
+    from arwen_global.world.sun import WorldSun
+
+    # Obliquity 0: the sun stands over the equator at the June solstice,
+    # so at local noon swdown is 1000 cos(latitude) in both hemispheres.
+    world = _audit_apply(WorldSun(obliquity_deg=0.0))
+    assert world == pytest.approx([500.0, 500.0, 342.0], abs=1.0)
+    # What the update did before: Earth's solstice sun, 804 / 113 / 0.
+    earth = _audit_apply(None)
+    assert earth == pytest.approx([804.0, 113.0, 0.0], abs=1.0)
+
+
+def test_the_runtime_hands_the_update_its_world_sun(monkeypatch):
+    from arwen_global.physics.native_runtime import NativePhysicsRuntime
+    from arwen_global.world import radiation as world_radiation
+    from arwen_global.world.sun import WorldSun
+
+    seen = []
+    stock = rb.apply
+
+    def recording(*args, **kwargs):
+        seen.append(kwargs.get("world_sun", "missing"))
+        return stock(*args, **kwargs)
+
+    monkeypatch.setattr(rb, "apply", recording)
+    # Earth: no world sun, the update's own Earth statements.
+    _run("surface")
+    assert seen and all(value is None for value in seen)
+    seen.clear()
+    # A world sun: the runtime's own is what the update reads.  The fake
+    # radiation takes the world_sun keyword as the world class does.
+    monkeypatch.setattr(world_radiation, "world_radiation_class", lambda parent: parent)
+    options = {**_options(), "radiation_interval_s": INTERVAL_S,
+               "radiation_between": "surface"}
+    suite = ArwenCudaColumnSuite(options, array_module=np, modules=_sun_modules())
+    sun = WorldSun(obliquity_deg=0.0)
+    suite._runtime = NativePhysicsRuntime(suite.options, modules=suite._modules)
+    suite._runtime.world_sun = sun
+    suite.step(_exchange())
+    assert seen and all(value is sun for value in seen)

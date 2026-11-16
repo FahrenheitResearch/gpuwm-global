@@ -25,6 +25,8 @@ kernel in ``test_arwen_global_snow_age_cuda.py``.
 """
 from __future__ import annotations
 
+from test_arwen_global_gf_default_d import gf_0_2_4
+
 from arwen_global.configs_dir import config_root as _shipped_configs
 from dataclasses import replace
 from types import SimpleNamespace
@@ -386,7 +388,7 @@ def test_snow_ageing_is_off_by_default_and_on_joins_the_identity():
     native = load_config(str(_shipped_configs() / "arwen_global_level5_native_smoke.toml"))
     assert native.native_adapter_options.get("snow_ageing", False) is False
     assert "snow_ageing" not in native.config_identity["native_adapter_options"]
-    assert replace(native, semi_implicit_scheme="external").config_hash == (
+    assert gf_0_2_4(replace(native, semi_implicit_scheme="external")).config_hash == (
         "367431fd86f9b0d7d1338d9fbcaf97ff62cada4cb4e249c2ccc658789cde1836")
     day = load_config(str(
         _shipped_configs() / "arwen_global_gdas_t255_native_sl_si_24h.toml"))
@@ -394,7 +396,7 @@ def test_snow_ageing_is_off_by_default_and_on_joins_the_identity():
     # the day hashes as 0.1.7's.
     without_drag = {key: value for key, value in day.native_adapter_options.items()
                     if key != "orographic_drag"}
-    assert replace(day, native_adapter_options=without_drag).config_hash == (
+    assert gf_0_2_4(replace(day, native_adapter_options=without_drag)).config_hash == (
         "c7a000d28c206ace5f88312d92320f4c30e72f7f0eb6d6108587022d935b4bbf")
     assert carried_physics_arrays(native) == frozenset()
     on = replace(native, native_adapter_options={

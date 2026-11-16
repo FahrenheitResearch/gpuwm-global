@@ -24,6 +24,7 @@ not a gate.  The gate is the test file.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 from pathlib import Path
 import re
 import sys
@@ -33,9 +34,24 @@ ROOT = Path(__file__).resolve().parents[1]
 SKIP_PARTS = {".git", "__pycache__", ".pytest_cache", "build", "dist",
               ".venv", "venv", "node_modules"}
 
-#: Hostnames of the machines this project's numbers were measured on, and
-#: run directories underneath them.
-MACHINE_NAME = re.compile(r"\b(weather-node-\d+|node-[1-9])\b")
+
+def _private_names():
+    spec = importlib.util.spec_from_file_location(
+        "arwen_global_private_names", Path(__file__).resolve().with_name("private_names.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+PRIVATE = _private_names()
+
+#: Hostnames of the machines this project's numbers were measured on.  The
+#: pattern is a private name and is read from the private names file at run
+#: time (`tools/private_names.py`): this file ships in the sdist, and a
+#: pattern spelled here would publish the hostnames it reports.  None when
+#: the file is not on this machine.
+_MACHINE_PATTERN = PRIVATE.string(PRIVATE.load(), "machine_pattern")
+MACHINE_NAME = re.compile(_MACHINE_PATTERN) if _MACHINE_PATTERN else None
 
 
 def candidates() -> list[Path]:
@@ -47,7 +63,7 @@ def candidates() -> list[Path]:
         if set(path.relative_to(ROOT).parts) & SKIP_PARTS:
             continue
         if path.name in {"provenance_sweep.py", "test_no_provenance.py"}:
-            continue  # they state the patterns as literals
+            continue  # they describe the rule
         found.append(path)
     return found
 
@@ -74,6 +90,10 @@ def main() -> int:
                         help="print only the number of mentions")
     args = parser.parse_args()
 
+    if MACHINE_NAME is None:
+        print("provenance_sweep: nothing to sweep for, because "
+              + PRIVATE.SKIP_REASON, file=sys.stderr)
+        return 0
     rows = sweep()
     if args.count:
         print(len(rows))

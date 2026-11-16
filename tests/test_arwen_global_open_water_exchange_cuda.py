@@ -84,8 +84,14 @@ def test_a_native_physics_call_with_the_account_has_the_atmosphere_of_the_finite
     assert np.array_equal(reservoir[water], a["reservoir0"][water])
     assert np.array_equal(reservoir[~water], b["surface"]["water_kg_m2"][~water])
     assert np.all(account[~water] == 0.0)
-    # The call moved open-water surface water, so the comparison has teeth.
-    assert np.any(account[water] != 0.0)
+    # The call evaporated on open water, so the comparison has teeth.  Since
+    # 0.2.5 (fix/water-divisor) the reservoir need not move: the half-step's
+    # 2e-6 kg/m2 of evaporation is below one float32 ulp of the 500 kg/m2
+    # reservoir (3.05e-5), and the one-ulp move this test used to see came
+    # from the q_v-times-the-water excess that fix removed (measured on this
+    # smoke state: qfx and the ocean evaporation reading equal before and
+    # after the fix, the reservoir move 3.05e-5 -> 0).
+    assert np.any(a["physics"]["qfx"][water] > 0.0)
     assert np.allclose(
         reservoir[water].astype(np.float64) + account[water],
         b["surface"]["water_kg_m2"][water].astype(np.float64), rtol=0.0, atol=1.0e-4)

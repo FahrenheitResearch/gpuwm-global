@@ -305,8 +305,8 @@ def default_eulerian_step_s(truncation: int, maximum_cfl: float = 0.75,
     return max(admitted)
 from .statics import STATICS_SOURCES, StaticsOptions, parse_utc
 from .boundary_options import (
-    OUTPUT_PRODUCT_KEYS, LandOptions, OceanOptions, OutputOptions, parse_land,
-    parse_ocean, parse_output,
+    OUTPUT_PRODUCT_KEYS, LandOptions, OceanOptions, OutputOptions, long_dated_run,
+    parse_land, parse_ocean, parse_output,
 )
 from .vertical import HybridCoordinate
 from .world.spec import EARTH as EARTH_WORLD, WorldSpec, parse_world
@@ -471,6 +471,13 @@ class ArwenGlobalConfig:
     # stays byte-identical.
     analysis_fill_grib: str | None = None
     analysis_fill_mapping: str | None = None
+    # [initial] analysis_snow_density: "analysis" (default) starts Noah's
+    # pack at the analysis depth; "wrf-floor" takes a pack lighter than
+    # 200 kg m-3 at WRF real.exe's derived depth, SWE * 0.005 m
+    # (surface_seeding.seed_surface_from_analysis says why: GDAS writes its
+    # depth as ten times the water equivalent).  Joins the identity only
+    # when not "analysis", so every hash written without it stays the same.
+    analysis_snow_density: str = "analysis"
     # [statics] surface static fields.  The real arm changes results (the
     # planet Noah runs on) and enters the identity as its source, dataset
     # tokens and, for the analytic planet, its date; the synthetic arm is
@@ -699,6 +706,13 @@ class ArwenGlobalConfig:
     # 1-2e-4 kg/m2 of vapour (qv rides the semi-Lagrangian core with no
     # mass fixer) and the water fixer took it off the surface stores.
     vapour_fixer: bool = False
+    # [initial] orography_filter_half_degree (experimental, analysis mode
+    # only): the half-amplitude total degree n0 of an isotropic spectral
+    # filter on the model terrain, exp(-ln2 (n(n+1)/(n0(n0+1)))^2) with
+    # degree 0 kept (spectral.orography_filter).  0, the default, is off
+    # and leaves the identity, so every config hash written before the
+    # key existed stays byte-identical; a filtered run carries it.
+    orography_filter_half_degree: float = 0.0
 
     @property
     def config_identity(self) -> dict[str, object]:
@@ -729,7 +743,7 @@ class ArwenGlobalConfig:
             del payload["ocean"]
         else:
             payload["ocean"] = ocean_identity
-        land_identity = self.land.identity(self.ocean)
+        land_identity = self.land.identity(self.ocean, long_dated_run(self))
         if land_identity is None:
             del payload["land"]
         else:
@@ -776,6 +790,9 @@ class ArwenGlobalConfig:
             del payload["energy_fixer"]
         if not payload["vapour_fixer"]:
             del payload["vapour_fixer"]
+        # The orography filter joins only when on.
+        if payload["orography_filter_half_degree"] == 0.0:
+            del payload["orography_filter_half_degree"]
         # The absorber's heat booking (on) leaves the identity as it was;
         # only a config that turns it off carries it.
         if payload["sponge_heat_booking"]:
@@ -844,6 +861,8 @@ class ArwenGlobalConfig:
         if payload["analysis_fill_grib"] is None:
             del payload["analysis_fill_grib"]
             del payload["analysis_fill_mapping"]
+        if payload["analysis_snow_density"] == "analysis":
+            del payload["analysis_snow_density"]
         if payload["integrator"] not in SEMILAG_INTEGRATORS:
             del payload["minimum_fold_determinant"]
             del payload["semilag"]
@@ -1151,13 +1170,19 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
     analysis_mapping = None
     analysis_fill_grib = None
     analysis_fill_mapping = None
+    analysis_snow_density = "analysis"
     if initial_mode == "analysis":
         # Analytic shape parameters are refused here rather than ignored, so
         # a config cannot claim a jet or a wavenumber the run never builds.
         _unknown(initial, {
             "mode", "analysis_grib", "analysis_mapping", "surface_water_kg_m2",
-            "analysis_fill_grib", "analysis_fill_mapping",
+            "analysis_fill_grib", "analysis_fill_mapping", "analysis_snow_density",
+            "orography_filter_half_degree",
         }, "initial")
+        analysis_snow_density = str(initial.get("analysis_snow_density", "analysis")).strip()
+        if analysis_snow_density not in {"analysis", "wrf-floor"}:
+            raise ValueError(
+                "initial.analysis_snow_density must be 'analysis' or 'wrf-floor'")
         analysis_grib = str(initial.get("analysis_grib", "")).strip()
         if not analysis_grib:
             raise ValueError(
@@ -1217,6 +1242,18 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         raise ValueError("initial.zonal_wavenumber must lie in 0..truncation")
     if terrain < 0.0 or surface_water < 0.0:
         raise ValueError("terrain amplitude and surface water must be nonnegative")
+    # The orography filter (experimental; only an analysis start reads it,
+    # the analytic modes refuse the key above).  0 is off; otherwise the
+    # half degree is a total wavenumber the truncation resolves.
+    orography_filter = _finite(
+        initial.get("orography_filter_half_degree", 0.0),
+        "initial.orography_filter_half_degree")
+    if orography_filter != 0.0 and not 0.0 < orography_filter <= truncation:
+        raise ValueError(
+            "initial.orography_filter_half_degree must be 0 (off) or lie in "
+            f"0 < n0 <= truncation ({truncation}); got {orography_filter!r}"
+        )
+    orography_filter = 0.0 if orography_filter == 0.0 else orography_filter
 
     physics = _table(raw, "physics")
     _unknown(physics, {"mode", "native_adapter_name", "native_adapter_options", "split"}, "physics")
@@ -1812,6 +1849,7 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         gate_positivity_fixer_max_step_relative=gate_positivity_fixer,
         analysis_fill_grib=analysis_fill_grib,
         analysis_fill_mapping=analysis_fill_mapping,
+        analysis_snow_density=analysis_snow_density,
         insitu=insitu,
         checkpoint_compression=checkpoint_compression,
         snapshot_buffer=snapshot_buffer,
@@ -1844,6 +1882,7 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         land=land,
         output=output_options,
         world=world,
+        orography_filter_half_degree=orography_filter,
     )
 
 

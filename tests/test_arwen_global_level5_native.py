@@ -155,7 +155,10 @@ def _fake_modules(*, fail_morrison=False, precipitation=None, noah_calls=None,
 
         def __init__(self, *, column_chunk=None,
                      updraft_only_when_downdraft_dry=False,
-                     resolved_convergence_closure=False):
+                     resolved_convergence_closure=False,
+                     momentum_transport=False, deep_experiment=0, deep_physics=0):
+                     # The 0.2.5 Grell-Freitas default D hands these three to the scheme;
+                     # the fake runs no plume, so it takes and ignores them.
             self.driver = None
             self.column_chunk = column_chunk
             self.updraft_only_when_downdraft_dry = updraft_only_when_downdraft_dry
@@ -991,14 +994,22 @@ def _write_specific_level(kernel_species, level, specific):
         kernel_species[name][level] = np.asarray(value, np.float64).astype(np.float32)
 
 
-def _mass_consistent_precip_modules(dp_bottom_up, booked, leftovers):
+def _dry_bottom_up(exchange):
+    """The batch's inbound dry fraction for ``exchange``, native order
+    (NativeColumnBatch.dry_fraction: 1 - q_v in float32)."""
+    qv = np.ascontiguousarray(np.asarray(exchange.qv, np.float32)[::-1])
+    return np.float32(1.0) - qv
+
+
+def _mass_consistent_precip_modules(dp_bottom_up, booked, leftovers,
+                                    dry_bottom_up):
     """Fakes for the precipitation double-entry conviction.
 
     Morrison removes exactly its reported precipitation total from column
-    vapor in the ledger's metric -- specific humidity times dp/g, the
-    model's convention, converted at the kernel-side level through the
-    bridge's own helpers (the kernel's contract: fallout is water that LEFT
-    the atmosphere) -- and Noah consumes rainbl into counted
+    vapor in the ledger's metric -- r_v d_in dp/g, the model's specific
+    humidity at the call's inbound dry fraction (``dry_bottom_up[0]``, set
+    by the caller per call; native_batch docstring) -- the kernel's
+    contract: fallout is water that LEFT the atmosphere -- and Noah consumes rainbl into counted
     stores the way SFLX does -- the liquid part fills the canopy to the
     CMCMAX cap of 0.5 kg/m2 (noah.cu:581-583, 1504) with the excess booked
     into sfcrunoff (noah.cu:1543), and the frozen part accrues into snow
@@ -1025,10 +1036,13 @@ def _mass_consistent_precip_modules(dp_bottom_up, booked, leftovers):
         remaining = np.full(qv.shape[1:], np.float64(total))
         for k in range(qv.shape[0]):
             dp_k = np.asarray(dp_bottom_up[k], np.float64)
-            specific = _specific_level(species, k)
-            take = np.clip(specific["qv"] * dp_k / g, 0.0, remaining)
-            specific["qv"] = specific["qv"] - take * g / dp_k
-            _write_specific_level(species, k, specific)
+            # The ledger prices vapour at the call's inbound dry fraction
+            # (native_batch docstring), so the fallout leaves in mixing
+            # ratio: F kg/m2 is F g / (d_in dp) kg per kg of dry air.
+            dry_k = np.asarray(dry_bottom_up[0][k], np.float64)
+            r_v = np.asarray(qv[k], np.float64)
+            take = np.clip(r_v * dry_k * dp_k / g, 0.0, remaining)
+            qv[k] = (r_v - take * g / (dry_k * dp_k)).astype(np.float32)
             remaining -= take
         leftovers.append(float(remaining.max()))
 
@@ -1128,16 +1142,23 @@ def test_precipitation_consumed_by_noah_is_debited_from_the_reservoir():
     ledger0 = ledger(exchange.surface, fields0, None)
 
     booked, leftovers = [], []
+    # The call's inbound dry fraction, set before each step.
+    dry_now = [_dry_bottom_up(exchange)]
     suite = ArwenCudaColumnSuite(
         _options(), array_module=np,
-        modules=_mass_consistent_precip_modules(dp_bottom_up, booked, leftovers),
+        modules=_mass_consistent_precip_modules(
+            dp_bottom_up, booked, leftovers, dry_now),
     )
     first = suite.step(exchange)
-    second = suite.step(_advance(exchange, first, 5.0))
+    advanced = _advance(exchange, first, 5.0)
+    dry_now[0] = _dry_bottom_up(advanced)
+    second = suite.step(advanced)
     reservoir2 = np.array(
         np.asarray(second.surface.water_kg_m2, np.float64), copy=True
     )
-    third = suite.step(_advance(exchange, second, 10.0))
+    advanced = _advance(exchange, second, 10.0)
+    dry_now[0] = _dry_bottom_up(advanced)
+    third = suite.step(advanced)
 
     # The double-entry really happened: Morrison drained its total from the
     # atmosphere on every call, and the second land call consumed the two
@@ -2311,10 +2332,12 @@ def test_cumulus_tendencies_integrate_into_the_column_with_the_exner_invariant()
     r_v[0] += dt * drying
     r_c[1] += dt * detrain_c
     r_i[2] += dt * detrain_i
-    moist = 1.0 + r_v
-    assert np.allclose(np.asarray(result.qv)[::-1], r_v / moist, rtol=1.0e-6, atol=1.0e-12)
-    assert np.allclose(np.asarray(result.qc)[::-1], r_c / moist, rtol=1.0e-6, atol=1.0e-12)
-    assert np.allclose(np.asarray(result.qi)[::-1], r_i / moist, rtol=1.0e-6, atol=1.0e-12)
+    # Back at the INBOUND dry fraction (native_batch docstring;
+    # fix/water-divisor): q_x = r_x d_in.
+    dry = np.asarray(batch.dry_fraction, np.float64)
+    assert np.allclose(np.asarray(result.qv)[::-1], r_v * dry, rtol=1.0e-6, atol=1.0e-12)
+    assert np.allclose(np.asarray(result.qc)[::-1], r_c * dry, rtol=1.0e-6, atol=1.0e-12)
+    assert np.allclose(np.asarray(result.qi)[::-1], r_i * dry, rtol=1.0e-6, atol=1.0e-12)
     # temperature = theta * exner held after the cumulus step: the energy
     # advisory measures the convective heating like any other term (it
     # reads batch temperature, which a stale copy would leave at zero).
@@ -2537,11 +2560,14 @@ def test_convective_rain_is_booked_to_the_reservoir_rainc_and_the_land_bucket(ex
     drying = -2.0e-6
     # The scheme's own RAINCV, deliberately 10% off the column integral of
     # its drying, above it and below it: the reservoir must take the
-    # MEASURED loss, and RAINC and the land bucket one number, the smaller
-    # of the two (Grell-Freitas's deep arm reports more rain than its rates
-    # remove: Noah forced with the excess grew stores out of water the
-    # atmosphere never lost, paid by the reservoir, and the maps drew rain
-    # that never left the air).
+    # MEASURED loss, and RAINC and the land bucket one number, the rain of
+    # the applied rates on the model's mass, which IS that loss to the
+    # float32 rounding of the update (fix/water-divisor: the scheme's
+    # RAINCV is priced on the kernel's mass, so it is a diagnostic; capped
+    # at the loss it withheld 1.56 percent of Grell-Freitas's rain at T255).
+    # Before GP-1 the deep arm reported more rain than its rates removed,
+    # and Noah forced with the excess grew stores out of water the
+    # atmosphere never lost.
     reported = np.asarray(excess * (-drying) * dt * dp_bottom / GRAVITY_M_S2, np.float32)
 
     def convection(result, atmosphere):
@@ -2566,29 +2592,25 @@ def test_convective_rain_is_booked_to_the_reservoir_rainc_and_the_land_bucket(ex
     assert np.allclose(credited, removed, atol=2.0e-5)
     assert not np.allclose(credited, reported, atol=1.0e-3)
     assert result.diagnostics["maximum_local_water_repair_kg_m2"] < 1.0e-5
-    # RAINC: the reported rain capped at the water that left the column, the
-    # same number the land bucket takes; RAINNC untouched.
-    landed = np.minimum(np.asarray(reported, np.float64), removed)
+    # RAINC: the water that left the column, whatever the scheme reported,
+    # the same number the land bucket takes; RAINNC untouched.
+    landed = removed
     rainc = np.asarray(result.physics_state.arrays[CONVECTIVE_RAIN_ACCUMULATOR])
     assert np.allclose(rainc, landed, rtol=0.0, atol=2.0e-5)
-    if excess > 1.0:
-        assert np.all(rainc < reported)
-    else:
-        assert np.allclose(rainc, reported, rtol=1.0e-6)
+    assert not np.allclose(rainc, reported, atol=1.0e-3)
     assert np.array_equal(
         np.asarray(result.surface.accumulated_rain_kg_m2, np.float64), rain0
     )
-    # The call's rain books: what the scheme reported, what it reported
-    # beyond the removed water (withheld, never rain), and the removal.
+    # The call's rain books: what the scheme reported (a diagnostic), the
+    # rain, the rain beyond the removed water (round-off only), the
+    # removal, and the rates-against-measurement closure.
     d = result.diagnostics
     assert np.isclose(d["cumulus_rain_reported_kg_m2"], float(np.mean(reported)), rtol=1.0e-6)
-    assert np.isclose(d["cumulus_rain_withheld_kg_m2"],
-                      float(np.mean(np.asarray(reported, np.float64) - rainc)), rtol=1.0e-5, atol=1.0e-9)
+    assert np.isclose(d["cumulus_rain_kg_m2"], float(np.mean(removed)), rtol=1.0e-4)
     assert np.isclose(d["cumulus_water_removed_kg_m2"], float(np.mean(removed)), rtol=1.0e-4)
-    if excess > 1.0:
-        assert d["cumulus_rain_withheld_kg_m2"] > 0.05 * d["cumulus_rain_reported_kg_m2"]
-    else:
-        assert d["cumulus_rain_withheld_kg_m2"] == 0.0
+    # Round-off only: 2^-24 of the column water per updated species.
+    assert 0.0 <= d["cumulus_rain_withheld_kg_m2"] < 2.0e-6
+    assert 0.0 <= d["cumulus_rain_closure_kg_m2"] < 2.0e-6
     # The land bucket: Noah's next due call is forced with that same number,
     # and the accumulator keeps growing by it.
     second = suite.step(_advance(exchange, result, 10.0))
@@ -2596,10 +2618,6 @@ def test_convective_rain_is_booked_to_the_reservoir_rainc_and_the_land_bucket(ex
     assert np.allclose(calls[0]["rainbl"], 0.0)
     assert np.allclose(calls[1]["rainbl"], landed, rtol=0.0, atol=2.0e-5)
     assert np.allclose(calls[1]["rainbl"], rainc, rtol=0.0, atol=1.0e-7)
-    if excess > 1.0:
-        assert np.all(calls[1]["rainbl"] < reported)
-    else:
-        assert np.allclose(calls[1]["rainbl"], reported, rtol=1.0e-6)
     assert np.allclose(
         np.asarray(second.physics_state.arrays[CONVECTIVE_RAIN_ACCUMULATOR]),
         2.0 * rainc, rtol=0.0, atol=4.0e-5,

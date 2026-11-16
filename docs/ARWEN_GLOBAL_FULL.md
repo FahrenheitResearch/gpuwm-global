@@ -238,9 +238,13 @@ the gathered bundle, with no new state and no new gather, so a restart stays
 bit-exact. `[semilag] level_rate_limiter = true` keeps the time-n vertical
 rate wherever it changed sign between the two levels, the limit ECMWF puts
 on the vertical SETTLS term. Neither is a default, both give the run its own
-config identity, and the departure form runs on one card at any band count
-(a run on several cards refuses it by name). The CPU gates are in
-`tests/test_arwen_global_semilag_settls_departure.py`. Both keys are
+config identity, and the departure form runs at any band count on one card
+or several: since 0.2.5 each card takes its neighbours' rows of the previous
+time level once a step, as wide as the band halo, and widens that reach
+when a band escapes its halo, so a run on P cards is the one-card run bit
+for bit. The CPU gates are in
+`tests/test_arwen_global_semilag_settls_departure.py` and, for several
+cards, `tests/test_arwen_global_semilag_bands.py`. Both keys are
 experimental. With both set at 600 s, four 48 h T255 forecasts
 (`arwen_global_gdas_t255_native_sl_si_24h_dt600` from the GDAS 2026-01-15,
 04-15, 07-15 and 10-15 00Z analyses, RTX 5090), scored against the
@@ -256,7 +260,7 @@ to 29 percent. The departure form without the limiter was not scored.
 `[semilag] extrapolation = "settls_residual_departure"` takes only the
 residual half of that form (the extrapolated residual rides the gathered
 bundle, the trajectory is the shipped one); it is experimental, has its own
-config identity and runs on one card at any band count. At T383 and 300 s
+config identity and runs at any band count on one card or several. At T383 and 300 s
 the shipped form puts divergent waves of 4 to 6 grid lengths across the
 fastest jets: the RMS of the divergent wind of degrees above 280 at about
 240 hPa inside winds over 50 m/s was 1.21 m/s at 96 h from the GDAS
@@ -298,7 +302,15 @@ because an unconverged trajectory reads as a Rossby phase error and produces
 no other symptom. A step whose search misses it at the configured
 `trajectory_iterations` is searched again at eight before it is refused, and
 the receipt counts those steps (`semilag_trajectory_retried_steps`); a step
-that converges never reaches the retry, so its bits are the plain search's. The flux-form tracer sweep is routed around rather than
+that converges never reaches the retry, so its bits are the plain search's.
+The plain search is a fixed-point pass, which contracts by the spectral
+radius of `(dt/2) J`; the fold gate bounds `det(I + (dt/2) J)`, not that
+radius, and a rotation or the jet's vertical-shear coupling keeps the
+determinant at or above one while the pass stalls. `[semilag]
+trajectory_solver = "newton"` (opt-in, device only, absent from the identity
+at its default) solves the same equation through the same gather with the
+interpolant's own Jacobian, which converges wherever that determinant is away
+from zero. The flux-form tracer sweep is routed around rather than
 sub-cycled 37 times at T255 and 160 at T533, with its own path still
 selectable as `[semilag] tracer_scheme = "flux_form"`. The barotropic
 semi-implicit proxy, a disabled operator and a partial `[semi_implicit]

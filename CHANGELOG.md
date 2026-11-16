@@ -1,5 +1,593 @@
 # Changelog
 
+## 0.2.5
+
+Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.2.4 did;
+proven against `gpuwm 2.9.13`.  `tools/measure_boundary.py` reads 242
+symbols across 72 modules with no gap, and all 50 engine seam files are
+pinned at 2.9.13.  The companion bundle carries ten Rust doors, unchanged
+from 0.2.0.  0.2.5 does not reproduce 0.2.4's forecasts.  Grell-Freitas runs
+a new default, D (Changed, below): every shipped config that runs it
+changes its hash, and stating the three options at their 0.2.4 values
+brings back that hash.  The semi-Lagrangian configs from T383 up take the
+departure-point time extrapolation, `settls_departure`, and change their
+hash too.  Five fixes change results under unchanged config hashes (Fixed,
+below): the cumulus schemes' vertical velocity, the water conversion and
+the convective rain books of the native physics, the soil and skin of
+coastal land at an analysis cold start, and the lake columns' surface
+layer; every config that runs the native physics (with the three
+Grell-Freitas values stated or not) computes different bits than 0.2.4
+under its own hash, so a 0.2.4 checkpoint resumed under 0.2.5 continues
+with 0.2.5's arithmetic.  A dated run of more than 16 days on a held sea
+follows the land climatology's calendar.  One config is added, the T1023
+forecast day for a 96 GB card, and the run door admits T799 and T1023 on
+that card at the plans a run measured.  The semi-Lagrangian T533, T799 and
+T1023 days filter their model terrain at total degree 350 and run the
+orographic drag, and change their hash (Changed, below).  Everything else new is a tool, a release file or
+an option that is off by default.
+
+### Changed (defaults)
+
+- Grell-Freitas runs the default D: `gf_deep_experiment = 7`,
+  `gf_deep_physics = 34` and `gf_momentum_transport = true`. 7 runs every
+  WRF GF formula that reads the convective memory csum at csum = 39, where
+  WRF's own `lev_start` reaches its 0.9 cap (lev_start 0.9, ocean edtmax
+  0.1, downdraft beta 0.02, land entrainment 1e-5; module_cu_gf_deep.F
+  v4.7.1), in place of the csum = 0 this driver passed. 34 is two UFS
+  CCPP pieces: the cloud-depth-dependent beta (2) and the
+  moisture-convergence closure members without WRF's max(0.5, 1 - edt
+  zd/zu) divisor (32). The momentum transport is WRF's own coupling of the
+  deep arm's RUCUTEN/RVCUTEN. Measured at T255 to 120 h against the GFS
+  analysis, D against 0.2.4's GF on 16 September-November and 16
+  June-August 2026 starts (starts better, two-sided sign test): at 24 h
+  Z500 is better in every region (NH and SH 16/16 in both seasons,
+  tropics 14/16), tropical T850 16/16 and tropical 250 hPa wind 13-14/16;
+  at 120 h tropical 250 hPa wind 8.420 to 8.077 and 8.679 to 8.260 m/s
+  (13/16 each) and tropical MSLP RMSE 1.728 to 1.600 and 1.724 to 1.491
+  hPa (13/16 each); no RMSE or ACC is significantly worse beyond 24 h in
+  either season. Tropical daily rain against GPCP (June-August): pattern
+  correlation 0.433 to 0.512 and RMSE 10.88 to 7.82 mm/day (16/16), and
+  the 24 h rain maximum on the 1.5 degree map falls from 212 to 136
+  mm/day. The tropical 300-200 hPa cold bias of -0.6 to -0.75 K becomes
+  about -0.05 to -0.25 K. Costs: the tropical mean biases go more negative
+  (Z500 -0.82 to -3.51 m at 120 h, 1/16; MSLP -0.84 to -0.92 hPa), which
+  exposes a low tropical surface pressure every arm shares, and the
+  bias-removed tropical Z500 at 24 h is worse (8/31); SH T850 at 24 h is
+  worse by about 0.01 K (1.027 to 1.040 K, 0/16), gone by 72 h; in 10-day
+  runs the tropical 850 hPa layer ends 0.3-0.6 K colder than 0.2.4's on 2
+  of 3 June-August starts and the SH 700-400 hPa layer 0.2-0.4 K colder on
+  2 of 3 September-October starts; the central-Pacific dry bias (140-110W,
+  about -1 mm/day) is not fixed, and the rain shifts toward GF (72-73 %
+  of it). Side-by-side runner pictures (two starts, 72 and 120 h) show
+  less grid-scale speckle in reflectivity and rain and fewer small closed
+  tropical lows. Every shipped config that runs GF (36, listed in
+  `tests/data/gf_default_d_hashes_before.json`) changes its hash; stating
+  `gf_deep_experiment = 0, gf_deep_physics = 0, gf_momentum_transport =
+  false` brings back each one's 0.2.4 hash exactly (the T1023 day: its
+  hash before the flip), so a 0.2.4 checkpoint of such a config restarts
+  under 0.2.5 with those three keys added.
+  `tests/test_arwen_global_gf_default_d.py`.
+  Under 7 (and 8) the scale-aware radius, frh and sig keep their csum-0
+  values and the reduced land entrainment rate acts on the plume only.
+  Fed to WRF's radius formula, the csum-39 land rate made the plume 20 km
+  wide, which caps frh at 0.9 for any dx below 37.4 km: land sig fell to
+  sig_thresh, 0.01, at T383 and finer (0.29 at T255, 0.78 at T127, against
+  WRF's csum-0 0.958 at T383, 0.981 at T255 and 0.995 at T127), so every
+  moist land column exited with ierr 231 and every other one had its mass
+  flux times 0.01. No reference driver runs that formula at csum > 0 (WRF
+  resets cactiv each step; CCPP comments the csum term out). Measured at
+  T383, 24 h, 2 starts: the share of 0-24 h land rain made by GF goes from
+  4.9 and 5.7 % to 49.5 and 55.3 %, the largest 24 h land total from 385
+  and 338 mm to 141 and 154 mm, and water columns are unchanged.
+  `tests/test_arwen_global_gf_land_sig_cuda.py`.
+
+- The shipped semi-Lagrangian configs from T383 up take `[semilag]
+  extrapolation = "settls_departure"` (Hortal's form: the time
+  extrapolation read at the departure point): the T383 and T533 forecast
+  and wall days and the T799 wall day (the T1023 day already did). Their
+  hashes move; the option's own default stays `"settls"`, so T255 and every
+  config that does not state it are unchanged. The shipped `"settls"` puts
+  grid-scale divergent stripes across the fastest jets at T383 and finer.
+  Measured on the shipped T383 day, 120 h, four starts (2026-09-14, 09-29,
+  10-13 12Z, 10-28), against the GFS analysis, departure form against
+  `settls` (starts better): the jet noise (high-pass divergent wind near
+  240 hPa) 1.03 to 0.21 m/s at 24 h and 0.92 to 0.22 at 120 h (4/4); NH Z500 RMSE 51.20 to 50.27 m at 120 h (3/4) and ACC
+  0.855 to 0.861; tropical Z500 11.84 to 11.49 m at 120 h (4/4); NH and SH
+  MSLP better at 72-120 h (3-4/4); the spectral tripwire fired 9 times on
+  2 of 4 starts with `settls` and never with the departure form. Costs,
+  small and not consistent in sign: T850 NH at 72 h +0.010 K (0/4), T850
+  SH at 24 h +0.006 K (0/4), SH 250 hPa wind at 96-120 h about +0.1 m/s
+  (1-2/4);
+  one start (10-28) is worse on NH Z500 at 120 h by 2.3 m. Four starts
+  give no significant result either way (the smallest sign-test p is
+  0.125). Runner pictures of two starts (09-14, 10-28) at 24, 72 and 120
+  h: the cross-jet streaks `settls` adds in the 500 hPa wind are gone and
+  no new structure appears; terrain and frontal texture, and some texture
+  in the strongest jet cores at 72 h, remain in both.
+  The T383 day on the RTX 5070 Ti (before the Grell-Freitas default D):
+  1.691 s a step, card peak 12,872 MiB, no tripwire, status pass. The
+  departure-side forms (`settls_departure`, `settls_residual_departure`)
+  now run on several cards, which 0.2.1 to the 0.2.5 candidate refused at
+  the first step: they read the previous time level at the departure
+  point, so each card takes its neighbours' rows of all seven planes of
+  that level once a step, as wide as the band halo, and every card widens
+  that reach together when a band escapes past it. Two cards return the
+  one-card run bit for bit, the halo escape included
+  (`tests/test_arwen_global_semilag_bands.py`, loopback TCP). Stating
+  `extrapolation = "settls"` (with the three Grell-Freitas 0.2.4 values)
+  brings back each config's 0.2.4 hash.
+  `tests/test_arwen_global_drag_default.py`.
+
+- The semi-Lagrangian T533, T799 and T1023 days
+  (`arwen_global_gdas_t533_native_sl_si_24h`,
+  `arwen_global_gdas_t533_native_sl_si_wall`,
+  `arwen_global_gdas_t799_native_sl_si_wall`,
+  `arwen_global_gdas_t1023_native_sl_si_24h`) filter their model terrain:
+  `[initial] orography_filter_half_degree = 350.0` (Added, below), the same
+  physical cut at every truncation. Unfiltered, the GDAS 0.25 degree
+  terrain puts a ripple on the 500 hPa height over the western mountains.
+  T1023, measured on 12 h runs of the T1023 showpiece recipe (this grid,
+  core and suite, on the tree before this release's Grell-Freitas default,
+  with the experimental k22 fallback on) from GDAS 2026-11-15 06Z, in the West box (35-48N
+  125-105W), as second differences of the field sampled onto the GFS grid
+  divided by GFS's own (east-west / north-south; identical fields read
+  about 0.76): Z500 3.62 / 2.98 at 9 h and 4.21 / 3.90 at 15 h unfiltered,
+  1.80 / 1.58 at 12 h with n0 = 500 and 1.22 / 0.96 with n0 = 350; 10 m
+  wind 1.67 / 1.50 and 1.17 / 1.18 unfiltered, 0.89 / 0.67 with n0 = 350;
+  vertical wind near 500 hPa over NV/UT/ID, rms / max, 0.169 / 1.54 and
+  0.176 / 1.93 m/s unfiltered, 0.086 / 0.52 m/s with n0 = 350. The NE
+  Pacific Z500 control box read 0.26 / 0.30 and 0.22 / 0.29 m on the model
+  grid unfiltered and 0.28 / 0.31 m with n0 = 350. Costs: the highest
+  terrain in NV/UT/ID (37-45N 120-110W) falls from 3170 m to 2901 m (rms
+  change 74 m), and the kinetic energy on model level 15 at step 80 keeps
+  0.84 / 0.61 / 0.45 of the unfiltered run's at n = 200-300 / 300-500 /
+  500-700. T799, this tree, the shipped T799 day from GDAS 2026-11-15
+  06Z: the same West-box Z500 ratio reads 1.12 / 0.86 at 12 h and
+  1.31 / 1.10 at 24 h with n0 = 350, 10 m wind 0.70 / 0.56 and
+  0.90 / 0.74; n0 = 273 (the T1023 fraction of the truncation) is
+  smoother on the model grid at 12 h (Z500 0.41 / 0.33 against
+  0.51 / 0.46 m) but takes the highest NV/UT/ID terrain to 2755 m against
+  2893 m, so 350 is kept. The unfiltered T799 day from the same start
+  reads 3.15 / 2.66 at 12 h (highest NV/UT/ID terrain 3154 m); against
+  it the filtered day costs, at 12 h against the GFS analysis, West land 2
+  m temperature RMSE 1.13 to 1.31 K (bias -0.31 to -0.42 K) and Z500 RMSE
+  NH 11.04 to 11.90 m (global 10.00 to 10.24), and 0-12 h rain over the
+  Andes 0.60 to 0.47 mm (GFS 0.98) and the Himalaya 0.98 to 0.80 mm
+  (GFS 0.59). T533, this tree, the shipped T533 day from the
+  same start, 12 h: Z500 ratio 1.91 / 1.66 unfiltered, 0.98 / 0.74
+  filtered; highest NV/UT/ID terrain 3042 to 2836 m. Costs measured at
+  T533 against its unfiltered run: West land 2 m temperature 0.09-0.10 K
+  colder (RMS change 0.51-0.54 K; RMSE against the GFS analysis 1.22 to
+  1.35 K at 12 h), 0-12 h precipitation over the Andes 14 % less (0.55 to
+  0.47 mm, GFS 0.98) and over the Himalaya 10 % less (0.90 to 0.80 mm,
+  GFS 0.59), Z500 RMSE against the GFS analysis at 12 h NH 11.28 to 11.89
+  m and global 10.05 to 10.23 m (T850 and MSLP within 0.03); one start,
+  so these are not significance tests. Not measured: T1023 2 m
+  temperature and precipitation against an unfiltered run, and anything
+  past 24 h. The other T533 configs (`arwen_global_gdas_t533_24h`,
+  `arwen_global_gdas_t533_native_24h`,
+  `arwen_global_gdas_t533_native_imex_24h`) run other cores and were not
+  tested, so they keep the unfiltered terrain.
+  These four hashes move; every other shipped config keeps its 0.2.5
+  hash, and with `orography_filter_half_degree = 0.0` (or the line
+  removed) each of the four is back to its hash before the default. The
+  hashes are pinned in `tests/data/orography_filter_hashes_before.json`.
+  `tests/test_arwen_global_orography_filter_defaults.py`.
+
+- The same four semi-Lagrangian days (T533 24 h and wall, T799 wall, T1023
+  24 h) run the orographic drag, `orographic_drag = "kim-gwdo"` (WRF
+  `gwd_opt = 1`), as the T255 and T383 days have since 0.2.3. Before this
+  they ran no gravity-wave drag at all, and the 500 hPa jet core over the
+  US Northwest grew with resolution exactly where the drag was off. GFS,
+  IFS and KIM all run orographic drag at 9-13 km. MEASURED at T799 only:
+  the shipped T799 day (terrain filter on) from GDAS 2026-11-15 06Z, 12 h,
+  with and without the drag, both runs at once on the two cards of one
+  RTX PRO 6000 Blackwell host. Against the GFS analysis valid 18Z (1.5
+  degree boxes, cos-latitude, 20-90N; T850 not scored where the terrain is
+  above 1000 m): NH Z500 RMSE 11.57 to 10.51 m, W250 vector RMSE 3.51 to
+  3.47 m/s, T850 RMSE 0.710 to 0.669 K (GFS F012 2.79 m, 1.88 m/s, 0.34
+  K). The 500 hPa jet over OR/WA/ID (41-50N 125-111W, the 0.25 degree tape):
+  maximum 79.5 to 77.3 kt (GFS F012 77.5, analysis 78.5), area above 70 kt
+  11.3 % to 7.3 % of the points (F012 1.7 %, analysis 3.3 %); on the model
+  grid (40-50N 125-110W) maximum 81.2 to 78.8 kt, 1 degree boxes above 70
+  kt 13 to 10 (analysis 4) and their RMSE against the analysis 5.22 to 4.60
+  kt (GFS F012 2.45). Cost: step wall 827.7 against 824.2 s for the 144
+  steps (5.75 s a step either way: no measurable cost), device peak used
+  48.38 against 48.48 GiB (+0.11 GiB), and the sub-grid orography cache the
+  run door builds once per grid (3.7 s at T799, measured by an earlier
+  run). One start and one lead, so these are not significance tests; T533
+  and T1023 take it on the T799 result and the operational practice above
+  (Measured has the T1023 day and a 3 h T533 check). The four hashes move
+  again; with
+  `orographic_drag = "none"` stated (or the key taken out of
+  `native_adapter_options`) each is back to its hash before this default.
+  `tests/test_arwen_global_drag_default.py`.
+- The T1023 day searches its departure points with `trajectory_solver =
+  "newton_ls"` (Added, below) in place of the plain `"newton"`. With the
+  drag on, the plain Newton refused the shipped day's first step from GDAS
+  2026-11-15 06Z: the last of its 8 passes still moved a point 0.0126 of a
+  grid length against the 0.0100 gate. The gate is unchanged. The T1023
+  hash moves; with `trajectory_solver = "newton"` stated (and the drag and
+  filter taken back out) it is back to its earlier hashes, as the tests
+  pin. The T799 wall keeps the shipped fixed-point search (3 passes, 8 on
+  a retry); it never ran the plain Newton.
+
+### Fixed
+
+- The cumulus schemes see orographic ascent. The physics exchange handed
+  Grell-Freitas (its Brown closure members and its moisture convergence),
+  New Tiedtke and arwen-massflux the continuity closure's eta-dot dp/d-eta,
+  the mass flux through the hybrid interfaces, which is zero at the surface
+  whatever the flow, as if it were omega. Steady flow up a slope therefore
+  reached them with no ascent at all. The exchange now carries omega =
+  B (dps/dt + ps V . grad ln ps) + eta-dot dp/d-eta (Simmons and Burridge
+  1981), with grad ln ps taken once per physics call from the spectral
+  ln ps (two planes). Transport keeps the flux. A 1 km ridge under 10 m/s
+  now gives w = u dh/dx at the ground (tests/test_arwen_global_exchange_omega.py).
+  Every config that runs a cumulus scheme computes different bits under
+  the same config hash.
+- Condensation no longer makes water in the native physics. The bridge
+  hands the WRF-lineage kernels dry mixing ratio, r_x = q_x / (1 - q_v), and
+  converted back with q_x = r_x / (1 + r_v) of the vapour the kernels
+  returned. The call holds dp, so each layer's dry-air mass is fixed through
+  it; dividing by the returned vapour priced every species against a dry
+  mass that moved with it, and vapour turned into cloud read back as about
+  q_v times itself of new water (one moist column: +0.151 kg/m2 on 10.04
+  kg/m2 condensed, 1.50%; after fallout the atmosphere lost 9.913 kg/m2
+  against 10.044 that fell). The rain books stopped matching the
+  atmosphere's loss: Grell-Freitas's RAINC was capped below its own removed
+  water, and Morrison rain on land debited the surface reservoir by about
+  q_v times the rain. The batch now keeps the inbound dry fraction 1 - q_v
+  and converts back with q_x = r_x (1 - q_v_in); the water ledger (numpy
+  and the fused card kernel) reads the same metric, so a kernel that
+  conserves mixing-ratio water conserves the model's ledger to round-off
+  (`tests/test_arwen_global_native_water_divisor.py`). Every config that
+  runs the native physics computes different water and no config hash
+  moves.
+- Convective rain is the water the cumulus rates took out of the column,
+  not the scheme's RAINCV capped at it. Grell-Freitas prices its rain on the
+  moist layer mass as if it were dry air (and on its own cup pressures), so
+  even with the conversion above fixed its RAINCV ran 1.6 percent above the
+  water that left and the cap withheld that. RAINC and the land bucket now
+  take the column integral of the applied water increments on the model's
+  mass, and a call where that integral and the measured column loss part by
+  more than the float32 rounding of the update (4 x 2^-24 of the column's
+  water) is refused. The scheme's RAINCV stays a diagnostic
+  (`cumulus_rain_reported_kg_m2`), beside `cumulus_rain_kg_m2` and
+  `cumulus_rain_closure_kg_m2`. Measured on the T255 GDAS 2026-09-01 00Z day
+  at the defaults (RTX 5070 Ti, 16 sampled half-calls), 0.2.5 before both
+  fixes, after the conversion fix, after both: the rain withheld 2.83, 1.56
+  and 0.0006 percent of the reported rain (round-off); the convective share
+  of the day's rain 56.92, 57.67 and 57.64 percent globally and 24.53, 25.27
+  and 25.34 percent over land; the lowest land surface reservoir 494.02,
+  497.02 and 496.94 kg/m2; total water 710.659801 kg/m2 at the start and
+  710.659800, 710.659797 and 710.659804 after 24 h.
+- A long run on a held sea no longer holds the land at the start date.
+  `[land] greenness` defaulted to `"start"` whenever `[ocean] mode =
+  "hold"`, so a held run of weeks kept the start's vegetation fraction, leaf
+  area index and background albedo: a run from 1 March kept March
+  vegetation under a May sun. That is the path a runner project prepared
+  before the long-run recipe takes (the runner states `mode = "hold"` for
+  it). Holding the sea says nothing about the land, so a dated analysis run
+  of more than 16 days on real statics now follows the monthly land
+  climatology day by day under `hold` too. A forecast of 16 days or less
+  keeps the start, so every shipped config computes what it did, and no
+  config hash moves: a held long run checkpointed under 0.2.4 restarts under
+  0.2.5 and its land follows the calendar from the restart on. Measured
+  (T127, held sea, ERA5 1976-03-01 00Z, 75 days): the statics read an NH
+  land 30-60N vegetation fraction of 0.236 and leaf area index of 0.361 for
+  03-01 and 0.345 and 0.960 for 05-15, and the 0.2.4 run kept the 03-01
+  values to the end; its checkpoint at step 10764 restarted under the fix
+  passed, and the vegetation went from 0.236 to 0.342 and the leaf area
+  from 0.361 to 0.945. From ERA5 2025-04-10 00Z (25 days) the 0.2.4 run
+  kept 0.264 and the fix read 0.270 to 0.311.
+  The spring NH jet excess that led here was smaller with the fix on both
+  starts (1976: Apr 30-May 9 +5.4 to +0.6 m/s against ERA5 1990-2019;
+  2025: Apr 20-May 4 +3.0 / +4.1 to +0.7 / +1.6 m/s), with one member per
+  arm, so that difference is not claimed as the fix's effect.
+  `[land] greenness = "start"` keeps the old behaviour. On a held run of
+  more than 16 days that stated `"start"` now joins the config hash, so it
+  never shares a hash with the default, which follows the calendar (in
+  0.2.4 both kept the start and shared one). A held long run that stated
+  `"start"` under 0.2.4 therefore resumes a 0.2.4 checkpoint only with
+  `--branch-from-other-config`.
+  `tests/test_arwen_global_held_land_follows_calendar.py`.
+- An ERA5 cold start completed from a fill (`analysis_fill_grib`) seeded
+  its sea ice with snow. ERA5 carries no snow on its sea-ice points and its
+  frame says so (`snow_on_sea_ice = False`), but the composite frame the
+  fill builds dropped that statement, so the seeding averaged snow over
+  land and sea-ice points as it does for GDAS: the rule that, on an ERA5
+  start without a fill before the frame said so, put the glacier's and the
+  coast's snow onto 2,336 sea-ice columns (up to 8,178 kg m-2, 2019-05-20
+  00Z). The composite now keeps the statement when the snow group is the
+  primary's own; snow taken from the fill states nothing and is read as
+  GDAS is, and a GDAS start (every shipped config) is untouched. Found in
+  review; the composite case itself was not re-run on a card.
+  `tests/test_arwen_global_analysis_fill.py`.
+
+- Coastal land starts with the analysis's own land soil and skin. At an
+  analysis cold start the soil temperature, soil water and skin of a land
+  column were regridded over the analysis's land and sea points alike, so a
+  coastal column took part of the sea: on the T255 GDAS 2026-09-01 00Z start
+  the 3,999 land columns with sea in their stencil read, old minus new, a
+  1-2 m soil temperature +1.60 K warmer on average (-7.9 to +15.1 K), and
+  the 77 with no analysis land in the stencil held the plain SST regrid at
+  1-2 m and soil water 0.25 (now -14.6 to +3.7 K from the SST and 0.05 to
+  1.00). Land columns now read `regrid(land value) / regrid(land)` on the
+  analysis's land points, and a column with none in its stencil reads the
+  nearest analysis land point (great circle). The 95,038 land columns with
+  an all-land stencil and every water column are unchanged; no hash moves.
+  `tests/test_arwen_global_coastal_land_surface.py`.
+- The surface layer knows the lakes. sfclay received no LAKEMASK, so inland
+  lake columns took the sea-salt 0.98 vapour-pressure factor of the sea; it
+  now receives the lake columns as WRF's LAKEMASK (920 of 167,946 open-water
+  columns at T255). No hash moves.
+- Under a non-Earth `[world.sun]` the update between radiation calls
+  (`radiation_between`, other than "hold") followed Earth's sun; it now
+  follows the world's. Earth is bit for bit unchanged.
+
+- On several cards the output readings (maximum wind, temperature
+  extremes, condensate and the moment maximum in the log, the receipt and
+  the progress events) were each card's own rows: a two-card T1023 run's
+  rank 0 wrote 84.419 m/s where the globe read 92.345. They are now folded
+  across the cards. The forecast state was never affected: the one-card and
+  two-card T1023 30-step states are bit identical (135 of 136 arrays, the
+  metadata differing by the config name). `tests/test_arwen_global_semilag_bands.py`.
+
+### Added
+
+- `gpuwm-global climatology qflux second-pass QFLUX --climatology NPZ
+  --slab-run DIR [--slab-run DIR ...] --out FILE`: a Q-flux file corrected
+  by long slab runs that read it. From each pair of a run's daily
+  summaries it books the heat the run's atmosphere put into the open ocean
+  beyond F_cal, rho_w c_w h (d(T - C)/dt + (T - C) / tau_r), with the
+  month weights, and adds it to F_cal; coverage, grid and calibration
+  record stay the base file's, so the guard reads it as it read the base
+  (`docs/ARWEN_GLOBAL_OCEAN.md`, "The second pass"). The long-run page's
+  recipe now makes its Q-flux in two passes. Measured, 60-day T127 slab
+  runs from the two starts the pass was made from: from 2026-08-01 the
+  open ocean cooled against the climatology by 0.218 K over 58 days on the
+  recipe's twelve-start file and by 0.098 K on the second-pass file; from
+  2026-02-01 by 0.064 and 0.009 K. From three starts the pass never saw,
+  59 days each: from 2026-11-01 the twelve-start file lost 0.242 K of the
+  start's anomaly and the second-pass file 0.076 K, and the open ocean
+  lacked 12.5 and 2.9 W/m2 in days 30-59 by the slab's books; from
+  2026-05-01 0.152 and 0.073 K, 13.3 and 3.8 W/m2; from 2026-01-15 neither
+  drifts far (-0.008 and +0.036 K). TOA net stays within 0.5 W/m2 between
+  the files except from 11-01 in days 30-59 (+2.89 against +3.49 W/m2).
+  One pass does not remove all the drift: the May and November starts
+  still lack 2.9-3.8 W/m2 in days 30-59.
+- `second-pass --skip-days N` (default 0, every day booked): each run's
+  first N days are left out of the books, so a start's own anomaly and the
+  coupled spin-up decaying are not booked as heat the file lacks; the
+  `second_pass` record gains `skip_days` and each run's `booked_from` and
+  `pairs_booked`. With 15 days over the same two runs, F_cal moves only in
+  January (-1.00 W/m2 ocean mean), February (-2.96), March (-0.01), July
+  (+0.10) and August (+0.09); April to June and September to December are
+  unchanged bit for bit. From 2026-01-15, the start that can tell the two
+  apart, it reads the default's open-ocean SST to 0.002 K on day 29 and
+  0.001 K on day 59 while its ocean gains 1.9 and 0.6 W/m2 more, so the
+  recipe keeps the default.
+- `arwen_global_gdas_t1023_native_sl_si_24h`: the T1023 L40 forecast day
+  (1536 x 3072, about 13 km, dt 300 s), the T533 semi-Lagrangian day at
+  truncation 1023 with `[semilag] gather_batch = 1`, `extrapolation =
+  "settls_departure"`, `trajectory_solver = "newton"` and
+  `trajectory_iterations = 5`. It needs a 96 GB card. Measured on one RTX
+  PRO 6000 Blackwell (97,887 MiB), GDAS 2026-11-14 18Z, 24 h (288 steps,
+  3-hourly output): status pass, 9.57 s a step (45.9 min a model day),
+  allocator live peak 81.21 GiB, pool peak 86.41 GiB, 89,350 MiB on the
+  card, one latitude band with nothing parked, no tripwire fired, 2 of 288
+  steps retried the trajectory search. With the shipped `settls` the same
+  run grew grid-scale stripes across the cold-sector flow of a NE Pacific
+  low (10 m wind second-difference rms 0.161 / 0.149 m/s at 0 h to 0.621 /
+  0.497 at 3 h, east-west / north-south) and tripped the spectral
+  top-decile wire at steps 30 and 40; with `settls_departure` the same box
+  read 0.066 / 0.087 at 3 h. From 9 h that box reads 0.39-0.56 / 0.53-0.90
+  m/s again, from a field of grid-scale shower cells in the cold air (2-4
+  grid lengths, 25-39 dBZ), which is open. The config header carries the
+  numbers. Those figures are from the tree before the 0.2.5 fixes, the
+  Grell-Freitas default, the terrain filter, the drag and newton_ls; the
+  day as it ships has its own 24 h run in Measured, below (pass, no
+  tripwire, no retried step). 61 configs ship.
+- The run door admits T799 and T1023 on the 96 GB card. Above T383 it
+  refused every truncation as unweighed and priced T1023 at 99.94 GiB live
+  and 129.46 GiB of card at one band. Two rows measured on an RTX PRO 6000
+  now price the exact plans that ran (T799 L40 at one band and the shipped
+  gather batch of eight, 65,984 MiB on the card; T1023 L40 at one band and
+  a gather batch of one, 87,928 MiB on the card), and only those plans: a
+  row measured at a smaller gather batch never prices a run at a larger
+  one, and the refusal of a T1023 config at the shipped batch names the
+  batch-of-one plan that fits. The fitted model is untouched, so every
+  other shape is priced as before: the T383 day on the 16 GB card is
+  priced at 14.27 GiB of card under both 0.2.4 and 0.2.5, and of every
+  shipped config only the T799 wall day's price on the 96 GB card moves
+  (78.58 to 64.44 GiB of card, from the T799 row).
+- Memory, same bits: on a resident forecast the first physics half works
+  on the step's input namespace in place (the second half already did),
+  the step drops its input atmosphere after that half (except under a
+  `physics_coupling` that reads it), and a gather batch of one contiguous
+  field reaches the kernel as the field itself instead of a stacked copy.
+  At T1023 L40 at one band the namespace copy was 8.58 GiB of an 88.47
+  GiB live peak, and the shipped batch of eight stacked 5,760 MiB blocks
+  that fragmented the pool until the card refused one after step 4.
+
+### Added (off by default)
+
+- `[semilag] trajectory_solver = "newton"` (default `"fixed_point"`, the
+  shipped pass, absent from the identity): the same departure-point
+  equation through the same gather, solved with the interpolant's own
+  Jacobian and a step halved where the residual stops falling. The
+  fixed-point pass contracts by the spectral radius of `(dt/2) J`; the fold
+  gate bounds `det(I + (dt/2) J)`, and a rotation or the jet's
+  vertical-shear coupling keeps that determinant at or above one while the
+  pass stalls. Device only. Measured only inside the T1023 day above (2 of
+  288 steps retried); no fixed-point against Newton comparison at T1023.
+- `[semilag] trajectory_solver = "newton_ls"`: that Newton step globalized
+  by a line search on the residual, with the convergence gate reading the
+  Newton step at the point returned. The plain `"newton"` damping only
+  ever halves and its gate reads the undamped step, so a point that
+  overshoots a cell face once is crippled for the rest of the search. The
+  gates are unchanged (0.01-cell convergence, 0.2 fold floor, the
+  8-iteration cap). Measured: on synthetic grid-scale flows (T255 L20,
+  float64, inside the fold gate) the plain Newton is 0.00464 cells out
+  after 8 passes and newton_ls 1.3e-4 after 4; on the T383 day at dt 600,
+  0 of 288 steps retried on two starts (the fixed-point pass: 251 and 285).
+  The shipped T1023 day uses it (Changed, above). Device only.
+- `[initial] orography_filter_half_degree = n0` (experimental; default
+  `0.0`, off, absent from the identity) multiplies the model terrain's
+  spectral coefficients by `exp(-ln2 (n(n+1)/(n0(n0+1)))^2)`, half
+  amplitude at total degree n0 with degree 0 kept, before the surface
+  pressure moves onto it; the statics carry the filtered terrain and the
+  receipt names it in `initial.provenance.orography_filter`. A value must
+  lie in `0 < n0 <= truncation`; only an analysis start reads it, and the
+  analytic modes refuse it. Off, every config hash is the one it had
+  before the key existed. The semi-Lagrangian T533, T799 and T1023 days
+  set 350 (Changed, above). `tests/test_arwen_global_orography_filter.py`.
+- `[initial] analysis_snow_density = "wrf-floor"` starts a snow pack the
+  analysis carries lighter than 200 kg m-3 at WRF real.exe's derived depth
+  (SNOWH = SNOW * 0.005). GDAS writes its snow depth as ten times the water
+  equivalent (66-73 % of its snow-covered land cells read 100 kg m-3 on
+  2026-01-16, 01-21 and 03-01), and that light, deep pack insulates the
+  skin from the soil: the control's day-1 NH land cold (T2 -1.07 / -1.08 /
+  -1.42 K against same-date GDAS from the Jan 16 / Feb 1 / Mar 1 starts,
+  T127) sat under a T925 within 0.3 K of GDAS. With the floor, NH land T2
+  at day 1 is -0.29 / -0.42 / -0.88 K and the T2 RMSE 3.29 / 2.99 / 3.18 K
+  (control 3.56 / 3.32 / 3.58); Siberia's T925-T2 inversion excess over
+  GDAS falls from 3.8 / 3.5 / 4.2 K to 1.4 / 1.2 / 2.1 K. It is not a
+  default. On the shipped T255 forecast config, 120 h from nine autumn
+  2026 starts against the GFS analysis: NH land T2 bias moves toward the
+  analysis on 9 of 9 starts at 24-96 h (+0.13 to +0.20 K), but NH land T2
+  RMSE improves only at 120 h (8 of 9, -0.03 K) and on 5 and 4 of 9 at 24
+  and 48 h; NH Z500 is neutral (bias-removed RMSE +0.12 m at 120 h, better
+  on 5 of 9; -0.05 m at 72 h, 7 of 9); NH MSLP RMSE is better on only 1 of 9
+  starts at each of 24, 48 and 72 h (+0.010 to +0.017 hPa); Canada T2 RMSE at
+  24 h is better on only 1 of 9 (+0.075 K), and from a December start (T127,
+  2025-12-16, 72 h) the floor alone warmed Canada's T2 bias from -0.28 to
+  +1.13 K, its inversion turning from too strong to too weak. GDAS snow on
+  sea ice reads 330 kg m-3, so the floor does not act there. It acts at
+  the cold start only. Off (before the Grell-Freitas default D) it wrote
+  0.2.4's checkpoints byte for byte. Details in docs/ARWEN_GLOBAL_LEVEL5.md
+  (Snow pack density at the cold start).
+
+### Added (experimental, not recommended)
+
+- Grell-Freitas: `gf_deep_physics`, a bit set of deep-plume pieces from
+  the operational UFS CCPP `cu_gf_deep.F90`: 1 detrains condensate as
+  cloud water, c1d = 0.1 x the updraft's mass detrainment, in place of
+  WRF's constant c1; 2 makes the deep updraft's beta depend on cloud
+  depth, 1.3 + (1 - depth/1200 hPa); 4 takes the ECMWF closure's
+  CAPE-removal time from the cloud the scheme keeps, at least 720 s; 8
+  adds the ice phase of the deep precipitation; 32 takes the
+  moisture-convergence closure members as the column's moisture
+  convergence. Any set of 1, 2, 4, 8 and 32 is accepted; 16 and anything
+  above 47 are refused. 34 is part of the default D (above); 0 compiles
+  0.2.4's kernel source and leaves the config hash. Recorded in
+  `docs/CARRIED-PHYSICS-DIVERGENCE.md` as `GF-CU-15`.
+- Grell-Freitas: `gf_deep_experiment` 5 (the GEOS GF2020 mass-flux peak of
+  Freitas et al. 2021), 6 (`lev_start` at its 0.9 cap only) and 8 (WRF's
+  convective-memory formulas at csum = 20, lev_start 0.66), besides 7 (the
+  default D). 6 with 34 and the momentum transport cools tropical 850 hPa
+  by about 0.3 K and was better on tropical T850 on 0 of 16 starts, so it
+  is not D. `GF-CU-14`.
+
+### Release files
+
+- The recipe's second-pass Q-flux is attached to the v0.2.5 GitHub
+  release, not the wheel: `qflux-t127-r5-sp1.npz` (14,191,518 B, SHA-256
+  3a3f0c5cc3cdfe00...), the file the slab runs above read, made from the
+  twelve-start file attached to v0.2.4 by one pass over two 180-day slab
+  runs on it, and `recipe-slab-t127.toml` (SHA-256 c842a55f0903c019...),
+  the 90-day T127 slab config of v0.2.4's release with its Q-flux line
+  naming the new file and the three Grell-Freitas options stated at their
+  0.2.4 values: the file was calibrated before the default D, and the
+  guard refuses it for D's physics. The guard binds options, not code:
+  the fixes that change results under unchanged hashes (Fixed) also change
+  the arithmetic the file was calibrated with, and no slab run has measured
+  the file under them. `second-pass` run on the same inputs rebuilds the
+  same arrays (SHA-256 fc3c65c6f0297bf9...); only the provenance's
+  `second_pass` record differs, where the tool also names the runs' days
+  and summaries. The twelve-start file and its template stay on v0.2.4.
+
+### Measured
+
+- The release tree (every change above), on the 16 GB RTX 5070 Ti,
+  alone, one card lease, GDAS 2026-09-01 00Z, the shipped configs by name,
+  24 h: the T255 day, status pass, no tripwire, nine checkpoints, config
+  hash 64d8998eb8f0c78f, 0.794 s a step, allocator live peak 6.23 GiB,
+  card peak 8,484 MiB; the T383 day (D and `settls_departure`), status
+  pass, no tripwire, five checkpoints, config hash c6673b228bc020ab,
+  1.651 s a step, allocator live peak 10.67 GiB, card peak 12,808 MiB of
+  16,303. The T1023 day as it ships (terrain filter, drag, newton_ls) on
+  one RTX PRO 6000 Blackwell (97,887 MiB), alone, GDAS 2026-11-15 06Z,
+  24 h: status pass, 288 steps, config hash ca1b2d1181aa9e50, 8.58 s a
+  step, allocator live peak 81.38 GiB, card peak 88,777 MiB, host peak
+  38.3 GiB (the process's maximum resident set), no trajectory retry
+  (the first step included) and no tripwire fired. Other arms on the same
+  start, for comparison: with the drag and the plain Newton the first step
+  refused (0.0126 of a grid length still moving after 8 passes, gate
+  0.0100); with the filter, no drag and the plain Newton the day passed at
+  8.68 s a step and the spectral top-decile tripwire fired three times
+  (2.138, 2.188, 2.439 against 2.1); with neither filter nor drag, twice
+  (2.110 and 2.119).
+- The bullets below measured the 0.2.5 candidate before the omega, water,
+  convective-rain, coastal, lake and Grell-Freitas land fixes; those fixes
+  change results under the same hashes, so the byte-for-byte statements
+  below hold for that candidate, not for the release.
+- On the 16 GB RTX 5070 Ti, alone, one card lease, 2026-11-15, GDAS
+  2026-09-01 00Z, the shipped T255 day for 24 h under 0.2.4 (`00d6989`)
+  and under this tree before the Grell-Freitas default D (every other
+  change in this section; `1e7cae2`), each over gpuwm 2.9.13; checkpoints
+  compared with `tools/arwen_global_checkpoint_identity.py`:
+  - all nine checkpoints, steps 0 to 288, byte-identical (44 and 135
+    arrays, equal inventories, `self_sha256` equal), config hash
+    7b140980a546263e in both;
+  - 0.2.5 restarted from 0.2.4's step 144 wrote steps 180 to 288
+    byte-identical to 0.2.4's straight run (135 arrays);
+  - allocator live peak 6.18 GiB (0.2.4: 6.72), card peak 7,806 MiB
+    (9,110): the memory changes above; every receipt gate passes.
+- On the same card, alone, the shipped T383 day (defaults) for 24 h from
+  the same analysis, 0.2.4 then 0.2.5 in one lease (before D): all five
+  checkpoints, steps 0 to 288, byte-identical (44 and 135 arrays), config hash
+  0b7d0643f1d964b2 in both; 1.712 s a step (0.2.4 1.734 s); card peak
+  12,964 MiB of 16,303 (0.2.4 14,220), allocator live peak 10.67 GiB
+  (11.88); every receipt gate passes. The door prices this day at 14.27
+  GiB of card under both trees.
+- With the Grell-Freitas default D, same card, alone, one lease, the same
+  analysis: the shipped T255 day, status pass, no tripwire fired, nine
+  checkpoints, config hash 64d8998eb8f0c78f, allocator live peak 6.18 GiB,
+  card peak 7,896 MiB, 0.820 s a step (0.735 s before D); the shipped T383
+  day, status pass, no tripwire, five checkpoints, config hash
+  31127c67165152be, 1.700 s a step, card peak 13,016 MiB of 16,303,
+  allocator live peak 10.67 GiB. That T383 run used `settls`; the
+  shipped T383 day as it now stands (D and `settls_departure` together)
+  was not run as one day: each change was run on the card on its own
+  (`settls_departure` before D: Changed, above).
+- Config hashes, every shipped config loaded under 0.2.4 and 0.2.5: 21
+  identical; 35 move, exactly the configs that run Grell-Freitas (the
+  default D), and each is back to its 0.2.4 hash with the three options at
+  their 0.2.4 values; the same four fixtures that did not load under 0.2.4
+  do not load (`arwen_global_native_physics_bridge_example` and the three
+  `global_spectral_*` smokes); one new, the T1023 day.
+- The Q-flux guard check (Release files, above), on a Linux CPU: under
+  0.2.4 and under 0.2.5 before D, `qflux-t127-r5-sp1.npz` and its
+  tool-built twin were accepted for the template naming them and
+  `qflux-t127-recipe-r5.npz` for v0.2.4's (grid 192 x 384, physics
+  identity, climatology 16ab9a39..., months 0-11); under 0.2.5 with D,
+  both second-pass files are accepted for the attached template (the three
+  Grell-Freitas options at their 0.2.4 values), and the first file is
+  refused for v0.2.4's template, whose physics is now D.
+- Tests: from the installed 0.2.5 wheel, 3629 CPU tests pass with CuPy (95
+  skipped) and without (112 skipped); 0.2.4 was 3520 / 90 / 104.  The five
+  tools return 0 in both: `build_cli_reference.py --check`, doc examples
+  156 accepted and 0 refused, line endings 0 mixed, `measure_boundary` 242
+  symbols across 72 modules with no gap, `pin_engine_seam` 50/50.
+  `python -m build` and `twine check --strict` pass; `gpuwm-global doctor`
+  from the installed wheel reads version 0.2.5, 61 shipped configs, no
+  gaps.
+- The T1023 day's figures (Added, above) are from one RTX PRO 6000
+  Blackwell, before the Grell-Freitas default D; that card was not part of
+  this release's gates.
+
 ## 0.2.4
 
 Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.2.3 did;

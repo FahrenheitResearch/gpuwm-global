@@ -43,16 +43,18 @@ VERTICAL_INTERPOLATIONS = ("cubic",)
 #:     the extrapolated wind and residual are interpolated at the DEPARTURE
 #:     point and the time-n ones read at the arrival point.  It needs no new
 #:     state and no new gather: the two winds swap roles in the search and
-#:     the extrapolated residual moves into the gathered bundle.  One card
-#:     only, at any band count; a run on several cards refuses it by name.
+#:     the extrapolated residual moves into the gathered bundle.  Any band
+#:     count on one card or several: on several, each card takes its
+#:     neighbours' rows of the previous level once a step, and the run is
+#:     one card's bit for bit.
 #: ``settls_residual_departure``
 #:     Half of Hortal's form: the extrapolated nonlinear residual is read
 #:     at the DEPARTURE point (it rides the gathered bundle and the arrival
 #:     point adds the time-n one), and the trajectory is the shipped
 #:     ``settls`` one (extrapolated wind at the arrival point).  The
 #:     arrival-point extrapolation of the residual is what puts 4-6 grid
-#:     length divergent ripples across fast jets at T383 and 300 s.  One
-#:     card only, at any band count, as ``settls_departure``.
+#:     length divergent ripples across fast jets at T383 and 300 s.  Any
+#:     band count on one card or several, as ``settls_departure``.
 #: ``none``
 #:     Time-n wind and residual on both ends (the start-up arithmetic).
 EXTRAPOLATIONS = ("settls", "settls_departure", "settls_residual_departure",
@@ -120,6 +122,18 @@ class SemiLagrangianOptions:
     quasi_monotone_dynamics: bool = False
     trajectory_iterations: int = 3
     trajectory_convergence_cells: float = 0.01
+    #: How the departure-point equation is solved: "fixed_point" (the
+    #: shipped pass) or "newton" (the same equation through the same
+    #: gather, solved with the interpolant's own Jacobian; it converges
+    #: wherever the fold gate's det(I + (dt/2) J) is away from zero, where
+    #: the fixed-point pass needs the spectral radius of (dt/2) J below
+    #: one), or "newton_ls" (that Newton step globalized by a line search
+    #: on the residual, with the gate reading the Newton step at the point
+    #: returned; the plain form's one-way damping stalls a point that
+    #: overshoots a cell face once, which is what refused 450-600 s steps
+    #: at T1023).  Opt-in, and absent from the identity at its default so
+    #: every shipped hash holds.
+    trajectory_solver: str = "fixed_point"
     extrapolation: str = "settls"
     #: Per-point limiter on the extrapolated vertical rate: where the level
     #: rate changed sign between t^{n-1} and t^n the extrapolation
@@ -163,6 +177,7 @@ class SemiLagrangianOptions:
             ("tracer_scheme", TRACER_SCHEMES),
             ("tracer_fixer", TRACER_FIXERS),
             ("physics_coupling", PHYSICS_COUPLINGS),
+            ("trajectory_solver", ("fixed_point", "newton", "newton_ls")),
         ):
             value = getattr(self, name)
             if value not in allowed:
@@ -231,6 +246,8 @@ class SemiLagrangianOptions:
             payload["level_rate_limiter"] = True
         else:
             del payload["level_rate_limiter"]
+        if self.trajectory_solver == "fixed_point":
+            del payload["trajectory_solver"]
         return payload
 
 

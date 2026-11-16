@@ -7,7 +7,7 @@ door was written, and no engine has ever declared that parameter: not the
 draw died at the call with a ``TypeError`` AFTER the tapes had been exported
 and the export receipt written, which is the most expensive place to fail.
 Nothing caught it because the demo pictures were drawn through the engine's
-own ``gpuwm render``, so the package's headline picture door never drew a
+own ``gpuwm render``, so the package's headline picture door never rendered a
 single picture in anger.
 
 The check reads the CALL, not a copy of it: the keyword set is parsed out of

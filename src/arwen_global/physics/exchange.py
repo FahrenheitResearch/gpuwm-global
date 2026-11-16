@@ -42,9 +42,12 @@ class PhysicsExchange:
     ng: object
     surface: SurfaceState
     physics_state: PhysicsState
-    #: Hydrostatic pressure velocity dp/dt (Pa/s) on the nlev+1 half levels,
-    #: in the model's top-to-bottom order, zero at the top and at the
-    #: surface (the continuity closure's own convention).  Cumulus schemes
+    #: Hydrostatic pressure velocity omega = Dp/Dt (Pa/s) on the nlev+1 half
+    #: levels, in the model's top-to-bottom order: the continuity closure's
+    #: eta-dot dp/d-eta plus B (dps/dt + ps V . grad ln ps)
+    #: (vertical.pressure_velocity), zero at a pressure lid and NOT zero at
+    #: the surface, where it carries the flow up and down the terrain
+    #: (omega = -rho g V . grad h for steady flow).  Cumulus schemes
     #: read it: Grell-Freitas' Brown vertical-velocity closure members and
     #: its moisture-convergence term run on omega, so a column state
     #: without it is not a complete cumulus input.  The dycore's exchange

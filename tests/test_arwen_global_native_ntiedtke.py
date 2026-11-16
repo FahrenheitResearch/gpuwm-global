@@ -24,6 +24,7 @@ import numpy as np
 import pytest
 
 from conftest import requires_engine_module, requires_gpu
+from test_arwen_global_gf_default_d import gf_0_2_4
 from arwen_global.config import load_config
 from arwen_global.constants import (
     CONVECTIVE_RAIN_ACCUMULATOR,
@@ -159,7 +160,8 @@ def test_the_gf_restart_pin_holds_and_ntiedtke_never_shares_it(tmp_path):
     assert cfg.native_adapter_options["ntiedtke_tiedtke_closure"] is False
     assert "ntiedtke_tiedtke_closure" not in cfg.config_identity["native_adapter_options"]
     archived = replace(cfg, semi_implicit_scheme="external")
-    assert archived.config_hash == PRESSURE_BLEND_HASHES[NATIVE_SMOKE_CONFIG]
+    # Pinned before the 0.2.5 Grell-Freitas default D: compared at 0.2.4's GF.
+    assert gf_0_2_4(archived).config_hash == PRESSURE_BLEND_HASHES[NATIVE_SMOKE_CONFIG]
     # The same config under New Tiedtke is a different trajectory, and so
     # is the classic-closure arm; neither can resume from the other's
     # checkpoint (runner.read_checkpoint compares config hashes).
@@ -314,8 +316,9 @@ def test_a_grid_that_is_not_latitude_rings_or_reaches_a_pole_is_refused():
 
 
 def test_ntiedtke_state_resumes_from_a_checkpoint_bit_for_bit():
-    # Under the 0.0165 kg/m2 a call these rates remove (dt 5 s), so the
-    # runtime's rain cap (landed rain <= removed water) lands all of it.
+    # The scheme reports 0.01 kg/m2 a call; since 0.2.5 the runtime lands the
+    # water these rates remove (about 0.0165 kg/m2 a call at dt 5 s), not the
+    # reported figure (fix/water-divisor).
     rain = 0.01
 
     def convection(result, atmosphere):
@@ -372,8 +375,12 @@ def test_ntiedtke_state_resumes_from_a_checkpoint_bit_for_bit():
             np.asarray(c3.physics_state.arrays[name]),
             np.asarray(i3.physics_state.arrays[name]),
         ), name
-    # The accumulator carried its two calls across the checkpoint.
-    assert np.allclose(np.asarray(i3.physics_state.arrays[CONVECTIVE_RAIN_ACCUMULATOR]), 3.0 * rain, rtol=1.0e-6)
+    # The accumulator carried its two calls across the checkpoint: three
+    # calls of the removed water, each above the reported 0.01.
+    first = np.asarray(c1.physics_state.arrays[CONVECTIVE_RAIN_ACCUMULATOR], np.float64)
+    assert np.all(first > rain)
+    assert np.allclose(np.asarray(i3.physics_state.arrays[CONVECTIVE_RAIN_ACCUMULATOR]),
+                       3.0 * first, rtol=1.0e-4)
     # And the momentum reached the wind on every call, including the resumed one.
     u_in = np.asarray(exchange.u, np.float32)
     assert np.allclose(

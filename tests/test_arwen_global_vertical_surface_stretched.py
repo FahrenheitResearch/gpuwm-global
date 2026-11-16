@@ -8,6 +8,8 @@ level-only half-layer integration (34 m mean / 64 m rms after DN-3).
 """
 from __future__ import annotations
 
+from test_arwen_global_gf_default_d import gf_0_2_4
+
 from arwen_global.configs_dir import config_root as _shipped_configs
 from pathlib import Path
 
@@ -209,7 +211,7 @@ def test_pressure_blend_stays_selectable_and_hash_stable():
         # identity byte-for-byte.  The vertical-mode default is a different
         # trajectory and must not share the hash.
         archived = replace(cfg, semi_implicit_scheme="external")
-        assert archived.config_hash == expected, path
+        assert gf_0_2_4(archived).config_hash == expected, path  # 0.2.4 GF (D, 0.2.5)
         assert cfg.config_hash != expected, path
 
 

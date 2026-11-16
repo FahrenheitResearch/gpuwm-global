@@ -41,6 +41,10 @@ minimum_fold_determinant = 0.2
 [semilag]
 quasi_monotone = true
 trajectory_iterations = 3
+# The departure-point form of the time extrapolation (Hortal 2002): the
+# shipped "settls" reads it at the arrival point and puts grid-scale
+# divergent stripes across the fastest jets from T383 up (CHANGELOG 0.2.5).
+extrapolation = "settls_departure"
 
 [vertical]
 coordinate = "surface_stretched"

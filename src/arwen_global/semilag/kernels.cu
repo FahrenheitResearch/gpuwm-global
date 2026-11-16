@@ -850,6 +850,535 @@ __device__ __forceinline__ void sl_departure_body(
     move_k[gid] = last_k;
 }
 
+/* ------------------------------------------------------------------ */
+/* The Newton form of the same search (semilag.trajectory_solver =      */
+/* "newton").  The equation is the fixed-point search's own,            */
+/*     r_D = normalize(r_A - (dt/2)[V_ex(r_A) + V(r_D)] / a),           */
+/*     k_D = k_A - (dt/2)[s_ex + s(r_D, k_D)],                          */
+/* read through the same trilinear gather, so the two solvers share one */
+/* fixed point.  The fixed-point pass contracts by the spectral radius  */
+/* of (dt/2) J, which the fold gate does not bound: det(I + (dt/2) J)   */
+/* stays at one for a rotation or for the jet's vertical-shear coupling */
+/* whatever their size, and the pass then converges slowly or not at    */
+/* all.  Newton converges wherever det(I + (dt/2) J) is away from zero, */
+/* which is what the gate does bound.  The Jacobian is the trilinear    */
+/* interpolant's own derivative, taken in the local east / north / level */
+/* frame at the current point; where its determinant is too small to    */
+/* trust (or at the pole itself) the step falls back to the plain pass. */
+
+template <typename T, int BAND>
+__device__ __forceinline__ void sl_trilinear4_grad(
+    const T* __restrict__ f0, const T* __restrict__ f1,
+    const T* __restrict__ f2, const T* __restrict__ f3,
+    T lamd, T phid, T xkd,
+    const T* __restrict__ lat_ext, const int* __restrict__ mlut,
+    const int* __restrict__ rowoff, const int* __restrict__ rowshift,
+    int nb, int nk, int nj, int ni, T inv_dlam, T lut_scale,
+    T* out, T* d_lam, T* d_phi, T* d_k, int njs, int* __restrict__ esc)
+{
+    const T p = min(max(phid, -(T)SL_HALF_PI_D), (T)SL_HALF_PI_D);
+    const T xk = min(max(xkd, (T)0), (T)(nk - 1));
+    const bool kfree = (xkd > (T)0) && (xkd < (T)(nk - 1));
+    const T xi = lamd * inv_dlam;
+
+    const T fi = sl_traits<T>::floor_(xi);
+    const T ax = xi - fi;
+    int c0 = ((int)fi) % ni; if (c0 < 0) c0 += ni;
+    int c1 = c0 + 1; if (c1 >= ni) c1 -= ni;
+    const int half = ni >> 1;
+    int d0 = c0 + half; if (d0 >= ni) d0 -= ni;
+    int d1 = c1 + half; if (d1 >= ni) d1 -= ni;
+
+    const int m0 = sl_bracket<T>(p, lat_ext, mlut, nb, nj, lut_scale);
+    const T la = lat_ext[m0];
+    const T lb = lat_ext[m0 + 1];
+    const T ay = (p - la) / (lb - la);
+    const T inv_dphi = (T)1 / (lb - la);
+    int r0 = rowoff[m0];
+    int r1 = rowoff[m0 + 1];
+    if (BAND && (r0 < 0 || r1 < 0)) {
+        atomicOr(esc, 1);
+        if (r0 < 0) r0 = 0;
+        if (r1 < 0) r1 = 0;
+    }
+    const int s0 = rowshift[m0];
+    const int s1 = rowshift[m0 + 1];
+    const int i00 = r0 + (s0 ? d0 : c0), i01 = r0 + (s0 ? d1 : c1);
+    const int i10 = r1 + (s1 ? d0 : c0), i11 = r1 + (s1 ? d1 : c1);
+
+    int k0 = (int)sl_traits<T>::floor_(xk);
+    k0 = min(max(k0, 0), nk - 2);
+    const T az = xk - (T)k0;
+
+    const long long plane = (long long)(BAND ? njs : nj) * (long long)ni;
+    const long long o0 = (long long)k0 * plane;
+    const long long o1 = o0 + plane;
+    const T bx = (T)1 - ax, by = (T)1 - ay, bz = (T)1 - az;
+
+    const T* fs[4] = {f0, f1, f2, f3};
+#pragma unroll
+    for (int q = 0; q < 4; ++q) {
+        const T* s = fs[q];
+        const T a00 = s[o0 + i00], a01 = s[o0 + i01];
+        const T a10 = s[o0 + i10], a11 = s[o0 + i11];
+        const T b00 = s[o1 + i00], b01 = s[o1 + i01];
+        const T b10 = s[o1 + i10], b11 = s[o1 + i11];
+        const T lo0 = bx * a00 + ax * a01, hi0 = bx * a10 + ax * a11;
+        const T lo1 = bx * b00 + ax * b01, hi1 = bx * b10 + ax * b11;
+        const T t0 = by * lo0 + ay * hi0;
+        const T t1 = by * lo1 + ay * hi1;
+        out[q] = bz * t0 + az * t1;
+        const T gx0 = by * (a01 - a00) + ay * (a11 - a10);
+        const T gx1 = by * (b01 - b00) + ay * (b11 - b10);
+        d_lam[q] = (bz * gx0 + az * gx1) * inv_dlam;
+        d_phi[q] = (bz * (hi0 - lo0) + az * (hi1 - lo1)) * inv_dphi;
+        d_k[q] = kfree ? (t1 - t0) : (T)0;
+    }
+}
+
+template <typename T, int BAND>
+__device__ __forceinline__ void sl_departure_newton_body(
+    const T* __restrict__ vx, const T* __restrict__ vy,
+    const T* __restrict__ vz, const T* __restrict__ sv,
+    const T* __restrict__ vxe, const T* __restrict__ vye,
+    const T* __restrict__ vze, const T* __restrict__ sve,
+    const T* __restrict__ lat_ext,
+    const int* __restrict__ mlut, const int* __restrict__ rowoff,
+    const int* __restrict__ rowshift,
+    T* __restrict__ xi_d, T* __restrict__ phi_d, T* __restrict__ zk_d,
+    T* __restrict__ move_m, T* __restrict__ move_k,
+    int iters, T dt, T radius, T dlam,
+    int nb, int nk, int nj, int ni, T inv_dlam, T lut_scale,
+    int njs, int nja, int ja0, int sja, int* __restrict__ esc)
+{
+    const int rows_out = BAND ? nja : nj;
+    const long long n = (long long)nk * (long long)rows_out * (long long)ni;
+    const long long gid = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= n) return;
+    const long long plane = (long long)rows_out * (long long)ni;
+    const int i = (int)(gid % ni);
+    const int j = (int)((gid / ni) % rows_out);
+    const int k = (int)(gid / plane);
+    const long long here = BAND
+        ? ((long long)k * (long long)njs + (long long)(j + sja)) * (long long)ni + i
+        : gid;
+
+    const T phia = lat_ext[j + (BAND ? ja0 : 0) + 2];
+    const T lama = (T)i * dlam;
+    T sph, cph, sla, cla;
+    sl_traits<T>::sincos_(phia, &sph, &cph);
+    sl_traits<T>::sincos_(lama, &sla, &cla);
+    const T ax = cph * cla, ay = cph * sla, az = sph;
+
+    const T ex = vxe[gid], ey = vye[gid], ez = vze[gid], es = sve[gid];
+    const T inv_r = (T)1 / radius;
+
+    /* the fixed-point search's own first guess */
+    T qx = ax - dt * vx[here] * inv_r;
+    T qy = ay - dt * vy[here] * inv_r;
+    T qz = az - dt * vz[here] * inv_r;
+    T rn = sl_traits<T>::rsqrt_(qx * qx + qy * qy + qz * qz);
+    qx *= rn; qy *= rn; qz *= rn;
+    const T klo = (T)-0.5, khi = (T)nk - (T)0.5;
+    T qk = (T)k - dt * sv[here];
+    qk = min(max(qk, klo), khi);
+
+    T last_m = (T)0, last_k = (T)0;
+    T alpha = (T)1, res_prev = sl_traits<T>::big();
+    const T hdt = (T)0.5 * dt;
+    const T c = hdt * inv_r;
+    for (int it = 0; it < iters; ++it) {
+        const T lamd = sl_traits<T>::atan2_(qy, qx);
+        const T phid = sl_latitude<T>(qx, qy, qz);
+        T w[4], gl[4], gp[4], gk[4];
+        sl_trilinear4_grad<T, BAND>(vx, vy, vz, sv, lamd, phid, qk, lat_ext,
+                                    mlut, rowoff, rowshift, nb, nk, nj, ni,
+                                    inv_dlam, lut_scale, w, gl, gp, gk, njs,
+                                    esc);
+        T ux = ax - c * (ex + w[0]);
+        T uy = ay - c * (ey + w[1]);
+        T uz = az - c * (ez + w[2]);
+        const T un = sl_traits<T>::rsqrt_(ux * ux + uy * uy + uz * uz);
+        const T px = ux * un, py = uy * un, pz = uz * un;
+        T pk = (T)k - hdt * (es + w[3]);
+        const bool kclamped = (pk <= klo) || (pk >= khi);
+        pk = min(max(pk, klo), khi);
+
+        /* the local frame at the current point */
+        T sp, cp, sl, cl;
+        sl_traits<T>::sincos_(phid, &sp, &cp);
+        sl_traits<T>::sincos_(lamd, &sl, &cl);
+        const T exx = -sl, exy = cl;
+        const T nxx = -sp * cl, nxy = -sp * sl, nxz = cp;
+        /* residual G(q) - q in that frame: radians east, north, levels */
+        const T dx = px - qx, dy = py - qy, dz = pz - qz;
+        const T re = exx * dx + exy * dy;
+        const T rnn = nxx * dx + nxy * dy + nxz * dz;
+        const T rk = pk - qk;
+
+        T de = re, dn = rnn, dk = rk;
+        /* The interpolant is piecewise trilinear, so its Jacobian jumps at
+           cell faces and a Newton step can cycle between two cells around a
+           solution that sits near a face.  Where the residual (in grid
+           cells) did not fall by a tenth since the last pass the step is
+           halved, down to an eighth; where Newton converges the residual
+           falls far faster than that and the step is the full one. */
+        {
+            const T cells0 = (T)nj * (T)(0.5 / SL_HALF_PI_D);
+            const T res = sl_traits<T>::sqrt_(
+                (re * re + rnn * rnn) * cells0 * cells0 + rk * rk);
+            if (it > 0 && res > (T)0.9 * res_prev)
+                alpha = max(alpha * (T)0.5, (T)0.125);
+            res_prev = res;
+        }
+        if (cp > (T)1e-6) {
+            const T icp = (T)1 / cp;
+            const T g = -c * un;
+            /* M = dG / d(east, north, level) */
+            const T m00 = g * (exx * gl[0] + exy * gl[1]) * icp;
+            const T m01 = g * (exx * gp[0] + exy * gp[1]);
+            const T m02 = g * (exx * gk[0] + exy * gk[1]);
+            const T m10 = g * (nxx * gl[0] + nxy * gl[1] + nxz * gl[2]) * icp;
+            const T m11 = g * (nxx * gp[0] + nxy * gp[1] + nxz * gp[2]);
+            const T m12 = g * (nxx * gk[0] + nxy * gk[1] + nxz * gk[2]);
+            const T m20 = kclamped ? (T)0 : -hdt * gl[3] * icp;
+            const T m21 = kclamped ? (T)0 : -hdt * gp[3];
+            const T m22 = kclamped ? (T)0 : -hdt * gk[3];
+            /* (I - M) d = r, by Cramer */
+            const T a00 = (T)1 - m00, a01 = -m01, a02 = -m02;
+            const T a10 = -m10, a11 = (T)1 - m11, a12 = -m12;
+            const T a20 = -m20, a21 = -m21, a22 = (T)1 - m22;
+            const T c00 = a11 * a22 - a12 * a21;
+            const T c01 = a12 * a20 - a10 * a22;
+            const T c02 = a10 * a21 - a11 * a20;
+            const T det = a00 * c00 + a01 * c01 + a02 * c02;
+            if (isfinite(det) && det > (T)0.05) {
+                const T idet = (T)1 / det;
+                const T ne = (c00 * re
+                              + (a02 * a21 - a01 * a22) * rnn
+                              + (a01 * a12 - a02 * a11) * rk) * idet;
+                const T nn = (c01 * re
+                              + (a00 * a22 - a02 * a20) * rnn
+                              + (a02 * a10 - a00 * a12) * rk) * idet;
+                const T nk2 = (c02 * re
+                               + (a01 * a20 - a00 * a21) * rnn
+                               + (a00 * a11 - a01 * a10) * rk) * idet;
+                /* a Newton step more than five times the plain one is a
+                   linearization across a cell edge, not a solve: cap it */
+                /* both moves in grid cells: horizontal in meridional
+                   spacings (nj / pi per radian), vertical in levels */
+                const T cells = (T)nj * (T)(0.5 / SL_HALF_PI_D);
+                const T rr = sl_traits<T>::sqrt_(
+                    (re * re + rnn * rnn) * cells * cells + rk * rk);
+                const T nr = sl_traits<T>::sqrt_(
+                    (ne * ne + nn * nn) * cells * cells + nk2 * nk2);
+                const T s = nr / (rr + (T)1e-12);
+                const T cap = (T)5;
+                const T scale = s > cap ? cap / s : (T)1;
+                if (isfinite(ne) && isfinite(nn) && isfinite(nk2)) {
+                    de = ne * scale; dn = nn * scale; dk = nk2 * scale;
+                }
+            }
+        }
+        /* the convergence gate reads the UNDAMPED step: a halved step is
+           not a converged one */
+        const T full_m = radius * sl_traits<T>::sqrt_(de * de + dn * dn);
+        const T full_k = sl_traits<T>::abs_(dk);
+        de *= alpha; dn *= alpha; dk *= alpha;
+        T nx = qx + de * exx + dn * nxx;
+        T ny = qy + de * exy + dn * nxy;
+        T nz = qz + dn * nxz;
+        rn = sl_traits<T>::rsqrt_(nx * nx + ny * ny + nz * nz);
+        nx *= rn; ny *= rn; nz *= rn;
+        T nkk = min(max(qk + dk, klo), khi);
+
+        const T cx = nx - qx, cy = ny - qy, cz = nz - qz;
+        const T chord = sl_traits<T>::sqrt_(cx * cx + cy * cy + cz * cz);
+        last_m = radius * (T)2 * sl_traits<T>::asin_(
+            min(max((T)0.5 * chord, (T)0), (T)1));
+        last_k = sl_traits<T>::abs_(nkk - qk);
+        if (alpha < (T)1) {
+            last_m = max(last_m, full_m);
+            last_k = max(last_k, full_k);
+        }
+        qx = nx; qy = ny; qz = nz; qk = nkk;
+    }
+
+    xi_d[gid] = sl_traits<T>::atan2_(qy, qx) * inv_dlam;
+    phi_d[gid] = sl_latitude<T>(qx, qy, qz);
+    zk_d[gid] = qk;
+    move_m[gid] = last_m;
+    move_k[gid] = last_k;
+}
+
+#define SL_NEWTON_ENTRY(NAME, T, BAND)                                       \
+extern "C" __global__ void NAME(                                             \
+    const T* vx, const T* vy, const T* vz, const T* sv,                      \
+    const T* vxe, const T* vye, const T* vze, const T* sve,                  \
+    const T* lat_ext, const int* mlut,                                       \
+    const int* rowoff, const int* rowshift,                                  \
+    T* xi_d, T* phi_d, T* zk_d, T* move_m, T* move_k,                        \
+    int iters, T dt, T radius, T dlam,                                       \
+    int nb, int nk, int nj, int ni, T inv_dlam, T lut_scale,                 \
+    int njs, int nja, int ja0, int sja, int* esc)                            \
+{ sl_departure_newton_body<T, BAND>(vx, vy, vz, sv, vxe, vye, vze, sve,     \
+    lat_ext, mlut, rowoff, rowshift, xi_d, phi_d, zk_d, move_m, move_k,      \
+    iters, dt, radius, dlam, nb, nk, nj, ni, inv_dlam, lut_scale, njs, nja,  \
+    ja0, sja, esc); }
+
+SL_NEWTON_ENTRY(sl_departure_newton_f32, float, 0)
+SL_NEWTON_ENTRY(sl_departure_newton_f64, double, 0)
+SL_NEWTON_ENTRY(sl_departure_newton_band_f32, float, 1)
+SL_NEWTON_ENTRY(sl_departure_newton_band_f64, double, 1)
+
+/* ------------------------------------------------------------------ */
+/* The globalized Newton search (semilag.trajectory_solver = "newton_ls"). */
+/*
+ * The same equation, the same trilinear gather and the same interpolant
+ * Jacobian as sl_departure_newton_body.  What differs is how a step is
+ * accepted and what the convergence gate reads.
+ *
+ * Why the plain Newton form stalls at a long step.  The interpolant is
+ * piecewise trilinear, so the Jacobian it hands Newton is one-sided inside
+ * each cell and jumps at every face.  Where (dt/2)|J| approaches one (the
+ * regime a 450-600 s step puts a 13 km jet or a resolved updraft in) the
+ * full Newton step from one cell lands in the next, whose own step points
+ * back, and the point cycles.  The plain form answered with a damping
+ * factor that only ever halves (to an eighth, never restored) and a gate
+ * that reads the UNDAMPED step, so a cycling point was still "moving" by
+ * most of a full step after eight iterations however close it sat to the
+ * root.  The fixed-point pass contracts by the spectral radius of
+ * (dt/2) J and does not contract at all past one.
+ *
+ * The cure is the textbook one for a piecewise-smooth system: a line
+ * search on the residual.  Each iteration takes the Newton direction and
+ * halves it (at most four times) until the residual |G(q) - q| measured
+ * in grid cells falls (Armijo, sigma = 1e-4).  The Newton direction is a
+ * descent direction of the residual inside the cell it was linearized in,
+ * so a short enough step always falls; a cycle between two cells cannot
+ * survive a strictly falling residual.  Where the 3x3 is singular or at
+ * the pole the direction is the plain fixed-point one, as before.  The
+ * trial point the line search accepts has already been evaluated, so an
+ * accepted full step costs exactly one gather, as one Newton pass does.
+ *
+ * The gate reads the Newton step AT THE RETURNED POINT: the linearized
+ * distance from the departure point this kernel returns to the root of
+ * the equation it solves, (I - M)^-1 (G(q) - q), and the plain residual
+ * wherever that system was not solved.  That is the error of the answer,
+ * where the fixed-point pass's "last move" is the residual one iterate
+ * earlier.  A point whose residual is below 1e-4 cells stops iterating.
+ */
+template <typename T, int BAND>
+__device__ __forceinline__ void sl_newton_frame(
+    T qx, T qy, T qz, T* exx, T* exy, T* nxx, T* nxy, T* nxz, T* cp_out)
+{
+    const T lamd = sl_traits<T>::atan2_(qy, qx);
+    const T phid = sl_latitude<T>(qx, qy, qz);
+    T sp, cp, sl, cl;
+    sl_traits<T>::sincos_(phid, &sp, &cp);
+    sl_traits<T>::sincos_(lamd, &sl, &cl);
+    *exx = -sl; *exy = cl;
+    *nxx = -sp * cl; *nxy = -sp * sl; *nxz = cp;
+    *cp_out = cp;
+}
+
+/* One evaluation at q: the residual G(q) - q in q's local frame (radians
+   east and north, levels), its size in grid cells, and the direction the
+   next step takes (the Newton solve, or the residual itself where the
+   system is not solved). */
+template <typename T, int BAND>
+__device__ __forceinline__ T sl_newton_ls_eval(
+    const T* __restrict__ vx, const T* __restrict__ vy,
+    const T* __restrict__ vz, const T* __restrict__ sv,
+    const T* __restrict__ lat_ext, const int* __restrict__ mlut,
+    const int* __restrict__ rowoff, const int* __restrict__ rowshift,
+    int nb, int nk, int nj, int ni, T inv_dlam, T lut_scale, int njs,
+    int* __restrict__ esc,
+    T qx, T qy, T qz, T qk, T ax, T ay, T az, int k,
+    T ex, T ey, T ez, T es, T c, T hdt, T klo, T khi, T cells,
+    T* de, T* dn, T* dk, int* solved)
+{
+    const T lamd = sl_traits<T>::atan2_(qy, qx);
+    const T phid = sl_latitude<T>(qx, qy, qz);
+    T w[4], gl[4], gp[4], gk[4];
+    sl_trilinear4_grad<T, BAND>(vx, vy, vz, sv, lamd, phid, qk, lat_ext,
+                                mlut, rowoff, rowshift, nb, nk, nj, ni,
+                                inv_dlam, lut_scale, w, gl, gp, gk, njs, esc);
+    const T ux = ax - c * (ex + w[0]);
+    const T uy = ay - c * (ey + w[1]);
+    const T uz = az - c * (ez + w[2]);
+    const T un = sl_traits<T>::rsqrt_(ux * ux + uy * uy + uz * uz);
+    const T px = ux * un, py = uy * un, pz = uz * un;
+    T pk = (T)k - hdt * (es + w[3]);
+    const bool kclamped = (pk <= klo) || (pk >= khi);
+    pk = min(max(pk, klo), khi);
+
+    T exx, exy, nxx, nxy, nxz, cp;
+    sl_newton_frame<T, BAND>(qx, qy, qz, &exx, &exy, &nxx, &nxy, &nxz, &cp);
+    const T dx = px - qx, dy = py - qy, dz = pz - qz;
+    const T re = exx * dx + exy * dy;
+    const T rnn = nxx * dx + nxy * dy + nxz * dz;
+    const T rk = pk - qk;
+    *de = re; *dn = rnn; *dk = rk; *solved = 0;
+    const T rr = sl_traits<T>::sqrt_(
+        (re * re + rnn * rnn) * cells * cells + rk * rk);
+    if (cp > (T)1e-6) {
+        const T icp = (T)1 / cp;
+        const T g = -c * un;
+        const T m00 = g * (exx * gl[0] + exy * gl[1]) * icp;
+        const T m01 = g * (exx * gp[0] + exy * gp[1]);
+        const T m02 = g * (exx * gk[0] + exy * gk[1]);
+        const T m10 = g * (nxx * gl[0] + nxy * gl[1] + nxz * gl[2]) * icp;
+        const T m11 = g * (nxx * gp[0] + nxy * gp[1] + nxz * gp[2]);
+        const T m12 = g * (nxx * gk[0] + nxy * gk[1] + nxz * gk[2]);
+        const T m20 = kclamped ? (T)0 : -hdt * gl[3] * icp;
+        const T m21 = kclamped ? (T)0 : -hdt * gp[3];
+        const T m22 = kclamped ? (T)0 : -hdt * gk[3];
+        const T a00 = (T)1 - m00, a01 = -m01, a02 = -m02;
+        const T a10 = -m10, a11 = (T)1 - m11, a12 = -m12;
+        const T a20 = -m20, a21 = -m21, a22 = (T)1 - m22;
+        const T c00 = a11 * a22 - a12 * a21;
+        const T c01 = a12 * a20 - a10 * a22;
+        const T c02 = a10 * a21 - a11 * a20;
+        const T det = a00 * c00 + a01 * c01 + a02 * c02;
+        if (isfinite(det) && det > (T)0.05) {
+            const T idet = (T)1 / det;
+            const T ne = (c00 * re
+                          + (a02 * a21 - a01 * a22) * rnn
+                          + (a01 * a12 - a02 * a11) * rk) * idet;
+            const T nn = (c01 * re
+                          + (a00 * a22 - a02 * a20) * rnn
+                          + (a02 * a10 - a00 * a12) * rk) * idet;
+            const T nk2 = (c02 * re
+                           + (a01 * a20 - a00 * a21) * rnn
+                           + (a00 * a11 - a01 * a10) * rk) * idet;
+            /* det > 0.05 bounds the Newton step at 20x the residual */
+            const T nr = sl_traits<T>::sqrt_(
+                (ne * ne + nn * nn) * cells * cells + nk2 * nk2);
+            const T s = nr / (rr + (T)1e-30);
+            const T cap = (T)20;
+            const T scale = s > cap ? cap / s : (T)1;
+            if (isfinite(ne) && isfinite(nn) && isfinite(nk2)) {
+                *de = ne * scale; *dn = nn * scale; *dk = nk2 * scale;
+                *solved = 1;
+            }
+        }
+    }
+    return rr;
+}
+
+template <typename T, int BAND>
+__device__ __forceinline__ void sl_departure_newton_ls_body(
+    const T* __restrict__ vx, const T* __restrict__ vy,
+    const T* __restrict__ vz, const T* __restrict__ sv,
+    const T* __restrict__ vxe, const T* __restrict__ vye,
+    const T* __restrict__ vze, const T* __restrict__ sve,
+    const T* __restrict__ lat_ext,
+    const int* __restrict__ mlut, const int* __restrict__ rowoff,
+    const int* __restrict__ rowshift,
+    T* __restrict__ xi_d, T* __restrict__ phi_d, T* __restrict__ zk_d,
+    T* __restrict__ move_m, T* __restrict__ move_k,
+    int iters, T dt, T radius, T dlam,
+    int nb, int nk, int nj, int ni, T inv_dlam, T lut_scale,
+    int njs, int nja, int ja0, int sja, int* __restrict__ esc)
+{
+    const int rows_out = BAND ? nja : nj;
+    const long long n = (long long)nk * (long long)rows_out * (long long)ni;
+    const long long gid = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= n) return;
+    const long long plane = (long long)rows_out * (long long)ni;
+    const int i = (int)(gid % ni);
+    const int j = (int)((gid / ni) % rows_out);
+    const int k = (int)(gid / plane);
+    const long long here = BAND
+        ? ((long long)k * (long long)njs + (long long)(j + sja)) * (long long)ni + i
+        : gid;
+
+    const T phia = lat_ext[j + (BAND ? ja0 : 0) + 2];
+    const T lama = (T)i * dlam;
+    T sph, cph, sla, cla;
+    sl_traits<T>::sincos_(phia, &sph, &cph);
+    sl_traits<T>::sincos_(lama, &sla, &cla);
+    const T ax = cph * cla, ay = cph * sla, az = sph;
+
+    const T ex = vxe[gid], ey = vye[gid], ez = vze[gid], es = sve[gid];
+    const T inv_r = (T)1 / radius;
+
+    /* the fixed-point search's own first guess */
+    T qx = ax - dt * vx[here] * inv_r;
+    T qy = ay - dt * vy[here] * inv_r;
+    T qz = az - dt * vz[here] * inv_r;
+    T rn = sl_traits<T>::rsqrt_(qx * qx + qy * qy + qz * qz);
+    qx *= rn; qy *= rn; qz *= rn;
+    const T klo = (T)-0.5, khi = (T)nk - (T)0.5;
+    T qk = (T)k - dt * sv[here];
+    qk = min(max(qk, klo), khi);
+
+    const T hdt = (T)0.5 * dt;
+    const T c = hdt * inv_r;
+    const T cells = (T)nj * (T)(0.5 / SL_HALF_PI_D);
+    T de, dn, dk;
+    int solved;
+    T res = sl_newton_ls_eval<T, BAND>(
+        vx, vy, vz, sv, lat_ext, mlut, rowoff, rowshift, nb, nk, nj, ni,
+        inv_dlam, lut_scale, njs, esc, qx, qy, qz, qk, ax, ay, az, k,
+        ex, ey, ez, es, c, hdt, klo, khi, cells, &de, &dn, &dk, &solved);
+    for (int it = 0; it < iters; ++it) {
+        if (res < (T)1e-4) break;
+        T exx, exy, nxx, nxy, nxz, cp;
+        sl_newton_frame<T, BAND>(qx, qy, qz, &exx, &exy, &nxx, &nxy, &nxz,
+                                 &cp);
+        T alpha = (T)1;
+        T tx, ty, tz, tk, tres, tde, tdn, tdk;
+        int tsolved;
+        for (int ls = 0; ; ++ls) {
+            const T se = alpha * de, sn = alpha * dn, sk = alpha * dk;
+            tx = qx + se * exx + sn * nxx;
+            ty = qy + se * exy + sn * nxy;
+            tz = qz + sn * nxz;
+            rn = sl_traits<T>::rsqrt_(tx * tx + ty * ty + tz * tz);
+            tx *= rn; ty *= rn; tz *= rn;
+            tk = min(max(qk + sk, klo), khi);
+            tres = sl_newton_ls_eval<T, BAND>(
+                vx, vy, vz, sv, lat_ext, mlut, rowoff, rowshift, nb, nk, nj,
+                ni, inv_dlam, lut_scale, njs, esc, tx, ty, tz, tk, ax, ay,
+                az, k, ex, ey, ez, es, c, hdt, klo, khi, cells,
+                &tde, &tdn, &tdk, &tsolved);
+            if (tres <= ((T)1 - (T)1e-4 * alpha) * res || ls >= 4) break;
+            alpha *= (T)0.5;
+        }
+        qx = tx; qy = ty; qz = tz; qk = tk; res = tres;
+        de = tde; dn = tdn; dk = tdk; solved = tsolved;
+    }
+
+    xi_d[gid] = sl_traits<T>::atan2_(qy, qx) * inv_dlam;
+    phi_d[gid] = sl_latitude<T>(qx, qy, qz);
+    zk_d[gid] = qk;
+    /* the distance from the returned point to the root, linearized there */
+    move_m[gid] = radius * sl_traits<T>::sqrt_(de * de + dn * dn);
+    move_k[gid] = sl_traits<T>::abs_(dk);
+}
+
+#define SL_NEWTON_LS_ENTRY(NAME, T, BAND)                                    \
+extern "C" __global__ void NAME(                                             \
+    const T* vx, const T* vy, const T* vz, const T* sv,                      \
+    const T* vxe, const T* vye, const T* vze, const T* sve,                  \
+    const T* lat_ext, const int* mlut,                                       \
+    const int* rowoff, const int* rowshift,                                  \
+    T* xi_d, T* phi_d, T* zk_d, T* move_m, T* move_k,                        \
+    int iters, T dt, T radius, T dlam,                                       \
+    int nb, int nk, int nj, int ni, T inv_dlam, T lut_scale,                 \
+    int njs, int nja, int ja0, int sja, int* esc)                            \
+{ sl_departure_newton_ls_body<T, BAND>(vx, vy, vz, sv, vxe, vye, vze, sve,  \
+    lat_ext, mlut, rowoff, rowshift, xi_d, phi_d, zk_d, move_m, move_k,      \
+    iters, dt, radius, dlam, nb, nk, nj, ni, inv_dlam, lut_scale, njs, nja,  \
+    ja0, sja, esc); }
+
+SL_NEWTON_LS_ENTRY(sl_departure_newton_ls_f32, float, 0)
+SL_NEWTON_LS_ENTRY(sl_departure_newton_ls_f64, double, 0)
+SL_NEWTON_LS_ENTRY(sl_departure_newton_ls_band_f32, float, 1)
+SL_NEWTON_LS_ENTRY(sl_departure_newton_ls_band_f64, double, 1)
+
 extern "C" __global__ void sl_departure_f32(
     const float* vx, const float* vy, const float* vz, const float* sv,
     const float* vxe, const float* vye, const float* vze, const float* sve,

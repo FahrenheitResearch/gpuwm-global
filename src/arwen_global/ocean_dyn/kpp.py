@@ -164,13 +164,13 @@ def kpp(*, theta, salt, uT, vT, h, depth_t, depth_w, n2, drho_dt, drho_ds, ustar
         a3 = 1.0 - 2.0 * g1
         return s * (1.0 + s * (a2[None] + a3[None] * s))
 
-    gs1 = xp.clip(kap_h / (hbl * ws1), 0.0, 1.0)
-    gm1 = xp.clip(nu_h / (hbl * wm1), 0.0, 1.0)
+    g1_heat = xp.clip(kap_h / (hbl * ws1), 0.0, 1.0)
+    g1_mom = xp.clip(nu_h / (hbl * wm1), 0.0, 1.0)
     s = xp.clip(sigma, 0.0, 1.0)
     # Inside h the boundary-layer profile, never below the interior value
     # (convection inside the layer keeps its 0.1 m2 s-1).
-    k_s = xp.where(inside, xp.maximum(hbl[None] * ws * shape(gs1, s), kap_i), kap_i)
-    k_m = xp.where(inside, xp.maximum(hbl[None] * wm * shape(gm1, s), nu_i), nu_i)
+    k_s = xp.where(inside, xp.maximum(hbl[None] * ws * shape(g1_heat, s), kap_i), kap_i)
+    k_m = xp.where(inside, xp.maximum(hbl[None] * wm * shape(g1_mom, s), nu_i), nu_i)
     nonlocal_ = xp.where(inside & unstable[None], CS_NONLOCAL * s * (1.0 - s) ** 2, 0.0)
     below = xp.zeros_like(h)
     below[:-1] = h[1:]

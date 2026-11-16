@@ -11,3 +11,6 @@ venv/
 out/
 runs/
 dist-*/
+# The private names the provenance gates read at run time (tools/private_names.py).
+# Never committed, never packaged.
+.private-names.json
