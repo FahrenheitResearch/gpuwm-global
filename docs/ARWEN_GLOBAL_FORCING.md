@@ -1,4 +1,4 @@
-# Arwen Global forcing: pull a run toward a record, and read the pull (experimental)
+# ArWen Global forcing: pull a run toward a record, and read the pull (experimental)
 
 The forcing operator pulls a run toward a stored record of large scales
 before every step and keeps the pull as a measurement. A run that does not

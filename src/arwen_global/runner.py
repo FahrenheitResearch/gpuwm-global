@@ -1,4 +1,4 @@
-"""Experiment runner, gates, checkpoints, and failure receipts for Arwen Global."""
+"""Experiment runner, gates, checkpoints, and failure receipts for ArWen Global."""
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -845,7 +845,7 @@ def _prepare_outdir(
     existing = [path for path in _owned_files(outdir) if path.exists()]
     if existing and not overwrite:
         raise FileExistsError(
-            f"Arwen Global output exists in {outdir}; pass --overwrite to replace owned files"
+            f"ArWen Global output exists in {outdir}; pass --overwrite to replace owned files"
         )
     if overwrite:
         for path in existing:

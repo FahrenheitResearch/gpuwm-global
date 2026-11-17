@@ -1,9 +1,9 @@
-# Arwen Global quickstart: a 24 h T255 global forecast from one analysis
+# ArWen Global quickstart: a 24 h T255 global forecast from one analysis
 
 Four commands, from nothing to rendered global maps. Every one of them is a
 door that already ships; this page is the route through them, not a new tool.
 
-Arwen Global is an **experimental research model**. It is reached through
+ArWen Global is an **experimental research model**. It is reached through
 `gpuwm-global`, its configuration surface can move between releases, and its
 output is not a supported product. What ships and where the envelope ends
 are in [ARWEN_GLOBAL.md](ARWEN_GLOBAL.md); what the model is, and the list

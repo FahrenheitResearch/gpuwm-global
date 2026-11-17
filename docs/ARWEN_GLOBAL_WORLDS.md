@@ -4,7 +4,7 @@
 labels and limits may change in any release, and nothing here is a forecast
 of anything.
 
-Arwen Global can run Earth changed: its mountains lowered or removed, its axis
+ArWen Global can run Earth changed: its mountains lowered or removed, its axis
 tilted, its sun brighter or dimmer, its air richer or poorer in carbon dioxide,
 its sea raised, its land taken away, or a continent from a map that is not
 today's. A world is a few lines in the ordinary run config. It has its own

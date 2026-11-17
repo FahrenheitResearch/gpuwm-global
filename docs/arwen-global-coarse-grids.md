@@ -1,4 +1,4 @@
-# Arwen Global: the T63 and T127 coarse grids (experimental)
+# ArWen Global: the T63 and T127 coarse grids (experimental)
 
 Two shipped experiments run the forecast day of record at a quarter and at
 half of its resolution:

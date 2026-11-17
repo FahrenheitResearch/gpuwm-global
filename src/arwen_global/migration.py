@@ -106,7 +106,7 @@ def read_level4_checkpoint(path: str | Path) -> tuple[dict, dict[str, np.ndarray
     if not isinstance(metadata, dict) or set(metadata) != required:
         raise ValueError("Level-4 checkpoint metadata inventory mismatch")
     if metadata["schema"] != LEVEL4_CHECKPOINT_SCHEMA:
-        raise ValueError("input is not an Arwen Global Level-4 checkpoint")
+        raise ValueError("input is not an ArWen Global Level-4 checkpoint")
     if metadata["pins_hash"] != LEVEL4_PINS_HASH:
         raise ValueError("Level-4 checkpoint arithmetic pins mismatch")
     if not _is_sha(metadata["config_hash"]):

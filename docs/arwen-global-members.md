@@ -1,4 +1,4 @@
-# Arwen Global forecast members: the member engine and its replay recipes (experimental)
+# ArWen Global forecast members: the member engine and its replay recipes (experimental)
 
 Module `src/arwen_global/members.py`; driver `tools/arwen_global_members.py`;
 tests `tests/test_arwen_global_members.py`.

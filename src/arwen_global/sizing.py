@@ -1,4 +1,4 @@
-"""Device and host memory sizing for the Arwen Global spectral model.
+"""Device and host memory sizing for the ArWen Global spectral model.
 
 WHY THIS FILE IS NOT ``gpuwm.core.preflight``.  That estimator itemizes a
 WRF-shaped experiment -- per-domain state arrays, per-scheme physics
@@ -1123,7 +1123,7 @@ GATE_DISPLAY = {
 
 @dataclass(frozen=True)
 class GlobalMemoryEstimate:
-    """Itemized device and host cost of one Arwen Global configuration."""
+    """Itemized device and host cost of one ArWen Global configuration."""
 
     name: str
     backend: str
@@ -3967,7 +3967,7 @@ def above_fitted_domain(cfg, nlev: int | None = None) -> str | None:
 class GlobalMemoryRefusal(RuntimeError):
     """This card cannot hold this configuration; the run is not started.
 
-    ``RuntimeError`` deliberately: both Arwen Global doors already convert
+    ``RuntimeError`` deliberately: both ArWen Global doors already convert
     that into a one-line refusal at exit 2 (``cli._REFUSALS`` and
     ``cli._DOOR_REFUSALS``), so the message below is the whole user
     experience and there is no traceback to read past.
@@ -4409,7 +4409,7 @@ def refusal_sentence(estimate: GlobalMemoryEstimate, free_bytes: int,
 
 
 # ---------------------------------------------------------------------------
-# `gpuwm check CONFIG` for an Arwen Global run config
+# `gpuwm check CONFIG` for an ArWen Global run config
 # ---------------------------------------------------------------------------
 
 def _format_bytes(n: int | None) -> str:
@@ -4439,7 +4439,7 @@ def _device_budget(free_bytes: int | None) -> int | None:
 
 
 def global_check_main(args) -> int:
-    """``gpuwm check CONFIG`` where CONFIG is an Arwen Global run config.
+    """``gpuwm check CONFIG`` where CONFIG is an ArWen Global run config.
 
     Exit codes are the regional preflight's, restricted to the verdicts
     this estimator can actually reach: 0 = every leg weighed and PASSED;
@@ -4481,7 +4481,7 @@ def global_check_main(args) -> int:
         # measurement is how a report comes to be trusted for something it
         # never did.
         print("gpuwm check: REFUSED (exit 2): --alloc has no measurement to "
-              "make for an Arwen Global config -- it constructs the "
+              "make for an ArWen Global config -- it constructs the "
               "regional experiment's device allocation set, and this model "
               "has none.  Building this configuration's transform IS the "
               "allocation, so the measurement is the run.",
@@ -4579,7 +4579,7 @@ def global_check_main(args) -> int:
 
 def _print_report(args, cfg, estimate, gates, *, free, free_source, budget,
                   capped_to, rail, lever) -> None:
-    print(f"gpuwm check: Arwen Global memory preflight for "
+    print(f"gpuwm check: ArWen Global memory preflight for "
           f"{estimate.name!r} (T{estimate.truncation}, "
           f"{estimate.nlon}x{estimate.nlat}x{estimate.nlev}, "
           f"{estimate.precision}, {estimate.backend} backend)")

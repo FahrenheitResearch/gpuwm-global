@@ -1,4 +1,4 @@
-# Arwen Global scheme transplant: how much of a difference one scheme carried (experimental)
+# ArWen Global scheme transplant: how much of a difference one scheme carried (experimental)
 
 Module `src/arwen_global/transplant.py`; seams in
 `src/arwen_global/physics/native_runtime.py`; tests

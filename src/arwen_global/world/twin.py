@@ -823,7 +823,7 @@ def _difference_tapes(found: list[dict[str, Path]], out: Path, *, offset: str,
         sources = {role: _sha256_file(group[name])
                    for role, group in zip(("world", "control", "perturbed"), found)}
         attributes = {
-            "TITLE": f"Arwen Global world difference: {label} minus Earth",
+            "TITLE": f"ArWen Global world difference: {label} minus Earth",
             "WORLD_LABEL": label,
             "WORLD_DIFFERENCE_RULE": (
                 "world minus control, shown only where it exceeds |perturbed "

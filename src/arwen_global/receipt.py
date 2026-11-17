@@ -1,4 +1,4 @@
-"""Atomic self-hashed Arwen Global receipts."""
+"""Atomic self-hashed ArWen Global receipts."""
 from __future__ import annotations
 
 import hashlib
@@ -272,7 +272,7 @@ def check_receipt(path: str | Path) -> dict[str, object]:
     source = Path(path)
     payload = json.loads(source.read_text(encoding="utf-8"))
     if payload.get("schema") != RECEIPT_SCHEMA:
-        raise ValueError("Arwen Global receipt schema mismatch")
+        raise ValueError("ArWen Global receipt schema mismatch")
     # The self-hash only proves the file is intact, not that the numbers in it
     # were produced by this build's arithmetic.  Without the pin comparison a
     # receipt written under a superseded PIN_DOCUMENT validates green and its
@@ -283,7 +283,7 @@ def check_receipt(path: str | Path) -> dict[str, object]:
     # this build's.
     if payload.get("pins_hash") not in KNOWN_PINS_HASHES:
         raise ValueError(
-            "Arwen Global receipt arithmetic pins mismatch: receipt "
+            "ArWen Global receipt arithmetic pins mismatch: receipt "
             f"{payload.get('pins_hash')!r} is not a pin of this build "
             + "("
             + ", ".join(
@@ -294,7 +294,7 @@ def check_receipt(path: str | Path) -> dict[str, object]:
     self_hash = payload.pop("self_sha256", None)
     expected = hashlib.sha256(canonical(payload)).hexdigest()
     if self_hash != expected:
-        raise ValueError("Arwen Global receipt self-hash mismatch")
+        raise ValueError("ArWen Global receipt self-hash mismatch")
     payload["self_sha256"] = self_hash
     return payload
 

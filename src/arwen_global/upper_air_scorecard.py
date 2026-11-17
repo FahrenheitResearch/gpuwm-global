@@ -1,4 +1,4 @@
-"""Upper-air scorecard for Arwen Global: the standard deterministic scores
+"""Upper-air scorecard for ArWen Global: the standard deterministic scores
 of a global model against an analysis, at every checkpoint hour.
 
 What it measures
@@ -1808,7 +1808,7 @@ def render_chart(payloads: list[dict], out_png: Path, *, title: str = "") -> Pat
         fig.legend(handles, labels, loc="upper center", ncol=ncol, fontsize=8, frameon=False,
                    bbox_to_anchor=(0.5, 0.985))
     top = 0.985 - 0.013 * rows_of_legend
-    fig.suptitle(title or "Arwen Global upper-air scorecard", fontsize=12, y=top - 0.008)
+    fig.suptitle(title or "ArWen Global upper-air scorecard", fontsize=12, y=top - 0.008)
     fig.tight_layout(rect=(0.0, 0.0, 1.0, top - 0.03))
     out_png = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)
@@ -1950,7 +1950,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--calibrate", action="store_true", help="run the synthetic families and print their numbers")
     parser.add_argument("--self-check", help="score this reference GRIB against itself on the grid of --run-dir's receipt")
     parser.add_argument("--floor", help="representation floor of this analysis GRIB on --run-dir's grid and levels (or --config's)")
-    parser.add_argument("--config", help="an Arwen Global config TOML standing in for --run-dir under --floor: the floor of a level set that has not run")
+    parser.add_argument("--config", help="an ArWen Global config TOML standing in for --run-dir under --floor: the floor of a level set that has not run")
     parser.add_argument("--table", help="PNG table of the numbers at --table-hour against --table-kind, for --inputs (or this run)")
     parser.add_argument("--table-hour", type=float, default=24.0)
     parser.add_argument("--table-kind", default="analysis")

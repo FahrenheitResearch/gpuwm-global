@@ -95,7 +95,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from gpuwm.da.letkf import (
+from .letkf_core import (
     LetkfError,
     _eigendecompose,
     _get_xp,

@@ -26,7 +26,7 @@ from arwen_global.da.letkf_point import (
     single_observation_increment,
 )
 from arwen_global.da.observations import PointObs
-from gpuwm.da.letkf import LetkfError, gaspari_cohn
+from arwen_global.da.letkf_core import LetkfError, gaspari_cohn
 
 from conftest import requires_gpu
 

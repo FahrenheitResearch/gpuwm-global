@@ -1,4 +1,4 @@
-# Arwen Global: the native suite on published single-column cases
+# ArWen Global: the native suite on published single-column cases
 
 `tools/arwen_global_scm_cases.py` runs the model's own physics suite (the
 `arwen-native` suite: RRTMGP, sfclay, YSU, Grell-Freitas, Morrison) on

@@ -95,7 +95,7 @@ def test_earth_stamps_nothing_and_keeps_its_title():
     assert we.world_tape_attributes(_world(ALL_EARTH), clock=UNDATED, valid=valid,
                                     seconds=0.0) == {}
     assert we.world_tape_title(EARTH, "science") == we.TAPE_TITLE
-    assert we.TAPE_TITLE == "Arwen Global research model"
+    assert we.TAPE_TITLE == "ArWen Global research model"
     with pytest.raises(ValueError, match="Earth has no world label"):
         we.world_tape_class(EARTH, 0.0)
 
@@ -124,16 +124,16 @@ def test_a_worlds_tape_carries_every_attribute_and_its_settings_hash_to_its_iden
         world, clock=UNDATED, valid=datetime(2026, 8, 30, 18), seconds=0.0)
     assert unrecorded[we.WORLD_STATEMENT_ATTR] == we.WORLD_STATEMENT_UNRECORDED
     assert we.world_tape_title(world, "illustration") == (
-        "Arwen Global research model, world on-its-side (illustration)")
+        "ArWen Global research model, world on-its-side (illustration)")
 
 
 def test_the_model_name_on_a_worlds_tape_is_one_the_renderer_prints():
     # The renderer drops a model name over 32 characters or holding a
     # parenthesis and prints "WRF" instead (RENDERER_MODEL_LABEL_MAX).
-    for label, expected in (("on-its-side", "WOOF Global, world on-its-side"),
-                            ("pangea-soil25", "WOOF Global, world pangea-soil25"),
-                            ("a-longer-world-name", "WOOF Global, a-longer-world-name"),
-                            ("a-much-longer-world-name-still", "WOOF Global")):
+    for label, expected in (("on-its-side", "ArWen Global, world on-its-side"),
+                            ("pangea-soil25", "ArWen Global, pangea-soil25"),
+                            ("a-longer-world-name", "ArWen Global"),
+                            ("a-much-longer-world-name-still", "ArWen Global")):
         world = _world(f'[world]\nlabel = "{label}"\n[world.sun]\nobliquity_deg = 90.0\n')
         name = we.world_model_label(world)
         assert name == expected
@@ -380,7 +380,7 @@ def test_a_world_tape_carries_every_attribute_and_the_world_in_its_title(tapes):
             # Every Earth attribute and every world one, and nothing else.
             assert names == earth_names | set(we.WORLD_TAPE_ATTRS)
             assert ds.getncattr("TITLE") == (
-                "Arwen Global research model, world on-its-side (illustration)")
+                "ArWen Global research model, world on-its-side (illustration)")
             assert ds.getncattr(we.MODEL_LABEL_ATTR) == (
                 f"{we.MODEL_LABEL}, world on-its-side")
             assert ds.getncattr(we.WORLD_ATTR) == "on-its-side"

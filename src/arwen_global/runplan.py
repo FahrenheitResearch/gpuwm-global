@@ -175,7 +175,7 @@ PROFILE_FIELDS_NOT_CARRIED = {
 
 #: The engine's `urban_scheme_id` (its row field from gpuwm 2.8.5, read off
 #: `sf_urban_physics`), ANSWERED rather than named: unlike the scheme ids
-#: above it has one true value for every row.  WOOF Global runs no urban
+#: above it has one true value for every row.  ArWen Global runs no urban
 #: canopy scheme in any experiment; an urban cell is a land-use category the
 #: land surface model reads, and nothing here selects an sf_urban_physics
 #: option, so the answer is the engine's own spelling of "none".
@@ -216,7 +216,7 @@ def producer_block() -> dict[str, Any]:
         "version": __version__,
         "console_script": CONSOLE_SCRIPT,
         "module": __name__,
-        "model": "Arwen Global: a hydrostatic spectral global model with its "
+        "model": "ArWen Global: a hydrostatic spectral global model with its "
                  "own ensemble assimilation",
         "engine": {
             "distribution": "gpuwm",

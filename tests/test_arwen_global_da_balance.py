@@ -55,7 +55,7 @@ from arwen_global.da.perturbations import (
 from arwen_global.da_control import ControlOptions
 from arwen_global.obs_table import ObsRow
 from arwen_global.runner import build_model_and_cold_state, build_transform
-from gpuwm.da.letkf import gaspari_cohn
+from arwen_global.da.letkf_core import gaspari_cohn
 from test_arwen_global_assimilate import spun_up  # noqa: F401 - the door fixture rides the import
 
 CONFIG = str(_shipped_configs() / "arwen_global_moist_smoke.toml")

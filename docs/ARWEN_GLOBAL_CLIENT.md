@@ -1,4 +1,4 @@
-# Driving Arwen Global from a client
+# Driving ArWen Global from a client
 
 This page is for a program, not a person. A desktop application, a terminal
 workspace or a CI job that already drives the ArWen engine through its

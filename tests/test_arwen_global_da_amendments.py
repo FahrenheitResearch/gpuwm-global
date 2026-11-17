@@ -63,7 +63,7 @@ from arwen_global.da.perturbations import draw_perturbation, member_rng, perturb
 from arwen_global.da.window import batches_unevaluated
 from arwen_global.obs_table import ObsRow
 from arwen_global.runner import build_model_and_cold_state, build_transform
-from gpuwm.da.letkf import gaspari_cohn
+from arwen_global.da.letkf_core import gaspari_cohn
 
 CONFIG = str(_shipped_configs() / "arwen_global_moist_smoke.toml")
 EPOCH = dt.datetime(2026, 8, 31, 12, 0, tzinfo=dt.timezone.utc)

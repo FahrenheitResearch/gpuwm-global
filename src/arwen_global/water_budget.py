@@ -1,4 +1,4 @@
-"""Column water-budget instrument for Arwen Global.
+"""Column water-budget instrument for ArWen Global.
 
 What it measures
 ----------------
@@ -1324,7 +1324,7 @@ def _finite(value):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="column water-budget instrument for Arwen Global"
+        description="column water-budget instrument for ArWen Global"
     )
     parser.add_argument(
         "--run-dir", help="directory of arwen_global_step*.npz checkpoints with the run receipt"

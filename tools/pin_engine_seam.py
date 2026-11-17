@@ -153,12 +153,9 @@ SEAM: tuple[tuple[str, str], ...] = (
     ("gpuwm/core/sase_limits.py",
      "E_MIN, bound at module scope by staying state.py"),
     ("gpuwm/core/jacobi_eigh.py",
-     "the LETKF eigensolver.  jacobi_eigh.cu is identical too, so the one "
-     "kernel the assimilation touches compiles through the ENGINE's loader "
-     "and needs no carry"),
-    ("gpuwm/da/letkf.py",
-     "gaspari_cohn and the LETKF entries this package's assimilation imports; "
-     "the filter runs on the engine unchanged"),
+     "the LETKF eigensolver, imported by the carried arithmetic in "
+     "arwen_global/da/letkf_core.py since gpuwm 3.0.3 removed gpuwm/da/letkf.py.  "
+     "jacobi_eigh.cu compiles through the ENGINE's loader and needs no carry"),
 
     # ------------------------------------------------------- the rest of it
     #

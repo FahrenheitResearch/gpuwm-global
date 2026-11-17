@@ -386,7 +386,7 @@ def test_an_output_that_exists_is_one_sentence_not_a_traceback(capsys,
     assert code == arwen_cli.EXIT_REFUSED
     lines = _stderr_lines(capsys.readouterr())
     assert lines == [
-        f"gpuwm-global: Arwen Global output exists in {outdir}; pass "
+        f"gpuwm-global: ArWen Global output exists in {outdir}; pass "
         "--overwrite to replace owned files"]
 
 

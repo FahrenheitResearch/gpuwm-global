@@ -1,4 +1,4 @@
-# Arwen Global composition replay: extra transported fields over a finished run (experimental)
+# ArWen Global composition replay: extra transported fields over a finished run (experimental)
 
 Module `src/arwen_global/composition.py`; drivers
 `tools/arwen_global_replay_tracers.py`, `tools/arwen_global_ozone_field.py`,

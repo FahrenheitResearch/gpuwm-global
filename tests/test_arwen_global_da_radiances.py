@@ -60,7 +60,7 @@ from arwen_global.microwave.entry import (
 )
 from arwen_global.radiance_streams import BiasLedger, RadianceContext, TABLES_DIR
 from arwen_global.runner import build_model_and_cold_state, build_transform
-from gpuwm.da.letkf import gaspari_cohn
+from arwen_global.da.letkf_core import gaspari_cohn
 
 from test_arwen_global_assimilate import (  # noqa: F401 - the fixture rides the import
     CONFIG, _synthetic_obs_files, spun_up,

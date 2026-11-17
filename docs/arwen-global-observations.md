@@ -1,4 +1,4 @@
-# Arwen Global observation streams: interface notes and measurements
+# ArWen Global observation streams: interface notes and measurements
 
 The observation front doors of the global data-assimilation system
 (2026-09-06). This page records every interface decision the observation

@@ -1,5 +1,5 @@
 """The global observing-system simulation experiment: the gate on the
-Arwen Global ensemble filter, its calibration families and its sweeps.
+ArWen Global ensemble filter, its calibration families and its sweeps.
 
 :mod:`gpuwm.da.osse` gates the regional filter on a model-free twin.  The
 global filter is gated on the model itself, in the dual-resolution shape
@@ -127,7 +127,7 @@ from .options import EnsembleOptions, FilterOptions
 from .perturbations import draw_perturbation, member_rng, perturbed_state
 from .window import ObservationWindow, batches_unevaluated
 
-from gpuwm.da.letkf import gaspari_cohn
+from .letkf_core import gaspari_cohn
 
 OSSE_SCHEMA = "gpuwm.arwen-global-ensemble-osse/v2"
 FAMILIES = ("recovery", "pull", "agree", "single", "transfer")
@@ -1096,8 +1096,8 @@ def _parse_value(option: str, text: str):
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
         prog="python -m arwen_global.da.osse",
-        description="Arwen Global ensemble filter twin experiment, calibration families and sweeps")
-    p.add_argument("--config", required=True, help="Arwen Global run config (re-cut by --truncation and --control-truncation)")
+        description="ArWen Global ensemble filter twin experiment, calibration families and sweeps")
+    p.add_argument("--config", required=True, help="ArWen Global run config (re-cut by --truncation and --control-truncation)")
     p.add_argument("--outdir", required=True)
     p.add_argument("--family", choices=FAMILIES, default="recovery")
     p.add_argument("--members", type=int, default=GlobalOsseSetup.members)

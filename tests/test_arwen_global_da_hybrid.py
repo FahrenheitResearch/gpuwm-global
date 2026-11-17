@@ -45,7 +45,7 @@ from arwen_global.da.static_covariance import (
     spectral_variance_by_degree,
 )
 from arwen_global.da_control import ControlOptions
-from gpuwm.da.letkf import LetkfError, gaspari_cohn
+from arwen_global.da.letkf_core import LetkfError, gaspari_cohn
 from arwen_global.spectral.constants import EARTH_ROTATION_RATE_S
 from arwen_global.spectral.transform import SphericalHarmonicTransform
 from arwen_global.spectral.vector import VorticityDivergenceOperator

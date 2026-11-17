@@ -102,7 +102,13 @@ normalisation exactly and is what recomputes it.
   Blackwell cards only. The longwave lid fix then added two hunks, measured on the same engine, filed as `RRTMGP-26`. The valid-year gas selection added one more, measured on the same engine, filed as `RRTMGP-27`. The in-cloud path factor added three, measured on the same engine, filed as `RRTMGP-28`. The 2.8.0 baseline
   before it is in the git history of this file; it read 361 hunks forward
   from 2.7.3, dropped 14 and read 66 new ones.
-* **Where the rows stand at 0.2.2 (measured 2026-11-14).** Since 0.2.0 the
+* **Where the rows stand at 0.3.0 (2026-11-16).** The declared range is
+  `gpuwm>=3.0.3,<3.1`. The rows were not re-baselined at 3.0.3: they still
+  name 2.8.5 (and 2.9.13 for the four marked so below), and the two
+  comparison nodes skip, naming both versions. The engine seam
+  (`arwen_global/data/engine-seam.json`) is re-pinned at 3.0.3: 12 of its 49
+  files moved against 2.9.13 and `gpuwm/core/constants.py` did not.
+* **Where the rows stood at 0.2.2 (measured 2026-11-14).** Since 0.2.0 the
   declared range is `gpuwm>=2.9.13,<2.10`, the fingerprint tool refuses any
   engine outside it, and the two comparison nodes skip because the rows
   still name 2.8.5. The radiation pressure ceiling (`RRTMGP-29`,

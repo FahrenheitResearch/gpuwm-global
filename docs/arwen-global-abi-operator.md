@@ -1,4 +1,4 @@
-# ABI brightness temperature as a forward operator for Arwen Global
+# ABI brightness temperature as a forward operator for ArWen Global
 
 `src/arwen_global/abi_operator.py` (the SimSat measurement, the entries, the
 four assessments), `abi_reference.py` (the columns, the reference, the

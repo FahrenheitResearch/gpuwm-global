@@ -1,4 +1,4 @@
-# Arwen Global ensemble data assimilation: interface notes
+# ArWen Global ensemble data assimilation: interface notes
 
 Package `src/arwen_global/da/` (2026-09-06).
 This page is the record of every interface decision the ensemble core

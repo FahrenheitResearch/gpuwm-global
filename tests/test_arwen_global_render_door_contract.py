@@ -65,3 +65,14 @@ def test_render_door_passes_only_keywords_the_engine_declares():
         f"declare: {', '.join(unknown)}. Every draw dies at the call with a "
         "TypeError, after the tapes have been exported."
     )
+
+
+def test_the_maps_name_the_product_and_this_release_not_the_engine():
+    """Left to the engine, the renderer prints "WOOF" and the ENGINE's version
+    ("WOOF 3.0.3" on gpuwm 3.0.3) on every map this door draws."""
+
+    from arwen_global import __version__
+    from arwen_global.render_door import map_source_label
+
+    assert map_source_label() == f"ArWen Global {__version__}"
+    assert "source_label" in _call_keywords("render_wrfouts_rust")

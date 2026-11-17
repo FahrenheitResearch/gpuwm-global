@@ -1,4 +1,4 @@
-# Arwen Global radiation between its calls: the shortwave follows the sun (experimental)
+# ArWen Global radiation between its calls: the shortwave follows the sun (experimental)
 
 Module `src/arwen_global/physics/radiation_between.py`; option
 `radiation_between` of the native suite (`native_adapter_options`); tests

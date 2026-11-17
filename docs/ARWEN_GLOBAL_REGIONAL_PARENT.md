@@ -1,4 +1,4 @@
-# Arwen Global as the parent of a regional run
+# ArWen Global as the parent of a regional run
 
 `gpuwm-global export-mapped-parent` writes a global forecast in the form the
 regional engine reads as initial and lateral boundary data. The feed is one

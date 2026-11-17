@@ -434,7 +434,12 @@ def test_render_door_on_earth_changes_nothing(tmp_path, engine, monkeypatch):
     (tapes, kwargs, basemap), = engine.calls
     assert tapes == [tape]
     assert kwargs["annotate"] is None and basemap is None
-    assert set(kwargs) == {"products", "timeidx", "outdir", "size", "annotate"}
+    # The source line names the product and this release (0.3.0); the world
+    # machinery still adds nothing on Earth.
+    assert set(kwargs) == {"products", "timeidx", "outdir", "size", "annotate",
+                           "source_label"}
+    from arwen_global.render_door import map_source_label
+    assert kwargs["source_label"] == map_source_label()
     assert not (out / "world-map").exists() and not (out / "world-title.json").exists()
     # An all-Earth [world] table given as the config: still nothing.
     cfg = tmp_path / "earth.toml"

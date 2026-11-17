@@ -67,14 +67,12 @@ INDIRECT = {
     # staying gpuwm/core/state.py binds both at ITS module scope
     "gpuwm/core/sase_limits.py",
     "gpuwm/core/wdm6_constants.py",
-    # the engine's LETKF compiles it; the assimilation reaches it through
-    # gpuwm/da/letkf.py
-    "gpuwm/core/jacobi_eigh.py",
 }
 
-#: Content this package depends on outside the carried physics: the filter
-#: the assimilation runs ON the engine, and the switch the native suite reads.
-OUTSIDE_THE_CORE = {"gpuwm/da/letkf.py", "gpuwm/local_gpu.py"}
+#: Content this package depends on outside the carried physics: the batched
+#: eigensolver the carried LETKF arithmetic (arwen_global/da/letkf_core.py)
+#: calls on the device, and the switch the native suite reads.
+OUTSIDE_THE_CORE = {"gpuwm/core/jacobi_eigh.py", "gpuwm/local_gpu.py"}
 
 
 def _installed_engine_version() -> str | None:

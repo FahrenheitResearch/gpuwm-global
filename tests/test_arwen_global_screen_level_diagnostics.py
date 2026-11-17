@@ -183,7 +183,7 @@ def test_export_writes_screen_fields_from_the_physics_state_and_labels_the_fallb
         with Dataset(tape) as ds:
             assert ds.getncattr(SURFACE_DIAGNOSTICS_ATTR) == row["surface_diagnostics"]
             # The renderer names this model, not "WRF", in the metadata row.
-            assert ds.getncattr(MODEL_LABEL_ATTR) == MODEL_LABEL == "WOOF Global"
+            assert ds.getncattr(MODEL_LABEL_ATTR) == MODEL_LABEL == "ArWen Global"
             t2 = np.asarray(ds["T2"][0])
             lowest_theta = np.asarray(ds["T"][0][0]) + 300.0
             lowest_t = lowest_theta * (np.asarray(ds["PB"][0][0]) / 1.0e5) ** KAPPA

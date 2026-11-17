@@ -689,7 +689,7 @@ def test_the_input_preflight_says_not_applicable_and_advances(capsys):
     assert _check_command(_check_args(SMOKE_CONFIG)) == 0
     printed = capsys.readouterr().out
     assert "not applicable" in printed
-    assert "Arwen Global run config" in printed
+    assert "ArWen Global run config" in printed
     assert "Continuing to the memory preflight" in printed
 
 
@@ -706,7 +706,7 @@ def test_check_main_routes_a_global_config_out_of_the_regional_loader(capsys):
         _check_args(SMOKE_CONFIG, budget_gib=8.0))
     printed = capsys.readouterr().out
     assert code == 0
-    assert "Arwen Global memory preflight" in printed
+    assert "ArWen Global memory preflight" in printed
     assert "unknown table" not in printed
 
 
@@ -722,7 +722,7 @@ def test_a_regional_config_still_reaches_the_regional_estimator(capsys):
         _check_args(regional, budget_gib=8.0, vram_gib=24.0))
     printed = capsys.readouterr().out
     assert "memory preflight for" in printed
-    assert "Arwen Global" not in printed
+    assert "ArWen Global" not in printed
     assert code in (0, 1, 4)
 
 

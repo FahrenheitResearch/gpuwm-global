@@ -1,4 +1,4 @@
-"""``gpuwm-global da``: the data-assimilation door of Arwen Global.
+"""``gpuwm-global da``: the data-assimilation door of ArWen Global.
 
 Five legs, one receipt (:data:`DA_RECEIPT_NAME`, schema
 :data:`DA_RECEIPT_SCHEMA`) beside whatever the leg wrote:
@@ -695,7 +695,7 @@ def _toml_scalar(value) -> str:
 
 def dump_toml(document: dict, *, header: str | None = None) -> str:
     """A TOML text of a nested dictionary of tables and scalars (the
-    shape every Arwen Global config has); inline tables for a dictionary
+    shape every ArWen Global config has); inline tables for a dictionary
     inside a table whose values are scalars."""
     lines: list[str] = []
     if header:

@@ -1,9 +1,9 @@
-# Arwen Global
+# ArWen Global
 
 A hydrostatic global spectral weather model that runs a whole forecast day on
 one consumer graphics card, with its own ensemble data assimilation.
 
-Arwen Global integrates the moist primitive equations on a Gaussian grid in
+ArWen Global integrates the moist primitive equations on a Gaussian grid in
 spherical-harmonic space, on a two-time-level semi-Lagrangian semi-implicit
 core at a 300 s step, with a full GPU physics suite (RRTMGP radiation, Morrison
 microphysics, Grell-Freitas or New Tiedtke convection, YSU boundary layer, Noah
@@ -34,14 +34,15 @@ One extra per CUDA major, because no pip environment marker can tell them
 apart. `gpu-cu13` pulls `cupy-cuda13x[ctk]`, `gpu-cu12` pulls
 `cupy-cuda12x[ctk]`, and the bare `gpu` alias is `gpu-cu13`, the stack the
 card figures on this page came off. Either line also resolves the engine
-`gpuwm>=2.9.13,<2.10`, its data companion `gpuwm-data` beside it, numpy, scipy
-and netCDF4. Against the published `gpuwm 2.9.13`,
-`python tools/measure_boundary.py` reads 242 symbols across 72 modules with
-no gap (Linux, 2026-11-13). Without either extra the package installs and
-every CPU door runs; the forecast needs the card.
+`gpuwm>=3.0.3,<3.1`, its data companion `gpuwm-data` beside it,
+numpy, scipy and netCDF4. Against the published `gpuwm 3.0.3`,
+`python tools/measure_boundary.py` reads 239 symbols across 72 modules with
+no gap (Linux, 2026-11-16). Without either extra the package installs and
+every CPU door runs; the forecast needs the card. It installs in one
+environment beside `gpuwm-hex` 0.6, which needs the same engine line.
 
-The rows dated 2026-11 on this page were taken on the published engines
-(`gpuwm 2.9.12` and `2.9.13`). The older forecast and assimilation figures
+The rows dated 2026-11 up to 2026-11-15 on this page were taken on the
+published engines `gpuwm 2.9.12` and `2.9.13`. The older forecast and assimilation figures
 were taken on 2026-09-06 and 2026-09-07 in the engine checkout this model was
 developed and graded in, whose own version string reads 2.6.4. That physics is what `arwen_global.core` carries, which is why
 an install on the 2.8 engine integrates the same bytes those runs did, apart
@@ -60,7 +61,7 @@ gpuwm-global doctor        # what is installed, staged and missing
 
 Of the eight observation doors, `rw_asos`, `rw_igra2`, `rw_ndbc`,
 `rw_amv`, `rw_gnssro`, `rw_wis2` and `rw_goes` arrive in the engine's own
-bundle on 2.9.x, so `fetch-doors` stages the other one.  It also stages the
+bundle on 3.0.x, so `fetch-doors` stages the other one.  It also stages the
 two libraries this package builds from its own `rust/` workspace: `rw_global_coldstart` (the cold start's analysis regrid
 and ln p remap) and `global_render_kernels` (the render tapes' regrid and
 column and the regional translation).  Neither has a NumPy fallback, so an
@@ -71,21 +72,21 @@ variable, as `doctor` says.
 `doctor` exits 1 when a command this page or
 [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) documents cannot run, and every
 line that says no names the command it stops and the remedy. Two engine
-symbols are absent from every published engine through 2.9.13:
+symbols are absent from every published engine through 3.0.3:
 `preflight.measured_free_vram_bytes` and `surface_bias.interpolate_to_tape`.
 Neither stops a documented command (the first stops the standalone
 card-pricing check that no subcommand is wired to, the second the
 surface-energy scorecard's regrid onto the tape), so `doctor` prints both as
 optional notes and a correct install exits 0: the three lines above, then
-`doctor`, exited 0 against `gpuwm 2.9.13` on Linux (MEASURED 2026-11-07). CI runs the same three lines on every push and every
+`doctor`, exited 0 against `gpuwm 3.0.3` on Linux (MEASURED 2026-11-16). CI runs the same three lines on every push and every
 publish and fails on any gap. Calling either symbol still refuses by name.
 The published 0.1.2 graded both as gaps and exited 1 on every correct
 install; that is fixed from 0.1.3.
 
-`gpuwm-global` needs `gpuwm>=2.9.13,<2.10`. The floor is the engine this
+`gpuwm-global` needs `gpuwm>=3.0.3,<3.1`. The floor is the engine this
 release's test suite and forecast proofs ran on. The ceiling is not
 decoration: the engine's own trees are not supersets of each other across
-minors, and this package imports 242 symbols across that boundary.
+minors, and this package imports 239 symbols across that boundary.
 `python tools/measure_boundary.py` regenerates the measurement rather than
 trusting a table, and names the symbols it could not check on a host without
 a CUDA runtime instead of counting them clean. The physics used in the
@@ -96,12 +97,14 @@ by kernel scorecards to compare GPU arithmetic (code verification, not an
 observation score), and the Noah tables). The engine files the carried code
 still reaches are pinned by path, size and SHA-256 in
 `arwen_global/data/engine-seam.json`, and `gpuwm-global doctor` re-hashes them
-and prints an `engine seam` section. The pins are taken at `gpuwm 2.9.13`,
-where all 48 files are proven. Between 2.8.5 and 2.9.12, 40 of the then 47
-files moved and each was re-pinned after the suite passed on 2.9.12; 2.9.13
-moved one more (`gpuwm/core/preflight.py`, one comment line), and the engine's
-CAM ozone reader (`gpuwm/ingest/wrf_ozone.py`) joined the seam with this
-release's default ozone.
+and prints an `engine seam` section. The pins are taken at `gpuwm 3.0.3`,
+where all 49 files are proven: 12 of them moved against 2.9.13 and each was
+re-pinned after the suite passed on 3.0.3; `gpuwm/core/constants.py`, whose
+CUDA defines open every carried kernel, did not move. gpuwm 3.0.3 removed
+`gpuwm/da/letkf.py`, and the eight names the ensemble filter took from it are
+carried in `arwen_global/da/letkf_core.py`, verbatim from 2.9.13; the one
+engine file they still reach, the batched eigensolver
+(`gpuwm/core/jacobi_eigh.py`), is pinned in its place.
 
 The two nodes of `tests/test_arwen_global_engine_seam.py` that compare
 hashes run against the pinned version and skip, naming both versions, on any

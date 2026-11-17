@@ -43,7 +43,22 @@ import shutil
 from .configs_dir import config_argument
 from .status import StatusWriter
 
-__all__ = ["add_render_arguments", "render"]
+__all__ = ["add_render_arguments", "map_source_label", "render"]
+
+
+def map_source_label() -> str:
+    """The source line on every map this door draws: the product's name and
+    THIS package's version.
+
+    Left to the engine, the renderer prints its own default, "WOOF" and the
+    engine's version ("WOOF 3.0.3" on gpuwm 3.0.3), which names neither the
+    model that made the forecast nor a release of it.
+    """
+    from . import __version__
+    from .wrfout_export import MODEL_LABEL
+
+    return f"{MODEL_LABEL} {__version__}"
+
 
 #: The checkpoint files a run directory holds, in time order.
 CHECKPOINT_GLOB = "arwen_global_step*.npz"
@@ -457,7 +472,8 @@ def render(args: argparse.Namespace) -> int:
             for group, annotation in groups:
                 drawn, failed, passed_over = render_wrfouts_rust(
                     group, products=args.products, timeidx=None,
-                    outdir=outdir, size=size, annotate=annotation)
+                    outdir=outdir, size=size, annotate=annotation,
+                    source_label=map_source_label())
                 pictures.extend(drawn)
                 failures.extend(failed)
                 skipped.extend(passed_over)

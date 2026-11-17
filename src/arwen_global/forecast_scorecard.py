@@ -1,4 +1,4 @@
-"""``gpuwm-global score``: one command that scores a WOOF Global forecast.
+"""``gpuwm-global score``: one command that scores a ArWen Global forecast.
 
 What it does
 ------------
@@ -803,7 +803,7 @@ def _fmt(value, width: int = 8, digits: int = 2) -> str:
 def scorecard_lines(payload: dict) -> list[str]:
     """The scorecard as plain text: one block per row kind, one row per lead."""
     label = payload["label"]
-    lines = [f"WOOF Global forecast scorecard: {label}, T{payload['truncation']}, "
+    lines = [f"ArWen Global forecast scorecard: {label}, T{payload['truncation']}, "
              f"start {payload['start_time_utc']}", ""]
     def surface_row(lead_h, who, scores):
         n = max(int(scores[v]["n"]) for v in scores)

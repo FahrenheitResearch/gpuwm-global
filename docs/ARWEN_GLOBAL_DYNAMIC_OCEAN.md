@@ -1,4 +1,4 @@
-# Arwen Global: the dynamic ocean (stage 1, experimental, off by default)
+# ArWen Global: the dynamic ocean (stage 1, experimental, off by default)
 
 `[ocean] mode = "dynamic"` couples the atmosphere to a three-dimensional ocean
 with currents: a hydrostatic Boussinesq primitive-equation model on z\*

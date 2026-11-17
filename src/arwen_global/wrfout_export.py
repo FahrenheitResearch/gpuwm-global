@@ -1,4 +1,4 @@
-"""Render tapes: global lat-lon wrfout files from Arwen Global checkpoints.
+"""Render tapes: global lat-lon wrfout files from ArWen Global checkpoints.
 
 The production renderer reads wrfout NetCDF and already draws unrotated
 MAP_PROJ=6 global frames (the MPAS bridge's proven path), so weather-field
@@ -57,11 +57,10 @@ SURFACE_DIAGNOSTICS_ATTR = "ARWEN_SURFACE_DIAGNOSTICS"
 #: this attribute every global map said "WRF" (the engine reads it from
 #: 2.8.1; an older engine ignores it and draws as before).
 MODEL_LABEL_ATTR = "GPUWM_MODEL_LABEL"
-#: The public name: maps and every sendable call the model WOOF Global, and
-#: the standalone package stamped the internal name on every tape, so its
-#: published maps would have named the model differently from the WOOF
-#: assembly's (which rewrote the literal).
-MODEL_LABEL = "WOOF Global"
+#: The public name the maps carry, ArWen Global (0.3.0; 0.2.x stamped
+#: "WOOF Global").  It is also the start of every map's source line
+#: (`render_door.map_source_label`).
+MODEL_LABEL = "ArWen Global"
 #: The longest model name the renderer prints.  MEASURED 2026-11-13 with
 #: engine 2.9.13's rw_wrfbatch on a T127 world tape: a label of 32
 #: characters is printed, one of 33 is dropped and the map says "WRF"
@@ -275,7 +274,7 @@ _ENGINE_TAPE_WRITER = WrfoutWriter
 
 #: The tape's TITLE.  A world's tape names the world and its label in it
 #: (:func:`world_tape_title`); an Earth tape keeps exactly these words.
-TAPE_TITLE = "Arwen Global research model"
+TAPE_TITLE = "ArWen Global research model"
 
 # -- other worlds (plan section 4.10) ----------------------------------------
 #

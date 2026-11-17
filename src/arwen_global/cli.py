@@ -1,4 +1,4 @@
-"""Command line interface for Arwen Global Level 5."""
+"""Command line interface for ArWen Global Level 5."""
 from __future__ import annotations
 
 import argparse
@@ -64,7 +64,7 @@ def add_render_arguments(parser):
 #: accept a flag the module door dropped, or to spell a default
 #: differently; the help text is single-sourced for the same reason.
 _RUN_HELP = (
-    "run a registered Arwen Global TOML experiment; the card is priced "
+    "run a registered ArWen Global TOML experiment; the card is priced "
     "and the band count and host tier chosen before anything is "
     "allocated, so no memory flag has to be set")
 _ASSIMILATE_HELP = (
@@ -145,7 +145,7 @@ _DA_LOCALISATION_HELP = (
 def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "config", type=config_argument,
-        help="Arwen Global experiment TOML (truncation, vertical coordinate, "
+        help="ArWen Global experiment TOML (truncation, vertical coordinate, "
              "physics suite, gates, and [time] integrator: 'sl_si', the "
              "two-time-level semi-Lagrangian core, is the default at every "
              "truncation and steps 300 s when dt_s is omitted, with its own "
@@ -782,7 +782,7 @@ def _add_assimilate_arguments(parser: argparse.ArgumentParser) -> None:
 def _add_cycle_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "config", type=config_argument,
-        help="Arwen Global experiment TOML; its duration_s is the end of the "
+        help="ArWen Global experiment TOML; its duration_s is the end of the "
              "whole run, cycle and forecast",
     )
     _add_memory_lever_arguments(parser)
@@ -1037,7 +1037,7 @@ def _add_stream_arguments(parser: argparse.ArgumentParser, *, obs_required: bool
 def _add_da_init_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "config", type=config_argument,
-        help="Arwen Global experiment TOML, or a shipped experiment's bare name")
+        help="ArWen Global experiment TOML, or a shipped experiment's bare name")
     parser.add_argument(
         "--outdir", type=Path, required=True,
         help="where the deterministic checkpoint, the ensemble manifest and "
@@ -1067,7 +1067,7 @@ def _add_da_init_arguments(parser: argparse.ArgumentParser) -> None:
 def _add_da_cycle_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "config", type=config_argument,
-        help="Arwen Global experiment TOML; its duration_s is the end of the "
+        help="ArWen Global experiment TOML; its duration_s is the end of the "
              "whole run, cycle and forecast",
     )
     _add_stream_arguments(parser, obs_required=False)
@@ -1605,8 +1605,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gpuwm-global",
         description=(
-            "Research-only moist hybrid global spherical-harmonic model, "
-            "native Arwen CUDA physics adapter, and one-way regional parent bridge."
+            "ArWen Global: a research-only moist hybrid global spherical-harmonic "
+            "model, native ArWen CUDA physics adapter, and one-way regional parent bridge."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1756,7 +1756,7 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_target = sub.add_parser("inspect-regional-target", help="validate regional target metadata")
     inspect_target.add_argument("input", type=Path)
 
-    frame = sub.add_parser("translate-regional-frame", help="translate one global export to an Arwen frame")
+    frame = sub.add_parser("translate-regional-frame", help="translate one global export to an ArWen regional frame")
     frame.add_argument("parent", type=Path)
     frame.add_argument("target", type=Path)
     frame.add_argument("output", type=Path)

@@ -1,4 +1,4 @@
-# Arwen Global: moist hybrid spherical-harmonic research model
+# ArWen Global: moist hybrid spherical-harmonic research model
 
 ## Status
 
@@ -936,7 +936,7 @@ adapter is registered. There is no fallback to the reference suite.
 ## Surface and water repair
 
 Spectral projection rings a sharp positive grid field below zero, and clipping
-that ringing creates water. Arwen Global closes the clip inside the atmosphere
+that ringing creates water. ArWen Global closes the clip inside the atmosphere
 (the standard hole-filling fixer):
 
 1. clips the physical water field;
@@ -1038,7 +1038,7 @@ has emptied it.
 Every checkpoint binds:
 
 - exact resolved config hash;
-- Arwen Global and inherited Level-3 pins;
+- ArWen Global and inherited Level-3 pins;
 - model step and time;
 - every atmospheric spectral array;
 - every grid-resident surface and soil array;

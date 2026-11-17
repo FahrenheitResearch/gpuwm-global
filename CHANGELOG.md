@@ -1,5 +1,79 @@
 # Changelog
 
+## 0.3.0
+
+ArWen Global on the 3.0 engine line.  Needs `gpuwm>=3.0.3,<3.1` and
+`gpuwm-data>=3.0.3,<3.1` (0.2.5: `<2.10`), so it installs in one
+environment beside `gpuwm-hex` 0.6 and the gpuwm 3.0.3 that both need.  Proven against `gpuwm 3.0.3`:
+`tools/measure_boundary.py` reads 239 symbols across 72 modules with no
+gap, and all 49 engine seam files are pinned at 3.0.3.  The companion
+bundle carries ten Rust doors, unchanged from 0.2.0; the engine's own
+bundle at 3.0.3 carries the same observation binaries as at 2.9.x.  No
+config changes, 61 experiments ship, and every config hash is 0.2.5's.
+
+### Changed
+
+- **The engine pin moves to gpuwm 3.0.3.**  gpuwm 3.0.3 removed
+  `gpuwm.da.letkf` with the engine's local data assimilation.  This
+  package's ensemble filter imported eight names from it (the refusal
+  class, the Gaspari-Cohn function, the eigensolver choice and
+  factorisation, and four helpers), and its command line imports the
+  filter's options while it builds the parser, so on 3.0.3 every command,
+  `doctor` and `--help` included, failed at import.  The eight are carried
+  in `arwen_global/da/letkf_core.py`, verbatim from gpuwm 2.9.13, and the
+  filter computes what it computed on 2.9.13.  The one engine module they
+  still call, the batched Jacobi eigensolver `gpuwm.core.jacobi_eigh`, is
+  in 3.0.3 and is pinned in the engine seam in place of
+  `gpuwm/da/letkf.py`.
+- **The engine seam is re-pinned at 3.0.3.**  12 of the 49 files moved
+  against 2.9.13 (`config.py`, `core/state.py`, `core/preflight.py`,
+  `core/kf.py`, `core/microphysics.py`, `core/noahmp_runtime.py`,
+  `core/mynn_pbl_runtime.py`, `core/shinhong.py`, `core/rrtmg_legacy.py`,
+  `data_assets.py`, `physics_compat.py`, `ingest/soil.py`);
+  `core/constants.py`, whose CUDA defines open every carried kernel, did
+  not.
+- **The name is spelled ArWen Global** (was "Arwen Global") in the README,
+  the documentation, the command-line help and on the maps.  Maps drawn by
+  `gpuwm-global render` and `go` print "ArWen Global" and this
+  package's version as their source line; before, the engine's default
+  printed "WOOF" and the engine's version.  Render tapes name the model
+  "ArWen Global" (was "WOOF Global"), and a world's tape adds the
+  world's name only while the renderer's 32-character limit allows it.
+  The package, import name, command, config names and API values do not
+  change.
+
+### Measured
+
+- **0.3.0 does not reproduce 0.2.5's forecasts, and the whole difference
+  is two changes in the engine.**  The shipped T255 day
+  (`arwen_global_gdas_t255_native_sl_si_24h`, GDAS 2026-09-01 00Z, 24 h)
+  on an RTX 5070 Ti, 16 GB, alone, 2026-11-17, each package installed in a fresh
+  environment from its wheel with its statics built by its own engine:
+  - 0.3.0 on gpuwm 3.0.3 (gpuwm-hex 0.6.0 in the same environment): pass,
+    no tripwire, 258.0 s of steps (0.896 s a step), 6.22 GiB live at the
+    allocator, 8,388 MiB on the card.  0.2.5 on gpuwm 2.9.13, same card,
+    same lease: pass, 257.0 s (0.892 s a step), 6.22 GiB live, 7,810 MiB.
+  - The step-0 checkpoints differ in eight surface arrays and every later
+    checkpoint differs, as a chaotic forecast does once its start differs.
+    Two engine changes move the start: the gpuwm 3.0.x geography reader
+    repairs the water, lake and ice pixels WPS_GEOG's MODIS land use
+    carries at 180 degrees (land use and soil category on 9 to 26 columns
+    of the T255 grid, all at 179.5 to 180 E), and the engine's
+    `monthly_interp_to_date` now blends the monthly greenness, leaf area
+    and albedo in float32 as WRF's real.exe does (one-ulp moves on 21,633
+    to 57,297 columns).
+  - With 0.2.5's statics and gpuwm 2.9.13's monthly blend substituted,
+    0.3.0 on gpuwm 3.0.3 equals 0.2.5 on gpuwm 2.9.13 bit for bit in all
+    9 checkpoints (every array and `self_sha256`).  Nothing else in the
+    port, the carried LETKF arithmetic and the 12 moved engine files
+    included, changes a bit of the forecast.
+- Config hashes: all 61 shipped configs hash as in 0.2.5 (the same 4
+  fixtures do not load, as before).
+- Maps of the 0.3.0 day drawn with Rust renderers (surface wind and
+  pressure, 500 hPa wind and vorticity, total precipitation, 12 regions
+  and the globe at 0, 12 and 24 h) were looked at: nothing at the
+  180-degree seam.
+
 ## 0.2.5
 
 Needs `gpuwm>=2.9.13,<2.10` and `gpuwm-data>=2.9.13,<2.10`, as 0.2.4 did;

@@ -1,4 +1,4 @@
-# Arwen Global: a fresh global analysis, and a forecast from it
+# ArWen Global: a fresh global analysis, and a forecast from it
 
 `gpuwm-global da` is the data-assimilation door of the experimental global
 model. It makes an analysis of the atmosphere from public observations

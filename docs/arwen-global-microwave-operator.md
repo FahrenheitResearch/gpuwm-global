@@ -1,4 +1,4 @@
-# ATMS microwave brightness temperature as a forward operator for Arwen Global
+# ATMS microwave brightness temperature as a forward operator for ArWen Global
 
 `src/arwen_global/microwave/` (package), `tools/rustwx/crates/rw-atms` (the
 HDF5 decoder and the thinning), door `gpuwm-global microwave`

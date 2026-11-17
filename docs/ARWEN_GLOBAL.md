@@ -1,6 +1,6 @@
-# Arwen Global: the experimental global spectral model
+# ArWen Global: the experimental global spectral model
 
-Arwen Global is a moist hydrostatic global spectral model, shipped as its own
+ArWen Global is a moist hydrostatic global spectral model, shipped as its own
 distribution and **experimental**. It runs on the gpuwm engine and is a second
 dycore beside gpuwm's regional nonhydrostatic model, not a replacement for it:
 an ordinary regional forecast reaches none of this code, and nothing about a
@@ -163,7 +163,7 @@ first-class fields rather than hidden inside a microphysics wrapper.
 
 ## Two cores, and the step each one takes
 
-Arwen Global has two time integrators and every truncation runs either.
+ArWen Global has two time integrators and every truncation runs either.
 `[time] integrator = "sl_si"`, the two-time-level semi-Lagrangian
 semi-implicit core, is the default at T255, T383 and T533 and steps 300 s
 when `dt_s` is omitted: a config that names no integrator runs it

@@ -1,4 +1,4 @@
-# Arwen Global from ERA5: a start on any past hour
+# ArWen Global from ERA5: a start on any past hour
 
 The global model cold-starts from one analysis. Until now that was a GDAS
 0.25-degree analysis only, and the GDAS archive the engine's fetch route

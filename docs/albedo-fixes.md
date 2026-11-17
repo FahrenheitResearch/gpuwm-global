@@ -1,6 +1,6 @@
 # The albedo fixes: three opt-in options and the key set that turns them on
 
-Arwen Global's ten-day runs reflected too much sunlight: planetary albedo
+ArWen Global's ten-day runs reflected too much sunlight: planetary albedo
 about 0.39 to 0.40 against CERES-EBAF's 0.30 for November, a reflected
 excess of 32.5 to 34 W/m2 of global mean. The cause table (radiation-only
 recalls on the feat/long-runs ten-day T255 run, branch `exp/attribution`)

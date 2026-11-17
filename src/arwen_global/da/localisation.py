@@ -71,7 +71,7 @@ from pathlib import Path
 
 import numpy as np
 
-from gpuwm.da.letkf import gaspari_cohn
+from .letkf_core import gaspari_cohn
 
 from ..constants import EARTH_RADIUS_M, KAPPA, REFERENCE_PRESSURE_PA
 from .observations import LOCALISATION_AXIS_LNP

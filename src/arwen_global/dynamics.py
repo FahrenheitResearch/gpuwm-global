@@ -367,7 +367,7 @@ def spectral_cfl_refusal(cfl: float, dt_s: float, maximum_cfl: float,
     rule = DEFAULT_EULERIAN_STEP_RULE_FRACTION
     wind = rate * radius_m / math.sqrt(truncation * (truncation + 1.0))
     return (
-        f"Arwen Global spectral CFL {cfl:.3f} exceeds {maximum_cfl:.3f} "
+        f"ArWen Global spectral CFL {cfl:.3f} exceeds {maximum_cfl:.3f} "
         f"at dt_s = {dt_s:g} s: this flow admits dt_s <= {maximum_cfl / rate:.1f} s "
         f"at the gate and <= {rule * maximum_cfl / rate:.1f} s at the shipped "
         f"{rule:g}-of-gate rule (implied maximum wind {wind:.1f} m/s); "
@@ -1827,7 +1827,7 @@ class MoistHybridModel:
         y = self.implicit_wave_number(dt_s)
         if y > limit:
             raise ValueError(
-                f"Arwen Global {integrator} implicit stage pair amplifies the "
+                f"ArWen Global {integrator} implicit stage pair amplifies the "
                 f"fastest gravity-wave mode at the truncation beyond omega dt = "
                 f"{limit:.1f}: this step has {y:.1f} (c_max k_T dt); reduce dt_s "
                 "or truncation"
@@ -3910,7 +3910,7 @@ class MoistHybridModel:
         del negative_rows, positive_rows, folds, tracer_folds, tracer_readings
         n_spectral = len(spectral_finite)
         if not all(readings[:n_spectral] != 0.0):
-            raise FloatingPointError("Arwen Global spectral state contains non-finite values")
+            raise FloatingPointError("ArWen Global spectral state contains non-finite values")
         t_min, t_max, ps_min, ps_max, negative, positive = (
             float(v) for v in readings[n_spectral : n_spectral + 6]
         )

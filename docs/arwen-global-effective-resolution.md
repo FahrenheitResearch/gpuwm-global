@@ -1,4 +1,4 @@
-# Arwen Global: effective resolution, the instrument of record
+# ArWen Global: effective resolution, the instrument of record
 
 Rebuilt 2026-09-01 on spherical-harmonic total-degree spectra, after an
 independent audit (`ARWEN-GLOBAL-CORE-AUDIT-2026-09-01`) reproduced six
@@ -504,7 +504,7 @@ on five GFS `atmf012` cycles and two GDAS `atmanl` analyses and stated
 with its SEM in "Measured readings" below. GFS now has the five cycles a
 scoreboard needs; GDAS has two analyses and is not one yet.
 
-The Arwen Global core has been measured at T255 (52 km) and only there.
+The ArWen Global core has been measured at T255 (52 km) and only there.
 The T255 readings, the T533 arm that produced none, and the T63 GDAS 48 h
 run that has still not been re-read are in "Measured readings" below.
 
@@ -587,7 +587,7 @@ These are readings of the wind on the grid the model wrote. For an
 FV3-based GFS that grid is the write component's remap of the cubed-sphere
 state at like resolution, which this instrument does not undo.
 
-### The Arwen Global core at T255, 52 km (measured 2026-09-01 and 2026-09-02)
+### The ArWen Global core at T255, 52 km (measured 2026-09-01 and 2026-09-02)
 
 Door `tools/arwen_global_ke_stick.py` (`measure_run`) on the run's own
 checkpoints. T255, `lambda(T) = 156.68 km`, 40 levels, native physics

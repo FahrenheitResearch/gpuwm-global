@@ -1,6 +1,6 @@
 """The render-tape and regional-translation kernels, in Rust.
 
-WOOF Global writes its weather-field products through wrfout render tapes
+ArWen Global writes its weather-field products through wrfout render tapes
 and hands its parent exports to the regional model through translated
 frames.  Both steps are data-path processing: the Gaussian grid is sampled
 onto the tape's regular latitude-longitude grid, the tape's hydrostatic

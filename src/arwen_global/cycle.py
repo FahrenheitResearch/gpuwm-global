@@ -1,4 +1,4 @@
-"""The in-process cycle door for Arwen Global: ``gpuwm-global cycle``.
+"""The in-process cycle door for ArWen Global: ``gpuwm-global cycle``.
 
 One process alternates the forecast and the assimilation on the resident
 device state: the model integrates to each analysis instant, the door's
@@ -484,7 +484,7 @@ def _cycle_tracked(
     existing = [path for path in cycle_owned_files(output) if path.exists()]
     if existing and not overwrite:
         raise FileExistsError(
-            f"Arwen Global output exists in {output}; pass --overwrite to "
+            f"ArWen Global output exists in {output}; pass --overwrite to "
             "replace owned files"
         )
     for path in existing:

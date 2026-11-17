@@ -1,4 +1,4 @@
-# Arwen Global: exact-twin amplitude scans (experimental)
+# ArWen Global: exact-twin amplitude scans (experimental)
 
 The tool on this page is a research instrument and is EXPERIMENTAL: its
 subcommands, its norm and its output may change between releases.
