@@ -17,6 +17,8 @@ m-loops were batched into strided GEMMs.
 """
 from __future__ import annotations
 
+import numpy as np
+
 from .backend import device_cache_key
 
 #: Compiled kernels, one entry per (name, module, DEVICE).  The device id
@@ -54,6 +56,178 @@ def project_kernel(xp):
         "T y",
         "y = (code == 0) ? T(0) : ((code == 2) ? T(x.real()) : x);",
     )
+
+
+def complex_split_kernel(xp):
+    """Real and imaginary parts of a (strided) complex array, in one pass.
+
+    Specification (numpy branch of ``_batched_contract``)::
+
+        re = ascontiguousarray(z.real)
+        im = ascontiguousarray(z.imag)
+
+    Pure data movement, no arithmetic, so every bit pattern (NaN payloads
+    included) arrives as it left: the two copies read the complex operand
+    twice at half its width each, this reads it once.
+    """
+    return _kernel(
+        xp,
+        "arwen_complex_split",
+        "C z",
+        "F re, F im",
+        "re = z.real(); im = z.imag();",
+    )
+
+
+def expand_band_kernel(xp, layout: str):
+    """One packed Legendre band written into the scratch, cleared slice and all.
+
+    Specification (``transform.expand_band``)::
+
+        'jn': dense[:, :, previous:m0] = 0; dense[:, :, m0:] = block
+        'nj': dense[:, previous:m0, :] = 0; dense[:, m0:, :] = block
+
+    The output is ``dense[..., previous:, ...]`` (``w = T+1-previous`` wide on
+    the degree axis), the block is ``wb = T+1-m0`` wide there.  Moves only.
+    """
+    if layout == "jn":
+        body = (
+            "const ptrdiff_t row = i / w; const int n = prev + (int)(i % w);"
+            "y = (n < m0) ? T(0) : block[row * (ptrdiff_t)wb + (n - m0)];"
+        )
+    else:
+        body = (
+            "const int j = (int)(i % nlat); const ptrdiff_t q = i / nlat;"
+            "const int n = prev + (int)(q % w); const ptrdiff_t b = q / w;"
+            "y = (n < m0) ? T(0) : block[(b * (ptrdiff_t)wb + (n - m0)) * nlat + j];"
+        )
+    return _kernel(
+        xp,
+        f"arwen_expand_band_{layout}",
+        "raw T block, int32 prev, int32 m0, int32 w, int32 wb, int32 nlat",
+        "T y",
+        body,
+    )
+
+
+_TRANSPOSE_SOURCE = r"""
+// Tiled layout moves for the Legendre GEMM operands: pure data movement,
+// no arithmetic, through a 32x33 shared tile so both the read and the write
+// are coalesced (the elementwise forms read or write with the order axis
+// outermost, one 32-byte sector per element).
+extern "C" __global__ void arwen_split_t_@T@(
+    const @T2@* __restrict__ in, @T@* __restrict__ re, @T@* __restrict__ im,
+    long long B, long long K, long long M)
+{
+    // in (B, K, M) contiguous complex -> re, im (M, B, K) contiguous
+    __shared__ @T2@ tile[32][33];
+    const long long m0 = (long long)blockIdx.x * 32;
+    const long long k0 = (long long)blockIdx.y * 32;
+    for (long long b = blockIdx.z; b < B; b += gridDim.z) {
+        for (int j = threadIdx.y; j < 32; j += blockDim.y) {
+            const long long k = k0 + j, m = m0 + threadIdx.x;
+            if (k < K && m < M) tile[j][threadIdx.x] = in[(b * K + k) * M + m];
+        }
+        __syncthreads();
+        for (int j = threadIdx.y; j < 32; j += blockDim.y) {
+            const long long m = m0 + j, k = k0 + threadIdx.x;
+            if (k < K && m < M) {
+                const @T2@ v = tile[threadIdx.x][j];
+                const long long o = (m * B + b) * K + k;
+                re[o] = v.x;
+                im[o] = v.y;
+            }
+        }
+        __syncthreads();
+    }
+}
+
+extern "C" __global__ void arwen_join_t_@T@(
+    const @T@* __restrict__ re, const @T@* __restrict__ im, @T2@* __restrict__ out,
+    long long B, long long N, long long M, int realify)
+{
+    // re, im (M, B, N) contiguous -> out (B, N, M) contiguous complex;
+    // realify: the m = 0 column's imaginary part is written +0, which is
+    // what out[..., :, 0] = out[..., :, 0].real stored there.
+    __shared__ @T@ tr[32][33];
+    __shared__ @T@ ti[32][33];
+    const long long n0 = (long long)blockIdx.x * 32;
+    const long long m0 = (long long)blockIdx.y * 32;
+    for (long long b = blockIdx.z; b < B; b += gridDim.z) {
+        for (int j = threadIdx.y; j < 32; j += blockDim.y) {
+            const long long m = m0 + j, n = n0 + threadIdx.x;
+            if (m < M && n < N) {
+                const long long i = (m * B + b) * N + n;
+                tr[j][threadIdx.x] = re[i];
+                ti[j][threadIdx.x] = (realify && m == 0) ? (@T@)0 : im[i];
+            }
+        }
+        __syncthreads();
+        for (int j = threadIdx.y; j < 32; j += blockDim.y) {
+            const long long n = n0 + j, m = m0 + threadIdx.x;
+            if (m < M && n < N) {
+                @T2@ v;
+                v.x = tr[threadIdx.x][j];
+                v.y = ti[threadIdx.x][j];
+                out[(b * N + n) * M + m] = v;
+            }
+        }
+        __syncthreads();
+    }
+}
+"""
+
+
+def _transpose_kernel(xp, which: str, dtype):
+    real = "float" if np.dtype(dtype) == np.float32 else "double"
+    key = (f"transpose_{which}_{real}", *device_cache_key(xp))
+    ker = _CACHE.get(key)
+    if ker is None:
+        source = _TRANSPOSE_SOURCE.replace("@T2@", real + "2").replace("@T@", real)
+        ker = xp.RawKernel(source, f"arwen_{which}_t_{real}")
+        _CACHE[key] = ker
+    return ker
+
+
+def _tile_grid(x: int, y: int, batch: int):
+    return ((x + 31) // 32, (y + 31) // 32, max(1, min(int(batch), 65535)))
+
+
+def split_transposed(xp, values, real_dtype):
+    """``(B, K, M)`` C-contiguous complex -> two ``(M, B, K)`` real arrays.
+
+    Specification: ``s = moveaxis(values, -1, 0).reshape(M, -1, K)``,
+    ``ascontiguousarray(s.real)``, ``ascontiguousarray(s.imag)``.  Moves only.
+    """
+    *lead, k, m = values.shape
+    b = 1
+    for size in lead:
+        b *= int(size)
+    re = xp.empty((m, b, k), dtype=real_dtype)
+    im = xp.empty_like(re)
+    if re.size:
+        _transpose_kernel(xp, "split", real_dtype)(
+            _tile_grid(m, k, b), (32, 8, 1),
+            (values, re, im, xp.int64(b), xp.int64(k), xp.int64(m)))
+    return re, im
+
+
+def join_transposed(xp, re, im, complex_dtype, *, realify: bool):
+    """Two ``(M, B, N)`` real arrays -> ``(B, N, M)`` C-contiguous complex.
+
+    Specification: ``out = empty((M, B, N)); out.real = re; out.imag = im;
+    moveaxis(out, 0, -1)`` (values equal, the layout C-contiguous), and with
+    ``realify`` the m = 0 column's imaginary part stored +0 as
+    ``out[..., :, 0] = out[..., :, 0].real`` stores it.  Moves only.
+    """
+    m, b, n = re.shape
+    out = xp.empty((b, n, m), dtype=complex_dtype)
+    if out.size:
+        _transpose_kernel(xp, "join", re.dtype)(
+            _tile_grid(n, m, b), (32, 8, 1),
+            (re, im, out, xp.int64(b), xp.int64(n), xp.int64(m),
+             xp.int32(1 if realify else 0)))
+    return out
 
 
 def momentum_bernoulli_kernel(xp):

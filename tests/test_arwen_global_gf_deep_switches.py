@@ -64,7 +64,7 @@ def test_deep_physics_defaults_to_34_and_0_the_0_2_4_arithmetic_leaves_the_ident
         assert "gf_deep_physics" not in other.identity, scheme
 
 
-@pytest.mark.parametrize("good", [0, 1, 2, 4, 8, 15, 32, 34, 35, 47])
+@pytest.mark.parametrize("good", [0, 1, 2, 4, 8, 15, 32, 34, 35, 47, 98, 162, 290, 511 - 16 - 128])
 def test_deep_physics_accepts_every_set_of_the_bits_the_kernel_has(good):
     from arwen_global.physics.native_options import NativePhysicsOptions
 
@@ -72,8 +72,8 @@ def test_deep_physics_accepts_every_set_of_the_bits_the_kernel_has(good):
     assert options.gf_deep_physics == good
 
 
-@pytest.mark.parametrize("bad", [16, 17, 48, 64, 255, -1, -34, True, 1.5, "34"])
-def test_deep_physics_refuses_bit_16_bits_above_32_and_non_integers(bad):
+@pytest.mark.parametrize("bad", [16, 17, 48, 192, 226, 255, 512, -1, -34, True, 1.5, "34"])
+def test_deep_physics_refuses_bit_16_bits_above_256_64_with_128_and_non_integers(bad):
     from arwen_global.physics.native_options import NativePhysicsOptions
 
     with pytest.raises(ValueError, match="gf_deep_physics must be an integer bit set"):

@@ -257,7 +257,9 @@ def test_gf_driver_integer_readings_agree_with_the_kernel_and_the_oracle_field_l
     enum = source[source.index("DI_ktop_deep"):source.index("GF_DRV_NISCA")]
     names = re.findall(r"\bDI_([a-z0-9_]+)", enum)
     assert names == list(gf._OUT_ISCA)
-    assert "ISCB[DI_downdraft_dry_exit] = dd_d;" in source
+    # speed/gf-kernel writes the integer readings through the packed output
+    # (io.isca) where they were stored into ISCB one by one; same word.
+    assert "io.isca(DI_downdraft_dry_exit, dd_d);" in source
     # The override covers both downdraft exits and remembers which one.
     assert "(ierr == 7 || ierr == 51)" in source and "downdraft_dry = ierr;" in source
 

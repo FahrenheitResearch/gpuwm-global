@@ -466,14 +466,20 @@ def test_the_six_hour_arms_and_the_forecast_day_are_two_cases():
     """Named breakage: a number from the six-hour arms quoted beside a
     number from the forecast day as though they were two points on one run.
 
-    They are not.  The configuration of record for the six-hour arms reads
-    the 2026-08-30 18Z analysis and the forecast day reads the 2026-09-01
-    00Z one, so "5.96e-2 over six hours and 1.01e-1 over a whole forecast
-    day" is two initial states and not an evolution.  An earlier writeup and
-    two docstrings in this tree said one case for both; this gate is what
-    makes the next writer look.
+    They are not.  The six-hour arms were MEASURED on the 2026-08-30 18Z
+    analysis and the forecast day on the 2026-09-01 00Z one, so "5.96e-2
+    over six hours and 1.01e-1 over a whole forecast day" is two initial
+    states and not an evolution.  An earlier writeup and two docstrings in
+    this tree said one case for both; this gate is what makes the next
+    writer look.  From 0.4.0 the shipped six-hour config reads the forecast
+    day's analysis (0.3.0's read a file no page fetched), so the two
+    docstrings that quote the six-hour numbers must keep naming the case
+    they were measured on rather than the config.
     """
     import tomllib
+    from arwen_global import runner
+    from arwen_global.semilag import tracers
+
     root = _shipped_configs()
     six = tomllib.loads(
         (root / "arwen_global_gdas_t255_native_sl_si_6h.toml").read_text(
@@ -483,9 +489,12 @@ def test_the_six_hour_arms_and_the_forecast_day_are_two_cases():
         (root / "arwen_global_gdas_t255_native_sl_si_24h.toml").read_text(
             encoding="utf-8")
     )
-    assert six["initial"]["analysis_grib"] != day["initial"]["analysis_grib"]
-    assert (six["physics"]["native_adapter_options"]["start_time_utc"]
-            != day["physics"]["native_adapter_options"]["start_time_utc"])
+    assert six["initial"]["analysis_grib"] == day["initial"]["analysis_grib"]
+    for text in (pathlib.Path(runner.__file__).read_text(encoding="utf-8"),
+                 tracers.__doc__):
+        flat = " ".join(text.split())
+        assert "GDAS 2026-08-30 18Z" in flat
+        assert "until 0.3.0" in flat
     # And the day is the case the scorecard chain reads, which is the one
     # the grading lane's A/B is of.
     assert "2026-09-01" in day["physics"]["native_adapter_options"][

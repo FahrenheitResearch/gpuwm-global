@@ -639,9 +639,9 @@ def _semilag_step_resident(model, atmosphere: MoistHybridState, dt_s: float,
         advanced = model.semi_implicit.solve_shifted(
             trial, transform, model.vertical, alpha * dt
         )
-        increment = float(
-            xp.max(xp.abs(advanced.divergence - trial_divergence))
-        )
+        # Left on the device until the metrics below read it: a float()
+        # here was a synchronisation between the solve and the tracers.
+        increment = xp.max(xp.abs(advanced.divergence - trial_divergence))
         del trial_divergence
 
     with prof.section("tracers"):
@@ -661,6 +661,11 @@ def _semilag_step_resident(model, atmosphere: MoistHybridState, dt_s: float,
             # gets its own arrays back and copies nothing.
             before = {name: resident(xp, value) for name, value
                       in atmosphere.grid_tracers().items()}
+            # The card is still working through the gathers, the assembly
+            # and the solve: the first physics half's deferred plane
+            # readings take their host turn here (dynamics.step), before
+            # the fixer's first read drains it.
+            _resolve_deferred_readings(model)
             fixed, fixer = fix_mass(
                 advected, before, g["dp"], after["dp"],
                 transform, scheme=options.tracer_fixer, deficits=deficits,
@@ -741,7 +746,7 @@ def _semilag_step_resident(model, atmosphere: MoistHybridState, dt_s: float,
     }
     metrics = {
         **({"tracer_transport": transport} if riding else {}),
-        "semi_implicit_max_divergence_increment_s1": increment,
+        "semi_implicit_max_divergence_increment_s1": float(increment),
         "semilag_startup_step": bool(startup),
         "semilag_off_centring_weight": alpha,
         "semilag_tracer_mass_fixer_relative": float(fixer_max),
@@ -757,6 +762,12 @@ def _semilag_step_resident(model, atmosphere: MoistHybridState, dt_s: float,
             trajectory.iterations != int(options.trajectory_iterations)),
     }
     return advanced, metrics
+
+
+def _resolve_deferred_readings(model) -> None:
+    resolve = getattr(model, "_resolve_deferred_readings", None)
+    if callable(resolve):
+        resolve()
 
 
 def _water_column_rows(xp, qv, before, dp):
@@ -1685,6 +1696,9 @@ def _semilag_step_banded(model, atmosphere: MoistHybridState, dt_s: float,
                 xi=band_stencil[0], phi=band_stencil[1],
                 level=band_stencil[2], tables=tables))
             band_stencil = None
+            # (The first physics half's deferred plane readings take their
+            # host turn here, as on the resident path.)
+            _resolve_deferred_readings(model)
             fixed, fixer = fix_mass(
                 advected, atmosphere.grid_tracers(), dp_before, dp_after,
                 transform, scheme=options.tracer_fixer, deficits=deficits,

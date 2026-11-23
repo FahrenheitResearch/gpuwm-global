@@ -43,14 +43,20 @@ gpuwm-global run CONFIG.toml --outdir out/global
 gpuwm-global assimilate CONFIG.toml CHECKPOINT.npz --obs OBS.csv --out analysis.npz
 
 gpuwm-global export CONFIG.toml out/global/arwen_global_step*.npz \
-  --outdir out/global-tapes --start-date 2026-08-30_18:00:00
+  --outdir out/global-tapes
 ```
+
+`export` dates the tapes from the analysis a config starts from, so no date
+is typed for a shipped day. `--start-date` is for an analytic config, which
+has no date of its own; a config that starts from an analysis refuses a
+`--start-date` that is not its analysis time.
 
 The core a bare config runs is the semi-Lagrangian one, `[time] integrator =
 "sl_si"` at a 300 s step at every truncation: a config that says nothing
 about the core gets it, with the core's own drain and gather
 (`arwen_global_gdas_t255_native_24h_bare` is that file in
-the tree, and the quickstart runs it). `integrator = "imex_ssp3"` selects the
+the tree; the quickstart's day, `arwen_global_gdas_t255_native_sl_si_24h`,
+runs the same core). `integrator = "imex_ssp3"` selects the
 Eulerian core by name at the step its CFL gate admits, written out in every
 shipped Eulerian config. The grade the default rests on is the equal-cost
 scorecard of record (MEASURED 2026-09-06 on the RTX 5090: `sl_si` at T383 and
@@ -1166,7 +1172,11 @@ gpuwm render out/global-tapes/wrfout_d01_* \
 
 Nothing about that step is global-specific, and nothing about it is a
 second renderer. The layout is the shipped one,
-`<out>/<run folder>/<domain>/<product>/<valid-day>/`.
+`<out>/<run folder>/<domain>/<product>/<valid-day>/`. Maps drawn this way
+carry the engine's own name and version in their source line and do not
+name the model grid; `gpuwm-global render` draws the
+same products with "ArWen Global", this package's version and the model
+grid in its source line.
 
 ### What a tape carries for a post-processor
 
@@ -1615,7 +1625,7 @@ it warmed analysed Antarctic vortex air (4.6 percent of the GDAS
 within an hour. Every receipt carries the floor's bill
 (`stratospheric_floor_ledger`), zero when it is off.
 
-### The native suite is experimental, and its evidence has a gap
+### The native suite is experimental, on device evidence for its default stack
 
 The target-device qualification battery **passed on an RTX 5090** on
 2026-09-01 for the five-scheme stack (RRTMGP, SFCLAY, Noah, YSU,
@@ -1623,19 +1633,24 @@ Morrison): every gate green, terminal checkpoints bit-exact including run
 trackers across a midpoint restart, device identity bound, evidence
 `self_sha256 c682dbcc73ea544af04d4892cbeea91af08dc8f7f35f1161fe2485f9c53a04fe`.
 Six admission defects were found and fixed by that battery on the way in.
-
-**That evidence does not cover what the adapter runs today.** Grell-Freitas
-cumulus joined the suite as a sixth component after the battery, because
+Grell-Freitas cumulus then joined the suite as a sixth component, because
 at 25 to 52 km spacing the stack had no convection parameterization and
-every convective column rained as a grid-point storm through Morrison. The
-registration is therefore back at `device-pending`, and the superseded
-digest is recorded in the adapter's limitations rather than sitting in
-`device_evidence_sha256` as cover for a stack it never measured. The
-battery is re-run with `cumulus = "gf"` in the order before that field
-carries a value again:
+every convective column rained as a grid-point storm through Morrison, and
+the registration went back to `device-pending`.
+
+**The battery passed again on an RTX 5070 Ti on 2026-11-23 with
+Grell-Freitas in the order**, on the shipped T255 day (CuPy 14.2.0,
+gpuwm 3.0.5): both campaigns passed their receipt gates and the
+midpoint-restarted day ended bit-exact with the continuous one, run
+trackers included. The registration is `experimental` on that evidence,
+`device_evidence_sha256
+04f92257b98bc7167fc104d1565f1b5c30ff82515cecbdd48634f584b2ba1185`. It
+covers the default stack, not the opt-in schemes of 0.4.0 (SA-TKE-EDMF,
+the Scinocca drag, TEMPO, New Tiedtke, the aerosol). The same battery takes
+evidence on your own card:
 
 ```bash
-gpuwm-global native-qualify CONFIG.toml --outdir out/native-qualification
+gpuwm-global native-qualify arwen_global_gdas_t255_native_sl_si_24h --outdir out/native-qualification
 ```
 
 Read the registration itself rather than this paragraph, because it moves:
@@ -1781,8 +1796,9 @@ none is a throughput claim for another card.
 
 ## Where to go next
 
-- [ARWEN_GLOBAL_QUICKSTART.md](ARWEN_GLOBAL_QUICKSTART.md) -- four
-  commands from nothing to rendered global maps, plus a no-card rehearsal.
+- [ARWEN_GLOBAL_QUICKSTART.md](ARWEN_GLOBAL_QUICKSTART.md) -- the
+  README's quick start one step at a time, from nothing to rendered global
+  maps, plus a no-card rehearsal.
 - [ARWEN_GLOBAL_FULL.md](ARWEN_GLOBAL_FULL.md) -- dynamics, hybrid
   coordinate, reference physics, water repair, receipts, non-claims.
 - [ARWEN_GLOBAL_LEVEL5.md](ARWEN_GLOBAL_LEVEL5.md) -- the native adapter,

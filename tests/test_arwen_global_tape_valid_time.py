@@ -106,7 +106,10 @@ def test_the_quickstart_route_types_no_date():
     assert blocks
     for block in blocks:
         assert "--start-date" not in block.split("```")[0], block
-    assert "Exactly two spellings travel together" in text
+    # The one place a date is spelled is the cycle: the config's analysis
+    # path and its start_time_utc, both of which a current cycle replaces.
+    assert "both must name the" in " ".join(text.split())
+    assert "cycle you fetch" in text
     quickstart = config_root() / "arwen_global_t255_quickstart.toml"
     raw = tomllib.loads(quickstart.read_text(encoding="utf-8"))
     assert raw["physics"]["mode"] == "reference"

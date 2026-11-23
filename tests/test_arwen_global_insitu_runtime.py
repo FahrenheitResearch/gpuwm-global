@@ -91,7 +91,9 @@ def test_ledger_on_and_off_are_bit_identical(tmp_path):
 
 
 def test_ledger_rows_are_batched_and_summarised_in_the_receipt(tmp_path):
-    cfg = _smoke(24)
+    # Every step's capture, asked for (the default samples every 10th
+    # step: test_capture_samples_every_tenth_step_by_default).
+    cfg = replace(_smoke(24), insitu=InsituOptions(tendencies_every=1))
     result = run(cfg, tmp_path / "run")
     rows = _rows(tmp_path / "run" / LEDGER_NAME)
     assert rows[0]["kind"] == "header"
@@ -133,6 +135,22 @@ def test_ledger_rows_are_batched_and_summarised_in_the_receipt(tmp_path):
     # A second run with --overwrite sweeps the ledger with the other owned files.
     run(cfg, tmp_path / "run", overwrite=True)
     assert sum(row["kind"] == "header" for row in _rows(tmp_path / "run" / LEDGER_NAME)) == 1
+
+
+def test_capture_samples_every_tenth_step_by_default(tmp_path):
+    """The default capture cadence is the spectra's and the flush's: the
+    component records ride steps 10 and 20 of a 24-step run, both halves,
+    every component, and the other rows carry none (insitu.options)."""
+    assert InsituOptions().tendencies_every == 10
+    run(_smoke(24), tmp_path / "run")
+    steps = [row for row in _rows(tmp_path / "run" / LEDGER_NAME)
+             if row["kind"] == "step"]
+    assert [row["step"] for row in steps] == list(range(1, 25))
+    sampled = [row["step"] for row in steps if row["physics"]]
+    assert sampled == [10, 20]
+    for row in steps:
+        if row["physics"]:
+            assert [record["call"] for record in row["physics"]] == [0] * 7 + [1] * 7
 
 
 def test_tripwire_trip_snapshots_the_state_and_records_the_term(tmp_path):

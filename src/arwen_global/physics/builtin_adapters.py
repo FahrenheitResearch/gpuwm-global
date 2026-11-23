@@ -91,31 +91,37 @@ def _contract() -> dict[str, object]:
             "local atmosphere+surface water closes through explicit finite "
             "surface-ledger residual; energy change is measured"
         ),
-        "evidence_receipt_sha256": _ZERO_SHA,
+        # The evidence file itself (native-device-evidence.json, its bytes)
+        # and the digest it carries of itself (self_sha256), from the
+        # battery of 2026-11-23 below.
+        "evidence_receipt_sha256": (
+            "7e905bde7995e6e003db62796b12562bf1242413b3e0840d97dc76dea76bc116"),
         "arithmetic_sha256": _arithmetic_hash(),
-        # Device-pending again as of 2026-09-01: the Grell-Freitas cumulus
-        # component joined the suite (default on) after the qualification
-        # battery that promoted it, so the evidence on file (native-device-
-        # evidence.json self_sha256 c682dbcc73ea544af04d4892cbeea91af08dc8f7
-        # f35f1161fe2485f9c53a04fe; continuous + midpoint-restart 6 h T255
-        # campaigns on the target 5090, cupy 14.2.0 / driver 13030) measured
-        # a five-scheme stack this registration no longer runs.  The
-        # registry admits only the fixed contract keys, so that digest
-        # lives in the limitations text as the superseded record, not in
-        # device_evidence_sha256 as cover for the six-scheme stack; the
-        # battery must be re-run with GF in the order before the field
-        # carries a value again.  The earlier promotion found and fixed six
-        # admission defects (97874305a, 89571245d, 7d7b528d0, 42c37383c,
-        # 9c5d407ca, 6f88311d4); those fixes stand.
-        "admission_status": "device-pending",
-        "device_evidence_sha256": _ZERO_SHA,
+        # Experimental again as of 2026-11-23 (0.4.0): the qualification
+        # battery was re-run with Grell-Freitas in the order, as the
+        # device-pending registration of 2026-09-01 required.
+        # `gpuwm-global native-qualify arwen_global_gdas_t255_native_sl_si_24h`
+        # on an RTX 5070 Ti (cupy 14.2.0, gpuwm 3.0.5): the continuous T255
+        # day (288 steps) and its midpoint restart both passed their receipt
+        # gates and ended bit-exact, run trackers included.  The battery's
+        # candidate proposed 'experimental'.  It covers the default stack
+        # (RRTMGP, SFCLAY, Noah, YSU, Morrison, Grell-Freitas), not the
+        # opt-in schemes of 0.4.0.  The superseded evidence c682dbcc
+        # (2026-09-01, five schemes, before GF) is in the limitations.  The
+        # earlier promotion found and fixed six admission defects
+        # (97874305a, 89571245d, 7d7b528d0, 42c37383c, 9c5d407ca,
+        # 6f88311d4); those fixes stand.
+        "admission_status": "experimental",
+        "device_evidence_sha256": (
+            "04f92257b98bc7167fc104d1565f1b5c30ff82515cecbdd48634f584b2ba1185"),
         "limitations": [
-            "no evidence receipt artifact exists; evidence_receipt_sha256 is the "
-            "zero digest until the qualification battery emits one",
-            "device qualification predates the Grell-Freitas component: the "
-            "superseded evidence c682dbcc73ea544af04d4892cbeea91af08dc8f7f35f11"
-            "61fe2485f9c53a04fe covers rrtmgp/sfclay/noah/ysu/morrison only and "
-            "the battery must be re-run with cumulus='gf' in the order",
+            "device evidence 04f92257b98bc7167fc104d1565f1b5c30ff82515cecbdd486"
+            "34f584b2ba1185 (2026-11-23, RTX 5070 Ti) covers the default stack "
+            "rrtmgp/sfclay/noah/ysu/morrison/gf on the T255 day; the opt-in "
+            "schemes (satmedmf, nonorographic_gwd, tempo, ntiedtke, "
+            "radiation_aerosol) are outside it; the superseded evidence "
+            "c682dbcc73ea544af04d4892cbeea91af08dc8f7f35f1161fe2485f9c53a04fe "
+            "(2026-09-01) covered rrtmgp/sfclay/noah/ysu/morrison only",
             "the cumulus advective forcing lanes (RTHFTEN/RQVFTEN) are the "
             "dynamics' theta and vapor tendencies over the previous dynamics "
             "interval, measured by the runtime between its calls, not the "

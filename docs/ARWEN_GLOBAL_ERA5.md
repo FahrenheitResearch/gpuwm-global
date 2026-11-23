@@ -18,7 +18,10 @@ gpuwm-global export era5_t255.toml \
   out/arwen-global-era5/arwen_global_step*.npz --outdir out/arwen-global-era5-tapes
 ```
 
-The `[initial]` table the fetch prints, for this hour:
+The `[initial]` table for this hour. The fetch prints it as comment lines
+(`#   key = value`) with the file's absolute path; copy those lines into the
+config without the leading `#`, in place of its `[initial]` table. A
+relative path, as here, is read from the folder you run in:
 
 ```toml
 [initial]

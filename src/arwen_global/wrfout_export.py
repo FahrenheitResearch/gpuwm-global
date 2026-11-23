@@ -66,6 +66,14 @@ MODEL_LABEL = "ArWen Global"
 #: characters is printed, one of 33 is dropped and the map says "WRF"
 #: instead, and so is any label holding a parenthesis.
 RENDERER_MODEL_LABEL_MAX = 32
+#: The model grid a tape was drawn from, as global attributes: the
+#: truncation and the Gaussian grid's spacing at the equator in km.  The
+#: tape's own DX is the spacing of the regular grid it is written on (0.5
+#: degree by default, 55.589 km whatever the truncation), which is the
+#: right number for the renderer's derivatives and the wrong one for a map
+#: label; `render_door.map_source_label` reads these two instead.
+TRUNCATION_ATTR = "ARWEN_TRUNCATION"
+GRID_SPACING_ATTR = "ARWEN_GRID_SPACING_KM"
 EXPORT_FALLBACK_SOURCE = "export-similarity-fallback"
 SURFACE_DIAGNOSTICS_SOURCES = {
     NATIVE_SURFACE_DIAGNOSTICS_SOURCE: (
@@ -419,6 +427,12 @@ def world_tape_title(world, world_class: str) -> str:
     if world.is_earth:
         return TAPE_TITLE
     return f"{TAPE_TITLE}, world {world.label} ({world_class})"
+
+
+def model_grid_spacing_km(grid) -> float:
+    """The Gaussian grid's spacing at the equator, km: one longitude step
+    on the model's own sphere (52.1 km for T255's 768 columns)."""
+    return 2.0 * math.pi * float(grid.radius_m) / int(grid.nlon) / 1000.0
 
 
 def world_model_label(world) -> str:
@@ -1032,6 +1046,8 @@ class TapeGrid:
             "PARENT_ID": np.int32(0),
             "DT": np.float32(cfg.dt_s),
             MODEL_LABEL_ATTR: MODEL_LABEL,
+            TRUNCATION_ATTR: np.int32(int(transform.grid.truncation)),
+            GRID_SPACING_ATTR: np.float32(model_grid_spacing_km(transform.grid)),
         }
 
     def device_fields(self, atmosphere) -> _DeviceFields:

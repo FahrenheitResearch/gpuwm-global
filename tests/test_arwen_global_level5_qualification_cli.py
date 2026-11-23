@@ -206,14 +206,16 @@ def test_qualification_without_overwrite_refuses_its_own_prior_artifacts(
         qualify_native_adapter(cfg, out)
 
 
-def test_cli_manifest_contains_device_pending_builtin(capsys):
+def test_cli_manifest_contains_the_qualified_builtin(capsys):
+    # Promoted by the battery of 2026-11-23 (GF in the order): the manifest
+    # carries the evidence's own digest and the digest of its file.
     assert main(["physics-manifest"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload[ADAPTER_NAME]["admission_status"] == "device-pending"
-    assert payload[ADAPTER_NAME]["contract"]["device_evidence_sha256"] == "0" * 64
-    # No evidence receipt artifact exists yet, so the field says so instead of
-    # carrying a well-formed digest of nothing.
-    assert payload[ADAPTER_NAME]["contract"]["evidence_receipt_sha256"] == "0" * 64
+    assert payload[ADAPTER_NAME]["admission_status"] == "experimental"
+    assert payload[ADAPTER_NAME]["contract"]["device_evidence_sha256"] == (
+        "04f92257b98bc7167fc104d1565f1b5c30ff82515cecbdd48634f584b2ba1185")
+    assert payload[ADAPTER_NAME]["contract"]["evidence_receipt_sha256"] == (
+        "7e905bde7995e6e003db62796b12562bf1242413b3e0840d97dc76dea76bc116")
 
 
 def test_cli_native_qualify_reports_pass_and_checks_both_artifacts(

@@ -42,6 +42,44 @@ DRAG_AFTER_THE_PINS = {
 }
 
 
+#: The two 6 h days 0.4.0 points at the README day's analysis (GDAS
+#: 2026-09-01 00Z, the file `gpuwm-global fetch-analysis` writes for the
+#: route); 0.3.0 read a 2026-08-30 18Z file no page fetched.  Their pinned
+#: hashes come back with the old path and start time restated.
+ANALYSIS_MOVED_IN_0_4_0 = {
+    "arwen_global_gdas_t255_native_sl_si_6h",
+    "arwen_global_gdas_t255_native_sl_si_6h_unclipped",
+}
+ANALYSIS_BACK = (
+    ('analysis_grib = "cases/baseline-2026090100/gdas.t00z.pgrb2.0p25.f000"',
+     'analysis_grib = "cases/gdas/gdas.t18z.pgrb2.0p25.f000"'),
+    ('start_time_utc = "2026-09-01T00:00:00Z"', 'start_time_utc = "2026-08-30T18:00:00Z"'),
+)
+
+
+def analysis_back(cfg, name):
+    """``cfg`` with its 0.3.0 analysis restated when 0.4.0 moved it."""
+    from dataclasses import replace
+
+    if name.removesuffix(".toml") not in ANALYSIS_MOVED_IN_0_4_0:
+        return cfg
+    options = dict(cfg.native_adapter_options)
+    options["start_time_utc"] = "2026-08-30T18:00:00Z"
+    return replace(cfg, analysis_grib="cases/gdas/gdas.t18z.pgrb2.0p25.f000",
+                   native_adapter_options=options)
+
+
+def analysis_back_text(lines, name):
+    if name.removesuffix(".toml") not in ANALYSIS_MOVED_IN_0_4_0:
+        return lines
+    out = []
+    for line in lines:
+        for old, new in ANALYSIS_BACK:
+            line = line.replace(old, new)
+        out.append(line)
+    return out
+
+
 def gf_0_2_4(cfg):
     """``cfg`` with the three Grell-Freitas options at their 0.2.4 values: a
     pinned hash recorded before the 0.2.5 default D is compared with this.
@@ -80,6 +118,7 @@ def _back(tmp_path, name):
     # The T1023 day's newton_ls solver (0.2.5) came after the pins too.
     if name in NEWTON_LS_FROM_0_2_5:
         lines = [ln.replace(*NEWTON_LS_BACK) for ln in lines]
+    lines = analysis_back_text(lines, name)
     path = tmp_path / f"{name}.toml"
     path.write_text("".join(lines), encoding="utf-8")
     return load_config(path)

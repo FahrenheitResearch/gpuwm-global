@@ -319,6 +319,7 @@ VERTICAL_COORDINATES = {
     # 23.4 hPa per layer (48 levels): selectable, graded against the
     # 40-level default on the T255 control case (2026-09-05).
     "jet_refined": HybridCoordinate.jet_refined,
+    "ifs_class": HybridCoordinate.ifs_class,
 }
 #: The level count a [vertical] table gets when it names a coordinate and
 #: no nlev: the count each layout was designed and graded at.
@@ -326,6 +327,7 @@ VERTICAL_DEFAULT_NLEV = {
     "surface_stretched": 40,
     "pressure_blend": 6,
     "jet_refined": 48,
+    "ifs_class": 80,
 }
 
 
@@ -644,6 +646,16 @@ class ArwenGlobalConfig:
     closure_cusp_decay: float = 3.03
     closure_eddy_prandtl: float = 0.6
     closure_tail_degrees: int = 5
+    # [diffusion] background_order / background_e_folding_time_s_at_truncation:
+    # a second, lower-order hyperdiffusion term beside the drain
+    # (arwen_global.spectral.diffusion).  Order 0 is off and leaves the
+    # identity, so every config hash written before the keys existed is
+    # unchanged; a config that turns it on carries both.
+    diffusion_background_order: int = 0
+    diffusion_background_efold_s: float = 0.0
+    # "all" or "momentum" (vorticity and divergence only); in the identity
+    # only when the term is on and the value is not "all".
+    diffusion_background_fields: str = "all"
     # [transforms] the transform diet: two switches that cut spherical
     # transform work the semi-Lagrangian step pays for and does not need.
     # Each is off by default, and each joins the identity only when it is
@@ -713,6 +725,12 @@ class ArwenGlobalConfig:
     # and leaves the identity, so every config hash written before the
     # key existed stays byte-identical; a filtered run carries it.
     orography_filter_half_degree: float = 0.0
+    # [stochastic] SPPT and SKEB for ensemble members (arwen_global.stochastic),
+    # appended at the END with a default.  Off (the default) leaves the
+    # identity, so every config hash written before the table existed stays
+    # byte-identical; an enabled member carries its canonical settings,
+    # member number and seed.
+    stochastic: object = None
 
     @property
     def config_identity(self) -> dict[str, object]:
@@ -773,6 +791,16 @@ class ArwenGlobalConfig:
                 "closure_cusp_decay", "closure_eddy_prandtl", "closure_tail_degrees",
             ):
                 del payload[key]
+        # The background hyperdiffusion term joins only when on.
+        # Its field choice joins only when the term is on and the choice is
+        # not "all", so a term on every field keeps the hash it had before
+        # the key existed.
+        if (payload["diffusion_background_order"] == 0
+                or payload["diffusion_background_fields"] == "all"):
+            del payload["diffusion_background_fields"]
+        if payload["diffusion_background_order"] == 0:
+            del payload["diffusion_background_order"]
+            del payload["diffusion_background_efold_s"]
         # Same hash-stability contract: only a config that SETS the physics
         # repair gate override carries it in its identity, so every
         # pre-existing config hash (and every written checkpoint and
@@ -891,6 +919,12 @@ class ArwenGlobalConfig:
             del payload["world"]
         else:
             payload["world"] = world_identity
+        stochastic_identity = (None if self.stochastic is None
+                               else self.stochastic.identity())
+        if stochastic_identity is None:
+            del payload["stochastic"]
+        else:
+            payload["stochastic"] = stochastic_identity
         return payload
 
     @property
@@ -972,7 +1006,7 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         "reference_physics", "sponge", "diffusion", "semi_implicit",
         "repair", "gates", "insitu", "statics", "semilag", "memory",
         "surface_update", "ocean", "sea_ice", "land", "output", "radiation",
-        "transforms", "world",
+        "transforms", "world", "stochastic",
     }
     unknown_tables = sorted(set(raw) - allowed_tables)
     if unknown_tables:
@@ -1149,8 +1183,8 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         default_nlev = VERTICAL_DEFAULT_NLEV[coordinate_name]
         nlev = _integer(vertical.get("nlev", default_nlev), "vertical.nlev")
         p_top = _finite(vertical.get("p_top_pa", 100.0), "vertical.p_top_pa")
-        if not 2 <= nlev <= 64:
-            raise ValueError("vertical.nlev must lie in 2..64")
+        if not 2 <= nlev <= 114:
+            raise ValueError("vertical.nlev must lie in 2..114")
         coordinate = VERTICAL_COORDINATES[coordinate_name](nlev, p_top)
 
     initial = _table(raw, "initial")
@@ -1404,6 +1438,8 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         "divergence_strength", "pressure_strength", "water_strength",
         "moment_strength", "closure", "plateau", "cusp_amplitude", "cusp_decay",
         "eddy_prandtl", "tail_degrees",
+        "background_order", "background_e_folding_time_s_at_truncation",
+        "background_fields",
     }, "diffusion")
     diff_enabled = _boolean(diffusion.get("enabled", True), "diffusion.enabled")
     diff_closure = str(diffusion.get("closure", DEFAULT_DIFFUSION_CLOSURE)).lower()
@@ -1462,6 +1498,46 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         )
     if diff_order < 1 or diff_efold <= 0.0 or not 0 <= diff_preserve <= truncation:
         raise ValueError("invalid diffusion order/e-fold/preserve settings")
+    # The background term: both keys or neither, under the hyperdiffusion
+    # only (the eddy viscosity sets its own drain at every degree).
+    has_bg_order = "background_order" in diffusion
+    has_bg_efold = "background_e_folding_time_s_at_truncation" in diffusion
+    if has_bg_order != has_bg_efold:
+        raise ValueError(
+            "diffusion.background_order and "
+            "diffusion.background_e_folding_time_s_at_truncation go together: "
+            "a lower-order term needs both its order and its e-folding time"
+        )
+    diff_bg_order = _integer(diffusion.get("background_order", 0), "diffusion.background_order")
+    diff_bg_efold = _finite(
+        diffusion.get("background_e_folding_time_s_at_truncation", 0.0),
+        "diffusion.background_e_folding_time_s_at_truncation",
+    )
+    if has_bg_order:
+        if diff_closure != DEFAULT_DIFFUSION_CLOSURE:
+            raise ValueError(
+                "diffusion.background_order belongs to the hyperdiffusion; the "
+                "spectral eddy viscosity sets its own drain at every degree"
+            )
+        if diff_bg_order < 1 or diff_bg_efold <= 0.0:
+            raise ValueError(
+                "diffusion.background_order must be >= 1 and its e-folding time "
+                "positive (leave both keys out for no background term)"
+            )
+        if diff_bg_order >= diff_order:
+            raise ValueError(
+                "diffusion.background_order must be lower than diffusion.order: "
+                "the background term drains the band below the truncation drain"
+            )
+    from arwen_global.spectral.diffusion import BACKGROUND_FIELDS
+    diff_bg_fields = str(diffusion.get("background_fields", "all")).lower()
+    if diff_bg_fields not in BACKGROUND_FIELDS:
+        raise ValueError(f"diffusion.background_fields must be one of {BACKGROUND_FIELDS}")
+    if "background_fields" in diffusion and not has_bg_order:
+        raise ValueError(
+            "diffusion.background_fields names the fields of the background term; "
+            "it needs background_order and its e-folding time"
+        )
     if min(div_strength, p_strength, water_strength, moment_strength) < 0.0:
         raise ValueError("diffusion strengths must be nonnegative")
 
@@ -1877,12 +1953,16 @@ def load_config(path: str | Path) -> ArwenGlobalConfig:
         closure_cusp_decay=closure_cusp_decay,
         closure_eddy_prandtl=closure_eddy_prandtl,
         closure_tail_degrees=closure_tail_degrees,
+        diffusion_background_order=diff_bg_order,
+        diffusion_background_efold_s=diff_bg_efold,
+        diffusion_background_fields=diff_bg_fields,
         **transforms,
         ocean=ocean,
         land=land,
         output=output_options,
         world=world,
         orography_filter_half_degree=orography_filter,
+        stochastic=_stochastic_options(raw),
     )
 
 
@@ -1968,3 +2048,14 @@ def _statics_options(table: dict, initial_mode: str) -> StaticsOptions:
         source=source, geog_root=geog_root, geog_data_res=tokens,
         cache_dir=cache_dir, valid_time=valid_time, declared=declared,
     )
+
+
+def _stochastic_options(raw):
+    """``[stochastic]`` (arwen_global.stochastic), or None when absent or off."""
+    table = raw.get("stochastic")
+    if not table:
+        return None
+    from .stochastic import config_from_table
+
+    options = config_from_table(table)
+    return options if options.enabled else None

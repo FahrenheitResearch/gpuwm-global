@@ -63,7 +63,14 @@ __device__ __forceinline__ float rrtmgp_pk_fraction_at(
         : vmr[cell * (ngas + 1) + gas1];
     const float amount2 = gas2 == 0 ? 1.0f
         : vmr[cell * (ngas + 1) + gas2];
+    // rrtmgp_planck_sources writes this as bare `amount1 + ratio*amount2`
+    // and ptxas decides per architecture: read off its SASS 2026-11-16,
+    // sm_120 keeps FMUL then FADD (two roundings), sm_89 matched the FFMA.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+    const float mix = __fadd_rn(amount1, __fmul_rn(ratio, amount2));
+#else
     const float mix = __fmaf_rn(ratio, amount2, amount1);
+#endif
     const float eta = mix > 2.0f * 1.17549435e-38f
         ? __fdiv_rn(amount1, mix) : 0.5f;
     const float loce = __fmul_rn(eta, (float)(neta - 1));

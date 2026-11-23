@@ -469,9 +469,12 @@ _MACHINE_LOCATION = re.compile(
 #: user to ON THEIR OWN MACHINE, the geography archive, this family's
 #: configuration directory and the package cache; a tilde path naming
 #: anything else is a path on somebody's machine, which is the only kind
-#: this rule has met.
+#: this rule has met.  A fourth from 0.4.0: `~/.local`, because the engine's
+#: `gpuwm fetch-geog` stages the archive into the reader's own
+#: `~/.local/share/gpuwm/WPS_GEOG` and the route says so (0.3.0 sent a
+#: fresh machine to a `~/WPS_GEOG` nothing had made).
 _HOME_PATH = re.compile("~[/" + _BACKSLASH * 2 + "]([A-Za-z0-9_.-]+)")
-_ALLOWED_HOME_TARGET = re.compile(r"\A(?:WPS_GEOG|\.gpuwm|\.cache)\Z")
+_ALLOWED_HOME_TARGET = re.compile(r"\A(?:WPS_GEOG|\.gpuwm|\.cache|\.local)\Z")
 
 #: A DIRECTORY OF TOOLING THAT IS NOT THIS REPOSITORY'S.
 #:

@@ -48,7 +48,8 @@ DRAG_AFTER_THE_FIXTURE = {
     "arwen_global_gdas_t533_native_sl_si_wall",
 }
 _DRAG = (', orographic_drag = "kim-gwdo" }', " }")
-from test_arwen_global_gf_default_d import NEWTON_LS_BACK, NEWTON_LS_FROM_0_2_5  # noqa: E402
+from test_arwen_global_gf_default_d import (  # noqa: E402
+    NEWTON_LS_BACK, NEWTON_LS_FROM_0_2_5, analysis_back, analysis_back_text)
 
 
 def _names():
@@ -78,13 +79,23 @@ def _off(tmp_path, name, spelling=None):
         if name in NEWTON_LS_FROM_0_2_5:
             line = line.replace(*NEWTON_LS_BACK)
         lines.append(line)
+    lines = analysis_back_text(lines, name)
     path = tmp_path / f"{name}.toml"
     path.write_text("".join(lines), encoding="utf-8")
     return load_config(path)
 
 
+#: Shipped after rel/0.2.5, so the fixture of that tree's hashes cannot name
+#: them; neither states the filter key.
+NEW_SINCE_0_2_5 = {
+    "arwen_global_gdas_t255_l80_satmedmf_scinocca_24h",
+    "arwen_global_gdas_t255_l80_ysu_scinocca_24h",
+}
+
+
 def test_the_fixture_covers_every_shipped_config():
-    assert set(_names()) == set(BEFORE) | DO_NOT_LOAD
+    assert set(_names()) == set(BEFORE) | DO_NOT_LOAD | NEW_SINCE_0_2_5
+    assert not NEW_SINCE_0_2_5 & (set(BEFORE) | DO_NOT_LOAD)
     assert not set(BEFORE) & DO_NOT_LOAD
 
 
@@ -112,7 +123,8 @@ def test_a_config_without_the_key_keeps_its_0_2_5_hash():
     for name, digest in BEFORE.items():
         if name in SETS_THE_FILTER:
             continue
-        assert load_config(config_root() / f"{name}.toml").config_hash == digest, name
+        assert analysis_back(load_config(config_root() / f"{name}.toml"),
+                             name).config_hash == digest, name
 
 
 def test_a_config_that_sets_the_key_moves_its_hash():

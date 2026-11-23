@@ -775,7 +775,7 @@ def test_the_order_axis_gathers_columns_and_never_sums_across_the_wire():
 
 
 # ---------------------------------------------------------------------
-# The cross-card agreement refusal (lane 6's finding, made into a gate):
+# The cross-card agreement refusal (a measured finding, made into a gate):
 # a gather two-card run assembles a waist from rows computed on both
 # cards, so it reproduces one card only where the cards agree.
 # ---------------------------------------------------------------------

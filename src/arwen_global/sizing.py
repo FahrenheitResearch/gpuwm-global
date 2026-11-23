@@ -2075,6 +2075,77 @@ OUT_OF_POOL_MEASURES = (
 #: trend.  Solved from the rows rather than typed.
 OUT_OF_POOL_BYTES = max(int(row["tax_bytes"]) for row in OUT_OF_POOL_MEASURES)
 
+#: THE KEPT cuFFT PLANS (:mod:`arwen_global.spectral.fft_plans`), MEASURED
+#: off against on, same tree, same card, same config.  A kept plan owns no
+#: work area -- the work area is taken from the pool for the call and handed
+#: back after it, as a re-planned call's was -- so the pool's LIVE peak
+#: moves by the 512-byte block the plans are built against, and the only
+#: other bytes are the kept handles' own tables outside the pool, bounded
+#: by ``fft_plans.DEFAULT_MAX_PLANS``.  Each row reads the pool's LIVE peak
+#: and the out-of-pool tax (nvidia-smi peak less the pool's held peak) off
+#: against on.  The pool's HELD peak is not a term here: it is the pool's
+#: fragmentation, already charged by its own measured classes, and it moves
+#: run to run on one config by more than either delta (T383 L40, two pairs
+#: of 36-step runs on this card: 14.16 against 14.72 GB with the plans
+#: kept, 14.24 against 13.59 without).  The door charges the live plus
+#: out-of-pool growth measured at a shape at least this one's size,
+#: floored at zero (:func:`fft_plan_cache_bytes`).
+FFT_PLAN_CACHE_MEASURES = (
+    {
+        "label": "T383 L40, resident, 5,000-column chunk, 30 steps, 10 plans",
+        "live_delta_bytes": 512,
+        "out_of_pool_delta_bytes": (
+            (13_653 - 14_411) * 2**20 - (13_405_130_240 - 14_194_013_696)),
+        "where": "rent2x RTX PRO 6000 Server, 2026-11-16, tree da8ed6e: "
+                 "pool live 12,399,717,376 -> 12,399,717,888 B, pool held "
+                 "14,194,013,696 -> 13,405,130,240 B, nvidia-smi peak "
+                 "14,411 -> 13,653 MiB (out of pool -5.7 MiB); largest "
+                 "work area 424,673,280 B; checkpoints at step 30 bit "
+                 "identical (136 arrays)",
+    },
+    {
+        "label": "T1023 L40, the shipped day's settings, rad 1500 s, "
+                 "30 steps, 10 plans",
+        "live_delta_bytes": 84_021_367_296 - 84_021_366_784,
+        "out_of_pool_delta_bytes": (
+            (88_427 - 87_609) * 2**20 - (91_818_156_544 - 91_026_415_616)),
+        "where": "rent2x RTX PRO 6000 Server, 2026-11-16, tree da8ed6e: "
+                 "pool live 84,021,366,784 -> 84,021,367,296 B, pool held "
+                 "91,026,415,616 -> 91,818,156,544 B, nvidia-smi peak "
+                 "87,609 -> 88,427 MiB (out of pool +62.9 MiB); every "
+                 "work area 0 B; checkpoints at step 30 bit identical "
+                 "(136 arrays)",
+    },
+)
+
+#: The largest growth measured at any shape, never below zero: the charge
+#: above the largest truncation measured.
+FFT_PLAN_CACHE_BYTES = max(0, max(
+    int(row["live_delta_bytes"]) + int(row["out_of_pool_delta_bytes"])
+    for row in FFT_PLAN_CACHE_MEASURES))
+
+
+def fft_plan_cache_bytes(truncation: int | None) -> int:
+    """What the door charges for the kept cuFFT plans (added to the card AND
+    the pool figure of a plan): the growth measured at the smallest
+    measured truncation at or above this one, never below zero, and the
+    largest measured growth above every measured truncation.  The kept
+    handles' tables grow with the transform length, so a shape is charged
+    at a shape at least its size: T383 at its own -5.7 MiB (so 0), a T533
+    or T799 run at the T1023 reading."""
+    rows = [row for row in FFT_PLAN_CACHE_MEASURES
+            if truncation is not None
+            and _truncation_of(row["label"]) >= int(truncation)]
+    if not rows:
+        return FFT_PLAN_CACHE_BYTES
+    nearest = min(rows, key=lambda row: _truncation_of(row["label"]))
+    return max(0, int(nearest["live_delta_bytes"])
+               + int(nearest["out_of_pool_delta_bytes"]))
+
+
+def _truncation_of(label: str) -> int:
+    return int(str(label).split()[0].lstrip("T"))
+
 
 def _reduced_chunk(chunk) -> bool:
     """Is this radiation chunk below the shipped default?"""
@@ -2722,6 +2793,7 @@ class RunMemoryPlan:
             "pool_fragmentation_evidence": self.fragmentation[1],
             "reduced_radiation_chunk": bool(self.reduced_chunk),
             "out_of_pool_bytes": OUT_OF_POOL_BYTES,
+            "fft_plan_cache_bytes": fft_plan_cache_bytes(self.truncation),
             "prediction_margin": 1.0 if self.ceiling else PREDICTION_MARGIN,
             "live_peak_ceiling": self.ceiling,
             "reason": self.reason,
@@ -2866,6 +2938,13 @@ def plan_run_memory(cfg, free_bytes: int | None, estimate=None,
             card = int(measured["card_bytes_measured"])
             pool = int(measured.get("pool_limit_bytes")
                        or measured["held_bytes"])
+        # The kept cuFFT plans, charged on top of every figure (fitted or
+        # measured), at what they were measured to add at this size.
+        kept_plans = fft_plan_cache_bytes(estimate.truncation)
+        if card:
+            card += kept_plans
+        if pool:
+            pool += kept_plans
         return live, card, spilled, (
                 str(ceiling["label"]) if capped else None), pool
 
@@ -3457,6 +3536,43 @@ COMPLETED_PLAN_PEAKS = (
                "8,362 MiB, its 3 h checkpoint byte-identical to the "
                "straight day's.  On an RTX 5090 two held days read "
                "9,967 and 10,285 MiB of card against 10,339 for 0.1.7's",
+    },
+    {
+        # THE 80-LEVEL T255 DAY, HELD TO A LIMIT AS THE 40-LEVEL ROW IS.
+        # The calibration table has no 80-level row, so the model scales
+        # its levelled terms past 48 levels by structure and read 14.15 GiB
+        # live and 18.97 GiB of card for this plan: the door refused the
+        # 80-level days on a 16 GB card at every band count ("nothing
+        # fits", 32 bands with every slice parked), where the unheld day
+        # completed at 12.49 GiB live.  The pool starts held to the day's
+        # live peak, and the row prices the plan at the heavier of its two
+        # held days' card figures (where the pool ends is set by how its
+        # blocks were cut, as on the T383 row); a row bounds every config
+        # of the shape, so the YSU twin is priced at it too.
+        "label": "T255 L80 on the semi-Lagrangian core, one band, nothing parked, 5,000-column chunk, the 16 GB card",
+        "truncation": 255, "nlat": 384, "nlon": 768, "nlev": 80,
+        "precision": "float32", "core": "semilag",
+        "radiation_column_chunk": 5_000,
+        "bands": 1, "spill_slices": (),
+        "peak_used_bytes": 13_407_135_232, "held_bytes": 15_050_652_160,
+        "pool_limit_bytes": 13_407_135_232,
+        "pool_limit_end_bytes": 15_084_206_592,
+        "card_bytes_measured": 15_466 * 1024 * 1024,
+        "step_s": 1.313,
+        "measured_on": "2026-11-23", "device": "NVIDIA GeForce RTX 5070 Ti",
+        "run": "the 24 h T255 L80 GDAS 2026-09-01 00Z semi-Lagrangian day "
+               "(arwen_global_gdas_t255_l80_satmedmf_scinocca_24h) through "
+               "`gpuwm-global go` by name at one band with nothing parked, "
+               "the card to itself, the pool held from 12.49 GiB and lifted "
+               "4 times to 13.96 GiB: 288 steps, 1.313 s a step, status "
+               "pass, 12.49 GiB live, 13.93 held, 15,018 MiB on the card "
+               "(nvidia-smi every 250 ms).  A second held day of the same "
+               "plan from an installed wheel, the card to itself, lifted the "
+               "pool 4 times to 14.05 GiB and read 12.49 GiB live, 14.02 "
+               "held and 15,466 MiB of card (2026-11-23): the row is that "
+               "heavier day.  The same day unheld, which the "
+               "door had refused before this row, read 12.49 GiB live, "
+               "14.64 held, 15,746 MiB of card and 1.418 s a step",
     },
     # THE 16 GB DESKTOP PLANS OF THE 34.7 km DAY, MEASURED 2026-11-11 on the
     # RTX 5070 Ti, the card otherwise empty, nvidia-smi sampled every 250 ms.

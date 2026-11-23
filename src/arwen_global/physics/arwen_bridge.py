@@ -42,6 +42,65 @@ def _fingerprint(xp, value):
     return (str(tuple(value.shape)), str(value.dtype), total, minimum, maximum)
 
 
+def _host_values(xp, scalars) -> list:
+    """Device 0-d reductions as Python numbers, in ONE transfer.
+
+    Each ``float(xp.sum(...))`` was its own device synchronisation, three
+    per array and two signatures per physics call; the same reductions are
+    stacked on the device and read back once.  Every value is widened to
+    float64 on the device (exact for the float32 and float64 reductions
+    and for integer extrema below 2**53), which is the Python float the
+    scalar read produced.
+    """
+    if not scalars:
+        return []
+    import numpy
+
+    # One stack per dtype, widened once, joined, read once, and put back
+    # in the original order on the host.
+    groups: dict[str, list[int]] = {}
+    for index, value in enumerate(scalars):
+        groups.setdefault(str(value.dtype), []).append(index)
+    parts, order = [], []
+    for indices in groups.values():
+        parts.append(xp.stack([scalars[i] for i in indices]).astype(xp.float64))
+        order.extend(indices)
+    stacked = parts[0] if len(parts) == 1 else xp.concatenate(parts)
+    if hasattr(stacked, "get"):
+        stacked = stacked.get()
+    read = numpy.asarray(stacked).tolist()
+    values = [0.0] * len(scalars)
+    for position, index in enumerate(order):
+        values[index] = float(read[position])
+    return values
+
+
+def _fingerprints(entries) -> dict[str, object]:
+    """``_fingerprint`` of every ``(key, xp, value)`` entry, the device
+    reductions of each array module read back in one transfer.  Same
+    signatures, same order of keys."""
+    rows: dict[str, object] = {}
+    pending: dict[int, tuple[object, list]] = {}
+    for key, xp, value in entries:
+        if spilled(value):
+            rows[key] = _fingerprint(xp, value)
+            continue
+        rows[key] = None
+        _module, items = pending.setdefault(id(xp), (xp, []))
+        items.append((key, value))
+    for xp, items in pending.values():
+        scalars = []
+        for _key, value in items:
+            scalars.extend((xp.sum(value, dtype=xp.float64), xp.min(value),
+                            xp.max(value)))
+        values = _host_values(xp, scalars)
+        for index, (key, value) in enumerate(items):
+            total, minimum, maximum = values[3 * index:3 * index + 3]
+            rows[key] = (str(tuple(value.shape)), str(value.dtype), total,
+                         minimum, maximum)
+    return rows
+
+
 def _array_module(value):
     # An array's own package is already imported wherever the array exists, so
     # this resolves cupy without the boundary importing it.
@@ -102,16 +161,14 @@ class NativeArwenPhysicsBridge:
     def _caller_fingerprints(self, exchange: PhysicsExchange, *,
                              namespace: bool = True) -> dict[str, object]:
         xp = _array_module(exchange.theta)
-        rows: dict[str, object] = {}
+        entries = []
         for name, value in exchange.prognostics().items():
-            rows[f"prognostic.{name}"] = _fingerprint(xp, value)
+            entries.append((f"prognostic.{name}", xp, value))
         for name, value in exchange.surface.arrays().items():
-            rows[f"surface.{name}"] = _fingerprint(xp, value)
+            entries.append((f"surface.{name}", xp, value))
         for name, value in (exchange.physics_state.arrays.items() if namespace else ()):
-            rows[f"physics_state.{name}"] = _fingerprint(
-                _array_module(value), value
-            )
-        return rows
+            entries.append((f"physics_state.{name}", _array_module(value), value))
+        return _fingerprints(entries)
 
     def _refuse_caller_mutation(
         self, exchange: PhysicsExchange, before: dict[str, object], *,
@@ -132,20 +189,47 @@ class NativeArwenPhysicsBridge:
             )
 
     def _refuse_bad_values(self, result: PhysicsResult) -> None:
-        for name, value in result.prognostics().items():
+        # Every reduction the checks read is launched first and read back
+        # in one transfer per array module (each bool()/float() of a device
+        # reduction was its own synchronisation); the checks then run in
+        # their original order on the read values, so the same field is
+        # refused with the same sentence.  The field scale max|v| is read
+        # as max(|min v|, |max v|), which is the same number for the
+        # finite field the check reaches (abs is exact).
+        signed = (*WATER_SPECIES, *NUMBER_MOMENTS)
+        prognostics = list(result.prognostics().items())
+        surfaces = list(result.surface.arrays().items())
+        groups: dict[int, tuple[object, list]] = {}
+
+        def ask(value, key, reduce):
             xp = _array_module(value)
-            if not bool(xp.all(xp.isfinite(value))):
+            groups.setdefault(id(xp), (xp, []))[1].append((key, reduce(xp, value)))
+
+        for name, value in prognostics:
+            ask(value, ("finite", name), lambda xp, v: xp.all(xp.isfinite(v)))
+            if name in signed:
+                ask(value, ("min", name), lambda xp, v: xp.min(v))
+                ask(value, ("max", name), lambda xp, v: xp.max(v))
+        for name, value in surfaces:
+            ask(value, ("surface", name), lambda xp, v: xp.all(xp.isfinite(v)))
+        read: dict[tuple[str, str], float] = {}
+        for xp, items in groups.values():
+            for (key, _scalar), number in zip(
+                    items, _host_values(xp, [scalar for _key, scalar in items])):
+                read[key] = number
+        for name, _value in prognostics:
+            if not bool(read[("finite", name)]):
                 raise FloatingPointError(
                     f"native adapter {self.adapter_name!r} returned non-finite "
                     f"{name}; it would enter the spectral transforms and only "
                     "surface later with no adapter named"
                 )
-            if name not in (*WATER_SPECIES, *NUMBER_MOMENTS):
+            if name not in signed:
                 continue
-            minimum = float(xp.min(value))
+            minimum = read[("min", name)]
             if minimum >= 0.0:
                 continue
-            scale = max(1.0, abs(float(xp.max(xp.abs(value)))))
+            scale = max(1.0, abs(max(abs(minimum), abs(read[("max", name)]))))
             floor = -_NEGATIVITY_RELATIVE_TOLERANCE * scale
             if minimum < floor:
                 raise FloatingPointError(
@@ -153,9 +237,8 @@ class NativeArwenPhysicsBridge:
                     f"{name}: {minimum:.9g} below {floor:.9g} at field scale "
                     f"{scale:.9g}"
                 )
-        for name, value in result.surface.arrays().items():
-            xp = _array_module(value)
-            if not bool(xp.all(xp.isfinite(value))):
+        for name, _value in surfaces:
+            if not bool(read[("surface", name)]):
                 raise FloatingPointError(
                     f"native adapter {self.adapter_name!r} returned non-finite "
                     f"surface field {name}"
@@ -190,6 +273,23 @@ class NativeArwenPhysicsBridge:
         self._refuse_caller_mutation(exchange, before, namespace=not consume)
         self._refuse_bad_values(result)
         return result
+
+    # The suite's deferred plane readings (native_suite: the host
+    # arithmetic of a call's grid-mean readings runs where the model's step
+    # says, on the same bytes); a suite without them takes neither.
+    @property
+    def defer_host_readings(self) -> bool:
+        return bool(getattr(self.adapter, "defer_host_readings", False))
+
+    @defer_host_readings.setter
+    def defer_host_readings(self, value: bool) -> None:
+        if hasattr(self.adapter, "resolve_pending_readings"):
+            self.adapter.defer_host_readings = bool(value)
+
+    def resolve_pending_readings(self) -> None:
+        resolve = getattr(self.adapter, "resolve_pending_readings", None)
+        if callable(resolve):
+            resolve()
 
     def finish(self, band_diagnostics, band_metadata, planes, surface,
                physics_state, **context):

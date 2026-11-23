@@ -106,9 +106,11 @@ from .upper_air_scorecard import (
     model_cache_path,
     read_receipt,
     receipt_initial_analysis,
+    receipt_orography_filter_half_degree,
     receipt_start_utc,
     resolve_mapping,
     surface_geopotential_cache_name,
+    surface_geopotential_construction,
     surface_geopotential_for_run,
 )
 
@@ -1457,10 +1459,11 @@ def _phi_for(run_dir: Path, mapping: str | None, cache_dir: Path | None, initial
             if cache.exists():
                 with np.load(cache, allow_pickle=False) as archive:
                     phi = np.array(archive["phi"])
+                half_degree = receipt_orography_filter_half_degree(receipt)
                 provenance = {
                     "initial_analysis": str(path), "sha256": digest,
-                    "construction": "analysis terrain regridded bilinearly to the Gaussian grid, "
-                                    "times g, spectrally truncated, float64 rebuild of the run's float32 field",
+                    "construction": surface_geopotential_construction(half_degree),
+                    "orography_filter_half_degree": half_degree,
                     "cache": str(cache),
                 }
                 return phi, provenance, mapping_path

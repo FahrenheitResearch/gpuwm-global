@@ -1016,6 +1016,10 @@ def state_from_checkpoint(
                     # (arwen_global.ocean_dyn.model.STATE_DTYPES), in every
                     # run precision.
                     or name.removeprefix("physics__").startswith(DYNAMIC_OCEAN_PREFIX)
+                    # The stochastic pattern state is float64 in every run
+                    # precision (arwen_global.stochastic), so a restart
+                    # continues the same AR(1) sequence bit for bit.
+                    or name.removeprefix("physics__").startswith("stochastic_")
                     else backend.float_dtype
                 ),
             )

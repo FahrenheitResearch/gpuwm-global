@@ -13,8 +13,8 @@ digest, its PTX and its floating-point contraction with no other signal.
 WHAT A FAILURE HERE MEANS depends on which test fails, and the split is the
 point.  A manifest that does not describe this repository is a defect in this
 package.  A manifest that no longer matches the INSTALLED engine is a fact
-about the engine, reported by name and never refused, so that row is a note
-rather than an assertion about somebody else's release.
+about the engine: the run is not refused, and `doctor` reports each moved
+file as a gap naming the engine the pins were taken at (from 0.4.0).
 """
 from __future__ import annotations
 
@@ -207,20 +207,44 @@ def test_the_pins_match_the_installed_engine():
         f"reaches {row.reached}" for row in moved)
 
 
-def test_the_doctor_reports_the_seam_and_never_refuses_on_it():
-    from arwen_global.doctor import build_report
-
-    report = build_report()
-    rows = None
+def _seam_rows(report):
     for title, section in report.sections:
         if title == "engine seam":
-            rows = section
-    assert rows is not None, "the doctor has no engine seam section"
+            return section
+    raise AssertionError("the doctor has no engine seam section")
+
+
+@needs_pinned_engine
+def test_the_doctor_reports_the_seam_with_no_gap_on_the_pinned_engine():
+    from arwen_global.doctor import build_report
+
+    rows = _seam_rows(build_report())
     assert any(row.label == "seam" for row in rows)
     for row in rows:
-        assert row.verdict != "gap", (
-            f"{row.label} is reported as a gap; a moved seam file is unproven, "
-            "not a refusal -- the dependency ceiling is the refusal")
+        assert row.verdict != "gap", (row.label, row.finding, row.detail)
+
+
+def test_a_moved_seam_file_is_a_gap_never_no_gaps_beside_it(monkeypatch):
+    """THE BREAKAGE: 0.3.0 on gpuwm 3.0.5 printed seven `moved ... unproven`
+    rows and then "No gaps.  Every documented command can run" (2026-11-22).
+    A moved file is a gap that names the engine the pins were taken at."""
+
+    import dataclasses
+
+    import arwen_global.engine_seam as engine_seam
+    from arwen_global.doctor import build_report
+
+    real = engine_seam.check_seam()
+    assert real, "the manifest names no file"
+    moved = (dataclasses.replace(real[0], found_sha256="0" * 64),) + real[1:]
+    monkeypatch.setattr(engine_seam, "check_seam", lambda root=None: moved)
+    report = build_report()
+    rows = _seam_rows(report)
+    gaps = [row for row in rows if row.verdict == "gap"]
+    pinned = load_manifest()["engine"]["version"]
+    assert [row.label for row in gaps] == [real[0].path.rsplit("/", 1)[-1]]
+    assert any(f'gpuwm=={pinned}' in line for line in gaps[0].detail), gaps[0]
+    assert "No gaps." not in report.render()
 
 
 @needs_pinned_engine

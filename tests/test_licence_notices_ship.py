@@ -69,6 +69,9 @@ LICENCE_TEXTS: dict[str, str] = {
         "and its float64 mirror",
     "NOTICE-AER-RRTMG-as-distributed-with-WRF.txt":
         "AER's own notice as WRF preserves it, all three year spans",
+    "LICENSE-Random123.txt":
+        "the Philox counter-based generator the SPPT/SKEB patterns draw from "
+        "(stochastic.py, ens/stochastic)",
 }
 
 #: EVERY device source this package ships, and the work whose notice covers

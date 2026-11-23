@@ -306,11 +306,14 @@ def _engine_seam_section(report: Report) -> None:
     assembled source, its digest, its PTX and its contraction, with no other
     signal anywhere.
 
-    A moved file is a NOTE naming the file, never a gap.  The version ceiling
-    in the dependency pin is the refusal; "these bytes are not the ones I
-    measured" does not name a breakage, and a package that stopped running
-    over a changed comment would be worse than one that says what it no
-    longer recognises.
+    A moved file is a GAP naming the file and the engine it was proven on
+    (from 0.4.0; it was a note before).  THE BREAKAGE: a forecast run on an
+    engine whose seam bytes this release never measured is a forecast this
+    release never proved, and the same report used to end "No gaps.  Every
+    documented command can run" directly under seven such rows (0.3.0 on
+    gpuwm 3.0.5, 2026-11-22).  The run is not refused here; `doctor` says
+    the install is not the proven one and names the one-line remedy, the
+    engine the pins were taken at.
     """
 
     from .engine_seam import check_seam, load_manifest
@@ -332,15 +335,19 @@ def _engine_seam_section(report: Report) -> None:
         rows.append(Row(
             row.path.rsplit("/", 1)[-1],
             "absent" if row.verdict == "absent" else "moved",
-            verdict="note",
+            verdict="gap",
             detail=(f"{row.path}",
                     f"pinned {row.pinned_sha256[:12]} at gpuwm "
                     f"{pinned_against}"
                     + ("" if row.found_sha256 is None
                        else f", installed {row.found_sha256[:12]}"),
                     f"this package reaches {row.reached}",
-                    "unproven, not refused: the dependency ceiling is the "
-                    "refusal")))
+                    "it stops `run` and `go` from being the forecast this "
+                    "release proved: the installed engine's copy of this "
+                    "file is not the one measured",
+                    f"install the proven engine: pip install "
+                    f"\"gpuwm=={pinned_against}\" "
+                    f"\"gpuwm-data=={pinned_against}\"")))
     proven = len(seam) - len(unproven)
     # THE TOKEN IS THE SUMMARY, and a reader scans tokens.  Measured on
     # the desktop 2026-09-10 with a comment appended to the installed
@@ -348,8 +355,7 @@ def _engine_seam_section(report: Report) -> None:
     # both digests and this row still printed "ok  seam  45/46 files
     # proven".  Green on the row that summarises a moved file, and
     # constants.py is the one that reaches every carried kernel's
-    # preamble.  The refusal stays the version ceiling; only the token
-    # moves.
+    # preamble.  The moved rows above are the gaps; this row summarises.
     rows.append(Row(
         "seam", f"{proven}/{len(seam)} files proven",
         verdict="note" if unproven else "ok",
@@ -422,7 +428,8 @@ def _doors_section(report: Report) -> None:
             detail = [f"{door.role}",
                       (f"does not stop {used}: {door.fallback}" if door.fallback
                        else f"stops: {used}"),
-                      f"published by the {bundle} bundle; stage it with {origin}"]
+                      f"published by the {bundle} bundle; stage it with {origin}",
+                      _looked_in(bundle, companion_dir)]
             if (bundle == COMPANION_BUNDLE and published
                     and not carried_by(door, pins.get("release"))):
                 detail.append(pinned_bundle_predates(door))
@@ -450,6 +457,22 @@ def _doors_section(report: Report) -> None:
             continue
         rows.append(Row(door.name, f"{size:,} B", verdict=verdict,
                         detail=tuple(detail)))
+
+
+def _looked_in(bundle: str, companion_dir: Path) -> str:
+    """Which of this account's folders a missing door was looked for in, and
+    the variable that points at another one (see the "this account"
+    section)."""
+
+    from gpuwm.bridges import default_bridge_dir
+
+    from .doors import COMPANION_DIR_ENV
+
+    if bundle == COMPANION_BUNDLE:
+        return (f"looked in {companion_dir}; {COMPANION_DIR_ENV}=DIR points "
+                "this account at a copy another account staged")
+    return (f"looked in {default_bridge_dir()}, this account's own; the "
+            "installed engine takes no shared-folder override for its bridges")
 
 
 def _origin(door, staged) -> str:
@@ -512,6 +535,99 @@ def _shadow_notes(door, staged, companion_dir) -> list[str]:
             + ("" if same else "; this package resolves its own copy first and "
                                "the engine keeps resolving that one"))
     return notes
+
+
+def _account_section(report: Report) -> None:
+    """The folders THIS account uses, and which of them another account
+    sharing the install can reach (arwen_global.accounts says why).
+
+    A second account on one machine used to meet two walls with no name: a
+    fetch that died with ``PermissionError`` in a lock folder the first
+    account owned, and ten door gaps whose only remedy was to stage
+    everything again.  Each folder is printed with who chose it, so the
+    remedy is a variable a reader can see rather than one they must find.
+    """
+
+    import os
+
+    from gpuwm.bridges import default_bridge_dir
+
+    from .accounts import (
+        LOCK_ROOT_ENV,
+        account_lock_root,
+        engine_lock_root_state,
+        lock_root_binding,
+    )
+    from .doors import COMPANION_DIR_ENV, companion_doors
+
+    rows = report.section("this account")
+    rows.append(Row("home", str(Path.home())))
+
+    root, chosen_by = lock_root_binding()
+    if chosen_by == "operator":
+        from .accounts import _writable_dir
+
+        writable = _writable_dir(root)
+        rows.append(Row(
+            "fetch locks", str(root) if writable else f"{root} is not writable here",
+            verdict="ok" if writable else "gap",
+            detail=(f"{LOCK_ROOT_ENV} is set in this shell, so this program "
+                    "and the engine's own commands both lock there",)
+            + (() if writable else (
+                "stops: every download (fetch-analysis, score, gpuwm "
+                "fetch-geog, gpuwm fetch)",
+                f"remedy: point {LOCK_ROOT_ENV} at a folder this account can "
+                f"write, such as {account_lock_root()}"))))
+    else:
+        rows.append(Row(
+            "fetch locks", str(root),
+            detail=("this account's own folder, set by this program for its "
+                    f"fetches ({LOCK_ROOT_ENV} was not set); "
+                    f"`export {LOCK_ROOT_ENV}=DIR` names another one",)))
+        state, engine_root = engine_lock_root_state()
+        if state == "blocked":
+            rows.append(Row(
+                "engine fetch locks", f"{engine_root} is not writable here",
+                verdict="gap",
+                detail=("another account created the engine's shared lock "
+                        "folder, so the engine's own downloads run from this "
+                        "shell stop with PermissionError",
+                        "stops: gpuwm fetch-geog, gpuwm fetch",
+                        f"remedy: export {LOCK_ROOT_ENV}={account_lock_root()} "
+                        "(in this account's shell profile), then run them "
+                        "again")))
+        else:
+            rows.append(Row(
+                "engine fetch locks", str(engine_root),
+                detail=("the engine's own downloads (gpuwm fetch-geog, "
+                        "gpuwm fetch) lock here when run from this shell; "
+                        "the folder is shared by every account and owned by "
+                        "the first one to fetch",
+                        f"on a machine shared by several accounts, export "
+                        f"{LOCK_ROOT_ENV}={account_lock_root()} in each "
+                        "account's shell profile")))
+
+    doors_dir = companion_door_dir()
+    staged = sum(1 for door in companion_doors()
+                 if (doors_dir / artifact_filename(door.name)).is_file())
+    total = len(companion_doors())
+    named = bool(os.environ.get(COMPANION_DIR_ENV))
+    rows.append(Row(
+        "door folder", str(doors_dir),
+        detail=((f"named by {COMPANION_DIR_ENV}" if named else
+                 f"this account's own (the default); {COMPANION_DIR_ENV}=DIR "
+                 "points every account at one shared copy, staged once with "
+                 f"`{CONSOLE_SCRIPT} fetch-doors`"),
+                f"{staged} of {total} doors this package publishes are "
+                "staged there")))
+    bridges = default_bridge_dir()
+    rows.append(Row(
+        "engine bridges", str(bridges),
+        detail=(("staged" if bridges.is_dir() and any(bridges.iterdir())
+                 else "nothing staged yet") + "; under this account's home, "
+                "and the installed engine takes no folder override, so each "
+                "account stages its own with `gpuwm fetch-bridges` (about "
+                "450 MB)",)))
 
 
 def _configs_section(report: Report) -> None:
@@ -692,6 +808,7 @@ def build_report() -> Report:
     _boundary_section(report)
     _engine_seam_section(report)
     _device_section(report)
+    _account_section(report)
     _doors_section(report)
     _source_mappings_section(report)
     _configs_section(report)

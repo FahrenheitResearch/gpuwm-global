@@ -60,7 +60,7 @@ from .da_scorecard import merge_cycles
 from .da_streams import fetch_streams, radiance_streams
 from .device_memory import (
     device_memory_receipt,
-    disable_fft_plan_cache,
+    keep_fft_plans,
     select_device_allocator,
     start_device_peak_tracking,
 )
@@ -353,7 +353,7 @@ def cycle(
     # As the forecast door: the pool is held to the plan's pool figure, and
     # an analysis that needs more than a forecast step raises the limit.
     hold_pool_to_plan(tracker, door_plan, allocator)
-    restore_plan_cache = disable_fft_plan_cache(cfg.backend)
+    restore_plan_cache = keep_fft_plans(cfg.backend)
     try:
         return _cycle_tracked(
             cfg, outdir, obs_locations=list(obs_locations), cycles=int(cycles),

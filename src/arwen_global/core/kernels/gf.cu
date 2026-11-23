@@ -278,6 +278,20 @@
 //     GF_DEEP_PHYS & 8 block in gfd_deep_column).
 //  32 the moisture-convergence closure member is mconv (CCPP
 //     cup_forcing_ens_3d), not mconv / max(0.5, 1 - edt zd/zu) (WRF).
+//  64 over water the downdraft-to-updraft mass-flux ratio is capped at 1, as
+//     CCPP does everywhere (cu_gf_deep.F90:632 edtmax = 1), so the shear and
+//     cloud-base precipitation-efficiency formula sets how much condensate
+//     the downdraft evaporates.  Without it the over-water cap is WRF's
+//     max(0.1, 0.4 - 0.015 csum), which GF_DEEP_EXPERIMENT 7's csum = 39
+//     makes 0.1 in every column.
+// 128 over water the downdraft cap reads csum = 0 (WRF's value for a column
+//     with no convective memory: 0.4), whatever GF_DEEP_EXPERIMENT sets.
+// 256 the diurnal-cycle term (dicycle) keeps the boundary-layer-forced CAPE
+//     whenever the updraft is rooted in the boundary layer (the source level
+//     k22 at or below kpbl + 1), as Bechtold et al. (2014, JAS 71:734) define
+//     the convection the correction applies to, instead of zeroing it
+//     whenever cloud base lies above kpbl + 1 (WRF), which is the shallow
+//     morning boundary layer under which land convection starts.
 // A DECLARED DIVERGENCE from WRF v4.6.1 when non-zero.
 #ifndef GF_DEEP_PHYS
 #define GF_DEEP_PHYS 0
@@ -325,7 +339,7 @@
 // array is added or removed; the static_asserts below the two counts are
 // what fails if a region is over-subscribed.
 #define GFWS_SLOT_COUNT_COL 90
-#define GFWS_SLOT_COUNT_DRV 36
+#define GFWS_SLOT_COUNT_DRV 37
 #define GFWS_SLOTS (GFWS_SLOT_COUNT_COL + GFWS_SLOT_COUNT_DRV)
 
 // LANE INTERLEAVING, and why it is not optional.  CUDA lays local memory out
@@ -768,12 +782,29 @@ __device__ float gfd_satvap(float temp2)
 
 // module_cu_gf_deep.F:2141-2269 with itest = -1: the height stack passes
 // through untouched and he is still assigned (guard is itest .le. 0).
+//
+// t_ref/e_ref (lane-base workspace pointers, both null or both set): a
+// saturation pressure the caller already holds, e_ref[k] = satvap(t_ref[k]).
+// A level whose temperature has t_ref's exact bit pattern takes that word
+// instead of recomputing it -- satvap is a pure function of its argument, so
+// the word is the one the call would have returned.  satvap (one logf and
+// one to three powf, glibc's own float words) is the bulk of the kernel's
+// arithmetic, and the driver's four environments share most of their
+// temperatures: two are the unperturbed t itself, and the shallow arm's
+// forced state is t wherever the boundary layer's tendency is zero.
 __device__ void gfd_cup_env(GfColC z, GfColC t, GfColC q,
                             GfColC p, GfCol qes, GfCol he, GfCol hes,
-                            int nz)
+                            int nz, const float *t_ref = nullptr,
+                            const float *e_ref = nullptr)
 {
     for (int k = 1; k <= nz; k++) {
-        float e = gfd_satvap(t[k]);
+        float e;
+        if (e_ref != nullptr
+            && __float_as_uint(t[k]) == __float_as_uint(
+                   t_ref[(size_t)k * (size_t)GFWS_LANES]))
+            e = e_ref[(size_t)k * (size_t)GFWS_LANES];
+        else
+            e = gfd_satvap(t[k]);
         qes[k] = FDIV(FMUL(K_P622, e), GMAX(K_E1M8, FSUB(p[k], e)));
         if (qes[k] <= K_E1M16) qes[k] = K_E1M16;
         if (qes[k] < q[k]) qes[k] = q[k];
@@ -795,7 +826,10 @@ __device__ void gfd_cup_env_clev(GfColC t, GfColC qes,
     GfCol qes_cup, GfCol q_cup, GfCol he_cup, GfCol hes_cup,
     GfCol z_cup, GfCol p_cup, GfCol gamma_cup, GfCol t_cup)
 {
-    for (int k = 0; k < GF_KP; k++) {
+    // Zero only the words the two fills below leave alone (0 and the pad
+    // above nz): every array ends holding exactly what the whole-extent
+    // zeroing followed by the fills left, at a fifth of the stores.
+    for (int k = 0; k < GF_KP; k = (k == 0) ? nz + 1 : k + 1) {
         qes_cup[k] = K_ZERO; q_cup[k] = K_ZERO; he_cup[k] = K_ZERO;
         hes_cup[k] = K_ZERO; z_cup[k] = K_ZERO; p_cup[k] = K_ZERO;
         gamma_cup[k] = K_ZERO; t_cup[k] = K_ZERO;
@@ -1892,7 +1926,9 @@ __device__ void gfd_deep_column(
     int *ierr_out,
     int *downdraft_dry_out,                    // the downdraft exit overridden (0, 7 or 51)
     GfClosureReading *reading,                 // the closure reading (always written)
-    float *gfws)                               // this column's "col" region
+    float *gfws,                               // this column's "col" region
+    const float *env_t_ref = nullptr,          // gfd_cup_env's satvap reuse
+    const float *env_e_ref = nullptr)
 {
     const int ktf = nz;
     const int kte = nz;
@@ -1967,9 +2003,19 @@ __device__ void gfd_deep_column(
     SCAB[SCA_cap_max] = cap_max;
     ISCB[ISCA_xland1] = xland1;
 
+    // LEAN: the driver entries (no capture sink) defer every array the
+    // k22/kbcon rejection does not read -- its zeroing and the unperturbed
+    // environment -- to the point the column is known to go on, so a
+    // rejected column never writes them.  A column that goes on gets the
+    // same words in the same arrays before their first read (the deferred
+    // statements read nothing written in between).  With a sink present the
+    // routine runs in its original order, statement for statement.
+    const bool lean = !LEVB.p && !SCAB.p && !ISCB.p;
+
     // ---- :455-471 : entrainment rate, radius, and sig ---------------------
     GfCol c1d = GFWS_AT(gfws, 0);
-    for (int k = 0; k < GF_KP; k++) c1d[k] = K_ZERO;
+    if (!lean)
+        for (int k = 0; k < GF_KP; k++) c1d[k] = K_ZERO;
     float entr_rate = FSUB(K_ENTR_BASE,
                            FMUL(GMIN(K_TWENTY, (float)csum), K_ENTR_CSUM));
     if (xland1 == 0) entr_rate = K_ENTR_BASE;
@@ -2011,14 +2057,20 @@ __device__ void gfd_deep_column(
     GfCol hcdo = GFWS_AT(gfws, 8);
     GfCol qrcdo = GFWS_AT(gfws, 9);
     GfCol dellaqc = GFWS_AT(gfws, 10);
+    auto init_480 = [&]() {
+        for (int k = 0; k < GF_KP; k++) {
+            cnvwt[k] = K_ZERO; zuo[k] = K_ZERO; zdo[k] = K_ZERO;
+            xz[k] = zo[k];
+            cd[k] = (k == 0) ? K_ZERO : K_E1M9;
+            cdd[k] = (k == 0) ? K_ZERO : K_E1M9;
+            hcdo[k] = K_ZERO; qrcdo[k] = K_ZERO; dellaqc[k] = K_ZERO;
+        }
+    };
     for (int k = 0; k < GF_KP; k++) {
-        cnvwt[k] = K_ZERO; zuo[k] = K_ZERO; zdo[k] = K_ZERO;
         cupclw[k] = K_ZERO;
-        z[k] = zo[k]; xz[k] = zo[k];
-        cd[k] = (k == 0) ? K_ZERO : K_E1M9;
-        cdd[k] = (k == 0) ? K_ZERO : K_E1M9;
-        hcdo[k] = K_ZERO; qrcdo[k] = K_ZERO; dellaqc[k] = K_ZERO;
+        z[k] = zo[k];
     }
+    if (!lean) init_480();
     float edtmax = K_ONE;
     float edtmin = K_EDTMIN;
     float depth_min = K_DEPTH_MIN;
@@ -2041,8 +2093,6 @@ __device__ void gfd_deep_column(
     GfCol qeso = GFWS_AT(gfws, 14);
     GfCol heo = GFWS_AT(gfws, 15);
     GfCol heso = GFWS_AT(gfws, 16);
-    gfd_cup_env(z, t, q, po, qes, he, hes, nz);
-    gfd_cup_env(zo, tn, qo, po, qeso, heo, heso, nz);
     GfCol qes_cup = GFWS_AT(gfws, 17);
     GfCol q_cup = GFWS_AT(gfws, 18);
     GfCol he_cup = GFWS_AT(gfws, 19);
@@ -2051,8 +2101,21 @@ __device__ void gfd_deep_column(
     GfCol p_cup = GFWS_AT(gfws, 22);
     GfCol gamma_cup = GFWS_AT(gfws, 23);
     GfCol t_cup = GFWS_AT(gfws, 24);
-    gfd_cup_env_clev(t, qes, q, he, hes, z, po, psur, z1, nz, qes_cup, q_cup,
-                     he_cup, hes_cup, z_cup, p_cup, gamma_cup, t_cup);
+    // The unperturbed environment: read first by the cloud-base energy
+    // (hkb) and cup_kbcon's z_cup, both only where k22 passes.
+    auto env_unperturbed = [&]() {
+        gfd_cup_env(z, t, q, po, qes, he, hes, nz, env_t_ref, env_e_ref);
+        gfd_cup_env_clev(t, qes, q, he, hes, z, po, psur, z1, nz, qes_cup,
+                         q_cup, he_cup, hes_cup, z_cup, p_cup, gamma_cup,
+                         t_cup);
+    };
+    if (!lean)
+        gfd_cup_env(z, t, q, po, qes, he, hes, nz, env_t_ref, env_e_ref);
+    gfd_cup_env(zo, tn, qo, po, qeso, heo, heso, nz, env_t_ref, env_e_ref);
+    if (!lean)
+        gfd_cup_env_clev(t, qes, q, he, hes, z, po, psur, z1, nz, qes_cup,
+                         q_cup, he_cup, hes_cup, z_cup, p_cup, gamma_cup,
+                         t_cup);
     GfCol qeso_cup = GFWS_AT(gfws, 25);
     GfCol qo_cup = GFWS_AT(gfws, 26);
     GfCol heo_cup = GFWS_AT(gfws, 27);
@@ -2080,13 +2143,18 @@ __device__ void gfd_deep_column(
     // ---- :583-615 ---------------------------------------------------------
     GfCol u_cup = GFWS_AT(gfws, 33);
     GfCol v_cup = GFWS_AT(gfws, 34);
-    for (int k = 0; k < GF_KP; k++) { u_cup[k] = K_ZERO; v_cup[k] = K_ZERO; }
-    u_cup[1] = us[1];
-    v_cup[1] = vs[1];
-    for (int k = 2; k <= ktf; k++) {
-        u_cup[k] = FMUL(K_HALF, FADD(us[k - 1], us[k]));
-        v_cup[k] = FMUL(K_HALF, FADD(vs[k - 1], vs[k]));
-    }
+    auto wind_cup = [&]() {
+        for (int k = 0; k < GF_KP; k = (k == 0) ? ktf + 1 : k + 1) {
+            u_cup[k] = K_ZERO; v_cup[k] = K_ZERO;   // 1..ktf written below
+        }
+        u_cup[1] = us[1];
+        v_cup[1] = vs[1];
+        for (int k = 2; k <= ktf; k++) {
+            u_cup[k] = FMUL(K_HALF, FADD(us[k - 1], us[k]));
+            v_cup[k] = FMUL(K_HALF, FADD(vs[k - 1], vs[k]));
+        }
+    };
+    if (!lean) wind_cup();
     CAPL(LEV_u_cup, u_cup); CAPL(LEV_v_cup, v_cup);
     for (int k = 1; k <= ktf; k++)
         if (zo_cup[k] > FADD(zkbmax, z1)) { kbmax = k; break; }
@@ -2103,6 +2171,7 @@ __device__ void gfd_deep_column(
         kbcon = 0;
     }
     ISCB[ISCA_k22_0] = k22;
+    if (lean && ierr == 0) env_unperturbed();
 
     // ---- :638-644 ---------------------------------------------------------
     float hkb = K_ZERO, hkbo = K_ZERO;
@@ -2153,6 +2222,44 @@ __device__ void gfd_deep_column(
     if (kstabi < kbcon) {
         kbcon = 1;
         ierr = 42;
+    }
+    // ---- the rejected column, without the walk to the end ----------------
+    // Once ierr is set here nothing below can clear it (the only reset, the
+    // downdraft-dry override, needs ierr_before_downdraft == 0) and every
+    // later stage is either inside `if (ierr == 0)` or returns on ierr
+    // before touching an output.  What the walk leaves behind is therefore
+    // fixed, and is written here directly: the five tendency columns zero
+    // over the whole extent (the :1724-1743 else-branch), cupclw as zeroed
+    // above, pre 0, ktop 0, kbcon raised to 2 by rates_up_pdf (its one
+    // write before its ierr return), k22 and ierr as they stand, no
+    // downdraft override, and of the closure reading only sig and
+    // closure_n (16, untouched by a forcing routine that returned at once)
+    // move off the zeros set at entry.  98-99 per cent of the globe's
+    // columns leave here (ierr 2 and 3, T383 GDAS 2026-11-15 06Z, 663,552
+    // columns: 0.95 per cent reach ierr 0).  Driver entries only: with any
+    // capture sink present the walk runs, so the stage captures the parity
+    // suites grade are unchanged word for word.
+    if (ierr != 0 && !LEVB.p && !SCAB.p && !ISCB.p) {
+        for (int k = 0; k < GF_KP; k++) {
+            outt[k] = K_ZERO; outq[k] = K_ZERO; outqc[k] = K_ZERO;
+            outu[k] = K_ZERO; outv[k] = K_ZERO;
+        }
+        reading->sig = sig;
+        reading->closure_n = closure_n;
+        *pre_out = K_ZERO;
+        *ktop_out = 0;
+        *kbcon_out = IMAX(kbcon, 2);
+        *k22_out = k22;
+        *ierr_out = ierr;
+        *downdraft_dry_out = 0;
+        return;
+    }
+    if (lean) {
+        // the deferred zeroing (see LEAN above); nothing since has read or
+        // written these arrays
+        for (int k = 0; k < GF_KP; k++) c1d[k] = K_ZERO;
+        init_480();
+        wind_cup();
     }
     GfCol entr_rate_2d = GFWS_AT(gfws, 36);
     for (int k = 0; k < GF_KP; k++)
@@ -2401,9 +2508,16 @@ __device__ void gfd_deep_column(
     }
     float beta = GMAX(K_BETA_DN_MIN,
                       FSUB(K_BETA_DN_A, FMUL((float)csum, K_BETA_DN_B)));
+#if (GF_DEEP_PHYS & 64)
+    // CCPP: edtmax = 1 over water too (cu_gf_deep.F90:632).
+#elif (GF_DEEP_PHYS & 128)
+    if (xland1 == 0)
+        edtmax = GMAX(K_P1, K_EDTMAX_LAND_A);  // csum = 0: 0.4
+#else
     if (xland1 == 0)
         edtmax = GMAX(K_P1, FSUB(K_EDTMAX_LAND_A,
                                  FMUL((float)csum, K_EDTMAX_LAND_B)));
+#endif
     float bud = K_ZERO;
     int downdraft_massless = 0;
     GfdPdf dn_pdf;
@@ -2644,7 +2758,11 @@ __device__ void gfd_deep_column(
     float t_star = K_T_STAR;
     aa1_bl = gfd_cup_up_aa1bl(t, tn, q, qo, dtime, zo_cup, kbcon, ierr, ktf);
     if (ierr == 0) {
+#if (GF_DEEP_PHYS & 256)
+        if (FSUB(zo_cup[k22], z1) > zo[IMIN(kte, kpbl + 1)]) {
+#else
         if (FSUB(zo_cup[kbcon], z1) > zo[IMIN(kte, kpbl + 1)]) {
+#endif
             aa1_bl = K_ZERO;
         } else {
             aa1_bl = GMAX(K_ZERO, FMUL(FDIV(aa1_bl, t_star), tau_bl));
@@ -3161,7 +3279,10 @@ __device__ void gfd_deep_column(
 #endif
 
     // ---- the get_inversion_layers capture, for the shallow port ----------
-    {
+    // Capture only: nothing below reads dtempdz or k_inv, so with both
+    // sinks absent (the driver entries) the sweep is skipped -- it wrote
+    // workspace no one reads and the two capture slabs nothing.
+    if (LEVB.p || ISCB.p) {
         GfCol dtempdz = GFWS_AT(gfws, 85);
         GfCol first_s = GFWS_AT(gfws, 86);
         GfCol sec_s = GFWS_AT(gfws, 87);
@@ -3428,7 +3549,9 @@ __device__ void gfd_shallow_column(
     GfCol outt, GfCol outq, GfCol outqc, GfCol cupclw,
     float *pre_out, float *xmb_out_p, int *k22_out, int *kbcon_out,
     int *ktop_out, int *ierr_out,
-    float *gfws)                               // this column's "col" region
+    float *gfws,                               // this column's "col" region
+    const float *env_t_ref = nullptr,          // gfd_cup_env's satvap reuse
+    const float *env_e_ref = nullptr)
 {
     const int ktf = nz;
     const int kte = nz;
@@ -3469,16 +3592,26 @@ __device__ void gfd_shallow_column(
     GfCol zuo = GFWS_AT(gfws, 11);
     GfCol zu = GFWS_AT(gfws, 12);
     GfCol xzu = GFWS_AT(gfws, 13);
+    // LEAN: as in the deep routine -- the driver entries defer what the
+    // k22/kbcon rejection never reads; with a capture sink, original order.
+    const bool lean = !LEVB.p && !SCAB.p && !ISCB.p;
+    auto init_265 = [&]() {
+        for (int k = 0; k < GF_KP; k++) {
+            upme[k] = K_ZERO; upmd[k] = K_ZERO;
+            upmeu_s[k] = K_ZERO; upmdu_s[k] = K_ZERO;
+            xz[k] = zo[k];
+            qrco[k] = K_ZERO; pwo[k] = K_ZERO;
+            cd[k] = (k == 0) ? K_ZERO : FMUL(K_ONE, entr_rate);
+            dellaqc[k] = K_ZERO; cnvwt[k] = K_ZERO;
+            zuo[k] = K_ZERO; zu[k] = K_ZERO; xzu[k] = K_ZERO;
+        }
+    };
     for (int k = 0; k < GF_KP; k++) {
-        upme[k] = K_ZERO; upmd[k] = K_ZERO;
-        upmeu_s[k] = K_ZERO; upmdu_s[k] = K_ZERO;
-        z[k] = zo[k]; xz[k] = zo[k];
-        qrco[k] = K_ZERO; pwo[k] = K_ZERO;
-        cd[k] = (k == 0) ? K_ZERO : FMUL(K_ONE, entr_rate);
-        dellaqc[k] = K_ZERO; cupclw[k] = K_ZERO; cnvwt[k] = K_ZERO;
-        zuo[k] = K_ZERO; zu[k] = K_ZERO; xzu[k] = K_ZERO;
+        z[k] = zo[k];
+        cupclw[k] = K_ZERO;
         outt[k] = K_ZERO; outq[k] = K_ZERO; outqc[k] = K_ZERO;
     }
+    if (!lean) init_265();
 
     // ---- :287-298 ---------------------------------------------------------
     float cap_maxs = K_CAP_MAXS_SH;
@@ -3527,8 +3660,6 @@ __device__ void gfd_shallow_column(
     GfCol qeso = GFWS_AT(gfws, 17);
     GfCol heo = GFWS_AT(gfws, 18);
     GfCol heso = GFWS_AT(gfws, 19);
-    gfd_cup_env(z, t, q, po, qes, he, hes, nz);
-    gfd_cup_env(zo, tn, qo, po, qeso, heo, heso, nz);
     GfCol qes_cup = GFWS_AT(gfws, 20);
     GfCol q_cup = GFWS_AT(gfws, 21);
     GfCol he_cup = GFWS_AT(gfws, 22);
@@ -3537,8 +3668,15 @@ __device__ void gfd_shallow_column(
     GfCol p_cup = GFWS_AT(gfws, 25);
     GfCol gamma_cup = GFWS_AT(gfws, 26);
     GfCol t_cup = GFWS_AT(gfws, 27);
-    gfd_cup_env_clev(t, qes, q, he, hes, z, po, psur, z1, nz, qes_cup, q_cup,
-                     he_cup, hes_cup, z_cup, p_cup, gamma_cup, t_cup);
+    // The unperturbed environment: first read by hkb and cup_kbcon's z_cup,
+    // both only where k22 passes.
+    if (!lean)
+        gfd_cup_env(z, t, q, po, qes, he, hes, nz, env_t_ref, env_e_ref);
+    gfd_cup_env(zo, tn, qo, po, qeso, heo, heso, nz, env_t_ref, env_e_ref);
+    if (!lean)
+        gfd_cup_env_clev(t, qes, q, he, hes, z, po, psur, z1, nz, qes_cup,
+                         q_cup, he_cup, hes_cup, z_cup, p_cup, gamma_cup,
+                         t_cup);
     GfCol qeso_cup = GFWS_AT(gfws, 28);
     GfCol qo_cup = GFWS_AT(gfws, 29);
     GfCol heo_cup = GFWS_AT(gfws, 30);
@@ -3595,6 +3733,12 @@ __device__ void gfd_shallow_column(
     }
     SCAB[SHS_cap_max] = cap_max;
     ISCB[SHI_k22_0] = k22;
+    if (lean && ierr == 0) {
+        gfd_cup_env(z, t, q, po, qes, he, hes, nz, env_t_ref, env_e_ref);
+        gfd_cup_env_clev(t, qes, q, he, hes, z, po, psur, z1, nz, qes_cup,
+                         q_cup, he_cup, hes_cup, z_cup, p_cup, gamma_cup,
+                         t_cup);
+    }
 
     // ---- :387-393 ----------------------------------------------------------
     float hkb = K_ZERO, hkbo = K_ZERO;
@@ -3615,6 +3759,23 @@ __device__ void gfd_shallow_column(
     ISCB[SHI_k22_1] = k22;
     SCAB[SHS_hkbo_1] = hkbo;
     ISCB[SHI_ierr_1] = ierr;
+
+    // ---- the rejected column, without the walk to the end ----------------
+    // As in the deep routine: past this point a set ierr is never cleared
+    // (every later stage sits inside `if (ierr == 0)` or returns on ierr),
+    // and the walk ends in the :899-905 branch -- k22, kbcon and ktop 0,
+    // xmb and pre 0, the three tendency columns zero (they are zero since
+    // entry, as is cupclw).  Driver entries only (no capture sink).
+    if (ierr != 0 && !LEVB.p && !SCAB.p && !ISCB.p) {
+        *pre_out = K_ZERO;
+        *xmb_out_p = K_ZERO;
+        *k22_out = 0;
+        *kbcon_out = 0;
+        *ktop_out = 0;
+        *ierr_out = ierr;
+        return;
+    }
+    if (lean) init_265();   // the deferred zeroing (see LEAN above)
 
     // ---- :409-414 ----------------------------------------------------------
     int kstabi = gfd_cup_minimi(heso_cup, kbcon, kbmax, ierr);
@@ -4293,32 +4454,106 @@ enum {
     GF_DRV_NISCA
 };
 
-extern "C" __global__ void gf_gfdrv_stage(
-    const float *__restrict__ lvin,   // (n, GF_DRV_NIN_LEV, nz)
-    const float *__restrict__ scin,   // (n, GF_DRV_NIN_SCA)
-    const int *__restrict__ iin,      // (n, 3)
-    float *__restrict__ lev,          // (n, GF_DRV_NLEV, nz)
-    float *__restrict__ sca,          // (n, GF_DRV_NSCA)
-    int *__restrict__ isca,           // (n, GF_DRV_NISCA)
-    float *__restrict__ ws,           // (n, GFWS_SLOTS, GF_KP) scratch
-    int k22_wrf_faithful, int n, int nz)
+// THE DRIVER BODY IS ONE TEMPLATE, TWO ENTRIES.  gfd_gfdrv_body is the whole
+// of GFDRV for one column; only where its words come from and go to is a
+// parameter (the IO policy), so the arithmetic of both entries is the same
+// source, statement for statement:
+//   * GfStageIO -- gf_gfdrv_stage, the packed (n, lanes, nz) slabs the
+//     parity suites and the oracle harness feed;
+//   * GfGridIO  -- gf_gfdrv_grid, the engine's own (nz, ncol) fields read in
+//     place, a column order given by an optional permutation, and only the
+//     output planes the caller asks for written.  It exists for speed: the
+//     packed entry costs a transpose of every input lane and of every output
+//     lane on every call, and its one-thread-per-column launch in the
+//     globe's natural order puts the few deep columns of each warp beside
+//     columns that exit early (the warp runs the deep path for all 32).
+// Neither policy touches a value: a read returns the stored float, a null
+// input lane returns 0.0f exactly as the zero-filled packed lane did, and a
+// write stores the float the body computed.
+struct GfStageIO {
+    const float *inb;   // this column's (GF_DRV_NIN_LEV, nz) input block
+    const float *sci;   // (GF_DRV_NIN_SCA)
+    const int *ii;      // (3)
+    float *levb;        // (GF_DRV_NLEV, nz)
+    float *scab;        // (GF_DRV_NSCA)
+    int *iscb;          // (GF_DRV_NISCA)
+    int nz;
+    __device__ __forceinline__ float in(int lane, int k) const {
+        return inb[(size_t)lane * nz + (k - 1)];
+    }
+    __device__ __forceinline__ float in_sca(int s) const { return sci[s]; }
+    __device__ __forceinline__ int in_int(int s) const { return ii[s]; }
+    __device__ __forceinline__ void lev(int f, int k, float v) const {
+        levb[(size_t)f * nz + (k - 1)] = v;
+    }
+    __device__ __forceinline__ void sca(int f, float v) const { scab[f] = v; }
+    __device__ __forceinline__ void isca(int f, int v) const { iscb[f] = v; }
+};
+
+struct GfGridIO {
+    // input level lanes, each an (nz, ncol) C-contiguous float field; null =
+    // the lane is absent and reads as 0.0f
+    const float *lane[GF_DRV_NIN_LEV];
+    const float *ht, *hfx, *qfx, *xland;   // (ncol)
+    const float *dxc;                      // (ncol) or null: dx_const
+    const int *kpbl;                       // (ncol)
+    float dt, dx_const;
+    int ishallow, ichoice;
+    // outputs: level planes (popcount(lev_mask), nz, ncol), plane order the
+    // DL_ order of the set bits; scalars (GF_DRV_NSCA, ncol) and integers
+    // (GF_DRV_NISCA, ncol), planar
+    float *lev_out;
+    unsigned lev_mask;
+    float *sca_out;
+    int *isca_out;
+    size_t ncol, c;
+    int nz;
+    __device__ __forceinline__ float in(int l, int k) const {
+        const float *a = lane[l];
+        return a ? a[(size_t)(k - 1) * ncol + c] : K_ZERO;
+    }
+    __device__ __forceinline__ float in_sca(int s) const {
+        switch (s) {
+        case DINS_ht: return ht[c];
+        case DINS_hfx: return hfx[c];
+        case DINS_qfx: return qfx[c];
+        case DINS_xland: return xland[c];
+        case DINS_dt: return dt;
+        default: return dxc ? dxc[c] : dx_const;
+        }
+    }
+    __device__ __forceinline__ int in_int(int s) const {
+        return s == 0 ? kpbl[c] : (s == 1 ? ishallow : ichoice);
+    }
+    __device__ __forceinline__ void lev(int f, int k, float v) const {
+        if ((lev_mask >> f) & 1u) {
+            int plane = __popc(lev_mask & ((1u << f) - 1u));
+            lev_out[((size_t)plane * nz + (k - 1)) * ncol + c] = v;
+        }
+    }
+    __device__ __forceinline__ void sca(int f, float v) const {
+        sca_out[(size_t)f * ncol + c] = v;
+    }
+    __device__ __forceinline__ void isca(int f, int v) const {
+        isca_out[(size_t)f * ncol + c] = v;
+    }
+};
+
+template <class IO>
+__device__ __forceinline__ void gfd_gfdrv_body(
+    const IO &io, float *gfws_col, int k22_wrf_faithful, int nz)
 {
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-    if (col >= n) return;
-    float *gfws_col = GFWS_LANE_BASE(ws);
     float *gfws_own = GFWS_DRV_BASE(gfws_col);
 
-    const float *inb = lvin + (size_t)col * GF_DRV_NIN_LEV * (size_t)nz;
-    const float *sci = scin + (size_t)col * GF_DRV_NIN_SCA;
-    int kpbl = iin[3 * (size_t)col + 0];
-    int ishallow = iin[3 * (size_t)col + 1];
-    int ichoice = iin[3 * (size_t)col + 2];
-    float ht = sci[DINS_ht];
-    float hfx = sci[DINS_hfx];
-    float qfx = sci[DINS_qfx];
-    float xland = sci[DINS_xland];
-    float dt = sci[DINS_dt];
-    float dx = sci[DINS_dx];
+    int kpbl = io.in_int(0);
+    int ishallow = io.in_int(1);
+    int ichoice = io.in_int(2);
+    float ht = io.in_sca(DINS_ht);
+    float hfx = io.in_sca(DINS_hfx);
+    float qfx = io.in_sca(DINS_qfx);
+    float xland = io.in_sca(DINS_xland);
+    float dt = io.in_sca(DINS_dt);
+    float dx = io.in_sca(DINS_dx);
 
     GfCol u = GFWS_AT(gfws_own, 0);
     GfCol v = GFWS_AT(gfws_own, 1);
@@ -4335,7 +4570,8 @@ extern "C" __global__ void gf_gfdrv_stage(
     GfCol rthraten = GFWS_AT(gfws_own, 12);
     GfCol rthblten = GFWS_AT(gfws_own, 13);
     GfCol rqvblten = GFWS_AT(gfws_own, 14);
-    for (int k = 0; k < GF_KP; k++) {
+    // 0 and the pad above nz only: levels 1..nz are all loaded just below.
+    for (int k = 0; k < GF_KP; k = (k == 0) ? nz + 1 : k + 1) {
         u[k] = K_ZERO; v[k] = K_ZERO; w[k] = K_ZERO; t[k] = K_ZERO;
         qv[k] = K_ZERO; p[k] = K_ZERO; pi_a[k] = K_ZERO; rho[k] = K_ZERO;
         dz8w[k] = K_ZERO; p8w[k] = K_ZERO; rthften[k] = K_ZERO;
@@ -4343,21 +4579,21 @@ extern "C" __global__ void gf_gfdrv_stage(
         rqvblten[k] = K_ZERO;
     }
     for (int k = 1; k <= nz; k++) {
-        u[k] = inb[(size_t)DIN_u * nz + (k - 1)];
-        v[k] = inb[(size_t)DIN_v * nz + (k - 1)];
-        w[k] = inb[(size_t)DIN_w * nz + (k - 1)];
-        t[k] = inb[(size_t)DIN_t * nz + (k - 1)];
-        qv[k] = inb[(size_t)DIN_qv * nz + (k - 1)];
-        p[k] = inb[(size_t)DIN_p * nz + (k - 1)];
-        pi_a[k] = inb[(size_t)DIN_pi * nz + (k - 1)];
-        rho[k] = inb[(size_t)DIN_rho * nz + (k - 1)];
-        dz8w[k] = inb[(size_t)DIN_dz8w * nz + (k - 1)];
-        p8w[k] = inb[(size_t)DIN_p8w * nz + (k - 1)];
-        rthften[k] = inb[(size_t)DIN_rthften * nz + (k - 1)];
-        rqvften[k] = inb[(size_t)DIN_rqvften * nz + (k - 1)];
-        rthraten[k] = inb[(size_t)DIN_rthraten * nz + (k - 1)];
-        rthblten[k] = inb[(size_t)DIN_rthblten * nz + (k - 1)];
-        rqvblten[k] = inb[(size_t)DIN_rqvblten * nz + (k - 1)];
+        u[k] = io.in(DIN_u, k);
+        v[k] = io.in(DIN_v, k);
+        w[k] = io.in(DIN_w, k);
+        t[k] = io.in(DIN_t, k);
+        qv[k] = io.in(DIN_qv, k);
+        p[k] = io.in(DIN_p, k);
+        pi_a[k] = io.in(DIN_pi, k);
+        rho[k] = io.in(DIN_rho, k);
+        dz8w[k] = io.in(DIN_dz8w, k);
+        p8w[k] = io.in(DIN_p8w, k);
+        rthften[k] = io.in(DIN_rthften, k);
+        rqvften[k] = io.in(DIN_rqvften, k);
+        rthraten[k] = io.in(DIN_rthraten, k);
+        rthblten[k] = io.in(DIN_rthblten, k);
+        rqvblten[k] = io.in(DIN_rqvblten, k);
     }
 
     // ---- the column preparation, module_cu_gf_wrfdrv.F:383-492 ------------
@@ -4373,7 +4609,9 @@ extern "C" __global__ void gf_gfdrv_stage(
     GfCol qshall = GFWS_AT(gfws_own, 21);
     GfCol dhdt = GFWS_AT(gfws_own, 22);
     GfCol omeg = GFWS_AT(gfws_own, 23);
-    for (int k = 0; k < GF_KP; k++) {
+    // 0 and the pad above nz only: levels 1..nz of all nine are written by
+    // the two loops below.
+    for (int k = 0; k < GF_KP; k = (k == 0) ? nz + 1 : k + 1) {
         zo[k] = K_ZERO; po[k] = K_ZERO; q2d[k] = K_ZERO; tn_f[k] = K_ZERO;
         qo_f[k] = K_ZERO; tshall[k] = K_ZERO; qshall[k] = K_ZERO;
         dhdt[k] = K_ZERO; omeg[k] = K_ZERO;
@@ -4419,6 +4657,12 @@ extern "C" __global__ void gf_gfdrv_stage(
     }
     float prets = K_ZERO, xmbs = K_ZERO;
     int k22s = 0, kbcons = 0, ktops = 0, ierrs = 0;
+    // satvap(t) once per column: the four environments below (shallow and
+    // deep, unperturbed and forced) take it at every level whose temperature
+    // is t's word (gfd_cup_env's reuse; the same function on the same
+    // argument, so the same word).
+    GfCol esat_t = GFWS_AT(gfws_own, 36);
+    for (int k = 1; k <= nz; k++) esat_t[k] = gfd_satvap(t[k]);
     if (ishallow == 1) {
         gfd_shallow_column(
             zo, t, q2d, tshall, qshall, po, dhdt, rho,
@@ -4427,7 +4671,7 @@ extern "C" __global__ void gf_gfdrv_stage(
             GfSink{(float *)0}, GfSink{(float *)0}, GfSinkI{(int *)0},
             outts, outqs, outqcs, cupclws,
             &prets, &xmbs, &k22s, &kbcons, &ktops, &ierrs,
-            gfws_col);
+            gfws_col, t.p, esat_t.p);
         float qmemf_s, thresh_s;
         prets = gfd_neg_check(1, dt, outqs, outts, outus, outvs, outqcs,
                               prets, nz, K_ZERO, &qmemf_s, &thresh_s);
@@ -4454,7 +4698,7 @@ extern "C" __global__ void gf_gfdrv_stage(
             GfSink{(float *)0}, GfSink{(float *)0}, GfSinkI{(int *)0},
             outt, outq, outqc, outu, outv, cupclw,
             &pret, &ktop_d, &kbcon_d, &k22_d, &ierr_d, &dd_d, &reading,
-            gfws_col);
+            gfws_col, t.p, esat_t.p);
     }
     (void)k22_d;
     float qmemf_d, thresh_d;
@@ -4462,18 +4706,15 @@ extern "C" __global__ void gf_gfdrv_stage(
                          reading.thresh_resolved, &qmemf_d, &thresh_d);
 
     // ---- capture the post-neg_check seam ----------------------------------
-    float *LEVB = lev + (size_t)col * GF_DRV_NLEV * (size_t)nz;
-    float *SCAB = sca + (size_t)col * GF_DRV_NSCA;
-    int *ISCB = isca + (size_t)col * GF_DRV_NISCA;
     for (int k = 1; k <= nz; k++) {
-        LEVB[(size_t)DL_outt * nz + (k - 1)] = outt[k];
-        LEVB[(size_t)DL_outq * nz + (k - 1)] = outq[k];
-        LEVB[(size_t)DL_outqc * nz + (k - 1)] = outqc[k];
-        LEVB[(size_t)DL_outu * nz + (k - 1)] = outu[k];
-        LEVB[(size_t)DL_outv * nz + (k - 1)] = outv[k];
-        LEVB[(size_t)DL_outts * nz + (k - 1)] = outts[k];
-        LEVB[(size_t)DL_outqs * nz + (k - 1)] = outqs[k];
-        LEVB[(size_t)DL_outqcs * nz + (k - 1)] = outqcs[k];
+        io.lev(DL_outt, k, outt[k]);
+        io.lev(DL_outq, k, outq[k]);
+        io.lev(DL_outqc, k, outqc[k]);
+        io.lev(DL_outu, k, outu[k]);
+        io.lev(DL_outv, k, outv[k]);
+        io.lev(DL_outts, k, outts[k]);
+        io.lev(DL_outqs, k, outqs[k]);
+        io.lev(DL_outqcs, k, outqcs[k]);
     }
 
     // ---- the output algebra (:713-840) ------------------------------------
@@ -4515,10 +4756,10 @@ extern "C" __global__ void gf_gfdrv_stage(
                          FMUL(cutenm, zl));
         float du = FADD(FMUL(zl, cutenm), FMUL(outu[k], cuten));
         float dv = FADD(FMUL(zl, cutenm), FMUL(outv[k], cuten));
-        LEVB[(size_t)DL_rthcuten * nz + (k - 1)] = rth;
-        LEVB[(size_t)DL_rqvcuten * nz + (k - 1)] = rqv;
-        LEVB[(size_t)DL_dudt * nz + (k - 1)] = du;
-        LEVB[(size_t)DL_dvdt * nz + (k - 1)] = dv;
+        io.lev(DL_rthcuten, k, rth);
+        io.lev(DL_rqvcuten, k, rqv);
+        io.lev(DL_dudt, k, du);
+        io.lev(DL_dvdt, k, dv);
     }
 
     // :799-808.  HBOT starts at the TOP index and HTOP at the bottom one.
@@ -4544,45 +4785,104 @@ extern "C" __global__ void gf_gfdrv_stage(
         } else {
             rqi = K_ZERO; rqc = qc; g1 = cw; g2 = K_ZERO;
         }
-        LEVB[(size_t)DL_rqccuten * nz + (k - 1)] = rqc;
-        LEVB[(size_t)DL_rqicuten * nz + (k - 1)] = rqi;
-        LEVB[(size_t)DL_gdc * nz + (k - 1)] = g1;
-        LEVB[(size_t)DL_gdc2 * nz + (k - 1)] = g2;
+        io.lev(DL_rqccuten, k, rqc);
+        io.lev(DL_rqicuten, k, rqi);
+        io.lev(DL_gdc, k, g1);
+        io.lev(DL_gdc2, k, g2);
     }
 
-    SCAB[DS_raincv] = raincv;
-    SCAB[DS_pratec] = pratec;
-    SCAB[DS_htop] = htop;
-    SCAB[DS_hbot] = hbot;
-    SCAB[DS_xmb_shallow] = (ishallow == 1) ? xmbs : K_ZERO;
-    SCAB[DS_pret] = pret;
-    SCAB[DS_prets] = prets;
-    SCAB[DS_cuten] = cuten;
-    SCAB[DS_cutens] = cutens;
-    SCAB[DS_xmb_request] = reading.xmb_request;
-    SCAB[DS_xmb_applied] = (cuten > K_ZERO) ? FMUL(reading.xmb, qmemf_d) : K_ZERO;
-    SCAB[DS_xmb_floor] = reading.xmb_floor;
-    SCAB[DS_floor_fraction] = reading.floor_fraction;
-    SCAB[DS_xf_quasi_equilibrium] = reading.xf_qe;
-    SCAB[DS_xf_omega] = reading.xf_omega;
-    SCAB[DS_xf_moisture_convergence] = reading.xf_mconv;
-    SCAB[DS_xf_ecmwf] = reading.xf_ecmwf;
-    SCAB[DS_xf_dicycle] = reading.xf_dicycle;
-    SCAB[DS_mconv] = reading.mconv;
-    SCAB[DS_mconv_den] = reading.mconv_den;
-    SCAB[DS_pr_ens7] = reading.pr7;
-    SCAB[DS_sig] = reading.sig;
-    SCAB[DS_closure_n] = reading.closure_n;
-    SCAB[DS_neg_check_factor] = qmemf_d;
-    SCAB[DS_heating_cap_k_day] = thresh_d;
-    ISCB[DI_ktop_deep] = ktop_deep;
-    ISCB[DI_k22_shallow] = (ishallow == 1) ? k22s : 0;
-    ISCB[DI_kbcon_shallow] = (ishallow == 1) ? kbcons : 0;
-    ISCB[DI_ktop_shallow] = (ishallow == 1) ? ktops : 0;
-    ISCB[DI_kbcon] = kbcon;
-    ISCB[DI_ktop] = ktop;
-    ISCB[DI_ierr_deep] = ierr_d;
-    ISCB[DI_downdraft_dry_exit] = dd_d;
-    ISCB[DI_closure_family] = reading.closure_family;
-    ISCB[DI_downdraft_massless_levels] = reading.downdraft_massless;
+    io.sca(DS_raincv, raincv);
+    io.sca(DS_pratec, pratec);
+    io.sca(DS_htop, htop);
+    io.sca(DS_hbot, hbot);
+    io.sca(DS_xmb_shallow, (ishallow == 1) ? xmbs : K_ZERO);
+    io.sca(DS_pret, pret);
+    io.sca(DS_prets, prets);
+    io.sca(DS_cuten, cuten);
+    io.sca(DS_cutens, cutens);
+    io.sca(DS_xmb_request, reading.xmb_request);
+    io.sca(DS_xmb_applied, (cuten > K_ZERO) ? FMUL(reading.xmb, qmemf_d) : K_ZERO);
+    io.sca(DS_xmb_floor, reading.xmb_floor);
+    io.sca(DS_floor_fraction, reading.floor_fraction);
+    io.sca(DS_xf_quasi_equilibrium, reading.xf_qe);
+    io.sca(DS_xf_omega, reading.xf_omega);
+    io.sca(DS_xf_moisture_convergence, reading.xf_mconv);
+    io.sca(DS_xf_ecmwf, reading.xf_ecmwf);
+    io.sca(DS_xf_dicycle, reading.xf_dicycle);
+    io.sca(DS_mconv, reading.mconv);
+    io.sca(DS_mconv_den, reading.mconv_den);
+    io.sca(DS_pr_ens7, reading.pr7);
+    io.sca(DS_sig, reading.sig);
+    io.sca(DS_closure_n, reading.closure_n);
+    io.sca(DS_neg_check_factor, qmemf_d);
+    io.sca(DS_heating_cap_k_day, thresh_d);
+    io.isca(DI_ktop_deep, ktop_deep);
+    io.isca(DI_k22_shallow, (ishallow == 1) ? k22s : 0);
+    io.isca(DI_kbcon_shallow, (ishallow == 1) ? kbcons : 0);
+    io.isca(DI_ktop_shallow, (ishallow == 1) ? ktops : 0);
+    io.isca(DI_kbcon, kbcon);
+    io.isca(DI_ktop, ktop);
+    io.isca(DI_ierr_deep, ierr_d);
+    io.isca(DI_downdraft_dry_exit, dd_d);
+    io.isca(DI_closure_family, reading.closure_family);
+    io.isca(DI_downdraft_massless_levels, reading.downdraft_massless);
+}
+
+extern "C" __global__ void gf_gfdrv_stage(
+    const float *__restrict__ lvin,   // (n, GF_DRV_NIN_LEV, nz)
+    const float *__restrict__ scin,   // (n, GF_DRV_NIN_SCA)
+    const int *__restrict__ iin,      // (n, 3)
+    float *__restrict__ lev,          // (n, GF_DRV_NLEV, nz)
+    float *__restrict__ sca,          // (n, GF_DRV_NSCA)
+    int *__restrict__ isca,           // (n, GF_DRV_NISCA)
+    float *__restrict__ ws,           // (n, GFWS_SLOTS, GF_KP) scratch
+    int k22_wrf_faithful, int n, int nz)
+{
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (col >= n) return;
+    GfStageIO io;
+    io.inb = lvin + (size_t)col * GF_DRV_NIN_LEV * (size_t)nz;
+    io.sci = scin + (size_t)col * GF_DRV_NIN_SCA;
+    io.ii = iin + 3 * (size_t)col;
+    io.levb = lev + (size_t)col * GF_DRV_NLEV * (size_t)nz;
+    io.scab = sca + (size_t)col * GF_DRV_NSCA;
+    io.iscb = isca + (size_t)col * GF_DRV_NISCA;
+    io.nz = nz;
+    gfd_gfdrv_body(io, GFWS_LANE_BASE(ws), k22_wrf_faithful, nz);
+}
+
+// The engine entry: the (nz, ncol) fields in place, columns [t0, t0 + nt)
+// of the order `perm` gives (null: natural order), the workspace indexed by
+// the launch's own thread, exactly as gf_gfdrv_stage indexes it.  The
+// fifteen level lanes are separate arguments in DIN_ order.
+extern "C" __global__ void gf_gfdrv_grid(
+    const float *l0, const float *l1, const float *l2, const float *l3,
+    const float *l4, const float *l5, const float *l6, const float *l7,
+    const float *l8, const float *l9, const float *l10, const float *l11,
+    const float *l12, const float *l13, const float *l14,
+    const float *ht, const float *hfx, const float *qfx, const float *xland,
+    const float *dxc, const int *kpbl,
+    float dt, float dx_const, int ishallow, int ichoice,
+    float *lev_out, unsigned lev_mask, float *sca_out, int *isca_out,
+    const int *perm, float *ws,
+    int k22_wrf_faithful, long long t0, int nt, long long ncol, int nz)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= nt) return;
+    long long p = t0 + i;
+    GfGridIO io;
+    io.lane[0] = l0; io.lane[1] = l1; io.lane[2] = l2; io.lane[3] = l3;
+    io.lane[4] = l4; io.lane[5] = l5; io.lane[6] = l6; io.lane[7] = l7;
+    io.lane[8] = l8; io.lane[9] = l9; io.lane[10] = l10; io.lane[11] = l11;
+    io.lane[12] = l12; io.lane[13] = l13; io.lane[14] = l14;
+    io.ht = ht; io.hfx = hfx; io.qfx = qfx; io.xland = xland;
+    io.dxc = dxc; io.kpbl = kpbl;
+    io.dt = dt; io.dx_const = dx_const;
+    io.ishallow = ishallow; io.ichoice = ichoice;
+    io.lev_out = lev_out; io.lev_mask = lev_mask;
+    io.sca_out = sca_out; io.isca_out = isca_out;
+    io.ncol = (size_t)ncol;
+    io.c = (size_t)(perm ? (long long)perm[p] : p);
+    io.nz = nz;
+    gfd_gfdrv_body(io, GFWS_LANE_BASE(ws), k22_wrf_faithful, nz);
 }

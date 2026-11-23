@@ -79,7 +79,7 @@ WORKFLOW = WORKFLOWS["full"]
 #: from a 3.12+ interpreter goes red on its own environment while the job
 #: it replays is fine, and the verdict then describes the harness rather
 #: than the tree.
-VENV_SEEDS = ("build", "setuptools>=77", "wheel", "pytest>=8.0")
+VENV_SEEDS = ("build", "setuptools==84.2.1", "wheel", "pytest>=8.0")
 
 
 def venv_python(venv_dir: Path) -> Path:

@@ -44,11 +44,15 @@ from pathlib import Path
 __all__ = [
     "GDAS_GLOBAL_ANALYSIS_MAPPING_ID",
     "GDAS_GLOBAL_QUICKSTART_CONFIG",
+    "GDAS_GLOBAL_QUICKSTART_CYCLE",
     "GDAS_GLOBAL_QUICKSTART_DOC",
+    "GDAS_GLOBAL_QUICKSTART_OUT",
     "add_fetch_analysis_arguments",
     "analysis_mapping_id",
     "fetch_analysis_main",
     "gdas_fetch_epilogue",
+    "missing_analysis_remedy",
+    "shipped_configs_reading",
 ]
 
 #: The source id the shipped GDAS experiments name.  The engine's value when
@@ -57,8 +61,17 @@ __all__ = [
 GDAS_GLOBAL_ANALYSIS_MAPPING_ID = "gdas-global"
 
 #: The shipped experiment the next step names, by the spelling that resolves
-#: from an install as well as from a checkout.
-GDAS_GLOBAL_QUICKSTART_CONFIG = "arwen_global_t255_quickstart"
+#: from an install as well as from a checkout.  It is the README's forecast
+#: day: one quick start, one config, one cycle (0.3.0 had two, the README's
+#: native-physics day and the quickstart page's reference-physics
+#: 2026-08-30 18Z run).
+GDAS_GLOBAL_QUICKSTART_CONFIG = "arwen_global_gdas_t255_native_sl_si_24h"
+
+#: The cycle and folder that config reads, spelled once for the hint and
+#: the pages (tests/test_arwen_global_quickstart.py holds them to the
+#: config's own ``[initial] analysis_grib``).
+GDAS_GLOBAL_QUICKSTART_CYCLE = "2026-09-01T00"
+GDAS_GLOBAL_QUICKSTART_OUT = "cases/baseline-2026090100"
 
 #: The page that runs the whole route, in this repository.
 GDAS_GLOBAL_QUICKSTART_DOC = "docs/ARWEN_GLOBAL_QUICKSTART.md"
@@ -114,22 +127,42 @@ def gdas_fetch_epilogue(*, out, cycle: dt.datetime,
         # `\.`, which TOML rejects as invalid escapes.
         analysis = (Path(out) / ANALYSIS_OBJECT.format(
             hour=cycle.hour)).as_posix()
+        readers = shipped_configs_reading(analysis)
+        if readers:
+            name = (GDAS_GLOBAL_QUICKSTART_CONFIG
+                    if GDAS_GLOBAL_QUICKSTART_CONFIG in readers else readers[0])
+            lines.append(
+                f"fetch-analysis: next: the shipped forecast day {name} "
+                "reads this file:")
+            lines.extend(_remaining_route(name))
+            if len(readers) > 1:
+                lines.append(
+                    f"  # {len(readers) - 1} other shipped experiment(s) read "
+                    "it too; `gpuwm-global configs --paths` lists every one.")
+        else:
+            lines.append(
+                "fetch-analysis: next: no shipped experiment reads this file, "
+                "so the run's config is yours.  Copy one "
+                "(`gpuwm-global configs --paths` prints where they are) and "
+                "set the key that is this fetch's output:")
+            lines.append(
+                "  # CONFIG is yours, and one key of it is this fetch's "
+                "output:\n"
+                "  #   [initial]\n"
+                "  #   mode = \"analysis\"\n"
+                f"  #   analysis_grib = \"{analysis}\"\n"
+                f"  #   analysis_mapping = \"{analysis_mapping_id()}\"\n"
+                "  # and delete start_time_utc from its physics options (or "
+                "set it to this cycle):\n"
+                "  # a run refuses an analysis whose instant disagrees.")
+            lines.extend(_remaining_route("CONFIG.toml"))
         lines.append(
-            "fetch-analysis: next: cold-start the global model from the f000 "
-            "analysis.  This half is bound:")
+            f"  # the README's day is {GDAS_GLOBAL_QUICKSTART_CONFIG} on the "
+            f"GDAS {GDAS_GLOBAL_QUICKSTART_CYCLE}Z analysis in "
+            f"{GDAS_GLOBAL_QUICKSTART_OUT};")
         lines.append(
-            f"  gpuwm-global run {GDAS_GLOBAL_QUICKSTART_CONFIG} "
-            "--outdir out/arwen-global")
-        lines.append(
-            "  # CONFIG is yours, and one key of it is this fetch's "
-            "output:\n"
-            "  #   [initial]\n"
-            "  #   mode = \"analysis\"\n"
-            f"  #   analysis_grib = \"{analysis}\"\n"
-            f"  #   analysis_mapping = \"{analysis_mapping_id()}\"\n"
-            f"  # {GDAS_GLOBAL_QUICKSTART_CONFIG} is a ready one; the "
-            "whole\n"
-            f"  # route through render is {GDAS_GLOBAL_QUICKSTART_DOC}.")
+            "  # the route with the reason for each step is "
+            f"{GDAS_GLOBAL_QUICKSTART_DOC}.")
     else:
         lines.append(
             "fetch-analysis: this object is a NOMADS AREA CROP and cannot "
@@ -137,6 +170,93 @@ def gdas_fetch_epilogue(*, out, cycle: dt.datetime,
             "longitude ring and refuses one that does not close.  Re-fetch "
             "without --area for a whole-globe analysis.")
     return lines
+
+
+def shipped_configs_reading(analysis: str | Path) -> list[str]:
+    """The shipped experiments whose ``[initial] analysis_grib`` is this
+    file, by bare name, sorted.  Compared as written relative paths, which
+    is how a shipped config spells it and how a reader types ``--out``."""
+
+    import tomllib
+
+    from .configs_dir import config_root
+
+    def norm(value) -> str:
+        text = Path(value).as_posix()
+        while text.startswith("./"):
+            text = text[2:]
+        return text
+
+    wanted = norm(analysis)
+    names: list[str] = []
+    for path in sorted(config_root().glob("*.toml")):
+        try:
+            raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        grib = (raw.get("initial") or {}).get("analysis_grib")
+        if isinstance(grib, str) and norm(grib) == wanted:
+            names.append(path.stem)
+    return names
+
+
+def _geog_staged() -> bool:
+    """Whether a WPS_GEOG archive the statics door would read is here."""
+
+    try:
+        from gpuwm.rustwx_static import geog_root_candidates
+    except Exception:  # pragma: no cover - a broken engine install
+        return False
+    return any(Path(path).is_dir() for path in geog_root_candidates())
+
+
+def _remaining_route(config: str) -> list[str]:
+    """The commands between this fetch and a drawn map, in order."""
+
+    lines: list[str] = []
+    if not _geog_staged():
+        lines.append(
+            "  gpuwm fetch-geog                     # once per machine: the "
+            "WPS_GEOG archive (2.7 GB download, 32 GB on disk)")
+    lines.append(
+        f"  gpuwm-global statics {config}   # once per truncation")
+    lines.append(f"  gpuwm-global run {config} --outdir out/day")
+    lines.append(
+        "  gpuwm-global render out/day --outdir out/pictures "
+        "--products 2m_temperature,mslp_10m_winds,500mb_height_winds")
+    lines.append(
+        f"  # or statics, run and render in one: gpuwm-global go {config} "
+        "--outdir out/day")
+    return lines
+
+
+def missing_analysis_remedy(grib: str | Path, start_time_utc: str | None) -> str:
+    """The sentence a run prints when its analysis file is not there yet.
+
+    It names the fetch that writes exactly that file.  The cycle comes from
+    the config's ``start_time_utc`` when it states one (the shipped native
+    days do), else from the hour in the file's own name with the date left
+    to the reader.
+    """
+
+    import re
+
+    grib = Path(grib)
+    out = grib.parent.as_posix() or "."
+    cycle = None
+    if start_time_utc:
+        try:
+            when = dt.datetime.fromisoformat(
+                str(start_time_utc).replace("Z", "+00:00"))
+            cycle = f"{when:%Y-%m-%dT%H}"
+        except ValueError:
+            cycle = None
+    if cycle is None:
+        match = re.match(r"gdas\.t(\d\d)z\.pgrb2", grib.name)
+        cycle = f"YYYY-MM-DDT{match.group(1)}" if match else "YYYY-MM-DDTHH"
+    return (f"analysis GRIB {grib} does not exist; fetch it with "
+            f"`gpuwm-global fetch-analysis --cycle {cycle} --out {out}`, "
+            "which writes exactly that file")
 
 
 # ------------------------------------------------------------------- the door

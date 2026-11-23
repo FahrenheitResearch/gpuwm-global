@@ -245,4 +245,7 @@ def test_the_credits_name_the_record_and_licence_the_reader_uses(page):
 
 
 def test_the_readme_links_the_page():
-    assert "](docs/ARWEN_GLOBAL_WORLDS.md)" in README.read_text(encoding="utf-8")
+    # Absolute from 0.4.0, so the page also resolves on PyPI, which does not
+    # resolve a README's relative links.
+    assert ("](https://github.com/FahrenheitResearch/gpuwm-global/blob/v0.4.0/"
+            "docs/ARWEN_GLOBAL_WORLDS.md)") in README.read_text(encoding="utf-8")

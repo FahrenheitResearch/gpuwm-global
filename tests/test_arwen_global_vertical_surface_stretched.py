@@ -247,7 +247,19 @@ def test_the_vertical_table_defaults_and_refusals(tmp_path):
     )
     with pytest.raises(ValueError, match="cannot be combined"):
         load_config(explicit)
-    assert set(VERTICAL_COORDINATES) == {"surface_stretched", "pressure_blend", "jet_refined"}
+    assert set(VERTICAL_COORDINATES) == {"surface_stretched", "pressure_blend", "jet_refined",
+                                         "ifs_class"}
+    # ifs_class (0.4.0): 80 levels by default, selectable by
+    # name, a lid at p_top, monotone, and its own identity; the level cap
+    # moved from 64 to 114 for it.
+    ifs = load_config(write("ifs.toml", 'coordinate = "ifs_class"\n'))
+    assert ifs.vertical.nlev == 80
+    a, b = np.asarray(ifs.vertical.a_half_pa), np.asarray(ifs.vertical.b_half)  # top -> bottom
+    p_ref = a + b * 101_325.0
+    assert np.all(np.diff(p_ref) > 0.0) and b[-1] == 1.0 and b[0] == 0.0
+    assert ifs.config_hash != bare.config_hash
+    with pytest.raises(ValueError, match="2..114"):
+        load_config(write("deep.toml", 'coordinate = "ifs_class"\nnlev = 115\n'))
 
 
 def test_the_receipt_and_the_door_state_the_vertical_grid(tmp_path):

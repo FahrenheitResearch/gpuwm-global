@@ -53,7 +53,10 @@ def test_t1023_is_admitted_at_one_band_on_the_96_gb_card_at_its_measured_plan():
     plan = gate["plan"]
     assert plan.bands == 1 and plan.spill_slices == ()
     assert plan.live_peak_bytes == int(row["peak_used_bytes"])
-    assert plan.card_bytes == int(row["card_bytes_measured"]) <= FREE_96
+    # The measured card figure plus the kept cuFFT plans (speed/fft-plans),
+    # which the row's run (2026-11-15) did not keep.
+    assert plan.card_bytes == (int(row["card_bytes_measured"])
+                               + sizing.fft_plan_cache_bytes(int(row["truncation"]))) <= FREE_96
     assert "completed run of exactly this plan" in gate["verdict"]
 
 
@@ -76,7 +79,10 @@ def test_t799_is_admitted_at_one_band_on_the_96_gb_card_at_its_measured_plan():
     assert not gate["refuse"] and gate["unfitted"] is None
     plan = gate["plan"]
     assert plan.bands == 1 and plan.spill_slices == ()
-    assert plan.card_bytes == int(row["card_bytes_measured"]) <= FREE_96
+    # The measured card figure plus the kept cuFFT plans (speed/fft-plans),
+    # which the row's run (2026-11-15) did not keep.
+    assert plan.card_bytes == (int(row["card_bytes_measured"])
+                               + sizing.fft_plan_cache_bytes(int(row["truncation"]))) <= FREE_96
 
 
 def test_t1023_at_the_shipped_gather_batch_is_not_priced_by_the_batch_one_run():

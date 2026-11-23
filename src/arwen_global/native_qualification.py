@@ -221,9 +221,11 @@ def qualify_native_adapter(
         raise ValueError("native qualification requires physics.mode='arwen-native'")
     if cfg.backend != "cupy" or cfg.precision != "float32":
         raise ValueError("native qualification requires cupy/float32")
+    # Any registered adapter, whatever its admission status: the battery is
+    # how a user proves the suite on their own card, and an adapter promoted
+    # on another card is still unproven on this one.  The battery writes
+    # evidence and a candidate; it never changes the registration.
     registration = get_global_physics_adapter(cfg.native_adapter_name or "")
-    if registration.contract["admission_status"] != "device-pending":
-        raise ValueError("this qualification door is for device-pending adapters")
 
     started = time.time()
     base: dict[str, object] = {

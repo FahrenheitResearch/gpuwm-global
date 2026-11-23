@@ -273,13 +273,17 @@ def build_orographic_statistics(grid, options: StaticsOptions) -> tuple[dict, di
 
 
 def missing_cache_remedy(npz_path: Path) -> str:
+    from .statics import shipped_config_for_cache
+
+    shipped = shipped_config_for_cache(npz_path)
+    config = shipped if shipped is not None else "<this run's config>"
     return (
         f"no sub-grid orography cache for this truncation at {npz_path}; "
         "orographic_drag = \"kim-gwdo\" reads VAR, CON, OA1-4 and OL1-4 on "
         "every column, and without them the drag would run on zeros, which "
         "turns it off without saying so.  Build it once for this truncation "
         "(after the land-surface statics, whose land mask it uses):\n"
-        "  gpuwm-global statics <this run's config> --orographic")
+        f"  gpuwm-global statics {config} --orographic")
 
 
 def load_orographic_statistics(options: StaticsOptions, grid) -> tuple[dict, dict]:

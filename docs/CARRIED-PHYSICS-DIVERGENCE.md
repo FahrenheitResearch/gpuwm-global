@@ -13,6 +13,17 @@ This is that file. `SOURCE.md` says which revision of the model's own source
 tree the package was cut from. It does not say which differences are on
 purpose, which is what this one is for.
 
+**Which engine the rows describe.** The rows below were measured against
+gpuwm 2.8.5. This release needs gpuwm 3.0.5, and against 3.0.5 the same
+measurement (`tools/fingerprint_engine_divergence.py`, 2026-11-23) finds
+1,030 differences no row covers yet and 430 of the 963 rows that no longer
+match (counted as `tests/test_engine_divergence.py` counts them), most
+of them in `core/physics.py` and `core/rrtmgp.py`: the engine moved between
+the two versions. Until the rows are re-measured and classified at 3.0.5,
+read them as a record of 2.8.5, and the two tests that hold them to an
+installed engine skip on 3.0.5. What the carried physics reaches in the
+engine is pinned separately at 3.0.5 (the 49 seam files `doctor` checks).
+
 ## How to use it
 
 **The engine changed a file this package carries.** Find the file's section
@@ -102,7 +113,19 @@ normalisation exactly and is what recomputes it.
   Blackwell cards only. The longwave lid fix then added two hunks, measured on the same engine, filed as `RRTMGP-26`. The valid-year gas selection added one more, measured on the same engine, filed as `RRTMGP-27`. The in-cloud path factor added three, measured on the same engine, filed as `RRTMGP-28`. The 2.8.0 baseline
   before it is in the git history of this file; it read 361 hunks forward
   from 2.7.3, dropped 14 and read 66 new ones.
-* **Where the rows stand at 0.3.0 (2026-11-16).** The declared range is
+* **Where the rows stand at 0.4.0 (2026-11-22).** The declared range is
+  `gpuwm>=3.0.5,<3.1`. The rows were not re-baselined at 3.0.5: they still
+  name 2.8.5 (and 2.9.13 for the four marked so below), and the two
+  comparison nodes skip, naming both versions. The engine seam is re-pinned
+  at 3.0.5: 7 of its 49 files moved against 3.0.3 (`config.py`,
+  `core/preflight.py`, `core/health_ledger.py`, `core/noahmp_runtime.py`,
+  `core/rrtmg_legacy.py`, `core/mpas_column_batch.py`,
+  `kernel_compile_notice.py`) and `gpuwm/core/constants.py` did not. Five
+  moved outside what this package reaches in them; `kernel_compile_notice.py`
+  now caches the kernel-cache file count it prints; in
+  `core/health_ledger.py` a non-finite state now raises a
+  `FloatingPointError` subclass with a longer message.
+* **Where the rows stood at 0.3.0 (2026-11-16).** The declared range is
   `gpuwm>=3.0.3,<3.1`. The rows were not re-baselined at 3.0.3: they still
   name 2.8.5 (and 2.9.13 for the four marked so below), and the two
   comparison nodes skip, naming both versions. The engine seam
@@ -317,6 +340,8 @@ notice that travels with them.
 **`RRTMGP-28`.** The driver takes `cloud_path_scale` (default 1.0) and, below 1, multiplies the in-cloud liquid and ice paths that both the longwave and the shortwave solver radiate; the sizes and the size-bounding record are left as they were. It is the effective-thickness correction for in-cloud variability a homogeneous subcolumn cannot carry (Cahalan et al. 1994, about 0.7 for marine stratocumulus; Tiedtke 1996, 0.7 on liquid and ice in both spectra in the ECMWF model). WRF's RRTMG has no such factor, so it is a declared departure, reached only through the native option `radiation_cloud_inhomogeneity = "tiedtke1996"`; at 1.0 the call is the call it always was (`tests/test_arwen_global_cloud_radiation_options_card.py`). See `docs/albedo-fixes.md`.
 
 **`RRTMGP-29`.** RRTMGP v1.9's gas tables end at 109,663.316 Pa of layer pressure, and the range gate both copies run refused anything deeper, so the run stopped. A truncated orography goes deeper under a winter high: the T127 year run of 2026-11-13 stopped at day 192.8 on a 109,701.9 Pa layer where the T127 terrain rings down to -101 m on the south-east Caspian shore. This copy looks such a layer up at the tables' deepest pressure (`GAS-CU-2`, and `NPREF-17` in the mirror), the way the UFS/CCPP RRTMGP interface bounds `p_lay` to `get_press_max()` in `GFS_rrtmgp_pre.F90`, and ends the gate at `RRTMGP_PLAY_CEILING_PA` = 115,000 Pa instead of at the table top. Only the lookup coordinate moves: the absorber columns, the minor-gas density scaling, the troposphere test and the cloud fraction keep the true pressure. A layer inside the tables reads exactly what it read before (`tests/test_rrtmgp_pressure_ceiling.py` pins the prepass to the untouched oracle bit for bit), and a 12 h winter T255 run was byte-identical to the 0.2.0 tree in all 589 arrays. The engine's copy keeps the table-top gate, so any engine run with a layer deeper than the tables stops the same way; it is offered as is. Measured against the 2.8.5 baseline this file is keyed to: seven hunks, every one on lines no other row covers.
+
+**`RRTMGP-30`.** The driver takes `aerosol_climatology` (default "none") and, set to "tegen-wrf", adds WRF's `aer_opt = 1` aerosol to the shortwave: the Tegen et al. (1997) six-type monthly climatology WRF ships in `run/aerosol*.formatted`, read through RRTMG's ECMWF per-type optics (`iaer = 6`), added to gas and cloud before the total is delta-scaled (`arwen_global/physics/aerosol_climatology.py`, which holds the data reading, the WRF interpolations, the band optics kernel and the combination kernel). The longwave takes none, as in WRF. Under "none" the driver builds no aerosol state and every call is the call it always was (`tests/test_arwen_global_aerosol_climatology_card.py`). The fused shortwave solver, the default path, carries the same combination inside `rrtmgp_sw_2stream` (`core/kernels/rrtmgp_rte.cu`, a branch taken only with the aerosol on), and with the aerosol on its every output is the finalize path's bit for bit (the same test file, on an RTX 4090 and an RTX 5070 Ti, 2026-11-22); the chunk-workspace solver, which this package's runtime does not use, refuses the option rather than run without it. The engine's copy has no aerosol at all, which is WRF's `aer_opt = 0`; it is offered as is. Not fingerprinted: the installed engine is 2.9.13 and the 2.8.5 rows above are skipped there, and the tool refuses 2.8.5 against this package's 2.9.13 floor, so this row is prose until the ledger is re-baselined. Reached only through the native option `radiation_aerosol = "tegen-wrf"`; see `docs/arwen-global-aerosol.md`.
 
 ### `core/gf.py`
 

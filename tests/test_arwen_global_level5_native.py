@@ -1341,12 +1341,11 @@ def test_native_bridge_subject_builds_from_the_t255_config():
     subject = native_bridge_subject(T255_CONFIG)
     assert callable(subject.step)
     assert subject.identity["adapter_name"] == "arwen-cuda-column-suite-v1"
-    # Device-pending: the Grell-Freitas component joined the suite after
-    # the 2026-09-01 qualification battery, so the evidence that earned
-    # 'experimental' measured a stack this registration no longer runs and
-    # the battery must be re-run (builtin_adapters).
-    assert subject.identity["admission_status"] == "device-pending"
-    assert subject.identity["device_evidence_sha256"] == "0" * 64
+    # Experimental: the battery was re-run with Grell-Freitas in the order
+    # on 2026-11-23 (builtin_adapters).
+    assert subject.identity["admission_status"] == "experimental"
+    assert subject.identity["device_evidence_sha256"] == (
+        "04f92257b98bc7167fc104d1565f1b5c30ff82515cecbdd48634f584b2ba1185")
     assert "Grell-Freitas" in subject.identity["scheme_identity"]["cumulus"]
 
 
@@ -2780,10 +2779,13 @@ def test_the_registration_names_the_cumulus_scheme_and_the_stale_evidence():
     bridge = NativeArwenPhysicsBridge(ADAPTER_NAME, _options())
     contract = bridge.registration.contract
     assert "Grell-Freitas" in contract["scheme_identity"]["cumulus"]
-    assert contract["admission_status"] == "device-pending"
-    assert contract["device_evidence_sha256"] == "0" * 64
+    assert contract["admission_status"] == "experimental"
+    assert contract["device_evidence_sha256"] == (
+        "04f92257b98bc7167fc104d1565f1b5c30ff82515cecbdd48634f584b2ba1185")
+    # The evidence names the stack it covers, GF in it, and the superseded
+    # five-scheme evidence stays on record.
     assert any(
-        "re-run" in row and "c682dbcc73ea544af04d4892cbeea91af08dc8f7" in row
+        "/gf" in row and "c682dbcc73ea544af04d4892cbeea91af08dc8f7" in row
         for row in contract["limitations"]
     )
     assert not any(row == "no cumulus scheme" for row in contract["limitations"])

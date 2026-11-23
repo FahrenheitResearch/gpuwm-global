@@ -10,6 +10,7 @@ import math
 import numpy as np
 
 from .backend import Backend, get_backend
+from .fft_plans import kept as kept_fft_plan
 from .grid import GaussianGrid
 from .legendre import (
     DEFAULT_BAND,
@@ -32,6 +33,29 @@ def expand_band(scratch, layout: str, previous: int, m0: int, m1: int, block):
     operand.
     """
     dense = scratch[: m1 - m0]
+    if (
+        hasattr(scratch, "__cuda_array_interface__")
+        and getattr(block, "flags", None) is not None
+        and block.flags.c_contiguous
+        and block.dtype == scratch.dtype
+    ):
+        # One launch writes the cleared slice and the band where the two
+        # assignments below took two (a fill and a copy): the same zeros and
+        # the same table values, moved, at every one of a step's band
+        # expansions (fused.expand_band_kernel).
+        import cupy
+
+        from .fused import expand_band_kernel
+
+        t1 = int(scratch.shape[2] if layout == "jn" else scratch.shape[1])
+        target = (dense[:, :, previous:] if layout == "jn"
+                  else dense[:, previous:, :])
+        if target.size:
+            expand_band_kernel(cupy, layout)(
+                block, int(previous), int(m0), int(t1 - previous), int(t1 - m0),
+                int(scratch.shape[1] if layout == "jn" else scratch.shape[2]),
+                target)
+        return dense
     if layout == "jn":
         dense[:, :, previous:m0] = 0
         dense[:, :, m0:] = block
@@ -486,19 +510,21 @@ class FourierWaist:
             # full-width scaled spectrum the band loop cannot amortise
             # over a single band never exists (fourier_waist's own
             # measurement, 0.9898 GiB against 1.5831 at T383 six fields).
-            self._values = xp.divide(
-                xp.fft.rfft(f, axis=-1)[..., :t1], self.transform.grid.nlon
-            )
+            with kept_fft_plan(f, self.transform.grid.nlon):
+                self._values = xp.divide(
+                    xp.fft.rfft(f, axis=-1)[..., :t1], self.transform.grid.nlon
+                )
             return
         if self._values is None:
             self._values = xp.empty(
                 self.shape, dtype=self.transform.backend.complex_dtype
             )
-        xp.divide(
-            xp.fft.rfft(f, axis=-1)[..., :t1],
-            self.transform.grid.nlon,
-            out=self._values[..., r0:r1, :],
-        )
+        with kept_fft_plan(f, self.transform.grid.nlon):
+            xp.divide(
+                xp.fft.rfft(f, axis=-1)[..., :t1],
+                self.transform.grid.nlon,
+                out=self._values[..., r0:r1, :],
+            )
 
     def close(self) -> "FourierWaist":
         """Fill the rows the other cards hold, refuse a waist with an
@@ -1149,7 +1175,7 @@ class SphericalHarmonicTransform:
 
         return scope()
 
-    def _batched_contract(self, values, table, *, transposed=False):
+    def _batched_contract(self, values, table, *, transposed=False, realify=False):
         """Contract ``values[..., k, m] * table[m, k, n] -> out[..., n, m]``.
 
         Each band rides one strided-batched real GEMM per real/imaginary
@@ -1173,8 +1199,26 @@ class SphericalHarmonicTransform:
         m_count = values.shape[-1]
         n_count = table.output_size(transposed=transposed)
         stacked = xp.moveaxis(values, -1, 0).reshape(m_count, -1, k)
-        real_in = xp.ascontiguousarray(stacked.real)
-        imag_in = xp.ascontiguousarray(stacked.imag)
+        device = self.backend.name == "cupy"
+        if device and values.flags.c_contiguous:
+            # One tiled pass over the complex operand writes both GEMM
+            # operands with coalesced reads and writes
+            # (fused.split_transposed: the two copies below, as moves).
+            from .fused import split_transposed
+
+            real_in, imag_in = split_transposed(
+                xp, values, self.backend.float_dtype)
+        elif device:
+            # One pass over the complex operand writes both GEMM operands
+            # (fused.complex_split_kernel: the two copies below, as moves).
+            from .fused import complex_split_kernel
+
+            real_in = xp.empty(stacked.shape, dtype=self.backend.float_dtype)
+            imag_in = xp.empty_like(real_in)
+            complex_split_kernel(xp)(stacked, real_in, imag_in)
+        else:
+            real_in = xp.ascontiguousarray(stacked.real)
+            imag_in = xp.ascontiguousarray(stacked.imag)
         batch = stacked.shape[1]
         # The complex input is dead once its real/imaginary operands are
         # copied out.  When the caller handed in a temporary (the weighted
@@ -1195,13 +1239,35 @@ class SphericalHarmonicTransform:
         for m0, m1, dense in table.expanded():
             if transposed:
                 dense = dense.transpose(0, 2, 1)
-            real[m0:m1] = real_in[m0:m1] @ dense
-            imag[m0:m1] = imag_in[m0:m1] @ dense
+            if device:
+                # The GEMM writes its band of the output in place: the
+                # same cuBLAS call on the same operands, handed a
+                # C-contiguous leading slice instead of a fresh array that
+                # was then copied into that slice (one copy per GEMM, about
+                # one in three of a step's copy kernels at T799).
+                xp.matmul(real_in[m0:m1], dense, out=real[m0:m1])
+                xp.matmul(imag_in[m0:m1], dense, out=imag[m0:m1])
+            else:
+                real[m0:m1] = real_in[m0:m1] @ dense
+                imag[m0:m1] = imag_in[m0:m1] @ dense
         # The GEMM operands are dead once every band has run; releasing
         # them before the complex output exists keeps the two from being
         # live together (memory only: at T533 float32 a six-field synthesis
         # held 0.51 GiB of operands beside a 0.76 GiB output).
         del real_in, imag_in
+        if device:
+            # One tiled pass writes the coefficients in the (..., n, m)
+            # layout their readers index, C-contiguous, where the strided
+            # half-writes left an order-outermost buffer behind a moveaxis
+            # view that every elementwise reader then read one sector per
+            # element.  Same values; with ``realify`` the m = 0 imaginary
+            # part is stored +0 here, which the caller's
+            # ``out[..., :, 0] = out[..., :, 0].real`` stored after.
+            from .fused import join_transposed
+
+            out = join_transposed(
+                xp, real, imag, self.backend.complex_dtype, realify=realify)
+            return out.reshape(*lead, n_count, m_count)
         out = xp.empty(real.shape, dtype=self.backend.complex_dtype)
         out.real = real
         out.imag = imag
@@ -1317,23 +1383,24 @@ class SphericalHarmonicTransform:
             # avoid it (ascontiguousarray measured the same peak), but
             # that copy divides with the band count.
             rows = f if (r0, r1) == (0, self.grid.nlat) else f[..., r0:r1, :]
-            return FourierWaist(
-                self,
-                xp.divide(
+            with kept_fft_plan(rows, self.grid.nlon):
+                values = xp.divide(
                     xp.fft.rfft(rows, axis=-1)[..., :t1],
                     self.grid.nlon,
-                ),
-                edges,
-            )
+                )
+            return FourierWaist(self, values, edges)
         waist = xp.empty(
             (*f.shape[:-2], self.grid.nlat, t1), dtype=self.backend.complex_dtype
         )
         for r0, r1 in edges:
-            xp.divide(
-                xp.fft.rfft(f[..., r0:r1, :], axis=-1)[..., :t1],
-                self.grid.nlon,
-                out=waist[..., r0:r1, :],
-            )
+            band = f[..., r0:r1, :]
+            with kept_fft_plan(band, self.grid.nlon):
+                xp.divide(
+                    xp.fft.rfft(band, axis=-1)[..., :t1],
+                    self.grid.nlon,
+                    out=waist[..., r0:r1, :],
+                )
+            del band
         return FourierWaist(self, waist, edges)
 
     def _agree_across_cards(self, direction: str, table, array) -> None:
@@ -1377,8 +1444,10 @@ class SphericalHarmonicTransform:
         """
         table = self._analysis if table is None else table
         with self._contraction_scope():
-            out = self._batched_contract(waist.take(), table)
-        out[..., :, 0] = out[..., :, 0].real
+            out = self._batched_contract(waist.take(), table, realify=True)
+        if self.backend.name != "cupy":
+            # On the device the output's join stored this (fused.join_transposed).
+            out[..., :, 0] = out[..., :, 0].real
         self._agree_across_cards("analysis", table, out)
         return out
 
@@ -1396,8 +1465,9 @@ class SphericalHarmonicTransform:
         """
         table = self._analysis if table is None else table
         with self._contraction_scope():
-            out = self._batched_contract(values, table)
-        out[..., :, 0] = out[..., :, 0].real
+            out = self._batched_contract(values, table, realify=True)
+        if self.backend.name != "cupy":
+            out[..., :, 0] = out[..., :, 0].real
         self._agree_across_cards("analysis", table, out)
         return out
 
@@ -1619,9 +1689,10 @@ class SphericalHarmonicTransform:
             # T533 float32 (allocator probe, 2026-09-02).
             from cupyx.scipy import fft as device_fft
 
-            grid = device_fft.irfft(
-                spectrum, n=self.grid.nlon, axis=-1, overwrite_x=True
-            )
+            with kept_fft_plan(spectrum, self.grid.nlon, inverse=True):
+                grid = device_fft.irfft(
+                    spectrum, n=self.grid.nlon, axis=-1, overwrite_x=True
+                )
         else:
             grid = xp.fft.irfft(spectrum, n=self.grid.nlon, axis=-1)
         del spectrum

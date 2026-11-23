@@ -76,3 +76,22 @@ def test_the_maps_name_the_product_and_this_release_not_the_engine():
 
     assert map_source_label() == f"ArWen Global {__version__}"
     assert "source_label" in _call_keywords("render_wrfouts_rust")
+
+
+def test_bbox_with_tapes_is_refused_not_ignored(tmp_path):
+    """``--bbox`` crops at export, so a tape that is already exported was
+    drawn whole while the flag was silently dropped (measured 2026-11-23: an
+    Asia crop and the globe came out byte-identical).  The door refuses that
+    pairing by name, before it looks for the renderer or draws anything."""
+
+    import argparse
+
+    tape = tmp_path / "wrfout_d01_2026-11-11_00"
+    tape.write_bytes(b"")
+    parser = argparse.ArgumentParser()
+    render_door.add_render_arguments(parser)
+    args = parser.parse_args([str(tape), "--outdir", str(tmp_path / "out"),
+                              "--bbox", "0", "60", "60", "150"])
+    with pytest.raises(ValueError, match="--bbox crops at export"):
+        render_door.render(args)
+    assert not any((tmp_path / "out").rglob("*.png"))

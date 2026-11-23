@@ -627,7 +627,9 @@ def test_t533_on_the_16_gb_card_is_a_row_of_the_door_not_a_shim():
     plan = gate["plan"]
     assert plan.bands == 4
     assert set(plan.spill_slices) == {"physics", "surface", "tracers"}
-    assert plan.card_bytes == 15_524 * 1024 * 1024 <= free
+    # The measured card figure plus the kept cuFFT plans (speed/fft-plans;
+    # the 2026-11-06 day kept none): 15,587 MiB, still inside the free reading.
+    assert plan.card_bytes == 15_524 * 1024 * 1024 + sizing.fft_plan_cache_bytes(533) <= free
     assert "completed run of exactly this plan" in gate["verdict"]
 
     default_pool = dataclasses.replace(base, streaming=True)

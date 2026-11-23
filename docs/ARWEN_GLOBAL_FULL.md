@@ -1080,12 +1080,10 @@ and the render behind it, is
 [ARWEN_GLOBAL_QUICKSTART.md](ARWEN_GLOBAL_QUICKSTART.md).
 
 ```bash
-gpuwm-global run arwen_global_t255_quickstart \
-  --outdir out/arwen-global-24h
+gpuwm-global run arwen_global_gdas_t255_native_sl_si_24h --outdir out/t255-day
 
-gpuwm-global export arwen_global_t255_quickstart \
-  out/arwen-global-24h/arwen_global_step*.npz \
-  --outdir out/arwen-global-tapes --start-date 2026-08-30_18:00:00
+gpuwm-global export arwen_global_gdas_t255_native_sl_si_24h \
+  out/t255-day/arwen_global_step*.npz --outdir out/t255-tapes
 
 gpuwm-global assimilate CONFIG CHECKPOINT --obs OBS.csv --out analysis.npz
 

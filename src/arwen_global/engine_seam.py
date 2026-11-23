@@ -43,12 +43,13 @@ contents, and `gpuwm.core.constants` alone reaches the assembled source of
 every carried kernel: move it and every kernel's `source_sha256`, PTX and
 floating-point contraction move with it, with no other signal.
 
-WHY A WARNING AND NOT A REFUSAL.  A moved seam file is reported by name as
-unproven.  It is not refused: the version ceiling in the dependency pin is the
-refusal, and a package that stopped running because a comment changed in a
-file it reads two constants from would be worse than one that says which file
-it no longer recognises.  A refusal has to name the breakage it prevents, and
-"this file's bytes are not the ones I measured" does not name one.
+A GAP IN `doctor`, NOT A REFUSAL OF THE RUN (from 0.4.0).  A moved seam file
+is reported by name, with the engine version the pins were taken at, as a
+`doctor` gap: the forecast on that engine is not the one this release proved.
+Before 0.4.0 it was a note, and on gpuwm 3.0.5 the report printed seven moved
+rows and then "No gaps" (2026-11-22).  The run itself is not stopped: the
+version ceiling in the dependency pin is the refusal, and `doctor` names the
+one-line remedy, installing the pinned engine.
 
 The manifest is written by `tools/pin_engine_seam.py`, which reads the hashes
 off the installed engine.  Nothing here is typed by hand.

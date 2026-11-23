@@ -1124,18 +1124,20 @@ List the current registry with:
 gpuwm-global physics-manifest
 ```
 
-The built-in adapter reads `device-pending`, and it has been there twice.
-The qualification battery passed on an RTX 5090 on 2026-09-01 and
-promoted the registration to `experimental` on that evidence, which
-covered a five-scheme stack: RRTMGP, SFCLAY, Noah, YSU and Morrison.
-Grell-Freitas cumulus then joined the suite as a sixth component, default
-on, so the evidence on file no longer describes the stack the adapter
-runs, and the registration went back to `device-pending`. The superseded
-digest sits in the contract's `limitations` rather than in
-`device_evidence_sha256`, where it would read as cover for a stack it
-never measured, and `device_evidence_sha256` is the zero digest until the
-battery is re-run with `cumulus = "gf"` in the order. `physics-manifest`
-is the current answer; this paragraph is the history behind it.
+The built-in adapter reads `experimental`. The qualification battery
+passed on an RTX 5090 on 2026-09-01 and promoted the registration to
+`experimental` on that evidence, which covered a five-scheme stack: RRTMGP,
+SFCLAY, Noah, YSU and Morrison. Grell-Freitas cumulus then joined the suite
+as a sixth component, default on, and the registration went back to
+`device-pending`. On 2026-11-23 the battery was re-run with Grell-Freitas
+in the order, on the shipped T255 day on an RTX 5070 Ti (CuPy 14.2.0,
+gpuwm 3.0.5): both campaigns passed their receipt gates and ended bit-exact,
+run trackers included, and the registration is `experimental` again with
+`device_evidence_sha256` `04f92257b98bc7167fc104d1565f1b5c30ff82515cecbdd48634f584b2ba1185`.
+That evidence covers the default stack, not the opt-in schemes of 0.4.0.
+The superseded five-scheme digest stays in the contract's `limitations`.
+`physics-manifest` is the current answer; this paragraph is the history
+behind it.
 
 ## Target-device qualification
 
@@ -1147,9 +1149,16 @@ Run the qualification battery on the target card:
 
 ```bash
 gpuwm-global native-qualify \
-  arwen_global_level5_native_smoke \
+  arwen_global_gdas_t255_native_sl_si_24h \
   --outdir out/arwen-global-native-qualification
 ```
+
+This is the run the registration's evidence came from (about 5 minutes on an
+RTX 5070 Ti, after the quick start's `fetch-analysis` and `statics`). The
+T3 smoke `arwen_global_level5_native_smoke` is a fixture for the CPU tests
+and does not qualify a card: on a card it stops at its first radiation call
+after step 0, because the five-level world's sunlit land skin leaves
+RRTMGP's 355 K table (363.5 K, measured 2026-11-23 on an RTX 5070 Ti).
 
 The battery binds evidence to:
 
@@ -1339,9 +1348,12 @@ On a target card, the qualification battery has run. It passed on an RTX
 5090 on 2026-09-01 for the five-scheme stack: every gate green, terminal
 checkpoints bit-exact including run trackers across a midpoint restart,
 device identity bound, six admission defects found and fixed on the way
-in. That evidence does not cover the six-scheme suite the adapter runs
-today, so the registration is back at `device-pending` and no CUDA
-numerical claim rests on it. No performance claim is made from it either.
+in. It passed again on an RTX 5070 Ti on 2026-11-23 for the six-scheme
+suite the adapter runs by default (Grell-Freitas in the order), and the
+registration is `experimental` on that evidence. It is device evidence, not
+validation against observations, and no performance claim is made from it.
+The battery runs on any registered adapter, so a user can take the same
+evidence on their own card.
 An environment without CuPy still gets the same treatment it always did:
 the battery emits a durable error receipt naming the missing dependency
 and emits no candidate.
@@ -1351,8 +1363,8 @@ and emits no candidate.
 A production global-parent claim still requires:
 
 1. passing target-device qualification on the intended GPU/CUDA/CuPy stack
-   for the suite as it stands, which today means re-running the battery
-   with `cumulus = "gf"` in the scheme order;
+   for the suite as it stands (done for the default stack on an RTX 5070 Ti
+   on 2026-11-23; the opt-in schemes of 0.4.0 are outside that evidence);
 2. scheme-by-scheme comparison against the existing regional physics wrappers
    on identical column batches;
 3. long moist global integrations and climatological/budget evaluation;

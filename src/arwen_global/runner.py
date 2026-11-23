@@ -32,9 +32,13 @@ from .config import (
     eulerian_wind_ceiling_m_s,
 )
 from .constants import DRY_TARGET_MASS_RELATIVE_DRIFT_FLOOR, EARTH_RADIUS_M
+
+#: A measuring instrument: when set, every step's model.step wall
+#: is appended to this file as "step seconds" (host timing only).
+_STEP_WALL_LOG = os.environ.get("ARWEN_GLOBAL_STEP_WALL_LOG", "")
 from .device_memory import (
     device_memory_receipt,
-    disable_fft_plan_cache,
+    keep_fft_plans,
     select_device_allocator,
     start_device_peak_tracking,
 )
@@ -194,6 +198,9 @@ def build_diffusion(cfg: ArwenGlobalConfig):
         order=cfg.diffusion_order,
         e_folding_time_s_at_truncation=cfg.diffusion_efold_s,
         preserve_degree=cfg.diffusion_preserve_degree,
+        background_order=cfg.diffusion_background_order,
+        background_e_folding_time_s_at_truncation=cfg.diffusion_background_efold_s,
+        background_fields=cfg.diffusion_background_fields,
     )
 
 
@@ -540,7 +547,7 @@ def open_card_session(cfg: ArwenGlobalConfig, transform, bands: int):
     session.placement = placement
     # A gather run assembles a Fourier waist out of latitude rows computed
     # on both cards, so it reproduces the single-card answer only where the
-    # cards return the same bits (lane 6's finding).  The check rides the
+    # cards return the same bits (measured 2026-09).  The check rides the
     # run's own contractions (cards.ContractionAgreement, called by the
     # transform once per distinct shape) rather than a probe at fixed
     # widths here: the fixed-width probe refused this pair at an
@@ -711,6 +718,7 @@ def build_model_and_cold_state(cfg: ArwenGlobalConfig, transform=None, *,
         latitude_bands=bands,
         cards=None if session is None else _row_exchange(session),
         card_halo_rows=int(getattr(cfg, "card_halo_rows", 16)),
+        stochastic=_build_stochastic(cfg, transform),
     )
     model.forecast_clock = clock
     # Not "world": the card exchange already uses that word for its rank count.
@@ -1180,11 +1188,11 @@ def _update_trackers(
 #: Priced from measurement, not from an estimate.  MEASURED 2026-09-06,
 #: the 16 GB host RTX 5070 Ti, T255 L40 with the full native suite at dt = 300 s:
 #: 3.44e-5 over a whole forecast day (288 steps) from the GDAS 2026-09-01
-#: 00Z analysis, and 2.17e-5 over the six-hour arms, which run the OTHER
-#: case this tree carries (GDAS 2026-08-30 18Z,
-#: configs/verify/arwen_global_gdas_t255_native_sl_si_6h.toml) -- two
-#: initial states, named because a reading of six hours and a reading of a
-#: day here are not two points on one run.  The six-hour number is the same
+#: 00Z analysis, and 2.17e-5 over the six-hour arms, which ran the OTHER
+#: case this tree carried then (GDAS 2026-08-30 18Z, the analysis
+#: arwen_global_gdas_t255_native_sl_si_6h read until 0.3.0; from 0.4.0 it
+#: reads the forecast day's) -- two initial states, named because a reading
+#: of six hours and a reading of a day here are not two points on one run.  The six-hour number is the same
 #: 2.17e-5 whichever form the fixer runs, because it is the ADVECTION's
 #: error and not the fixer's.  The limit is 1e-4, three times the day's
 #: reading.
@@ -2097,10 +2105,12 @@ def run(
     # the first device byte, so it cannot grow past what the run was
     # admitted at (DevicePeakTracker.hold_pool_to; released with the hook).
     hold_pool_to_plan(tracker, door_plan, allocator)
-    # The cuFFT plan cache is off for the run (memory only; see
-    # device_memory.disable_fft_plan_cache) and restored with the
-    # allocator afterwards.
-    restore_plan_cache = disable_fft_plan_cache(cfg.backend)
+    # CuPy's cuFFT plan cache is off for the run (it keeps every plan's
+    # work area; device_memory.disable_fft_plan_cache) and the package's
+    # own kept plans are on (no work area of their own, so the pool holds
+    # what it held with the cache off; device_memory.keep_fft_plans).
+    # Both are restored with the allocator afterwards.
+    restore_plan_cache = keep_fft_plans(cfg.backend)
     try:
         recovery: list[dict] = []
         written: list[str] = []
@@ -3020,8 +3030,14 @@ def _run_tracked(
             state, metrics = model.step(state, cfg.dt_s)
             if record_writer is not None:
                 record_writer.offer(state, transform.backend.to_numpy)
-            step_wall_seconds += time.perf_counter() - step_started
+            step_took = time.perf_counter() - step_started
+            step_wall_seconds += step_took
             step_count += 1
+            if _STEP_WALL_LOG:
+                # Measuring instrument: one line per step, host
+                # wall of model.step only; no arithmetic is touched.
+                with open(_STEP_WALL_LOG, "a", encoding="utf-8") as fh:
+                    fh.write(f"{int(state.step)} {step_took:.6f}\n")
             if attempt is not None:
                 attempt["step"] = int(state.step)
             if model.pipeline.exchange is not None:
@@ -3559,3 +3575,13 @@ __all__ = [
     "build_model_and_cold_state", "build_physics", "build_transform",
     "frame_world_reason", "run", "run_gates", "world_of",
 ]
+
+
+def _build_stochastic(cfg, transform):
+    """The member's stochastic physics, or None (the shipped run)."""
+    options = getattr(cfg, "stochastic", None)
+    if options is None or not options.enabled:
+        return None
+    from .stochastic import StochasticPhysics
+
+    return StochasticPhysics(options, transform)

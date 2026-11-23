@@ -117,9 +117,11 @@ def test_licence_is_an_spdx_expression_with_both_files(declaration):
     assert not [row for row in classifiers if row.startswith("License ::")], (
         "PEP 639 replaced the trove classifier with the expression above, and "
         "setuptools>=77 refuses a build that states both")
-    assert declaration["build-system"]["requires"] == ["setuptools>=77"], (
+    assert declaration["build-system"]["requires"] == ["setuptools==84.2.1"], (
         "below 77 the SPDX expression silently becomes the old License: field "
-        "and the licence files are dropped from the wheel")
+        "and the licence files are dropped from the wheel; and a backend that "
+        "is not pinned lets the publish workflow's rebuild from the tag write "
+        "WHEEL and METADATA members that differ from the sealed files")
 
 
 def test_engine_dependency_is_bounded_at_both_ends(declaration):
@@ -133,7 +135,7 @@ def test_engine_dependency_is_bounded_at_both_ends(declaration):
     deps = declaration["project"]["dependencies"]
     engine = [row for row in deps if row.split(">")[0].strip() == "gpuwm"]
     assert len(engine) == 1, deps
-    assert ">=3.0.3" in engine[0] and "<3.1" in engine[0], engine[0]
+    assert ">=3.0.5" in engine[0] and "<3.1" in engine[0], engine[0]
 
 
 def test_the_companion_data_distribution_is_declared(declaration):
@@ -155,7 +157,7 @@ def test_the_companion_data_distribution_is_declared(declaration):
                  if re.split(r"[<>=!~\[]", row, maxsplit=1)[0].strip()
                  == "gpuwm-data"]
     assert len(companion) == 1, deps
-    assert ">=3.0.3" in companion[0] and "<3.1" in companion[0], companion[0]
+    assert ">=3.0.5" in companion[0] and "<3.1" in companion[0], companion[0]
 
     source = (SRC / "core" / "rrtmgp.py").read_text(encoding="utf-8")
     module_scope = [line for line in source.splitlines()
@@ -226,7 +228,7 @@ def _matches(relative: str, glob: str) -> bool:
 
 
 def test_the_configs_that_ship_are_the_ones_that_were_carved():
-    """61 experiments, and every one of them parses as TOML.
+    """63 experiments, and every one of them parses as TOML.
 
     Fifty-three came out of the engine's `configs/verify/` at the first cut;
     the fifty-fourth is the quickstart, which lived one directory up and was
@@ -244,11 +246,13 @@ def test_the_configs_that_ship_are_the_ones_that_were_carved():
     kim-gwdo drag and New Tiedtke convection switched on.  The sixty-first
     is the T1023 forecast day: the T533 semi-Lagrangian day at truncation
     1023 with its departure gathers one field at a time, the departure-point
-    time extrapolation and the Newton trajectory solver.
+    time extrapolation and the Newton trajectory solver.  The sixty-second
+    and sixty-third are 0.4.0's opt-in 80-level T255 days, one with the
+    SA-TKE-EDMF boundary layer and the Scinocca drag and its twin with YSU.
     """
 
     configs = sorted((SRC / "configs").glob("*.toml"))
-    assert len(configs) == 61, [path.name for path in configs]
+    assert len(configs) == 63, [path.name for path in configs]
     families = {path.name.split("_")[0] for path in configs}
     assert families == {"arwen", "global"}, families
     for path in configs:
@@ -466,7 +470,7 @@ def test_the_build_backend_floor_is_what_the_licence_field_needs(declaration):
     requires = declaration["build-system"]["requires"]
     setuptools = [r for r in requires if re.split(r"[<>=!~\[]", r, maxsplit=1)[0].strip() == "setuptools"]
     assert len(setuptools) == 1, requires
-    floor = re.search(r">=\s*(\d+)", setuptools[0])
+    floor = re.search(r"(?:>=|==)\s*(\d+)", setuptools[0])
     assert floor is not None and int(floor.group(1)) >= 77, requires
 
 

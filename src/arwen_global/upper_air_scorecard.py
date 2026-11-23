@@ -37,8 +37,10 @@ Definitions, stated so the numbers are reproducible:
   ``T (1 + 0.61 qv - condensate)``, and geopotential the dycore's own
   hydrostatic integration (``HybridCoordinate.hydrostatic_geopotential``)
   from the surface geopotential the run integrated with: the analysis
-  orography of the run's initial state regridded to the Gaussian grid and
-  spectrally truncated, rebuilt here in float64 from that file (its
+  orography of the run's initial state regridded to the Gaussian grid,
+  spectrally truncated and, for a run with ``[initial]
+  orography_filter_half_degree``, filtered as the run filtered it, rebuilt
+  here in float64 from that file (its
   SHA-256 must be the one the run receipt recorded, else the reader
   refuses by name).  The run truncated it in float32 on the card; the
   float64 rebuild differs at the 0.01 m level.
@@ -527,14 +529,38 @@ def build_transform_from_receipt(receipt: dict):
     )
 
 
-def surface_geopotential_from_frame(frame, transform) -> np.ndarray:
+def receipt_orography_filter_half_degree(receipt: dict) -> float:
+    """The ``[initial] orography_filter_half_degree`` the run integrated
+    with (0.0 = off).  The config identity carries the key only when it is
+    on, so a receipt without it ran the unfiltered terrain."""
+    config = receipt.get("config") or {}
+    return float(config.get("orography_filter_half_degree", 0.0) or 0.0)
+
+
+def surface_geopotential_from_frame(frame, transform,
+                                    orography_filter_half_degree: float = 0.0) -> np.ndarray:
     """The model's surface geopotential: the analysis terrain regridded to
-    the Gaussian grid and spectrally truncated, as analysis_initial does."""
+    the Gaussian grid, spectrally truncated and, when the run filtered its
+    orography, filtered the same way, as analysis_initial does.
+
+    The filter is not optional for a run that used it: the shipped T533,
+    T799 and T1023 configs set ``orography_filter_half_degree = 350``, and a
+    rebuild without it handed those runs a surface away from the one they
+    integrated with, which moves the model's height at every level by the
+    same amount and so reads as 500 hPa height error.  MEASURED 2026-11-22
+    on GDAS 2026-11-10 00Z, on this scorecard's own Gaussian grid and
+    regions, RMS of the difference over g: T533 26.8 m globe, 34.8 m
+    20N-90N, 17.6 m 90S-20S, 25.3 m tropics (885 m at worst); T799 31.2 m
+    globe; T1023 31.8 m globe (on a 1.5 degree grid, T533: 22.7 / 30.1 /
+    15.2 / 20.2 m)."""
     from .analysis_initial import _global_regridder
+    from .spectral.orography_filter import filter_orography_coefficients
 
     regrid = _global_regridder(frame.latitude, frame.longitude, transform.grid)
     phi_src = GRAVITY_M_S2 * regrid(frame.fields["terrain_height"].values)
-    return np.asarray(transform.inverse(transform.forward(phi_src)), dtype=np.float64)
+    coeff = filter_orography_coefficients(
+        transform.forward(phi_src), transform, float(orography_filter_half_degree))
+    return np.asarray(transform.inverse(coeff), dtype=np.float64)
 
 
 def surface_geopotential_cache_name(digest: str, receipt: dict) -> str:
@@ -543,12 +569,18 @@ def surface_geopotential_cache_name(digest: str, receipt: dict) -> str:
     Keyed on the analysis, the TRUNCATION and the grid shape, never on the
     shape alone: T383 on its linear grid (dealias_factor 1.0) and T255 on
     its quadratic grid are both 384 x 768, and a cache keyed on the shape
-    handed the T383 run the T255 terrain."""
+    handed the T383 run the T255 terrain.  A run that filtered its
+    orography also carries the filter's half degree, so a filtered and an
+    unfiltered surface never share a file (and a cache written before the
+    filter was rebuilt here, which holds the unfiltered terrain, is not
+    read for a filtered run)."""
     geometry = receipt.get("transform") or {}
     config = receipt.get("config") or {}
     truncation = int(geometry.get("truncation", config.get("truncation")))
     nlat, nlon = int(geometry["nlat"]), int(geometry["nlon"])
-    return f"phi-surface-{digest[:16]}-T{truncation}-{nlat}x{nlon}.npz"
+    half_degree = receipt_orography_filter_half_degree(receipt)
+    suffix = f"-orogf{half_degree:g}" if half_degree > 0.0 else ""
+    return f"phi-surface-{digest[:16]}-T{truncation}-{nlat}x{nlon}{suffix}.npz"
 
 
 def resolve_mapping(spec: str | None, receipt: dict) -> Path:
@@ -604,6 +636,16 @@ def decode_reference(mapping: Path, path: Path):
     return frames[0], decoded.receipt
 
 
+def surface_geopotential_construction(orography_filter_half_degree: float = 0.0) -> str:
+    """The provenance line for a rebuilt surface geopotential."""
+    text = ("analysis terrain regridded bilinearly to the Gaussian grid, times g, "
+            "spectrally truncated")
+    if float(orography_filter_half_degree) > 0.0:
+        text += (f", orography filter at half degree {float(orography_filter_half_degree):g} "
+                 "(the run's [initial] orography_filter_half_degree)")
+    return text + ", float64 rebuild of the run's float32 field"
+
+
 def surface_geopotential_for_run(
     receipt: dict, transform, initial_analysis: str | Path | None, mapping: Path,
     cache_dir: Path | None = None,
@@ -628,10 +670,11 @@ def surface_geopotential_for_run(
             f"receipt recorded ({', '.join(v[:16] for v in inputs.values())}); the "
             "surface geopotential would not be the one the run integrated with"
         )
+    half_degree = receipt_orography_filter_half_degree(receipt)
     provenance = {
         "initial_analysis": str(path), "sha256": digest,
-        "construction": "analysis terrain regridded bilinearly to the Gaussian grid, "
-                        "times g, spectrally truncated, float64 rebuild of the run's float32 field",
+        "construction": surface_geopotential_construction(half_degree),
+        "orography_filter_half_degree": half_degree,
     }
     cache = None
     if cache_dir is not None:
@@ -641,7 +684,7 @@ def surface_geopotential_for_run(
                 return np.array(archive["phi"]), {**provenance, "cache": str(cache)}
     frame, decode = decode_reference(mapping, path)
     provenance["decode"] = decode
-    phi = surface_geopotential_from_frame(frame, transform)
+    phi = surface_geopotential_from_frame(frame, transform, half_degree)
     if cache is not None:
         cache.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(cache, phi=phi)
@@ -2063,8 +2106,9 @@ __all__ = [
     "model_cache_path", "vertical_round_trip",
     "analysis_series", "measure_run", "reference_fields", "relative_humidity_percent", "render_chart",
     "render_scorecard_table", "representation_floor", "score_pair",
+    "receipt_orography_filter_half_degree",
     "scorecard_table", "shifted_copy", "summary_lines", "surface_geopotential_cache_name",
-    "surface_geopotential_for_run",
+    "surface_geopotential_construction", "surface_geopotential_for_run",
     "surface_geopotential_from_frame", "synthetic_columns", "synthetic_grid", "synthetic_reference",
     "zonal_mean_climatology",
 ]

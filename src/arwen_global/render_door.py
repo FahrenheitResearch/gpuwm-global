@@ -46,18 +46,66 @@ from .status import StatusWriter
 __all__ = ["add_render_arguments", "map_source_label", "render"]
 
 
-def map_source_label() -> str:
-    """The source line on every map this door draws: the product's name and
-    THIS package's version.
+def map_source_label(tapes=()) -> str:
+    """The source line on every map this door draws: the product's name,
+    THIS package's version and, when the tapes say it, the model grid.
 
     Left to the engine, the renderer prints its own default, "WOOF" and the
     engine's version ("WOOF 3.0.3" on gpuwm 3.0.3), which names neither the
     model that made the forecast nor a release of it.
+
+    The renderer titles every map with the TAPE's spacing, "Δx 55.589 km"
+    on the default 0.5 degree tape whatever the truncation (T63's maps
+    carried it too).  That number is right for the renderer's derivatives
+    and is the spacing the picture is drawn at, so it stays; this line adds
+    the model's own grid beside it, read from the tapes
+    (``wrfout_export.TRUNCATION_ATTR``): "ArWen Global 0.4.0, T255 52.1 km
+    grid, drawn at 0.5°".  Tapes of different grids, or tapes written
+    before the attributes existed, get the plain name and version.
     """
     from . import __version__
     from .wrfout_export import MODEL_LABEL
 
-    return f"{MODEL_LABEL} {__version__}"
+    plain = f"{MODEL_LABEL} {__version__}"
+    grids = {_tape_grid(path) for path in tapes}
+    if len(grids) != 1:
+        return plain
+    grid = grids.pop()
+    if grid is None:
+        return plain
+    truncation, spacing_km, tape_deg = grid
+    label = f"{plain}, T{truncation} {spacing_km:.1f} km grid"
+    if tape_deg is not None:
+        label += f", drawn at {tape_deg:g}°"
+    return label
+
+
+def _tape_grid(path) -> tuple[int, float, float | None] | None:
+    """``(truncation, model spacing km, tape spacing degrees)`` of one tape,
+    or None when it does not carry the model grid."""
+    from .wrfout_export import GRID_SPACING_ATTR, TRUNCATION_ATTR
+
+    try:
+        from netCDF4 import Dataset
+    except ImportError:          # pragma: no cover - netCDF4 is a dependency
+        return None
+    try:
+        with Dataset(os.fspath(path)) as tape:
+            names = set(tape.ncattrs())
+            if TRUNCATION_ATTR not in names or GRID_SPACING_ATTR not in names:
+                return None
+            truncation = int(tape.getncattr(TRUNCATION_ATTR))
+            spacing = round(float(tape.getncattr(GRID_SPACING_ATTR)), 1)
+            tape_deg = None
+            if "west_east" in tape.dimensions:
+                columns = len(tape.dimensions["west_east"])
+                lon = tape.variables.get("XLONG")
+                if lon is not None and columns > 1:
+                    row = lon[0, 0, :] if lon.ndim == 3 else lon[0, :]
+                    tape_deg = round(abs(float(row[1]) - float(row[0])), 4)
+            return truncation, spacing, tape_deg
+    except (OSError, ValueError, TypeError, IndexError):
+        return None
 
 
 #: The checkpoint files a run directory holds, in time order.
@@ -116,7 +164,9 @@ def add_render_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--bbox", type=float, nargs=4, default=None,
         metavar=("LAT_MIN", "LAT_MAX", "LON_MIN", "LON_MAX"),
-        help="crop to a lat/lon window (degrees, lon in -180..180)")
+        help="crop to a lat/lon window at export (degrees, lon in -180..180); "
+             "checkpoints and run directories only, tapes already exported "
+             "are refused")
     parser.add_argument(
         "--tapes-dir", type=Path, default=None,
         help="where the intermediate tapes are written (default: a directory "
@@ -421,8 +471,20 @@ def render(args: argparse.Namespace) -> int:
     if status.log_path is not None:
         print(f"log: {status.log_path}")
     try:
-        _require_renderer()
         checkpoints, tapes = _expand(args.inputs)
+        if args.bbox and tapes:
+            # The crop is made where the tapes are written (export_wrfout),
+            # so a tape that is already exported is drawn whole: without
+            # this refusal `--bbox` with tape inputs had the globe drawn and said
+            # nothing (two crops measured byte-identical, 2026-11-23).
+            raise ValueError(
+                "--bbox crops at export, and these inputs include tapes that "
+                "are already exported, which would be drawn whole: "
+                + ", ".join(str(path) for path in tapes[:3])
+                + (" ..." if len(tapes) > 3 else "")
+                + ".  Pass the run directory or its checkpoints with --bbox, "
+                "or drop --bbox to draw the tapes as they are.")
+        _require_renderer()
         size = _parse_size(args.size)
         world = None
 
@@ -473,7 +535,7 @@ def render(args: argparse.Namespace) -> int:
                 drawn, failed, passed_over = render_wrfouts_rust(
                     group, products=args.products, timeidx=None,
                     outdir=outdir, size=size, annotate=annotation,
-                    source_label=map_source_label())
+                    source_label=map_source_label(group))
                 pictures.extend(drawn)
                 failures.extend(failed)
                 skipped.extend(passed_over)

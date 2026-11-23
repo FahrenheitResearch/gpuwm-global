@@ -845,6 +845,55 @@ def disable_fft_plan_cache(backend_name: str):
     return restore
 
 
+#: ``ARWEN_FFT_PLAN_CACHE=0`` turns the kept plans off: every transform
+#: re-plans on every call, as through 0.2.5.
+FFT_PLAN_CACHE_ENV = "ARWEN_FFT_PLAN_CACHE"
+
+
+def keep_fft_plans(backend_name: str, environ=None):
+    """CuPy's own plan cache off (see :func:`disable_fft_plan_cache`) and
+    this package's kept plans on; returns the restore.
+
+    A kept plan owns no work area: the work area is taken from the pool
+    for the call and handed back after it, as a re-planned call's was, so
+    the pool holds what it held with the cache off.  What is kept is the
+    planning (at T799, 388 module loads and about a second of host time a
+    step).  Same plans, same kernels, so the same bits
+    (:mod:`arwen_global.spectral.fft_plans`).  A numpy run, a process
+    where the loaded cuFFT cannot be reached, or
+    ``ARWEN_FFT_PLAN_CACHE=0`` keeps nothing.
+    """
+    import os
+
+    env = os.environ if environ is None else environ
+    restore_cupy = disable_fft_plan_cache(backend_name)
+    if str(backend_name) != "cupy" or \
+            str(env.get(FFT_PLAN_CACHE_ENV, "1")).strip() in ("0", "off"):
+        return restore_cupy
+    import cupy as cp
+    from .spectral import fft_plans
+
+    kept = fft_plans.FftPlanCache.for_this_process(cp)
+    if kept is None:
+        return restore_cupy
+    earlier = fft_plans.activate(kept)
+
+    def restore() -> None:
+        fft_plans.activate(earlier)
+        kept.clear()
+        restore_cupy()
+
+    return restore
+
+
+def fft_plans_receipt() -> dict[str, object] | None:
+    """The receipt's ``device_memory.fft_plans`` row (None when off)."""
+    from .spectral import fft_plans
+
+    cache = fft_plans.active()
+    return None if cache is None else cache.receipt()
+
+
 def device_memory_receipt(
     tracker: DevicePeakTracker | None, backend_name: str, *,
     sizing_model_peak_bytes: int | None,
@@ -879,6 +928,7 @@ def device_memory_receipt(
         # arithmetic.  A peak has no meaning without it: the same run
         # under two allocators holds two different totals.
         row["allocator"] = allocator.receipt()
+    row["fft_plans"] = fft_plans_receipt()
     row["sizing_model_note"] = (
         "prediction of arwen_global.sizing made before the run, not a "
         "measurement: the calibrated model of the allocator-measured pool "
@@ -951,5 +1001,8 @@ __all__ = [
     "device_peak_sentence",
     "pool_limit_phrase",
     "disable_fft_plan_cache",
+    "FFT_PLAN_CACHE_ENV",
+    "fft_plans_receipt",
+    "keep_fft_plans",
     "start_device_peak_tracking",
 ]

@@ -23,7 +23,7 @@ scorecard with two kinds of rows, each row keyed by the forecast lead:
   through the Rust mapped-source door with its own mapping and scored on
   the run's grid by :func:`arwen_global.upper_air_scorecard.score_pair`
   (z500, t850, w250, w850, rh700; four regions).  An analysis is another
-  model's best estimate, not a measurement: these rows say how far WOOF
+  model's best estimate, not a measurement: these rows say how far ArWen
   Global sits from the two operational centres' starting points, and they
   are labelled as references, never as skill.  Each analysis is also
   scored ALONE against the same station and sounding reports (its
@@ -68,6 +68,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -216,10 +217,35 @@ def select_checkpoints(rows: list[dict], hours: list[float] | None) -> list[dict
 # --------------------------------------------------------------------------
 
 
+def default_label(truncation: int) -> str:
+    """The model's row label: the model's own name and its truncation
+    (0.3.0 printed another product's name there)."""
+    return f"arwen-global-t{int(truncation)}"
+
+
+def _say(*parts, **kwargs) -> None:
+    """The default progress line: printed at once, also into a pipe or a
+    log, because a scorer that buffers its lines for ten minutes reads as
+    one that hangs."""
+    print(*parts, flush=True, **kwargs)
+
+
 def _door(name: str, arguments: list[str]) -> dict:
     from .obs_streams import _run_door
 
     return _run_door(name, arguments)
+
+
+def _timed_door(name: str, arguments: list[str], progress=None) -> dict:
+    """One observation door call, named before and timed after when
+    ``progress`` is given."""
+    if progress is None:
+        return _door(name, arguments)
+    progress(f"score:   {name} {arguments[0]} ...")
+    began = time.perf_counter()
+    result = _door(name, arguments)
+    progress(f"score:   {name} {arguments[0]} done in {time.perf_counter() - began:.0f} s")
+    return result
 
 
 def _write_json(path: Path, payload) -> Path:
@@ -240,7 +266,7 @@ def _stride_minutes(valid_times: list[dt.datetime]) -> int:
     return stride or 60
 
 
-def asos_record(obs_dir: Path, valid_times: list[dt.datetime]) -> Path:
+def asos_record(obs_dir: Path, valid_times: list[dt.datetime], progress=None) -> Path:
     """The ``gpuwm-obs.asos-surface.v2`` record covering ``valid_times``,
     through ``rw_asos``: every ASOS network the archive lists, the station
     table frozen from them, one fetch of the window and one decode at the
@@ -249,37 +275,41 @@ def asos_record(obs_dir: Path, valid_times: list[dt.datetime]) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     first, last = valid_times[0], valid_times[-1]
     stride = _stride_minutes(valid_times)
-    networks_record = _door("rw_asos", ["networks", "--out", str(out / "networks.json")])
+    networks_record = _timed_door("rw_asos", ["networks", "--out", str(out / "networks.json")], progress)
     networks = ",".join(networks_record["networks"])
-    _door("rw_asos", ["stations", "--networks", networks, "--out", str(out / "stations.json")])
-    fetched = _door("rw_asos", [
+    if progress is not None:
+        progress(f"score:   {len(networks_record['networks'])} networks; the station table "
+                 "and the radiosonde archive are the two long steps (about 9 and 12 "
+                 "minutes on a first run, measured 2026-11-22)")
+    _timed_door("rw_asos", ["stations", "--networks", networks, "--out", str(out / "stations.json")], progress)
+    fetched = _timed_door("rw_asos", [
         "fetch", "--networks", networks,
         "--start", _stamp(first - dt.timedelta(hours=1)),
         "--end", _stamp(last + dt.timedelta(hours=1)),
         "--out", str(out / "obs.csv"),
-    ])
+    ], progress)
     _write_json(out / "fetch.json", fetched)
-    decoded = _door("rw_asos", [
+    decoded = _timed_door("rw_asos", [
         "decode", "--obs", str(out / "obs.csv"), "--stations", str(out / "stations.json"),
         "--start", _stamp(first), "--end", _stamp(last), "--step-minutes", str(stride),
         "--out", str(out / "record.json"),
-    ])
+    ], progress)
     _write_json(out / "decode.json", decoded)
     return out / "record.json"
 
 
-def igra2_table(obs_dir: Path, valid_times: list[dt.datetime]) -> Path:
+def igra2_table(obs_dir: Path, valid_times: list[dt.datetime], progress=None) -> Path:
     """The radiosonde mandatory levels of the window as a neutral table,
     through ``rw_igra2`` (the year-to-date archive, every station)."""
     out = Path(obs_dir) / "igra2"
     raw = out / "raw"
     raw.mkdir(parents=True, exist_ok=True)
-    _door("rw_igra2", ["fetch", "--out", str(raw)])
+    _timed_door("rw_igra2", ["fetch", "--out", str(raw)], progress)
     table = out / "igra2.csv"
-    _door("rw_igra2", [
+    _timed_door("rw_igra2", [
         "table", "--zips", str(raw), "--start", _stamp(valid_times[0]), "--end", _stamp(valid_times[-1]),
         "--mandatory-only", "--fetch-record", str(raw / "fetch.json"), "--out", str(table),
-    ])
+    ], progress)
     return table
 
 
@@ -664,7 +694,7 @@ def score_forecast(
     run_dir: Path, out_dir: Path, *, hours: list[float] | None = None, label: str | None = None,
     asos: Path | None = None, igra2: Path | None = None, references: list[tuple[str, Path]] | None = None,
     fetch_references: bool = True, families: tuple[str, ...] = tuple(REFERENCE_FAMILIES),
-    initial_analysis: Path | None = None, progress=print,
+    initial_analysis: Path | None = None, progress=_say,
 ) -> dict:
     """Score one run; see the module text.  ``asos`` and ``igra2`` name an
     existing door record and table (else the doors fetch them into
@@ -687,7 +717,7 @@ def score_forecast(
     receipt, rows = run_checkpoints(run_dir)
     chosen = select_checkpoints(rows, hours)
     truncation = int(receipt["config"]["truncation"])
-    label = label or f"woof-global-t{truncation}"
+    label = label or default_label(truncation)
     valid_times = [r["valid"] for r in chosen]
 
     progress(f"score: {run_dir} T{truncation}, leads {', '.join(_lead_text(r) for r in chosen)} h")
@@ -695,10 +725,10 @@ def score_forecast(
 
     if asos is None:
         progress("score: ASOS through rw_asos (networks, stations, fetch, decode)")
-        asos = asos_record(out_dir / "obs", valid_times)
+        asos = asos_record(out_dir / "obs", valid_times, progress)
     if igra2 is None:
         progress("score: radiosondes through rw_igra2 (fetch, table --mandatory-only)")
-        igra2 = igra2_table(out_dir / "obs", valid_times)
+        igra2 = igra2_table(out_dir / "obs", valid_times, progress)
 
     by_family: dict[str, dict[str, Path]] = {}
     for family_label, path in references or []:
@@ -881,7 +911,7 @@ def add_score_arguments(parser: argparse.ArgumentParser) -> None:
                              "the fetched analyses land in")
     parser.add_argument("--hours", type=float, nargs="+", default=None,
                         help="the leads to score, in hours; default every checkpoint after the start")
-    parser.add_argument("--label", default=None, help="the model's row label (default woof-global-t<N>)")
+    parser.add_argument("--label", default=None, help="the model's row label (default arwen-global-t<N>)")
     parser.add_argument("--asos-record", type=Path, default=None,
                         help="a `rw_asos decode` record (gpuwm-obs.asos-surface.v2) covering the leads; "
                              "default: fetch and decode one through rw_asos")

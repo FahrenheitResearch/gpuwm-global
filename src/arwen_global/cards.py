@@ -2058,7 +2058,7 @@ def _assert_card_hashes_agree(key, hashes) -> None:
     ``hashes`` is one digest per rank of that contraction's output.  A
     gather run assembles a Fourier waist out of latitude rows computed on
     two different cards, so it reproduces the single-card answer ONLY if
-    the cards return the same bits for the same work (lane 6's finding, the
+    the cards return the same bits for the same work (measured 2026-09, the
     precondition the design did not state).  This is that precondition
     made into a refusal: a pair that disagrees is stopped by name at the
     first contraction they disagree on, before the waist it feeds is
@@ -2088,7 +2088,7 @@ class ContractionAgreement:
 
     A gather run reproduces one card only where the cards return the same
     bits for the same work, and which shapes agree is a property of the
-    operand shapes the configuration presents (lane 6).  A probe at fixed
+    operand shapes the configuration presents (measured 2026-09).  A probe at fixed
     widths therefore refuses pairs the run would reproduce (an eight-plane
     synthesis at T255 differs between an RTX 5070 Ti and an RTX 5090 while
     every contraction of the T255 L40 step agrees, MEASURED 2026-09-07) and

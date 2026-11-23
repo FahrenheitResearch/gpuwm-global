@@ -723,13 +723,18 @@ def test_statics_door_builds_the_cache_the_run_reads(geog_root, tmp_path, capsys
     assert row["convention"] == state.physics_state.metadata[statics.SURFACE_STATICS_METADATA_KEY]
     assert 0.0 <= host(state.surface.vegetation_fraction).max() <= 1.0
     assert not np.allclose(host(state.surface.albedo), 0.08 + 0.12 * host(state.surface.land_fraction))
-    # the door line names the cache it read, and a second build without
-    # --overwrite is a refusal: exit 1, the code this package's doors give
-    # every refusal (the 2 this line used to expect is the owner tree's
-    # boundary, which this door never passes through)
+    # A second `statics` over a cache that verifies is done, not refused
+    # (0.4.0; 0.3.0 exited 1, so the README's quick start followed by its
+    # stage-by-stage route failed at the statics): exit 0, naming the
+    # cache and --overwrite.  A cache that does not verify is still a
+    # refusal, exit 1, the code this package's doors give every refusal.
+    assert main(["statics", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "already built" in out and "--overwrite" in out
+    cache.with_suffix(".json").write_text("{}", encoding="utf-8")
     assert main(["statics", str(path)]) == 1
     err = capsys.readouterr().err
-    assert "--overwrite" in err
+    assert "does not verify" in err and "--overwrite" in err
 
 
 def test_run_door_prints_the_synthetic_planet(tmp_path, capsys):

@@ -25,9 +25,10 @@ almost all sharp maxima.
 Both effects are MEASURED, on the T255 native arms of 2026-09-06 (the 16 GB host,
 dt = 300 s, the full native suite).  The two arm sets run the tree's two
 cases and the numbers below are not two points on one run: the six-hour
-arms are the GDAS 2026-08-30 18Z case
-(configs/verify/arwen_global_gdas_t255_native_sl_si_6h.toml) and the
-forecast day is the GDAS 2026-09-01 00Z case.  The largest per-step
+arms are the GDAS 2026-08-30 18Z case (the analysis
+arwen_global_gdas_t255_native_sl_si_6h read until 0.3.0; from 0.4.0 it
+reads the forecast day's) and the forecast day is the GDAS 2026-09-01 00Z
+case.  The largest per-step
 relative mass the fixer had to move was 5.96e-2 over six hours and 1.01e-1
 over the forecast day, and the six-hour arm with the limiter TURNED OFF
 reads 6.43e-2, which is the same number as the six-hour arm with it on.
@@ -131,6 +132,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+
 from .interpolate import Stencil, gather_batch, gather_linear_batch
 from ..spill import resident
 
@@ -199,6 +202,24 @@ def _mass(xp, field, dp, cell) -> float:
     return float(xp.sum(field * dp * cell))
 
 
+def _mass_device(xp, field, dp, cell):
+    """``_mass`` left on the device: the same reduction, not yet read."""
+    return xp.sum(field * dp * cell)
+
+
+def _read(xp, *values) -> list[float]:
+    """Device 0-d reductions as Python floats, in ONE transfer.
+
+    ``float(x)`` of each was its own device synchronisation; the stacked
+    read gives the same numbers (a float32 sum read as a Python float is
+    the same double either way).
+    """
+    stacked = xp.stack(list(values))
+    if hasattr(stacked, "get"):
+        stacked = stacked.get()
+    return [float(value) for value in np.asarray(stacked).tolist()]
+
+
 def advect(
     tracers: dict[str, Any], stencil: Stencil, *, monotone: bool = True,
     batch: int = 8, deficit: bool = False,
@@ -244,20 +265,31 @@ def _bermejo_conde(xp, value, low, delta: float, dp, cell):
     weight = room if BERMEJO_CONDE_BETA == 1.0 else room ** BERMEJO_CONDE_BETA
     remaining = abs(float(delta))
     placed = 0.0
-    for _ in range(BERMEJO_CONDE_PASSES):
-        capacity = _mass(xp, weight, dp, cell)
+    closing = None
+    # One read a pass: a pass's moved mass comes back with the next pass's
+    # capacity (the same reductions, launched in the same order), so the
+    # loop synchronises once a pass where it did twice.  When the pass
+    # count runs out the next capacity is not taken.
+    capacity = _mass(xp, weight, dp, cell)
+    for index in range(BERMEJO_CONDE_PASSES):
         if capacity <= 0.0 or remaining <= 0.0:
             break
         step = xp.minimum((remaining / capacity) * weight, room)
-        moved = _mass(xp, step, dp, cell)
+        moved = _mass_device(xp, step, dp, cell)
         value = value + sign * step
         room = room - step
         del step
-        remaining -= moved
-        placed += moved
         # A point that reached its trilinear value takes no more.
         weight = xp.where(room > 0.0, weight, 0.0)
-    return value, sign * placed
+        if index + 1 < BERMEJO_CONDE_PASSES:
+            moved, capacity = _read(xp, moved, _mass_device(xp, weight, dp, cell))
+        else:
+            # The last pass also reads the corrected field's mass, which
+            # the uniform stage reads next (fix_mass): one read, not two.
+            moved, closing = _read(xp, moved, _mass_device(xp, value, dp, cell))
+        remaining -= moved
+        placed += moved
+    return value, sign * placed, closing
 
 
 def fix_mass(
@@ -326,14 +358,23 @@ def fix_mass(
     cell = area_weights(transform)
     metrics: dict[str, float] = {}
     fixed: dict[str, Any] = {}
+    # The read-only closing readings (touched fraction, residual) of every
+    # species stay on the device and are read once after the last species;
+    # the readings the correction itself needs are read together where it
+    # needs them.  Each float() of a device sum was its own device
+    # synchronisation, about fifteen a species; the numbers are the same.
+    deferred: list[tuple] = []
     for name in list(advected):
         value = advected.pop(name) if consume else advected[name]
         # The before-state may be the tier's (a parked tracer): staged
         # one species at a time for its mass and dropped.
         source = resident(xp, before[name])
-        target = _mass(xp, source, dp_before, cell)
+        target_mass = _mass_device(xp, source, dp_before, cell)
         clamped = 0.0
-        if scheme != "none":
+        if scheme == "none":
+            target, after = _read(
+                xp, target_mass, _mass_device(xp, value, dp_after, cell))
+        else:
             # The floor comes FIRST, and its mass is measured.
             #
             # Every conservative form here ends by clamping the mixing
@@ -348,11 +389,16 @@ def fix_mass(
             # error of the arm that runs with the limiter off, and that
             # arm is the counter-arm the limiter's value is read from.
             floored = xp.maximum(value, 0.0)
-            clamped = (_mass(xp, floored, dp_after, cell)
-                       - _mass(xp, value, dp_after, cell))
+            # ``after`` is the floored field's mass: the same reduction of
+            # the same array as the clamp's first term, so it is read once.
+            target, floored_mass, raw_mass = _read(
+                xp, target_mass, _mass_device(xp, floored, dp_after, cell),
+                _mass_device(xp, value, dp_after, cell))
+            clamped = floored_mass - raw_mass
+            after = floored_mass
             value = floored
+        del target_mass
         metrics[f"semilag_tracer_positivity_clamp_kg_m2__{name}"] = float(clamped)
-        after = _mass(xp, value, dp_after, cell)
         delta = target - after
         relative = abs(delta) / max(abs(target), 1.0e-30)
         metrics[f"semilag_tracer_mass_fixer_relative__{name}"] = float(relative)
@@ -375,6 +421,7 @@ def fix_mass(
         start = value
         total = abs(delta)
         sign = 1.0 if delta > 0.0 else -1.0
+        closing = None
         if additive:
             # Stage one.  The limiter's own record of where the mass went:
             # the deficit is raw minus kept, so a positive entry is mass
@@ -399,8 +446,8 @@ def fix_mass(
             value = xp.maximum(value, 0.0)
         elif weighted:
             low = gather_linear_batch([source], stencil)[0]
-            value, moved = _bermejo_conde(xp, value, low, delta,
-                                          dp_after, cell)
+            value, moved, closing = _bermejo_conde(xp, value, low, delta,
+                                                   dp_after, cell)
             del low
             metrics[f"semilag_tracer_fixer_local_share__{name}"] = float(
                 abs(moved) / max(total, 1.0e-30)
@@ -414,7 +461,10 @@ def fix_mass(
         # that holds none of the species: a uniform RELATIVE adjustment of
         # the air that has it.  ``value`` is nonnegative here, so the
         # scaled field cannot leave the floor.
-        weight = _mass(xp, value, dp_after, cell)
+        # (Already read with the last water-filling pass when it ran all
+        # its passes: the same reduction of the same field.)
+        weight = (_mass(xp, value, dp_after, cell) if closing is None
+                  else closing)
         rest = target - weight
         if weight == 0.0:
             if rest != 0.0:
@@ -431,25 +481,33 @@ def fix_mass(
         # TOUCHED_RELATIVE of their own value.  One for the uniform form
         # whenever its factor exceeds that, and the number that says how
         # local a weighted form actually was.
-        held = _mass(xp, start, dp_after, cell)
-        if held > 0.0:
-            changed = xp.abs(value - start) > TOUCHED_RELATIVE * start
-            metrics[
-                f"semilag_tracer_fixer_touched_mass_fraction__{name}"
-            ] = float(_mass(xp, xp.where(changed, start, 0.0),
-                            dp_after, cell) / held)
-            del changed
+        # (Read after the last species: the touched mass is taken whatever
+        # the held mass reads and kept only where it is positive, as the
+        # reading was taken only then.)
+        held = _mass_device(xp, start, dp_after, cell)
+        changed = xp.abs(value - start) > TOUCHED_RELATIVE * start
+        touched = _mass_device(xp, xp.where(changed, start, 0.0), dp_after, cell)
+        del changed
         del start
         # The closure the fixer exists for, read back from the field it
         # returns: the species' mass after the fix against the target, as
         # a fraction of the target.  Float roundoff of the reductions and
         # nothing else; a receipt that reads more than that has a fixer
         # that is not conserving.
-        metrics[f"semilag_tracer_fixer_residual_relative__{name}"] = float(
-            abs(_mass(xp, value, dp_after, cell) - target)
-            / max(abs(target), 1.0e-30)
-        )
+        closed = _mass_device(xp, value, dp_after, cell)
+        deferred.append((name, target, held, touched, closed))
         fixed[name] = value
+    if deferred:
+        read = _read(xp, *[scalar for row in deferred for scalar in row[2:]])
+        for index, (name, target, _h, _t, _c) in enumerate(deferred):
+            held, touched, closed = read[3 * index:3 * index + 3]
+            if held > 0.0:
+                metrics[
+                    f"semilag_tracer_fixer_touched_mass_fraction__{name}"
+                ] = float(touched / held)
+            metrics[f"semilag_tracer_fixer_residual_relative__{name}"] = float(
+                abs(closed - target) / max(abs(target), 1.0e-30)
+            )
     return fixed, metrics
 
 

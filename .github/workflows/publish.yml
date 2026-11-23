@@ -73,7 +73,7 @@ jobs:
       - name: build and install the wheel, resolving the engine from PyPI
         run: |
           python -m pip install --upgrade pip
-          python -m pip install build "setuptools>=77" wheel "pytest>=8.0"
+          python -m pip install build "setuptools==84.2.1" wheel "pytest>=8.0"
           python -m build --wheel --outdir dist
           python -m pip install "$(ls dist/*.whl)"
       # THE BREAKAGE THIS PREVENTS: the cold start regrids the analysis and
@@ -185,7 +185,7 @@ jobs:
       - name: build and check the sdist and the wheel
         run: |
           python -m pip install --upgrade pip
-          python -m pip install build twine "setuptools>=77" wheel
+          python -m pip install build twine "setuptools==84.2.1" wheel
           python -m build
           python -m twine check --strict dist/*
       - name: the built distributions carry the version being cut

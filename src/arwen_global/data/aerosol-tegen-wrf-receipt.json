@@ -1,0 +1,39 @@
+{
+  "schema": "arwen-global.aerosol-climatology-receipt/v1",
+  "name": "tegen-wrf",
+  "file": "aerosol-tegen-wrf.npz",
+  "npz_sha256": "e0487eab4c963e075b880196cb067aab2363c249b3f381ab20c16e8ecc130b2f",
+  "what": "Monthly aerosol optical depth at 550 nm per pascal for six aerosol types on 12 pressure levels (20-959 hPa), 46 latitudes (89S-89N) and 72 longitudes (180W-175E): the climatology WRF's RRTMG shortwave reads under aer_opt = 1.",
+  "types_in_file_order": ["organic carbon", "sea salt", "dust", "black carbon", "sulfate", "stratospheric"],
+  "rrtmg_optics_types_in_file_order": ["continental average", "maritime", "desert", "urban", "volcanic active", "stratospheric background"],
+  "arrays": {
+    "aod_per_pa": "float32 (species 6, month 12, lat 46, level 12, lon 72), WRF aerosol_in's read order (ks, m, j, k, i)",
+    "plev_hpa": "float32 (12,), top-down",
+    "lat": "float32 (46,)",
+    "lon": "float32 (72,)"
+  },
+  "source": {
+    "distribution": "WRF v4.6.1, run/ directory (github.com/wrf-model/WRF tag v4.6.1); identical bytes in the WRF 4.7.1 build used to cut this file",
+    "files_sha256": {
+      "aerosol.formatted": "5551eeccf5b4aa80e6ed8ae94e73c4ce8a4306a32aae9b3cc954cfa9c2c2d6aa",
+      "aerosol_lat.formatted": "16121ba61f026c57ba18200988ae786609304f52959d24db86d50d8411473a1a",
+      "aerosol_lon.formatted": "8201ebcba7199b5b737edf4f9f2a75d36ef4afa27fbdcffa9029dadcf8e61376",
+      "aerosol_plev.formatted": "3992b2acecbf604430cdb1975497d617cca3e314ee0ae3624f03e5a7f788fc96"
+    },
+    "conversion": "each whitespace-separated token parsed to float32, reshaped in WRF aerosol_in's loop order, numpy savez_compressed; no value changed",
+    "origin": "WRF module_physics_init.F aerosol_in: 'Data from Ryan Torn, computed from EC 6 types of aerosol data', the ECMWF regridding of Tegen et al. (1997)"
+  },
+  "licence": {
+    "terms": "public domain (WRF LICENSE.txt: NCAR and UCAR make no proprietary claims and consider WRF to be in the public domain for use by any person or entity for any purpose); UCAR's requested notice is in this distribution's NOTICE and licenses/LICENSE-WRF-public-domain.txt",
+    "redistribution": "allowed"
+  },
+  "references": [
+    "Tegen, I., P. Hollrig, M. Chin, I. Fung, D. Jacob and J. Penner, 1997: Contribution of different aerosol species to the global aerosol extinction optical thickness: Estimates from model results. J. Geophys. Res., 102, 23895-23915.",
+    "WRF v4.6.1 phys/module_radiation_driver.F aer_time_int, aer_p_int; phys/module_physics_init.F aerosol_in, interp_vec; phys/module_ra_rrtmg_sw.F swaerpr and the iaer = 6 branch of rrtmg_sw"
+  ],
+  "sanity_at_cut": {
+    "global_annual_mean_column_aod_550": 0.0880,
+    "column_aod_550_march": {"Sahara 22N 10E": 0.253, "Arabia 22N 45E": 0.338, "India 22N 75E": 0.200, "N Mexico 26N 105W": 0.099, "Amazon 6S 60W": 0.035, "Pacific 2N 150W": 0.077},
+    "method": "sum over the 12 levels of value times a level thickness from midpoints with a 1013.25 hPa bottom, nearest grid point"
+  }
+}

@@ -357,16 +357,18 @@ class NativePhysicsRuntime:
                     from ..world.radiation import world_radiation_class
                     radiation_class = world_radiation_class(radiation_class)
                     world_sun = {"world_sun": self.world_sun}
+                grid = self._radiation_grid(batch)
                 self._radiation = radiation_class(
                     start_time=self.options.start_time,
-                    latitude_deg=batch.arrays["latitude_deg"],
-                    longitude_deg=batch.arrays["longitude_deg"],
+                    latitude_deg=grid.sub(batch.arrays["latitude_deg"]),
+                    longitude_deg=grid.sub(batch.arrays["longitude_deg"]),
                     column_chunk=self.options.radiation_column_chunk,
                     validation_mode=self.options.radiation_validation_mode,
                     trace_gas_overrides=self.options.greenhouse_gas_overrides(),
                     column_size_bounding=True,
                     ozone_climatology=self.options.ozone,
                     **self._cloud_inhomogeneity_kwargs(),
+                    **self._aerosol_kwargs(),
                     **world_sun,
                 )
             if self.options.ghg_year == "valid":
@@ -395,12 +397,33 @@ class NativePhysicsRuntime:
                 "emiss": batch.surface.emissivity,
                 "albedo": batch.surface.albedo,
             }
-            result = self._radiation(
-                atmosphere=atmosphere,
-                fields=fields,
-                state=self._radiation_state(batch, persistent),
-                cfg=cfg,
-            )
+            grid = self._radiation_grid(batch)
+            if grid.reduced:
+                # radiation_stride_lat / _lon (physics.radiation_grid): the
+                # call solves the reduced grid's columns and its planes come
+                # back to the model grid.
+                from .radiation_grid import full_grid_result
+
+                reduced_result = self._radiation(
+                    atmosphere={k: grid.sub(v) for k, v in atmosphere.items()},
+                    fields={k: grid.sub(v) for k, v in fields.items()},
+                    state=grid.sub_state(
+                        self._radiation_state(batch, persistent)),
+                    cfg=cfg,
+                )
+                result = full_grid_result(
+                    grid, reduced_result,
+                    coszen_full=self._radiation_grid_coszen(batch, cfg),
+                    albedo=fields["albedo"], emissivity=fields["emiss"],
+                    skin_temperature=fields["tsk"],
+                    stefan_boltzmann=STEFAN_BOLTZMANN)
+            else:
+                result = self._radiation(
+                    atmosphere=atmosphere,
+                    fields=fields,
+                    state=self._radiation_state(batch, persistent),
+                    cfg=cfg,
+                )
             persistent.arrays["rad_rthratenlw"][...] = result.rthratenlw
             persistent.arrays["rad_rthratensw"][...] = result.rthratensw
             for name in ("swdown", "glw", "olr", "gsw", "coszen",
@@ -433,8 +456,9 @@ class NativePhysicsRuntime:
             if isinstance(columns, dict):
                 ny, nx = batch.surface_shape
                 self.last_radiation_bounding_columns = {
-                    name: xp.ascontiguousarray(
-                        xp.asarray(value).reshape(ny, nx))
+                    name: (grid.nearest(value) if grid.reduced else
+                           xp.ascontiguousarray(
+                               xp.asarray(value).reshape(ny, nx)))
                     for name, value in columns.items()
                 }
             bounding = getattr(self._radiation, "last_size_bounding", None)
@@ -472,6 +496,51 @@ class NativePhysicsRuntime:
         self._accumulate_radiation(batch, persistent)
         return due
 
+    def _radiation_grid(self, batch):
+        """The grid this band's radiation call solves on: the model grid
+        (default) or the reduced one of radiation_stride_lat / _lon
+        (physics.radiation_grid), built once per band."""
+        from .radiation_grid import FULL_GRID, ReducedRadiationGrid
+
+        sy = int(getattr(self.options, "radiation_stride_lat", 1))
+        sx = int(getattr(self.options, "radiation_stride_lon", 1))
+        if (sy, sx) == (1, 1):
+            return FULL_GRID
+        if self.world_sun is not None:
+            raise ValueError(
+                "a reduced radiation grid is built for Earth's sun only")
+        cache = self.__dict__.setdefault("_radiation_grids", {})
+        ny, nx = batch.surface_shape
+        key = (self._band_key, ny, nx)
+        grid = cache.get(key)
+        if grid is None:
+            grid = cache[key] = ReducedRadiationGrid(batch.xp, ny, nx, sy, sx)
+        return grid
+
+    def _radiation_grid_coszen(self, batch, cfg):
+        """The model grid's cosine of the solar zenith angle at the reduced
+        call's own sun: the driver's statements (its ``_cosine_zenith`` at
+        the interval midpoint, the same float32 latitude and longitude)
+        evaluated on every model column."""
+        from types import SimpleNamespace
+
+        from arwen_global.core.physics import (
+            _model_clock_dt, _physics_interval_seconds)
+
+        xp = batch.xp
+        radt_minutes = cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes
+        radt_seconds = _physics_interval_seconds(
+            radt_minutes, _model_clock_dt(cfg))
+        valid_time = self.options.start_time + timedelta(
+            seconds=float(batch.time_s))
+        geometry = SimpleNamespace(
+            latitude_deg=xp.ascontiguousarray(xp.asarray(
+                batch.arrays["latitude_deg"], dtype=xp.float32)),
+            longitude_deg=xp.ascontiguousarray(xp.asarray(
+                batch.arrays["longitude_deg"], dtype=xp.float32)))
+        return type(self._radiation)._cosine_zenith(
+            geometry, valid_time, hour_offset_seconds=0.5 * radt_seconds)
+
     def _cloud_inhomogeneity_kwargs(self) -> dict:
         """The driver keyword for radiation_cloud_inhomogeneity: nothing
         under "none", so the driver is built as it always was."""
@@ -480,6 +549,12 @@ class NativePhysicsRuntime:
         factor = CLOUD_INHOMOGENEITY_FACTORS[
             self.options.radiation_cloud_inhomogeneity]
         return {} if factor is None else {"cloud_path_scale": float(factor)}
+
+    def _aerosol_kwargs(self) -> dict:
+        """The driver keyword for radiation_aerosol: nothing under "none",
+        so the driver is built as it always was."""
+        value = getattr(self.options, "radiation_aerosol", "none")
+        return {} if value == "none" else {"aerosol_climatology": value}
 
     def _radiation_state(self, batch, persistent):
         """The state the radiation reads.  Under radiation_liquid_radius
@@ -1081,11 +1156,14 @@ class NativePhysicsRuntime:
         skipped = (self._xland(batch) >= xp.float32(1.5)) | self._frozen_columns(
             batch, persistent
         )
-        preserved = None
-        if bool(xp.any(skipped)):
-            preserved = {
-                name: dev[name].copy() for name in ("smois", "tslb", "smcrel", "sh2o")
-            }
+        # Held whatever the mask reads: where no column was skipped the
+        # restore below writes each array's own values back, so the result
+        # is the same, and the mask is no longer read on the host (a device
+        # synchronisation every land call; a global grid always has open
+        # water, so the copies were always taken anyway).
+        preserved = {
+            name: dev[name].copy() for name in ("smois", "tslb", "smcrel", "sh2o")
+        }
         stores_before = self._priced_land_stores(batch, persistent)
         runoff_before = self._priced_runoff_stores(batch, persistent)
         noah.launch_noah(
@@ -1527,25 +1605,141 @@ class NativePhysicsRuntime:
             persistent.metadata.get("lake_surface_calls", 0)
         ) + 1
 
+    def _satmedmf_pbl(self, batch, persistent, dz):
+        """Run GFS SA-TKE-EDMF PBL on device columns (fast FP32 GPU port by default)."""
+        xp = batch.xp
+        f = persistent.arrays
+        nz, nlat, nlon = batch.shape
+        if "tke_edmf" not in f or tuple(f["tke_edmf"].shape) != (nz, nlat, nlon):
+            f["tke_edmf"] = xp.full((nz, nlat, nlon), xp.float32(0.01), dtype=xp.float32)
+        use_fp32 = (
+            self.options.pbl in {"satmedmf", "satmedmf_fp32"}
+            and batch.arrays["u"].dtype == xp.float32
+            and xp.__name__ == "cupy"
+        )
+        if use_fp32:
+            from arwen_global.physics.satmedmf_fp32 import run_satmedmf_fp32
+            out, tke_new = run_satmedmf_fp32(
+                batch.arrays["u"], batch.arrays["v"], batch.arrays["theta"],
+                batch.arrays["qv"], batch.arrays["qc"], batch.arrays["qr"], batch.arrays["qi"],
+                batch.arrays["p_full"], batch.arrays["p_half"], batch.arrays["exner"], dz,
+                f["rad_rthratensw"], f["rad_rthratenlw"], f["tke_edmf"],
+                f["znt"], batch.surface.vegetation_fraction, self._xland(batch),
+                f["br"], batch.surface.temperature_k, f["hfx"], f["qfx"],
+                f["ust"], f["wspd"], f["u10"], f["v10"], f["fm"], f["fh"],
+                dx_m=float(self.options.dx_m),
+                dt_s=float(batch.dt_s),
+                tridi_fp64=True,
+            )
+            f["tke_edmf"] = tke_new
+            return out
+        import gpuwm.core.satmedmf as satmedmf
+        n = nlat * nlon
+        col = lambda a: xp.asfortranarray(xp.asarray(a, dtype=xp.float64).reshape(nz, n).T)
+        surf = lambda a: xp.asarray(a, dtype=xp.float64).reshape(n)
+        if "tke_edmf" not in f or tuple(f["tke_edmf"].shape) != (nz, nlat, nlon):
+            f["tke_edmf"] = xp.full((nz, nlat, nlon), xp.float32(0.01), dtype=xp.float32)
+        rv = col(batch.arrays["qv"])
+        denom = 1.0 + rv
+        q = xp.empty((n, nz, 5), dtype=xp.float64, order="F")
+        q[:, :, 0] = rv / denom
+        q[:, :, 1] = col(batch.arrays["qc"]) / denom
+        q[:, :, 2] = col(batch.arrays["qr"]) / denom
+        q[:, :, 3] = col(batch.arrays["qi"]) / denom
+        q[:, :, 4] = xp.maximum(col(f["tke_edmf"]), 1.0e-6)
+        p = col(batch.arrays["p_full"])
+        pi = xp.asfortranarray(xp.asarray(batch.arrays["p_half"], dtype=xp.float64).reshape(nz + 1, n).T)
+        exner = col(batch.arrays["exner"])
+        psk = (pi[:, 0] / 100000.0) ** (DRY_AIR_GAS_CONSTANT / DRY_AIR_CP)
+        dz64 = col(dz)
+        zi = xp.zeros((n, nz + 1), dtype=xp.float64, order="F")
+        zi[:, 1:] = xp.cumsum(dz64, axis=1)
+        zm = 0.5 * (zi[:, :-1] + zi[:, 1:])
+        t_k = col(batch.arrays["theta"]) * exner
+        rho0 = p[:, 0] / (DRY_AIR_GAS_CONSTANT * xp.maximum(t_k[:, 0], 100.0))
+        rough = surf(f["znt"])
+        green = surf(batch.surface.vegetation_fraction) * 0.01
+        rough_fraction = xp.clip((rough - 0.1) / 0.9, 0.0, 1.0)
+        zvfun = xp.sqrt(rough_fraction * xp.maximum(green, 0.1))
+        zvfun = xp.where(surf(self._xland(batch)) < 1.5, zvfun, 0.0)
+        sfc = xp.empty((n, 16), dtype=xp.float64, order="F")
+        sfc[:, 0] = psk
+        sfc[:, 1] = surf(f["br"])
+        sfc[:, 2] = 100.0 * rough
+        sfc[:, 3] = surf(batch.surface.temperature_k)
+        sfc[:, 4] = surf(f["hfx"]) / (rho0 * 1004.6)
+        sfc[:, 5] = surf(f["qfx"]) / rho0
+        sfc[:, 6] = surf(f["ust"]) ** 2
+        sfc[:, 7] = surf(f["wspd"])
+        sfc[:, 8] = surf(f["u10"])
+        sfc[:, 9] = surf(f["v10"])
+        sfc[:, 10] = surf(f["fm"])
+        sfc[:, 11] = surf(f["fh"])
+        sfc[:, 12] = 1.0
+        sfc[:, 13] = float(self.options.dx_m) ** 2
+        sfc[:, 14] = zvfun
+        sfc[:, 15] = green
+        inputs = {
+            "u": col(batch.arrays["u"]),
+            "v": col(batch.arrays["v"]),
+            "t": t_k,
+            "q": q,
+            "swh": col(f["rad_rthratensw"]) * exner,
+            "hlw": col(f["rad_rthratenlw"]) * exner,
+            "prsi": pi,
+            "prsl": p,
+            "prslk": exner,
+            "phii": zi * GRAVITY_M_S2,
+            "phil": zm * GRAVITY_M_S2,
+            "sfc": sfc,
+        }
+        # Chunk columns by 32768 to stay well under Workstation GPU kernel watchdog timeout
+        chunk = 32768
+        if n <= chunk:
+            raw = satmedmf.run_device(inputs, dt=float(batch.dt_s))
+        else:
+            raw = None
+            for i0 in range(0, n, chunk):
+                i1 = min(n, i0 + chunk)
+                sub = {k: xp.asfortranarray(v[i0:i1]) for k, v in inputs.items()}
+                part = satmedmf.run_device(sub, dt=float(batch.dt_s))
+                if raw is None:
+                    raw = {k: xp.empty((n,) + v.shape[1:], dtype=v.dtype, order="F") for k, v in part.items()}
+                for k, v in part.items():
+                    raw[k][i0:i1] = v
+        rates = satmedmf.recover_physics_rates(inputs, raw, (nz, nlat, nlon), float(batch.dt_s))
+        f["tke_edmf"] = xp.clip(
+            f["tke_edmf"] + xp.float32(batch.dt_s) * rates["dtke_edmf"],
+            xp.float32(1.0e-6), xp.float32(50.0),
+        )
+        return {
+            "du": rates["du"], "dv": rates["dv"], "dtheta": rates["dtheta"],
+            "dqv": rates["dqv"], "dqc": rates["dqc"], "dqi": rates["dqi"],
+            "hpbl": xp.ascontiguousarray(raw["hpbl"].reshape(nlat, nlon), dtype=xp.float32),
+        }
+
     def _pbl_step(self, batch, persistent):
-        module = self._module("arwen_global.core.ysu")
         f = persistent.arrays
         dz = self._dz(batch)
-        out = module.launch_ysu(
-            batch.arrays["u"], batch.arrays["v"], batch.arrays["theta"],
-            batch.arrays["qv"], batch.arrays["qc"], batch.arrays["qi"],
-            batch.arrays["p_full"], batch.arrays["p_half"],
-            batch.arrays["exner"], dz,
-            rthraten=f["rad_rthratenlw"] + f["rad_rthratensw"],
-            psfc=batch.arrays["p_half"][0], znt=f["znt"], ust=f["ust"],
-            hfx=f["hfx"], qfx=f["qfx"], wspd=f["wspd"], br=f["br"],
-            psim=f["fm"], psih=f["fh"],
-            xland=self._xland(batch),
-            u10=f["u10"], v10=f["v10"], dt=batch.dt_s,
-            ysu_topdown_pblmix=self.options.ysu_topdown_pblmix,
-            free_atmosphere_mixing_length=(
-                self.options.ysu_free_atmosphere_mixing_length),
-        )
+        if self.options.pbl in {"satmedmf", "satmedmf_fp32", "satmedmf_fp64"}:
+            out = self._satmedmf_pbl(batch, persistent, dz)
+        else:
+            module = self._module("arwen_global.core.ysu")
+            out = module.launch_ysu(
+                batch.arrays["u"], batch.arrays["v"], batch.arrays["theta"],
+                batch.arrays["qv"], batch.arrays["qc"], batch.arrays["qi"],
+                batch.arrays["p_full"], batch.arrays["p_half"],
+                batch.arrays["exner"], dz,
+                rthraten=f["rad_rthratenlw"] + f["rad_rthratensw"],
+                psfc=batch.arrays["p_half"][0], znt=f["znt"], ust=f["ust"],
+                hfx=f["hfx"], qfx=f["qfx"], wspd=f["wspd"], br=f["br"],
+                psim=f["fm"], psih=f["fh"],
+                xland=self._xland(batch),
+                u10=f["u10"], v10=f["v10"], dt=batch.dt_s,
+                ysu_topdown_pblmix=self.options.ysu_topdown_pblmix,
+                free_atmosphere_mixing_length=(
+                    self.options.ysu_free_atmosphere_mixing_length),
+            )
         if self.options.orographic_drag_enabled:
             # WRF's PBL driver adds gwd_opt's drag to RUBLTEN/RVBLTEN after
             # the PBL scheme, from the same column state the PBL scheme read
@@ -1559,6 +1753,19 @@ class NativePhysicsRuntime:
                     launch=self._module(
                         "arwen_global.core.terrain_drag").launch_gwdo,
                     dz=dz, dx_m=self.options.dx_m,
+                    metadata=persistent.metadata)
+        if self.options.nonorographic_gwd_enabled:
+            from .nonorographic_gwd import apply_nonorographic_gwd
+
+            with profiler_of(self).section("nonorographic_gwd"):
+                apply_nonorographic_gwd(
+                    batch, out, dz=dz,
+                    launch_flux_pa=self.options.nogwd_launch_flux_pa,
+                    launch_pa=self.options.nogwd_launch_pa,
+                    cstar_scale=self.options.nogwd_cstar,
+                    heat_booking=self.options.nogwd_heat_booking,
+                    lat_profile=self.options.nogwd_lat_profile,
+                    latitude_deg=batch.arrays.get("latitude_deg"),
                     metadata=persistent.metadata)
         step = batch.xp.float32(batch.dt_s)
         column_before = self._water_before(batch)
@@ -2079,14 +2286,23 @@ class NativePhysicsRuntime:
             landed = xp.maximum(rain_model, 0.0).astype(xp.float32)
             f[CONVECTIVE_RAIN_ACCUMULATOR] += landed
             f["land_rainbl"] += landed
+            # The four means cross to the host in one read (four
+            # synchronisations a call before); the same float64 means.
+            books = xp.stack([
+                xp.mean(increment, dtype=xp.float64),
+                xp.mean(landed, dtype=xp.float64),
+                xp.mean(xp.maximum(landed - xp.maximum(removed, 0.0), 0.0),
+                        dtype=xp.float64),
+                xp.mean(removed, dtype=xp.float64),
+            ])
+            books = np.asarray(
+                xp.asnumpy(books) if hasattr(xp, "asnumpy") else books)
             rain_books = {
-                "rain_reported_kg_m2": float(xp.mean(increment, dtype=xp.float64)),
-                "rain_kg_m2": float(xp.mean(landed, dtype=xp.float64)),
+                "rain_reported_kg_m2": float(books[0]),
+                "rain_kg_m2": float(books[1]),
                 # The rain beyond the measured loss: round-off only.
-                "rain_withheld_kg_m2": float(xp.mean(
-                    xp.maximum(landed - xp.maximum(removed, 0.0), 0.0),
-                    dtype=xp.float64)),
-                "water_removed_kg_m2": float(xp.mean(removed, dtype=xp.float64)),
+                "rain_withheld_kg_m2": float(books[2]),
+                "water_removed_kg_m2": float(books[3]),
                 # Mean |rates' rain - measured loss| (the guard holds the
                 # largest to round-off); a column mean, merged as one.
                 "rain_closure_kg_m2": float(closure_readings[2]),
@@ -2138,6 +2354,72 @@ class NativePhysicsRuntime:
         self._microphysics_kernel(batch, persistent)
         self._book_microphysics(batch, persistent, column_before)
 
+    def _tempo_microphysics_kernel(self, batch, persistent):
+        """Run gpuwm 3.0.3 NCAR TEMPO v3.2.5 microphysics in place."""
+        from gpuwm.core.tempo_runtime import TempoConfig, TempoRuntime
+        xp = batch.xp
+        f = persistent.arrays
+        shape = batch.shape
+        nz = shape[0]
+        if getattr(self, "_tempo_rt", None) is None or self._tempo_nz_max < nz:
+            self._tempo_nz_max = int(nz)
+            from gpuwm.tempo_assets import ensure_tempo_tables
+            self._tempo_rt = TempoRuntime(
+                table_dir=ensure_tempo_tables(), hailaware=False, nz_max=self._tempo_nz_max,
+                fmad=True, version="v3.2.5"
+            )
+            self._tempo_rt.threads_per_block = 128
+            self._tempo_cfg = TempoConfig(
+                aerosolaware=False, hailaware=False, cloud_condensation=True,
+                refl10cm=False, re_cloud=True, re_ice=True, re_snow=True,
+                max_hail_diameter=False,
+            )
+        dz = xp.ascontiguousarray(self._dz(batch), dtype=xp.float32)
+        zeros = xp.zeros(shape, dtype=xp.float32)
+        # Ensure all TEMPO state fields are C-contiguous float32 views/arrays
+        fields = {
+            "t": batch.arrays["theta"],
+            "p": batch.arrays["p_full"],
+            "w": zeros,
+            "dz": dz,
+            "qv": batch.arrays["qv"],
+            "qc": batch.arrays["qc"],
+            "qr": batch.arrays["qr"],
+            "qi": batch.arrays["qi"],
+            "qs": batch.arrays["qs"],
+            "qg": batch.arrays["qg"],
+            "ni": batch.arrays["ni"],
+            "nr": batch.arrays["nr"],
+            "nc": batch.arrays["nc"],
+            "nwfa": zeros,
+            "nifa": zeros,
+            "ng": batch.arrays["ng"],
+            "qb": zeros,
+        }
+        diag = self._tempo_rt.step(
+            fields, float(batch.dt_s), self._tempo_cfg, exner=batch.arrays["exner"]
+        )
+        # Guard against tiny (-1e-6) fp32 sublimation undershoots before _book_microphysics & _validate_result
+        for _sp in ("qv", "qc", "qr", "qi", "qs", "qg"):
+            xp.maximum(batch.arrays[_sp], xp.float32(0.0), out=batch.arrays[_sp])
+        sfc = diag["surface"]
+        col = diag["column"]
+        rain = xp.asarray(sfc["rain_precip"], dtype=xp.float32)
+        ice = xp.asarray(sfc["ice_liquid_equiv_precip"], dtype=xp.float32)
+        snow = xp.asarray(sfc["snow_liquid_equiv_precip"], dtype=xp.float32)
+        graupel = xp.asarray(sfc["graupel_liquid_equiv_precip"], dtype=xp.float32)
+        total = rain + ice + snow + graupel
+        f["rainncv"][...] = total
+        f["snowncv"][...] = snow + ice
+        f["graupelncv"][...] = graupel
+        f["rainnc"] += total
+        f["snownc"] += (snow + ice)
+        f["graupelnc"] += graupel
+        f["sr"][...] = (snow + ice + graupel) / (total + xp.float32(1.0e-12))
+        f["effc"][...] = xp.clip(xp.asarray(col["re_cloud"], dtype=xp.float32) * xp.float32(1.0e6), xp.float32(1.0), xp.float32(90.0))
+        f["effi"][...] = xp.clip(xp.asarray(col["re_ice"], dtype=xp.float32) * xp.float32(1.0e6), xp.float32(5.0), xp.float32(500.0))
+        f["effs"][...] = xp.clip(xp.asarray(col["re_snow"], dtype=xp.float32) * xp.float32(1.0e6), xp.float32(10.0), xp.float32(2000.0))
+
     def _microphysics_kernel(self, batch, persistent):
         """The Morrison launch alone: the batch's theta, water species and
         number concentrations, and the namespace's per-call precipitation
@@ -2145,6 +2427,9 @@ class NativePhysicsRuntime:
         updated in place.  The scheme-output seam of the microphysics slot
         (:mod:`arwen_global.transplant`); the books are
         :meth:`_book_microphysics`."""
+        if self.options.microphysics == "tempo":
+            self._tempo_microphysics_kernel(batch, persistent)
+            return
         module = self._module("arwen_global.core.morrison")
         xp = batch.xp
         f = persistent.arrays

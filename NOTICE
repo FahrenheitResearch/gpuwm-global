@@ -75,7 +75,14 @@ in arwen_global.core, written from the published descriptions and the
 reference sources rather than copied from them, and it carries four WRF
 parameter tables verbatim from WRF's run/ directory: LANDUSE.TBL,
 VEGPARM.TBL, SOILPARM.TBL and GENPARM.TBL, in
-arwen_global/data/noah_tables, with a provenance note beside them. UCAR
+arwen_global/data/noah_tables, with a provenance note beside them. It also
+carries WRF's aer_opt = 1 aerosol climatology (run/aerosol.formatted,
+aerosol_lat.formatted, aerosol_lon.formatted and aerosol_plev.formatted,
+byte-identical to WRF v4.6.1's, the values unchanged and stored as one
+compressed array) in arwen_global/data/aerosol-tegen-wrf.npz, with its
+receipt beside it; the ECMWF aerosol optical tables that file is read
+through are AER's, transcribed in arwen_global/physics/aerosol_climatology.py
+under the AER notice below. UCAR
 asks that its notice travel with any copy of WRF, so that notice is
 reproduced here in full:
 
@@ -363,6 +370,80 @@ file of theirs is carried.
 
 --------------------------------------------------------------------------
 
+The opt-in physics of 0.4.0: where each scheme comes from
+
+SA-TKE-EDMF boundary layer, single precision (pbl = "satmedmf";
+arwen_global/physics/satmedmf_fp32.py). Project code (Apache-2.0). It
+carries no outside source of its own: at run time it reads the gpuwm
+engine's satmedmf_column.cuh, rewrites its double-precision arithmetic to
+single precision with a guarded humidity expression, and compiles and calls
+the result. That engine file is gpuwm's transcription of the CCPP physics
+scheme satmedmfvdifq (ccpp-physics, GFSv17 HR4), Apache-2.0, copyright
+NOAA, UCAR and the University of Colorado, under gpuwm's own NOTICE.
+pbl = "satmedmf_fp64" calls that engine column unchanged.
+
+Non-orographic gravity-wave drag (nonorographic_gwd = "scinocca";
+arwen_global/physics/nonorographic_gwd.py and its fused CUDA kernel).
+Project code (Apache-2.0), a simplified spectral scheme written from these
+papers, not ported from any model's code and not bitwise to any:
+
+  Scinocca, J. F., 2003: An accurate spectral nonorographic gravity wave
+    drag parameterization for general circulation models. J. Atmos. Sci.,
+    60, 667-682.
+  Warner, C. D. and M. E. McIntyre, 1999: Toward an ultra-simple spectral
+    gravity wave parameterization for general circulation models. Earth
+    Planets Space, 51, 475-484.
+  Orr, A., P. Bechtold, J. Scinocca, M. Ern and M. Janiskova, 2010:
+    Improved middle atmosphere climate and forecasts in the ECMWF model
+    through a nonorographic gravity wave drag parameterization. J. Climate,
+    23, 5905-5926.
+
+The launch flux and launch level it shares with those papers are the
+published values. No IFS or CMAM source is carried.
+
+The 80-level ifs_class vertical grid (arwen_global/vertical.py). Project
+code (Apache-2.0): an analytic level formula. No level table from another
+model is carried.
+
+TEMPO microphysics (microphysics = "tempo"). This package carries no TEMPO
+source: the option calls the NCAR TEMPO scheme inside the gpuwm engine,
+under that engine's NOTICE. The New Tiedtke cumulus and TEMPO launch
+settings of 0.4.0 change how the kernels already carried are launched, not
+their source.
+
+--------------------------------------------------------------------------
+
+Stochastic physics (SPPT, SKEB): project code written from papers
+
+arwen_global/stochastic.py is project code (Apache-2.0). It is a port of
+this project's own stochastic physics for the gpuwm-hex model line
+(project code under Apache-2.0), which was written from these published
+methods:
+
+  Buizza, R., M. Miller and T. N. Palmer, 1999: Stochastic representation
+    of model uncertainties in the ECMWF Ensemble Prediction System.
+    Q. J. R. Meteorol. Soc., 125, 2887-2908.
+  Palmer, T. N., R. Buizza, F. Doblas-Reyes, T. Jung, M. Leutbecher,
+    G. J. Shutts, M. Steinheimer and A. Weisheimer, 2009: Stochastic
+    parametrization and model uncertainty. ECMWF Technical Memorandum 598.
+  Shutts, G., 2005: A kinetic energy backscatter algorithm for use in
+    ensemble prediction systems. Q. J. R. Meteorol. Soc., 131, 3079-3102.
+  Berner, J., G. J. Shutts, M. Leutbecher and T. N. Palmer, 2009: A
+    spectral stochastic kinetic energy backscatter scheme and its impact
+    on flow-dependent predictability in the ECMWF ensemble prediction
+    system. J. Atmos. Sci., 66, 603-626.
+  Weaver, A. and P. Courtier, 2001: Correlation modelling on the sphere
+    using a generalized diffusion equation. Q. J. R. Meteorol. Soc., 127,
+    1815-1846.
+  Bolton, D., 1980: The computation of equivalent potential temperature.
+    Mon. Wea. Rev., 108, 1046-1053.
+
+No code, registry or documentation from NOAA's stochastic_physics package
+was read or used. The Philox4x32-10 counter generator follows Random123
+(D. E. Shaw Research, BSD-3-Clause): licenses/LICENSE-Random123.txt.
+
+--------------------------------------------------------------------------
+
 Data services (not redistributed)
 
 This software fetches data at the user's request from third-party services
@@ -379,8 +460,18 @@ is subject to them:
   - Zenodo: the PALEOMAP paleo-elevation maps, under the licence named in
     the section on other worlds above.
 
+  - the Copernicus Climate Change Service (C3S): ERA5 hourly fields, read
+    from Google's public ARCO copy by `gpuwm-global fetch-analysis --source
+    era5` (see the Copernicus notice below).
+
 The geography archive this model builds its static surface fields from is
 fetched through the engine and is not part of this distribution.
+
+Copernicus notice. Runs started from ERA5, and the static surface fields
+whose deep soil temperature the engine's geography fetch derives from ERA5,
+contain modified Copernicus Climate Change Service information (2026).
+Neither the European Commission nor ECMWF is responsible for any use that
+may be made of the Copernicus information or data it contains.
 
 --------------------------------------------------------------------------
 

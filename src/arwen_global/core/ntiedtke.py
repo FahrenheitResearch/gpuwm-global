@@ -59,7 +59,7 @@ from gpuwm.core.state import DTYPE
 #: 32 is one warp per block, which caps occupancy through the
 #: blocks-per-SM limit regardless of register count, and cuascn is at 94
 #: registers with cutypen at 91.  Revisiting it is a Phase 4 question.
-NT_TPB = 32
+NT_TPB = 128
 
 #: Stage ids, mirroring the ``NT_STAGE_*`` defines in ntiedtke.cu.  The
 #: kernel writes its observed geometry into ``geom_report[stage_id]``.
@@ -238,16 +238,26 @@ class NtStages:
         Appended HERE rather than at each call site, so a stage cannot opt
         out of the geometry or ordering checks by forgetting them.
         """
-        import numpy as np
-        g = self.geometry
-        return (np.int32(g.tpb), np.int32(g.nblocks), self._geom_report,
-                self._order_report, self._ticket)
+        tail = getattr(self, "_tail_cache", None)
+        if tail is None:
+            import numpy as np
+            g = self.geometry
+            tail = (np.int32(g.tpb), np.int32(g.nblocks), self._geom_report,
+                    self._order_report, self._ticket)
+            self._tail_cache = tail
+        return tail
 
     def launch(self, kernel_name: str, args: tuple):
         """Launch one stage under the descriptor.  No geometry parameter."""
-        from arwen_global.core.kernels import load_module
-
-        fn = load_module("ntiedtke").get_function(kernel_name)
+        fns = getattr(self, "_fn_cache", None)
+        if fns is None:
+            fns = {}
+            self._fn_cache = fns
+        fn = fns.get(kernel_name)
+        if fn is None:
+            from arwen_global.core.kernels import load_module
+            fn = load_module("ntiedtke").get_function(kernel_name)
+            fns[kernel_name] = fn
         fn(self.geometry.grid, self.geometry.block, tuple(args) + self._tail())
         return self
 
@@ -1139,7 +1149,28 @@ class NtPipeline:
         return tuple(out)
 
     def run_stage(self, stage: str) -> None:
-        self.stages.launch(stage, self.args_for(stage))
+        cache = getattr(self, "_stage_args_cache", None)
+        if cache is None:
+            cache = {}
+            self._stage_args_cache = cache
+        entry = cache.get(stage)
+        if entry is None:
+            sig = NT_STAGE_SIGNATURE[stage]
+            llo3_idx = -1
+            pos = 0
+            for name in sig:
+                if name in _GEOMETRY_TAIL:
+                    continue
+                if name == "llo3":
+                    llo3_idx = pos
+                pos += 1
+            args_list = list(self.args_for(stage))
+            entry = (args_list, llo3_idx)
+            cache[stage] = entry
+        args_list, llo3_idx = entry
+        if llo3_idx >= 0:
+            args_list[llo3_idx] = self.scalars["llo3"]
+        self.stages.launch(stage, tuple(args_list))
 
     # -- the assembler's own work ---------------------------------------
     def zero_run_head(self) -> None:
@@ -1191,8 +1222,11 @@ class NtPipeline:
 
         klab = self.w.bind("klab", 1)
         nz = self.w.nz
-        first = bool((klab[nz] > 0).any())         # klab(:, klev)
-        ever = bool((klab[1:nz + 1] > 0).any())    # any level, any column
+        # Fuse both .any() checks into a single 2-element D2H sync (was 3 syncs/chunk).
+        pair_d = cp.stack([(klab[nz] > 0).any(), (klab[1:nz + 1] > 0).any()])
+        pair_h = pair_d.get()
+        first = bool(pair_h[0])
+        ever = bool(pair_h[1])
         if first != ever:
             raise ValueError(
                 "llo3's hoist is unsound for this chunk: klab is zero at "
@@ -1202,7 +1236,6 @@ class NtPipeline:
                 "12's precondition holds on the fixture (48 of 48 triggering "
                 "columns) and "
                 "does not hold here.")
-        cp.cuda.Stream.null.synchronize()
         import numpy as np
 
         self.scalars["llo3"] = np.int32(1 if first else 0)

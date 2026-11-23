@@ -103,6 +103,34 @@ def _statics_needed(cfg, status: StatusWriter) -> bool:
     return True
 
 
+def _release_forecast_pool(cfg, status) -> None:
+    """Hand the forecast's cached device blocks back before the render.
+
+    THE BREAKAGE THIS PREVENTS, measured 2026-11-23 on an RTX 5070 Ti: the
+    door prices a day at the card its forecast takes, and `go` then exported
+    the tapes in the same process while the pool still held the forecast's
+    cached blocks, so the export grew the pool on top of them.  The T383 day
+    stayed under its 14.27 GiB price for the whole forecast and then took
+    14,898 MiB of card after its receipt was written.  The forecast's arrays
+    are gone once `run` returns; only their cached blocks are left, and the
+    export takes what it needs from the card instead."""
+
+    import gc
+    import sys
+
+    gc.collect()
+    cupy = sys.modules.get("cupy")
+    if cupy is None or str(getattr(cfg, "backend", "")) != "cupy":
+        return
+    from .device_memory import installed_pool
+
+    pool = installed_pool(cupy)
+    release = getattr(pool, "free_all_blocks", None)
+    if release is not None:
+        release()
+        status.note("the forecast's cached device blocks handed back before the render")
+
+
 def go(args: argparse.Namespace) -> int:
     from . import cli
     from .config import load_config
@@ -160,6 +188,7 @@ def go(args: argparse.Namespace) -> int:
             status.done("forecast complete, render skipped for want of a valid time")
             return 0
         print("go: rendering")
+        _release_forecast_pool(cfg, status)
         checkpoints = sorted(outdir.glob("arwen_global_step*.npz"))
         if not checkpoints:
             status.note("render skipped: the forecast wrote no checkpoints")

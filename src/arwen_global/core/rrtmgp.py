@@ -1577,6 +1577,156 @@ def finish_size_bounding(counts: SizeBounding, terms: SizeBoundingTerms,
         counts, **_size_bounding_fractions(sums, xp=xp, dtype=dtype))
 
 
+#: bound_cloud_sizes on the chunked production call (carry, cldfra given,
+#: path sums deferred) in one launch: the bounded paths and sizes, the
+#: terms' masks and every count from one thread per column.  False runs the
+#: operation-by-operation chain the kernel is tested against word for word
+#: (tests/test_arwen_global_cldfra1_fused_cuda.py).
+_BOUND_SIZES_FUSED = True
+_BOUND_SIZES_KERNELS: dict = {}
+
+_BOUND_SIZES_SOURCE = r"""
+#ifndef NAN
+#define NAN __int_as_float(0x7fffffff)
+#endif
+__device__ __forceinline__ float bcs_max(float a, float b) {
+    return (isnan(a) | isnan(b)) ? (float)(NAN) : (float)(max(a, b));
+}
+__device__ __forceinline__ float bcs_clip(float a, float lo, float hi) {
+    return lo > hi ? hi : (a < lo ? lo : (a > hi ? hi : a));
+}
+// One thread per column.  counts: liquid, liquid_below, liquid_above,
+// liquid_below_columns, liquid_above_columns, ice, ice_below, ice_above,
+// ice_below_columns, ice_above_columns, liquid_unsampled, ice_unsampled.
+extern "C" __global__ void arwen_bound_cloud_sizes(
+    const float* __restrict__ clwp, const float* __restrict__ ciwp,
+    const float* __restrict__ reliq, const float* __restrict__ dgice,
+    const float* __restrict__ weight,
+    const bool* __restrict__ lsm, const bool* __restrict__ ism,
+    float* __restrict__ clwp_o, float* __restrict__ ciwp_o,
+    float* __restrict__ reliq_o, float* __restrict__ dgice_o,
+    bool* __restrict__ la_o, bool* __restrict__ ia_o,
+    bool* __restrict__ ls_o, bool* __restrict__ is_o,
+    unsigned long long* __restrict__ counts,
+    const long long ncol, const int nlay,
+    const float liq_lwr, const float liq_upr,
+    const float ice_lwr, const float ice_upr, const int sentinel)
+{
+    const long long col = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (col >= ncol) return;
+    unsigned long long c[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    bool lb_col = false, la_col = false, ib_col = false, ia_col = false;
+    for (int k = 0; k < nlay; ++k) {
+        const long long i = col * nlay + k;
+        const float lw = clwp[i], iw = ciwp[i], r = reliq[i], d = dgice[i];
+        const float w = weight[i];
+        const bool liquid = lw > 0.0f, ice = iw > 0.0f;
+        const bool la = liquid & (r > liq_upr), lb = liquid & (r < liq_lwr);
+        const bool ia = ice & (d > ice_upr), ib = ice & (d < ice_lwr);
+        la_o[i] = la;
+        ia_o[i] = ia;
+        if (sentinel) {
+            ls_o[i] = liquid & lsm[i];
+            is_o[i] = ice & ism[i];
+        }
+        c[0] += liquid; c[1] += lb; c[2] += la;
+        c[5] += ice; c[6] += ib; c[7] += ia;
+        c[10] += liquid & (w <= 0.0f);
+        c[11] += ice & (w <= 0.0f);
+        lb_col |= lb; la_col |= la; ib_col |= ib; ia_col |= ia;
+        const float lw_carry = lw * (liq_upr / bcs_max(r, liq_upr));
+        const float iw_carry = iw * (ice_upr / bcs_max(d, ice_upr));
+        clwp_o[i] = la ? lw_carry : lw;
+        ciwp_o[i] = ia ? iw_carry : iw;
+        reliq_o[i] = bcs_clip(r, liq_lwr, liq_upr);
+        dgice_o[i] = bcs_clip(d, ice_lwr, ice_upr);
+    }
+    c[3] = lb_col; c[4] = la_col; c[8] = ib_col; c[9] = ia_col;
+    for (int n = 0; n < 12; ++n)
+        if (c[n]) atomicAdd(counts + n, c[n]);
+}
+"""
+
+
+def _bound_sizes_fusable(xp, clwp, ciwp, reliq, dgice, cldfra,
+                         sentinel_masks) -> bool:
+    if not hasattr(xp, "RawKernel"):
+        return False
+    arrays = [clwp, ciwp, reliq, dgice, cldfra]
+    if any(not isinstance(a, xp.ndarray) for a in arrays):
+        return False
+    shape = clwp.shape
+    if len(shape) != 2:
+        return False
+    for a in arrays:
+        if (a.shape != shape or a.dtype != np.float32
+                or not a.flags.c_contiguous):
+            return False
+    if sentinel_masks is not None:
+        for m in sentinel_masks:
+            if (not isinstance(m, xp.ndarray) or m.shape != shape
+                    or m.dtype != np.bool_ or not m.flags.c_contiguous):
+                return False
+    return True
+
+
+def _bound_cloud_sizes_fused(clwp, ciwp, reliq, dgice, bounds, cldfra,
+                             sentinel_masks, sentinel_counts, *, xp):
+    """:func:`bound_cloud_sizes` (carry, cldfra given, path sums deferred)
+    in one launch.  The carry and the clip are the chain's CuPy routines
+    (its NaN-propagating maximum, its clip) in its order, one rounding
+    each; the masks are the chain's; the counts are integers, exact in any
+    order.  So the result is the chain's, word for word."""
+    key = _cache_device_key(xp)
+    kernel = _BOUND_SIZES_KERNELS.get(key)
+    if kernel is None:
+        kernel = xp.RawKernel(_BOUND_SIZES_SOURCE, "arwen_bound_cloud_sizes",
+                              options=("-fmad=false",))
+        _BOUND_SIZES_KERNELS[key] = kernel
+    f32 = np.float32
+    ncol, nlay = clwp.shape
+    clwp_o, ciwp_o = xp.empty_like(clwp), xp.empty_like(ciwp)
+    reliq_o, dgice_o = xp.empty_like(reliq), xp.empty_like(dgice)
+    liquid_above = xp.empty(clwp.shape, dtype=xp.bool_)
+    ice_above = xp.empty_like(liquid_above)
+    sentinel = sentinel_masks is not None
+    if sentinel:
+        lsm, ism = sentinel_masks
+        liquid_sentinel = xp.empty_like(liquid_above)
+        ice_sentinel = xp.empty_like(liquid_above)
+    else:
+        lsm = ism = liquid_sentinel = ice_sentinel = None
+    null = np.uint64(0)
+    counts = xp.zeros((12,), dtype=xp.int64)
+    threads = 128
+    kernel(((ncol + threads - 1) // threads,), (threads,), (
+        clwp, ciwp, reliq, dgice, cldfra,
+        lsm if sentinel else null, ism if sentinel else null,
+        clwp_o, ciwp_o, reliq_o, dgice_o, liquid_above, ice_above,
+        liquid_sentinel if sentinel else null,
+        ice_sentinel if sentinel else null,
+        counts, np.int64(ncol), np.int32(nlay),
+        f32(bounds.radliq_lwr), f32(bounds.radliq_upr),
+        f32(bounds.diamice_lwr), f32(bounds.diamice_upr),
+        np.int32(1 if sentinel else 0)))
+    terms = SizeBoundingTerms(
+        clwp=clwp, ciwp=ciwp, liquid_above=liquid_above, ice_above=ice_above,
+        liquid_sentinel=liquid_sentinel, ice_sentinel=ice_sentinel)
+    fractions = {name: None for name in SIZE_BOUNDING_FIELDS
+                 if name.endswith("fraction")}
+    bounding = SizeBounding(
+        liquid_cells=counts[0], liquid_below_cells=counts[1],
+        liquid_above_cells=counts[2], liquid_below_columns=counts[3],
+        liquid_above_columns=counts[4], ice_cells=counts[5],
+        ice_below_cells=counts[6], ice_above_cells=counts[7],
+        ice_below_columns=counts[8], ice_above_columns=counts[9],
+        liquid_unsampled_cells=counts[10], ice_unsampled_cells=counts[11],
+        **fractions,
+        **(sentinel_counts or {}),
+    )
+    return HydrometeorPaths(clwp_o, ciwp_o, reliq_o, dgice_o, bounding, terms)
+
+
 def bound_cloud_sizes(clwp, ciwp, reliq, dgice, bounds: CloudSizeBounds, *,
                       xp, treatment: str = SIZE_TREATMENT_CARRY,
                       sentinel_counts=None, cldfra=None,
@@ -1623,6 +1773,13 @@ def bound_cloud_sizes(clwp, ciwp, reliq, dgice, bounds: CloudSizeBounds, *,
     if treatment not in SIZE_TREATMENTS:
         raise ValueError(
             f"treatment must be one of {SIZE_TREATMENTS}, got {treatment!r}")
+    if (_BOUND_SIZES_FUSED and not path_sums
+            and treatment == SIZE_TREATMENT_CARRY and cldfra is not None
+            and _bound_sizes_fusable(xp, clwp, ciwp, reliq, dgice, cldfra,
+                                     sentinel_masks)):
+        return _bound_cloud_sizes_fused(
+            clwp, ciwp, reliq, dgice, bounds, cldfra, sentinel_masks,
+            sentinel_counts, xp=xp)
     dtype = clwp.dtype
     liq_lwr, liq_upr = dtype.type(bounds.radliq_lwr), dtype.type(bounds.radliq_upr)
     ice_lwr, ice_upr = dtype.type(bounds.diamice_lwr), dtype.type(bounds.diamice_upr)
@@ -1731,8 +1888,17 @@ def _prepare_above_model_chunk(
     if xp is None:
         import cupy as xp
 
+    play_columns, plev_columns = play[columns], plev[columns]
+    # The driver's interface temperatures are built from the same packed
+    # play and plev; hand them over rather than pack both a second time
+    # (the extension only reads its inputs).  Only when they ARE the
+    # packers it was built on; anything else is indexed as before.
+    shared = (isinstance(tlev, _InterfaceTemperatureColumns)
+              and tlev._play is play and tlev._plev is plev)
+    tlev_columns = (tlev.packed(columns, play_columns, plev_columns)
+                    if shared else tlev[columns])
     profile = _extend_above_model_profile(
-        play[columns], plev[columns], tlay[columns], tlev[columns],
+        play_columns, plev_columns, tlay[columns], tlev_columns,
         qv[columns], p_top=p_top, kind=kind,
         pressure_floor=pressure_floor, xp=xp, validate_top=validate_top,
         uniform_top=uniform_top)
@@ -2259,6 +2425,157 @@ def load_cloud_tables(kind: str) -> CloudTables:
         )
 
 
+#: hydrometeor_paths' Morrison branch (paths and radii) in one launch on
+#: the production call (cldfra given, validate off); False runs the
+#: operation-by-operation chain the kernel is tested against word for word
+#: (tests/test_arwen_global_cldfra1_fused_cuda.py).
+_MORRISON_PATHS_FUSED = True
+_MORRISON_PATHS_KERNELS: dict = {}
+
+
+def _morrison_paths_kernel(effective: bool):
+    """The Morrison branch's chain from the layer mass path to dgice as one
+    CuPy ElementwiseKernel: every line is one of the chain's CuPy operations
+    with CuPy's routine for it (``fabsf``, ``powf``, its NaN-propagating
+    maximum, its clip), in the chain's order and association, rounded to
+    float32 once each; the one product that feeds a sum is written
+    ``__fmul_rn`` / ``__fadd_rn`` so it cannot contract into an FMA, and the
+    constants are runtime parameters, as in :func:`_cldfra1_kernel`."""
+    import cupy as cp
+
+    key = (*_cache_device_key(cp), bool(effective))
+    kernel = _MORRISON_PATHS_KERNELS.get(key)
+    if kernel is not None:
+        return kernel
+    consts = {
+        "mass": 1000.0 / 9.80665, "inc": 0.01, "tiny": 1.0e-20,
+        "rd": 287.15, "s_a": 0.0005714, "s_n": 1.0e6, "s_b": 0.2714,
+        "one": 1.0, "two": 2.0, "three": 3.0, "ten": 10.0, "fifty": 50.0,
+        "zero": 0.0, "k_c": np.pi * 997.0 / 6.0, "third": 1.0 / 3.0,
+        "mega": 1.0e6, "k_i": np.pi * 500.0, "k_s": np.pi * 100.0,
+        "r_e": 1.5e6, "sentinel": MORRISON_NO_MASS_RADIUS_UM,
+        "d_i": MORRISON_ICE_DENSITY_KG_M3 / RRTMGP_ICE_TABLE_DENSITY_KG_M3,
+        "d_s": MORRISON_SNOW_DENSITY_KG_M3 / RRTMGP_ICE_TABLE_DENSITY_KG_M3,
+    }
+    # Runtime parameters, not literals, exactly as CuPy hands a ufunc its
+    # scalar operand: a literal lets the compiler specialise an operation
+    # on its constant (measured: the droplet shape line written with literal
+    # constants moved 2,018 of 400,000 words against the ufunc chain).
+    c = {name: f"K_{name}" for name in consts}
+    preamble = r"""
+#ifndef NAN
+#define NAN __int_as_float(0x7fffffff)
+#endif
+__device__ __forceinline__ float mpaths_max(float a, float b) {
+    return (isnan(a) | isnan(b)) ? (float)(NAN) : (float)(max(a, b));
+}
+__device__ __forceinline__ float mpaths_clip(float a, float lo, float hi) {
+    return lo > hi ? hi : (a < lo ? lo : (a > hi ? hi : a));
+}
+"""
+    sent = ""
+    if effective:
+        sent = f"""
+    const bool liquid_s = (qc > {c['zero']}) & (effc == {c['sentinel']});
+    const bool ice_i = (qi > {c['zero']}) & (effi == {c['sentinel']});
+    const bool ice_s = (qs > {c['zero']}) & (effs == {c['sentinel']});
+    liquid_sentinel = liquid_s;
+    ice_sentinel = ice_i | ice_s;
+    re_c = liquid_s ? re_c : effc;
+    re_i = ice_i ? re_i : effi;
+    re_s = ice_s ? re_s : effs;
+"""
+    body = f"""
+    const float mass_path = fabsf(plev_hi - plev_lo) * {c['mass']};
+    const float incloud = mpaths_max({c['inc']}, cldfra);
+    clwp = (qc * mass_path) / incloud;
+    ciwp = ((qi + qs) * mass_path) / incloud;
+    const float rho_air = play / ({c['rd']} * tlay);
+    const float shape = __fadd_rn(__fmul_rn({c['s_a']}, __fmul_rn(ncp / {c['s_n']}, rho_air)), {c['s_b']});
+    const float pgam = mpaths_clip(
+        {c['one']} / (shape * shape) - {c['one']}, {c['two']}, {c['ten']});
+    const float gamma_ratio = ((pgam + {c['one']}) * (pgam + {c['two']}))
+        * (pgam + {c['three']});
+    const float lam_c = powf((({c['k_c']} * ncp) * gamma_ratio)
+                             / mpaths_max(qc, {c['tiny']}), {c['third']});
+    float re_c = ((pgam + {c['three']})
+                  / mpaths_max({c['two']} * lam_c, {c['tiny']})) * {c['mega']};
+    const float lam_i = powf(({c['k_i']} * nip) / mpaths_max(qi, {c['tiny']}),
+                             {c['third']});
+    float re_i = {c['r_e']} / mpaths_max(lam_i, {c['tiny']});
+    const float lam_s = powf(({c['k_s']} * nsp) / mpaths_max(qs, {c['tiny']}),
+                             {c['third']});
+    float re_s = {c['r_e']} / mpaths_max(lam_s, {c['tiny']});
+{sent}
+    const float wc = ((qc > {c['zero']}) & (ncp > {c['zero']})) ? ncp : {c['zero']};
+    const float mi = ((qi > {c['zero']}) & (nip > {c['zero']})) ? qi : {c['zero']};
+    const float ms = ((qs > {c['zero']}) & (nsp > {c['zero']})) ? qs : {c['zero']};
+    reliq = (wc > {c['zero']}) ? re_c : {c['ten']};
+    const float d_i = ({c['two']} * re_i) * {c['d_i']};
+    const float d_s = ({c['two']} * re_s) * {c['d_s']};
+    const float area = mi / mpaths_max(d_i, {c['tiny']})
+        + ms / mpaths_max(d_s, {c['tiny']});
+    dgice = ((mi + ms) > {c['zero']})
+        ? (mi + ms) / mpaths_max(area, {c['tiny']}) : {c['fifty']};
+"""
+    ins = ("float32 plev_hi, float32 plev_lo, float32 qc, float32 qi, "
+           "float32 qs, float32 cldfra, float32 play, float32 tlay, "
+           "float32 ncp, float32 nip, float32 nsp")
+    outs = "float32 clwp, float32 ciwp, float32 reliq, float32 dgice"
+    if effective:
+        ins += ", float32 effc, float32 effi, float32 effs"
+        outs += ", bool liquid_sentinel, bool ice_sentinel"
+    ins += "".join(f", float32 K_{name}" for name in consts)
+    kernel = cp.ElementwiseKernel(
+        ins, outs, body,
+        "arwen_morrison_paths_eff" if effective else "arwen_morrison_paths",
+        preamble=preamble)
+    entry = (kernel, tuple(np.float32(value) for value in consts.values()))
+    _MORRISON_PATHS_KERNELS[key] = entry
+    return entry
+
+
+def _morrison_paths_fused(plev, qc, qi, qs, *, play, tlay, nc, nr, ni, ns,
+                          effc, effr, effi, effs, cldfra, field):
+    """The Morrison branch of :func:`hydrometeor_paths` (cldfra given,
+    validation off) in one launch: ``(clwp, ciwp, reliq, dgice,
+    sentinel_counts, sentinel_masks, cldfra)``, the chain's bits."""
+    import cupy as cp
+
+    cldfra = _device_profile(cldfra, qc.shape, "cldfra")
+    if play is None or tlay is None or any(x is None for x in (nc, nr, ni, ns)):
+        raise ValueError("Morrison radii require play, tlay, nc, nr, ni, ns")
+    play = _device_profile(play, qc.shape, "play")
+    tlay = _device_profile(tlay, qc.shape, "tlay")
+    ncp, _nrp = field(nc, "nc"), field(nr, "nr")
+    nip, nsp = field(ni, "ni"), field(ns, "ns")
+    supplied = (effc, effr, effi, effs)
+    effective = any(value is not None for value in supplied)
+    args = [plev[:, 1:], plev[:, :-1], qc, qi, qs, cldfra, play, tlay,
+            ncp, nip, nsp]
+    if effective:
+        if any(value is None for value in supplied):
+            raise ValueError("Morrison effective radii require effc/effr/"
+                             "effi/effs together")
+        re_c, _re_r, re_i, re_s = (
+            field(value, name) for value, name in zip(
+                supplied, ("effc", "effr", "effi", "effs")))
+        args += [re_c, re_i, re_s]
+    kernel, constants = _morrison_paths_kernel(effective)
+    out = kernel(*args, *constants)
+    clwp, ciwp, reliq, dgice = out[:4]
+    if effective:
+        liquid_sentinel, ice_sentinel = out[4:]
+        counts = {
+            "liquid_sentinel_cells": cp.count_nonzero(liquid_sentinel),
+            "ice_sentinel_cells": cp.count_nonzero(ice_sentinel)}
+        masks = (liquid_sentinel, ice_sentinel)
+    else:
+        counts = {"liquid_sentinel_cells": 0, "ice_sentinel_cells": 0}
+        masks = None
+    return clwp, ciwp, reliq, dgice, counts, masks, cldfra
+
+
 def hydrometeor_paths(plev, qc, qr=None, qi=None, qs=None, *,
                       microphysics="kessler", play=None, tlay=None,
                       nc=None, nr=None, ni=None, ns=None,
@@ -2359,6 +2676,17 @@ def hydrometeor_paths(plev, qc, qr=None, qi=None, qs=None, *,
         if bool(cp.any(~cp.isfinite(plev))):
             raise ValueError("hydrometeor pressure inputs must be finite")
         _require_finite_nonnegative(qc=qc, qr=qr, qi=qi, qs=qs)
+    if (_MORRISON_PATHS_FUSED and str(microphysics).lower() == "morrison"
+            and cldfra is not None and not validate):
+        fused = _morrison_paths_fused(
+            plev, qc, qi, qs, play=play, tlay=tlay, nc=nc, nr=nr, ni=ni,
+            ns=ns, effc=effc, effr=effr, effi=effi, effs=effs,
+            cldfra=cldfra, field=field)
+        clwp, ciwp, reliq, dgice, sentinel_counts, sentinel_masks, cldfra = fused
+        return bound_cloud_sizes(clwp, ciwp, reliq, dgice, size_bounds, xp=cp,
+                                 sentinel_counts=sentinel_counts, cldfra=cldfra,
+                                 sentinel_masks=sentinel_masks,
+                                 path_sums=path_sums)
     mass_path = (cp.abs(cp.diff(plev, axis=1))
                  * DTYPE(1000.0 / 9.80665))
     clwp = qc * mass_path
@@ -2610,6 +2938,90 @@ def hydrometeor_paths(plev, qc, qr=None, qi=None, qs=None, *,
                              path_sums=path_sums)
 
 
+#: cal_cldfra1 in one launch (see _cldfra1_kernel); False runs the
+#: operation-by-operation chain, which the fused kernel is tested against
+#: word for word (tests/test_arwen_global_cldfra1_fused_cuda.py).
+_CLDFRA1_FUSED = True
+_CLDFRA1_KERNELS: dict = {}
+
+
+def _cldfra1_kernel():
+    """cal_cldfra1's operation chain as one CuPy ElementwiseKernel.
+
+    Every line is one of the chain's CuPy operations with the routine CuPy
+    runs for it (``in0 * in1``, ``in0 / in1``, ``exp``, ``powf``, its float
+    maximum: NaN if either side is NaN, else ``max``), in the chain's order
+    and association, each rounded to float32 once.  Every product that
+    feeds a sum is written ``__fmul_rn`` / ``__fadd_rn``, which the compiler
+    never contracts into an FMA (the one-operation-per-launch chain never
+    could; CuPy's ElementwiseKernel does not pass ``-fmad=false`` through,
+    measured: the plain form moved 553 of 123,041 words).  The constants
+    are the float32 values of the chain's ``DTYPE(...)`` literals, handed
+    in as runtime parameters the way CuPy hands a ufunc its scalar, so the
+    compiler cannot specialise an operation on a literal.
+    """
+    import cupy as cp
+
+    key = _cache_device_key(cp)
+    kernel = _CLDFRA1_KERNELS.get(key)
+    if kernel is not None:
+        return kernel
+    consts = {
+        "svpt0": 273.15, "a_w": 17.2693882, "b_w": 35.86,
+        "a_i": 21.8745584, "b_i": 7.66, "qcldmin": 1.0e-12,
+        "one": 1.0, "zero": 0.0, "tiny": 1.0e-10, "argmin": -6.9,
+        "alpha": -100.0, "gamma": 0.49, "pexp": 0.25, "trunc": 0.01}
+    # Runtime parameters, not literals, as CuPy hands a ufunc its scalar.
+    c = {name: f"K_{name}" for name in consts}
+    preamble = r"""
+#ifndef NAN
+#define NAN __int_as_float(0x7fffffff)
+#endif
+__device__ __forceinline__ float cldfra1_max(float a, float b) {
+    return (isnan(a) | isnan(b)) ? (float)(NAN) : (float)(max(a, b));
+}
+"""
+    body = f"""
+    const float tc = tlay - {c['svpt0']};
+    const float esw = __fmul_rn(c_es, exp(({c['a_w']} * tc) / (tlay - {c['b_w']})));
+    const float esi = __fmul_rn(c_es, exp(({c['a_i']} * tc) / (tlay - {c['b_i']})));
+    const float qvsw = (ep2 * esw) / (play - esw);
+    const float qvsi = (ep2 * esi) / (play - esi);
+    float qcld, weight;
+    if (arm == 2) {{
+        qcld = (qi + qc) + qs;
+        const float w = (qi + qs) / cldfra1_max(qcld, {c['qcldmin']});
+        weight = (qcld < {c['qcldmin']}) ? {c['zero']} : w;
+    }} else if (arm == 1) {{
+        qcld = qi + qc;
+        const float w = qi / cldfra1_max(qcld, {c['qcldmin']});
+        weight = (qcld < {c['qcldmin']}) ? {c['zero']} : w;
+    }} else {{
+        qcld = qc;
+        const float w = (tlay > {c['svpt0']}) ? {c['zero']} : {c['one']};
+        weight = (qcld < {c['qcldmin']}) ? {c['zero']} : w;
+    }}
+    const float qvs_weight = __fadd_rn(__fmul_rn({c['one']} - weight, qvsw), __fmul_rn(weight, qvsi));
+    const float rhum = qv / qvs_weight;
+    const float subsat = cldfra1_max({c['tiny']}, qvs_weight - qv);
+    const float arg = cldfra1_max(
+        {c['argmin']}, ({c['alpha']} * qcld) / powf(subsat, {c['gamma']}));
+    float fraction = powf(cldfra1_max({c['tiny']}, rhum), {c['pexp']})
+        * ({c['one']} - exp(arg));
+    fraction = (fraction < {c['trunc']}) ? {c['zero']} : fraction;
+    const float inner = (rhum >= {c['one']}) ? {c['one']} : fraction;
+    out = (qcld < {c['qcldmin']}) ? {c['zero']} : inner;
+"""
+    kernel = cp.ElementwiseKernel(
+        "float32 qv, float32 qc, float32 qi, float32 qs, float32 tlay, "
+        "float32 play, float32 c_es, float32 ep2, int32 arm"
+        + "".join(f", float32 K_{name}" for name in consts),
+        "float32 out", body, "arwen_cal_cldfra1", preamble=preamble)
+    entry = (kernel, tuple(np.float32(value) for value in consts.values()))
+    _CLDFRA1_KERNELS[key] = entry
+    return entry
+
+
 def cal_cldfra1(qv, qc, qi, qs, tlay, play, *, f_qc=True, f_qi=True,
                 f_qs=True):
     """WRF icloud=1 Xu-Randall cloud fraction on device (FP32).
@@ -2655,6 +3067,17 @@ def cal_cldfra1(qv, qc, qi, qs, tlay, play, *, f_qc=True, f_qi=True,
             "blend with a field that does not exist")
     qcldmin = DTYPE(1.0e-12)
     svpt0 = DTYPE(273.15)
+    if _CLDFRA1_FUSED:
+        # The whole chain below in ONE launch (it was about forty-five
+        # per chunk): the same CuPy operations in the same order, each
+        # rounded once in float32, no product contracted into a sum, and
+        # the host-side scalar products formed on the host as below.
+        arm = 2 if (f_qi and f_qs) else (1 if f_qi else 0)
+        kernel, constants = _cldfra1_kernel()
+        return kernel(
+            qv, qc, qi, qs, tlay, play,
+            DTYPE(1000.0) * DTYPE(0.61078), DTYPE(287.0) / DTYPE(461.6),
+            np.int32(arm), *constants)
     tc = tlay - svpt0
     esw = DTYPE(1000.0) * DTYPE(0.61078) * cp.exp(
         DTYPE(17.2693882) * tc / (tlay - DTYPE(35.86)))
@@ -3384,6 +3807,13 @@ class RRTMGPRadiation:
     #: declared departure from WRF; the native option
     #: radiation_cloud_inhomogeneity hands it in.
     cloud_path_scale: float = 1.0
+    #: Aerosol in the shortwave.  "none" (default): gas and cloud only,
+    #: WRF's aer_opt = 0, and the call is the call it always was.
+    #: "tegen-wrf": WRF's aer_opt = 1, the Tegen et al. (1997) monthly
+    #: six-type climatology with RRTMG's ECMWF optics
+    #: (arwen_global.physics.aerosol_climatology); the native option
+    #: radiation_aerosol hands it in.
+    aerosol_climatology: str = "none"
 
     def __post_init__(self) -> None:
         import cupy as cp
@@ -3404,6 +3834,15 @@ class RRTMGPRadiation:
                 or not isinstance(self.cloud_path_scale, (int, float))
                 or not 0.0 < float(self.cloud_path_scale) <= 1.0):
             raise ValueError("cloud_path_scale must be a number in (0, 1]")
+        from arwen_global.physics import aerosol_climatology as _aerosol
+
+        if self.aerosol_climatology not in _aerosol.AEROSOL_CLIMATOLOGIES:
+            raise ValueError(
+                "aerosol_climatology must be one of "
+                + ", ".join(repr(n) for n in _aerosol.AEROSOL_CLIMATOLOGIES))
+        self._aerosol = (
+            _aerosol.TegenAerosol(self.latitude_deg, self.longitude_deg)
+            if self.aerosol_climatology == "tegen-wrf" else None)
         self.lw_tables = load_gas_tables("lw")
         self.sw_tables = load_gas_tables("sw")
         if (not np.array_equal(self.lw_tables.press_ref,
@@ -3709,6 +4148,9 @@ class RRTMGPRadiation:
     def __call__(self, *, atmosphere, fields, state, cfg):
         self._set_ozone_date(
             self.start_time + timedelta(seconds=float(state.elapsed_seconds)))
+        if self._aerosol is not None:
+            self._aerosol.set_date(
+                self.start_time + timedelta(seconds=float(state.elapsed_seconds)))
         pressure = atmosphere["pressure"]
         nz, ny, nx = pressure.shape
         full_validation = self.validation_mode == "full"
@@ -3813,6 +4255,37 @@ class RRTMGPRadiation:
             # the top interface does not vary across the chunks that follow.
             _validate_model_top_plane(top_interface, profile_p_top, xp=cp)
         del top_interface
+        # The sun, and with it the shortwave loop's sunlit chunks, chosen
+        # HERE, at the firing's first read, and not between the two solver
+        # loops where it used to be.  Choosing the chunks reads the sunlit
+        # count back (one host read per call, _shortwave_column_chunks);
+        # taken between the loops it drained every longwave chunk the host
+        # had queued and left the card idle while the shortwave chunks were
+        # launched from nothing.  Here the queue holds only the reduction
+        # above.  The geometry reads only the clock, the grid and cfg, none
+        # of which the call writes, so it is the same sun bit for bit.
+        valid_time = (self.start_time
+                      + timedelta(seconds=float(state.elapsed_seconds)))
+        # WRF evaluates the HOUR ANGLE at the CENTER of the radiation
+        # interval: calc_coszen receives xtime + radt*0.5 inside the
+        # Solar_step block (module_radiation_driver.F:1206-1208, 'jararias
+        # 2013/08/10') while declination/EOT stay at the call-time julian
+        # (:3514-3541); that coszen is what RRTMG SW consumes (driver:2636).
+        from arwen_global.core.physics import (
+            _model_clock_dt, _physics_interval_seconds)
+        radt_minutes = cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes
+        radt_seconds = _physics_interval_seconds(
+            radt_minutes, _model_clock_dt(cfg))
+        mu_raw = self._cosine_zenith(
+            valid_time, hour_offset_seconds=0.5 * radt_seconds)
+        daylight = mu_raw > DTYPE(0.0)
+        mu = cp.where(daylight, mu_raw, DTYPE(1.0)).reshape(-1)
+        # A dark column's shortwave is zeroed after the solve (the daylight
+        # mask in the shortwave loop), so that loop runs the sunlit columns
+        # only and the dark ones keep the zero they would have been given;
+        # see _shortwave_column_chunks.
+        sw_chunks, lit_only = _shortwave_column_chunks(
+            daylight.reshape(-1), self.column_chunk, xp=cp)
 
         qc_source = self._field_from_state(state, ("qc",), atmosphere["qc"])
         qi_source = self._field_from_state(state, ("qi",), atmosphere["qi"])
@@ -3947,14 +4420,18 @@ class RRTMGPRadiation:
                           if active_bl else 1),
         }
 
-        def cloud_fraction(sl):
+        def cloud_fraction(sl, columns=None):
             """This chunk's (qc, qi, cldfra) as the optics see them: WRF's
             cal_cldfra1, then the MYNN boundary-layer cloud merge (which
-            returns its inputs untouched away from MYNN)."""
+            returns its inputs untouched away from MYNN).  ``columns`` is
+            the caller's own ``(qv, tlay, play)`` already packed for
+            ``sl`` (cal_cldfra1 only reads them), or None to pack here."""
             qc_chunk, qi_chunk = qc_cols[sl], qi_cols[sl]
+            qv_chunk, tlay_chunk, play_chunk = (
+                (qv[sl], tlay[sl], play[sl]) if columns is None else columns)
             fraction = cal_cldfra1(
-                qv[sl], qc_chunk, qi_chunk, qs_cols[sl], tlay[sl], play[sl],
-                f_qc=True, f_qi=ice_active, f_qs=snow_species)
+                qv_chunk, qc_chunk, qi_chunk, qs_cols[sl], tlay_chunk,
+                play_chunk, f_qc=True, f_qi=ice_active, f_qs=snow_species)
             return merge_mynn_bl_clouds(
                 qc_chunk, qi_chunk, fraction,
                 qc_bl=bl_fields["qc_bl"][sl] if active_bl else None,
@@ -3982,20 +4459,31 @@ class RRTMGPRadiation:
         # chunk into ONE flag word, read once afterwards.
         cldfra = cp.empty((ncol, nz), dtype=DTYPE)
         flags = None if full_validation else cp.zeros((1,), dtype=cp.uint32)
+        # Each chunk's layer pressures, interfaces, temperatures and vapour
+        # are packed ONCE and handed to the cloud fraction, the interface
+        # temperatures and the validator alike (packing is a copy and
+        # none of the three writes its inputs), where each used to pack
+        # its own: play three times, tlay and plev twice, qv twice, a
+        # launch and an allocation apiece per chunk on a host-bound loop.
         for sl in slices:
-            qc_chunk, qi_chunk, cldfra_chunk = cloud_fraction(sl)
+            play_chunk, plev_chunk = play[sl], plev[sl]
+            tlay_chunk, qv_chunk = tlay[sl], qv[sl]
+            qc_chunk, qi_chunk, cldfra_chunk = cloud_fraction(
+                sl, (qv_chunk, tlay_chunk, play_chunk))
             cldfra[sl] = cldfra_chunk
             if flags is not None:
                 _launch_validation_kernel(
-                    flags, play=play[sl], plev=plev[sl], tlay=tlay[sl],
-                    tlev=tlev[sl], tsfc=tsfc[sl], exner=exner[sl],
-                    qv=qv[sl], qc=qc_chunk, qr=qr_cols[sl], qi=qi_chunk,
+                    flags, play=play_chunk, plev=plev_chunk, tlay=tlay_chunk,
+                    tlev=tlev.packed(sl, play_chunk, plev_chunk),
+                    tsfc=tsfc[sl], exner=exner[sl],
+                    qv=qv_chunk, qc=qc_chunk, qr=qr_cols[sl], qi=qi_chunk,
                     qs=qs_cols[sl], cldfra=cldfra_chunk,
                     emiss=emiss_bands[sl], numbers=packed(numbers, sl),
                     effective=packed(effective_fields, sl),
                     tables_lw=self.lw_tables, tables_sw=self.sw_tables,
                     radii_bands=radii_bands)
             del qc_chunk, qi_chunk, cldfra_chunk
+            del play_chunk, plev_chunk, tlay_chunk, qv_chunk
 
         def legacy_replay():
             # The legacy validators read whole-grid extrema into their
@@ -4085,10 +4573,14 @@ class RRTMGPRadiation:
              liquid_sentinel, ice_sentinel, counts, whole_terms)
         paths = HydrometeorPaths(clwp, ciwp, reliq, dgice, bounding)
 
-        # One host round trip per firing (the model-top check above already
-        # synchronizes): the bounding counts are diagnostics the runtime
-        # books, never an input to the optics.
-        self.last_size_bounding = paths.size_bounding.host()
+        # The bounding counts are diagnostics the runtime books, never an
+        # input to the optics, so their host read waits for the END of the
+        # call (below, after the heating rates): read here it drained the
+        # whole cloud preparation before the first longwave chunk could be
+        # queued, a second pipeline drain per firing for a record nothing
+        # in this call reads.  The record is the same device values either
+        # way; only the moment they are copied out moves.
+        bounding_record = paths.size_bounding
         # Column total cloud cover under the maximum-random overlap the
         # McICA generator draws from (bottom-to-top walk; the pair rule of
         # Geleyn and Hollingsworth 1979): what a sky observer would call
@@ -4112,6 +4604,36 @@ class RRTMGPRadiation:
                     "workspace "
                     f"{(workspace.nz, workspace.column_chunk, workspace.p_top)}")
 
+        # The solvers combine the cloud optics, the McICA mask and (LW) the
+        # Planck sources themselves on the production (fused-validation)
+        # path; see _fused_solver.  Full validation keeps the standalone
+        # kernels, whose validators it exists to replay.
+        fused_lw = (not full_validation) and _fused_solver("lw")
+        # The fused shortwave solver combines the cloud optics, the McICA
+        # mask and, with the aerosol climatology on, the band aerosol inside
+        # the solver (FusedAerosolOptics: rrtmgp_finalize_cloud_aer_sw's
+        # arithmetic in rrtmgp_sw_2stream).  When speed/radiation-batch first
+        # met fix/aerosol-clim the solver had no aerosol term and dropped the
+        # aerosol without a word on every card where it is the default; then
+        # an aerosol run took the slower finalize path, until the term was
+        # put in the solver.
+        fused_sw = (not full_validation) and _fused_solver("sw")
+        fused_planck = fused_lw and _fused_planck()
+        # The kernels index a chunk's g-point cube with 32-bit ints, so a
+        # chunk whose cube passes 2**31 cells walks off its arrays (measured
+        # 2026-11-16: T383 at one chunk for the whole grid, 663,552 columns,
+        # died CUDA_ERROR_ILLEGAL_ADDRESS; 100,000 ran).  Refused here,
+        # before the first launch, rather than at an illegal address.
+        widest = min(self.column_chunk, ncol) * (
+            nz + max(rrtmgp_above_model_layer_counts(
+                profile_p_top, pressure_floor=RRTMGP_TOA_PRESSURE_PA))) * max(
+            int(self.lw_tables.ngpt), int(self.sw_tables.ngpt))
+        if widest >= 2**31:
+            raise ValueError(
+                f"radiation_column_chunk {self.column_chunk} makes a "
+                f"{widest:,}-cell g-point cube, past the kernels' 32-bit "
+                f"index (2**31); use a chunk below "
+                f"{self.column_chunk * (2**31) // widest:,}")
         lw_up = cp.empty((ncol, nz + 1), dtype=DTYPE)
         lw_dn = cp.empty_like(lw_up)
         for start in range(0, ncol, self.column_chunk):
@@ -4144,6 +4666,39 @@ class RRTMGPRadiation:
                 mask_lw = mcica_cloud_masks(
                     lw_profile.play, lw_cldfra, self.lw_tables.ngpt,
                     MCICA_PERMUTESEED_LW, validate=full_validation)
+            if workspace is None and fused_lw:
+                # The cloud optics, the McICA mask and the Planck sources
+                # combined INSIDE the solver (FusedCloudOptics,
+                # PlanckInputs; the arithmetic pinned to the standalone
+                # kernels', see rrtmgp_rte.cu): the finalize kernel, the
+                # Planck kernel and the three cubes they wrote and the
+                # solver read straight back do not exist on this path.
+                emiss = _expand_band_to_gpoint(
+                    emiss_bands[sl], self.lw_tables, "surface emissivity")
+                if fused_planck:
+                    sources, planck_in = None, PlanckInputs(
+                        tables=self.lw_tables, play=lw_profile.play,
+                        tlay=lw_profile.tlay, tlev=lw_profile.tlev,
+                        tsfc=tsfc[sl], vmr=vmr_lw,
+                        metadata=chunk_metadata)
+                else:
+                    planck_in = None
+                    sources = _planck_sources(
+                        self.lw_tables, lw_profile.play, lw_profile.plev,
+                        lw_profile.tlay, lw_profile.tlev, tsfc[sl],
+                        vmr_lw, metadata=chunk_metadata,
+                        validate=full_validation)
+                flux = _lw_rte(
+                    gas_lw.tau,
+                    None if sources is None else sources.lay_source,
+                    None if sources is None else sources.lev_source,
+                    None if sources is None else sources.sfc_source,
+                    emiss, top_at_1=False, out=None, incident_out=None,
+                    fused_cloud=FusedCloudOptics(
+                        tables=self.lw_tables, cloud=cld_lw, mask=mask_lw),
+                    planck=planck_in)
+                del mask_lw, sources, planck_in
+            elif workspace is None:
                 # MEMORY ONLY, and the chunk's largest arrays are the
                 # reason.  The finalize kernel is one thread per element
                 # and reads tau_gas[idx] before it writes tau[idx], so the
@@ -4229,22 +4784,8 @@ class RRTMGPRadiation:
             # the name does not exist on the workspace-less branch.
             work = None
 
-        valid_time = (self.start_time
-                      + timedelta(seconds=float(state.elapsed_seconds)))
-        # WRF evaluates the HOUR ANGLE at the CENTER of the radiation
-        # interval: calc_coszen receives xtime + radt*0.5 inside the
-        # Solar_step block (module_radiation_driver.F:1206-1208, 'jararias
-        # 2013/08/10') while declination/EOT stay at the call-time julian
-        # (:3514-3541); that coszen is what RRTMG SW consumes (driver:2636).
-        from arwen_global.core.physics import (
-            _model_clock_dt, _physics_interval_seconds)
-        radt_minutes = cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes
-        radt_seconds = _physics_interval_seconds(
-            radt_minutes, _model_clock_dt(cfg))
-        mu_raw = self._cosine_zenith(
-            valid_time, hour_offset_seconds=0.5 * radt_seconds)
-        daylight = mu_raw > DTYPE(0.0)
-        mu = cp.where(daylight, mu_raw, DTYPE(1.0)).reshape(-1)
+        # The sun (valid_time, mu_raw, daylight, mu) and the sunlit chunks
+        # were chosen at the top of the call; see there.
         albedo_surface = cp.asarray(
             fields["albedo"], dtype=DTYPE).reshape(-1)
         solar = _solar_source_device(self.sw_tables)
@@ -4259,12 +4800,6 @@ class RRTMGPRadiation:
                                       dtype=np.float64))))
         sw_up = cp.empty_like(lw_up)
         sw_dn = cp.empty_like(lw_up)
-        # A dark column's shortwave is zeroed after the solve (the daylight
-        # mask below), so the loop runs the sunlit columns only and the dark
-        # ones keep the zero they would have been given; see
-        # _shortwave_column_chunks.
-        sw_chunks, lit_only = _shortwave_column_chunks(
-            daylight.reshape(-1), self.column_chunk, xp=cp)
         if lit_only:
             sw_up.fill(DTYPE(0.0))
             sw_dn.fill(DTYPE(0.0))
@@ -4298,15 +4833,49 @@ class RRTMGPRadiation:
                 mask_sw = mcica_cloud_masks(
                     sw_profile.play, sw_cldfra, self.sw_tables.ngpt,
                     MCICA_PERMUTESEED_SW, validate=full_validation)
+            if workspace is None and fused_sw:
+                # As in the longwave loop: the cloud optics, the mask and
+                # the delta scaling combined inside the solver, the
+                # finalize kernel and its three cubes gone.
+                albedo = cp.ascontiguousarray(cp.broadcast_to(
+                    albedo_surface[sl][:, None],
+                    (chunk_ncol, self.sw_tables.ngpt)))
+                inc = cp.ascontiguousarray(cp.broadcast_to(
+                    solar[None, :],
+                    (chunk_ncol, self.sw_tables.ngpt)))
+                aerosol_sw = (
+                    None if self._aerosol is None
+                    else FusedAerosolOptics(*self._aerosol.band_optics(
+                        sw_profile.play, sw_profile.plev, sl, nz)))
+                flux = _sw_rte(
+                    gas_sw.tau, gas_sw.ssa, None, mu[sl],
+                    albedo, albedo, inc, top_at_1=False, out=None,
+                    fused_cloud=FusedCloudOptics(
+                        tables=self.sw_tables, cloud=cld_sw, mask=mask_sw),
+                    fused_aerosol=aerosol_sw)
+                del mask_sw, aerosol_sw
+            elif workspace is None:
                 # MEMORY ONLY, as in the longwave loop: the gas tau and
                 # ssa cubes are the finalize kernel's own outputs (it
                 # reads tau_gas[idx] and ssa_gas[idx] into locals before
                 # it writes tau[idx], ssa[idx] and asym[idx], one thread
                 # per element), so the chunk takes one new cube, the
                 # asymmetry, where it took three.
-                optics_sw = _finalize_cloud_optics(
-                    self.sw_tables, gas_sw, cld_sw, cloud_mask=mask_sw,
-                    out=(gas_sw.tau, gas_sw.ssa, None))
+                if self._aerosol is None:
+                    optics_sw = _finalize_cloud_optics(
+                        self.sw_tables, gas_sw, cld_sw, cloud_mask=mask_sw,
+                        out=(gas_sw.tau, gas_sw.ssa, None))
+                else:
+                    from arwen_global.physics.aerosol_climatology import (
+                        finalize_cloud_aerosol_sw)
+
+                    aerosol_sw = self._aerosol.band_optics(
+                        sw_profile.play, sw_profile.plev, sl, nz)
+                    optics_sw = finalize_cloud_aerosol_sw(
+                        self.sw_tables, gas_sw, cld_sw, aerosol_sw,
+                        cloud_mask=mask_sw,
+                        out=(gas_sw.tau, gas_sw.ssa, None))
+                    del aerosol_sw
                 del mask_sw
                 # (workspace-less path: finalize kept)
                 albedo = cp.ascontiguousarray(cp.broadcast_to(
@@ -4320,6 +4889,10 @@ class RRTMGPRadiation:
                     albedo, albedo, inc, top_at_1=False)
                 del optics_sw
             else:
+                if self._aerosol is not None:
+                    raise ValueError(
+                        "aerosol_climatology needs the driver without a chunk "
+                        "workspace; the fused workspace solver has no aerosol term")
                 work = workspace.phase("sw_optics", chunk_ncol)
                 vmr_sw = self._gas_vmr(
                     self.sw_tables, sw_profile.play, sw_profile.qv,
@@ -4374,6 +4947,10 @@ class RRTMGPRadiation:
             lw_up, lw_dn, sw_up, sw_dn, plev, exner, ny=ny, nx=nx,
             coszen=mu_raw, cldfra_total=cldfra_total,
             validate=full_validation, column_chunk=self.column_chunk)
+        # One host round trip per firing, after the last launch of the call
+        # (see where bounding_record is taken).
+        self.last_size_bounding = bounding_record.host()
+        del bounding_record
         # Release hook.  The shipped SharedRRTMGPChunkWorkspace has no
         # ``on_call_end``, so it keeps its persistent behaviour with no
         # branch and no cost; a workspace that CAN hand its bytes back
@@ -4395,6 +4972,46 @@ def _device_profile(value, shape, name):
     if out.shape != shape:
         raise ValueError(f"{name} must have shape {shape}, got {out.shape}")
     return out
+
+
+#: The measurement override for the in-solver cloud optics and Planck
+#: sources: "0" runs the standalone finalize and Planck kernels instead,
+#: "lw" or "sw" fuses that band only, so the forms can be interleaved in
+#: one session.
+FUSED_SOLVER_ENV = "GPUWM_RRTMGP_FUSED_SOLVER"
+
+
+#: The fused longwave solver derives the Planck sources itself
+#: (PlanckInputs) instead of reading the standalone Planck kernel's three
+#: cubes.  "1" / "0" force it; unset, it is on only on the architectures
+#: where it was measured to give the standalone bytes (below).  Before the
+#: per-architecture pin in rrtmgp_planck_common.cuh it moved the firing's
+#: hash on sm_120 (RTX 5070 Ti, NVRTC 13.5) and not on sm_89: the
+#: standalone kernel is bare float code, so ptxas chooses its contractions
+#: per architecture.
+FUSED_PLANCK_ENV = "GPUWM_RRTMGP_FUSED_PLANCK"
+
+
+#: Compute capabilities where the in-solver Planck was MEASURED to give the
+#: standalone kernel's bytes (2026-11-16, NVRTC 13.5; whole-firing sha256 at
+#: 192x384x40, and at T383 576x1152x40 on sm_89): RTX 4090 (8.9), RTX 5070
+#: Ti and RTX PRO 6000 Server (12.0).  Every other card keeps the standalone
+#: kernel until it is measured, because the bare standalone code's
+#: contractions are ptxas's per-architecture choice.
+_FUSED_PLANCK_VERIFIED_CC = frozenset({"89", "120"})
+
+
+def _fused_planck() -> bool:
+    forced = os.environ.get(FUSED_PLANCK_ENV, "").strip()
+    if forced:
+        return forced == "1"
+    import cupy as cp
+    return str(cp.cuda.Device().compute_capability) in _FUSED_PLANCK_VERIFIED_CC
+
+
+def _fused_solver(kind: str) -> bool:
+    value = os.environ.get(FUSED_SOLVER_ENV, "1").strip().lower()
+    return value not in ("0", "lw", "sw") or value == kind
 
 
 #: The measurement override that puts the dark columns back through the
@@ -4535,8 +5152,15 @@ class _InterfaceTemperatureColumns:
         self.shape = (int(play.shape[0]), int(play.shape[1]) + 1)
 
     def __getitem__(self, columns):
-        tlev = _interface_temperatures(
-            self._play[columns], self._plev[columns], self._tlay[columns])
+        return self.packed(
+            columns, self._play[columns], self._plev[columns])
+
+    def packed(self, columns, play, plev):
+        """``self[columns]`` from the caller's own ``play[columns]`` and
+        ``plev[columns]`` (packed by the same packers this was built on),
+        so a chunk that already holds them does not pack them again.
+        :func:`_interface_temperatures` only reads them."""
+        tlev = _interface_temperatures(play, plev, self._tlay[columns])
         if self._transform is not None:
             tlev = self._transform(tlev)
         return tlev
@@ -4999,6 +5623,31 @@ def _fused_cloud_args(fused, tau, ncol, nlay, ngpt):
 
 
 
+class FusedAerosolOptics(NamedTuple):
+    """Band aerosol (tau, ssa, g), each (ncol, nlay, nband), combined
+    inside the SW solver beside FusedCloudOptics: the aerosol
+    climatology's rrtmgp_finalize_cloud_aer_sw, replicated in
+    rrtmgp_sw_2stream."""
+
+    tau: object
+    ssa: object
+    g: object
+
+
+def _fused_aerosol_args(aerosol, fused_cloud, tau, ncol, nlay):
+    """Resolve FusedAerosolOptics into the SW solver's trailing fa
+    arguments; off, the dummy-pointer convention of _fused_cloud_args."""
+    if aerosol is None:
+        return (tau, tau, tau, np.int32(0))
+    if fused_cloud is None:
+        raise ValueError("fused aerosol optics need the fused cloud optics")
+    band_shape = (ncol, nlay, fused_cloud.tables.nband)
+    return (_device_profile(aerosol.tau, band_shape, "aerosol.tau"),
+            _device_profile(aerosol.ssa, band_shape, "aerosol.ssa"),
+            _device_profile(aerosol.g, band_shape, "aerosol.g"),
+            np.int32(1))
+
+
 class PlanckInputs(NamedTuple):
     """What the LW solver needs to derive its own Planck sources.
 
@@ -5091,6 +5740,30 @@ _RTE_BLOCK = 256
 _RTE_MAX_FOLD_BLOCK = 1024
 
 
+#: The compiled local frame of each RTE kernel, read once per kernel.
+#: ``Function.attributes`` asks the driver for every attribute the kernel
+#: has (one cuFuncGetAttribute each) and builds a dict, and the tile was
+#: sized from it at every solver span of every chunk of both bands -- host
+#: work in a loop the host already cannot keep the card fed from.  The
+#: frame is a property of the compiled code, which the kernel cache
+#: (kernels.get_kernel_int_defines) holds for the process, so keying on
+#: the kernel object returns the number the call would have read.
+_RTE_FRAME_BYTES: dict = {}
+
+
+def _rte_frame_bytes(kernel) -> int:
+    if kernel is None:
+        return 0
+    frame = _RTE_FRAME_BYTES.get(kernel)
+    if frame is None:
+        try:
+            frame = int(kernel.attributes["local_size_bytes"])
+        except Exception:                                # pragma: no cover
+            frame = 0
+        _RTE_FRAME_BYTES[kernel] = frame
+    return frame
+
+
 def _rte_gpt_tile(kernel, ncol: int, ngpt: int, *,
                   fold: bool = False) -> int:
     """How many g-points per column to hold in flight in the RTE solvers.
@@ -5126,12 +5799,7 @@ def _rte_gpt_tile(kernel, ncol: int, ngpt: int, *,
     #
     # LW wants two blocks per SM now, SW still wants one.  Reading the frame
     # off the compiled kernel keeps this exact if either changes again.
-    frame = 0
-    if kernel is not None:
-        try:
-            frame = int(kernel.attributes["local_size_bytes"])
-        except Exception:                                # pragma: no cover
-            frame = 0
+    frame = _rte_frame_bytes(kernel)
     coverage = 2 if 0 < frame <= 1024 else 1
     # Measurement override, so the two settings can be INTERLEAVED in one
     # session (13.5 trap 3).  Comparing a block of runs against a block taken
@@ -5267,19 +5935,55 @@ def _lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
     pk = _planck_solver_args(planck, tau, ncol, nlay, ngpt)
     stage = _rte_kernel("rrtmgp_lw_noscat", nlay)
     fold = _rte_kernel("rrtmgp_lw_flux_reduce", nlay)
-    # Column spans (see _rte_column_spans): the fused-cloud and in-solver
-    # Planck operands are per-column too and are not sliced here, so those
-    # calls keep the one launch set they always had.
-    spans = (_rte_column_spans(ncol, column_span)
-             if fused_cloud is None and planck is None else ((0, ncol),))
+    # Column spans (see _rte_column_spans), on the fused path too: the
+    # fused-cloud and in-solver Planck operands are per-column arrays with
+    # the column as their leading axis, so a span narrows them the way it
+    # narrows tau (_cut_fused_args).  Until 2026-11-16 a fused call kept one
+    # launch over the whole chunk, which at a wide chunk drops the g-point
+    # tile below the folding path's 32.
+    spans = _rte_column_spans(ncol, column_span)
     for c0, c1 in spans:
         whole = (c0, c1) == (0, ncol)
         cut = (lambda a: a) if whole else (lambda a: a[c0:c1])
         _lw_rte_launches(
             stage, fold, cut(tau), cut(lay_source), cut(lev_source),
             cut(sfc_source), cut(sfc_emis), cut(incident), cut(up),
-            cut(down), c1 - c0, nlay, ngpt, top_at_1, fz, pk)
+            cut(down), c1 - c0, nlay, ngpt, top_at_1,
+            _cut_fused_args(fz, _FZ_COLUMN_ARGS, c0, c1, whole),
+            _cut_fused_args(pk, _PK_COLUMN_ARGS, c0, c1, whole))
     return FluxResult(up, down)
+
+
+#: How many leading entries of the fz / pk argument tuples are per-column
+#: arrays (column-major leading axis) and the flag that says they are live.
+#: fz: cld_tau, cld_ssa, cld_asy (band cubes); the mask (index 4) only when
+#: have_mask (index 6).  pk: play, tlay, tlev, tsfc, vmr, iatm, jt, jp,
+#: ftemp, fpress; on when pk_on (the last entry).
+_FZ_COLUMN_ARGS = "fz"
+_PK_COLUMN_ARGS = "pk"
+_FA_COLUMN_ARGS = "fa"
+
+
+def _cut_fused_args(args, kind, c0, c1, whole):
+    """``args`` narrowed to columns ``[c0, c1)``: the per-column operands
+    are sliced on their leading axis (contiguous views, nothing copied), the
+    tables and integers are passed as they are.  Off (the dummy-pointer
+    convention) or a whole-chunk span: unchanged."""
+    if whole or not int(args[-1]):
+        return args
+    args = list(args)
+    if kind == _FZ_COLUMN_ARGS:
+        for i in (0, 1, 2):
+            args[i] = args[i][c0:c1]
+        if int(args[6]):
+            args[4] = args[4][c0:c1]
+    elif kind == _FA_COLUMN_ARGS:
+        for i in (0, 1, 2):
+            args[i] = args[i][c0:c1]
+    else:
+        for i in range(10):
+            args[i] = args[i][c0:c1]
+    return tuple(args)
 
 
 def _lw_rte_launches(stage, fold, tau, lay_source, lev_source, sfc_source,
@@ -5335,7 +6039,7 @@ def sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
 
 
 def _sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
-            *, top_at_1: bool, out, fused_cloud=None,
+            *, top_at_1: bool, out, fused_cloud=None, fused_aerosol=None,
             column_span=None) -> FluxResult:
     import cupy as cp
     from arwen_global.core.kernels import get_kernel
@@ -5375,18 +6079,20 @@ def _sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
             for value, name in zip(
                 out, ("flux_up", "flux_dn", "flux_dir")))
     fz = _fused_cloud_args(fused_cloud, tau, ncol, nlay, ngpt)
+    fa = _fused_aerosol_args(fused_aerosol, fused_cloud, tau, ncol, nlay)
     stage = _rte_kernel("rrtmgp_sw_2stream", nlay)
     fold = _rte_kernel("rrtmgp_sw_flux_reduce", nlay)
-    # Column spans as in _lw_rte; the fused-cloud operands are not sliced.
-    spans = (_rte_column_spans(ncol, column_span)
-             if fused_cloud is None else ((0, ncol),))
+    # Column spans as in _lw_rte, the fused-cloud operands narrowed with them.
+    spans = _rte_column_spans(ncol, column_span)
     for c0, c1 in spans:
         whole = (c0, c1) == (0, ncol)
         cut = (lambda a: a) if whole else (lambda a: a[c0:c1])
         _sw_rte_launches(
             stage, fold, cut(tau), cut(ssa), cut(g), cut(mu0),
             cut(alb_dir), cut(alb_dif), cut(inc), cut(up), cut(down),
-            cut(direct), c1 - c0, nlay, ngpt, top_at_1, fz)
+            cut(direct), c1 - c0, nlay, ngpt, top_at_1,
+            _cut_fused_args(fz, _FZ_COLUMN_ARGS, c0, c1, whole)
+            + _cut_fused_args(fa, _FA_COLUMN_ARGS, c0, c1, whole))
     return FluxResult(up, down, direct)
 
 

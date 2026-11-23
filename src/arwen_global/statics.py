@@ -716,7 +716,34 @@ def read_cache(npz_path: Path, grid=None) -> tuple[dict[str, np.ndarray], dict]:
     return fields, document
 
 
+def shipped_config_for_cache(npz_path: Path) -> str | None:
+    """The shipped day that builds the default-selection cache ``npz_path``
+    names (``arwen-global-statics-T127-192x384-default...``), or None.
+
+    A refusal that said only "<this run's config>" left the reader to
+    guess, and the run that needs the cache is not always the config on its
+    command line: ``da fresh`` on the T255 day runs its members at T127 and
+    needs that truncation's cache too (measured 2026-11-23 from a fresh
+    account).  Any config at that truncation with the default dataset
+    selection builds the same cache, so the shipped day is named."""
+    import re
+
+    match = re.match(r"arwen-global-statics-T(\d+)-\d+x\d+-default(?:[-.]|$)",
+                     Path(npz_path).name)
+    if match is None:
+        return None
+    name = f"arwen_global_gdas_t{int(match.group(1))}_native_sl_si_24h"
+    try:
+        from .configs_dir import list_configs
+
+        return name if name in list_configs() else None
+    except Exception:  # noqa: BLE001 - the remedy falls back to the generic line
+        return None
+
+
 def missing_cache_remedy(npz_path: Path) -> str:
+    shipped = shipped_config_for_cache(npz_path)
+    config = shipped if shipped is not None else "<this run's config>"
     return (
         f"no static-field cache for this truncation at {npz_path}; a "
         "real-data run needs the land-use, soil, vegetation, albedo and "
@@ -724,9 +751,22 @@ def missing_cache_remedy(npz_path: Path) -> str:
         "planet would run on one vegetation class and one soil class "
         "(the +4.2 K / -4.1 K 2 m bias measured 2026-08-31).  Build it "
         "once for this truncation:\n"
-        "  gpuwm-global statics <this run's config>\n"
+        f"  gpuwm-global statics {config}\n"
         "or select [statics] source = \"synthetic\" in a smoke or test "
         "configuration that has no geography and says so")
+
+
+def cache_problem(npz_path: Path, grid) -> str | None:
+    """Why the cache file at ``npz_path`` does not verify for ``grid``, or
+    None when it does: its sidecar's self-hash, the arrays' digests and the
+    grid, as :func:`read_cache` checks them.  For the statics door, which
+    asks whether a cache it was told to build is already there and whole;
+    a run reads its statics through :func:`load_statics` instead."""
+    try:
+        read_cache(npz_path, grid)
+    except (OSError, ValueError) as problem:
+        return str(problem)
+    return None
 
 
 def load_statics(options: StaticsOptions, grid) -> tuple[dict[str, np.ndarray], dict]:

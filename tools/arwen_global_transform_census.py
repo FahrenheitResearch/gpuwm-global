@@ -83,11 +83,14 @@ def counting():
         init(self, *args, **kwargs)
         profilers.append(self)
 
-    def contract_hook(self, values, table, *, transposed=False):
+    def contract_hook(self, values, table, *, transposed=False, **keywords):
+        # Every keyword the contraction takes passes through unchanged
+        # (speed/exchange-copies added ``realify``; a hook that named only
+        # ``transposed`` stopped every census run with a TypeError).
         where = _where(profilers)
         if where:
             records.append(("legendre", *where, _lead(values.shape)))
-        return contract(self, values, table, transposed=transposed)
+        return contract(self, values, table, transposed=transposed, **keywords)
 
     def fft_hook(kind, original):
         def hook(a, *args, **kwargs):

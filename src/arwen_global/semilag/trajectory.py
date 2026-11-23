@@ -468,15 +468,25 @@ def _trajectory_diagnostics(
             * xp.arcsin(xp.sqrt(xp.clip(hav, dtype.type(0.0),
                                         dtype.type(1.0)))))
 
+    # The six maxima come to the host in one transfer (each float() of a
+    # device maximum was its own synchronisation); same values.
+    maxima = xp.stack([
+        xp.max(move_m), xp.max(move_m / cell), xp.max(move_k),
+        xp.max(dist), xp.max(dist / cell),
+        xp.max(xp.abs(stencil.level - lev0)),
+    ])
+    if hasattr(maxima, "get"):
+        maxima = maxima.get()
+    maxima = [float(value) for value in np.asarray(maxima).tolist()]
     return TrajectoryDiagnostics(
         iterations=int(iterations),
         dt_s=float(dt_s),
-        move_max_m=float(xp.max(move_m)),
-        move_max_cells=float(xp.max(move_m / cell)),
-        move_max_levels=float(xp.max(move_k)),
-        displacement_max_m=float(xp.max(dist)),
-        displacement_max_cells=float(xp.max(dist / cell)),
-        displacement_max_levels=float(xp.max(xp.abs(stencil.level - lev0))),
+        move_max_m=maxima[0],
+        move_max_cells=maxima[1],
+        move_max_levels=maxima[2],
+        displacement_max_m=maxima[3],
+        displacement_max_cells=maxima[4],
+        displacement_max_levels=maxima[5],
     )
 
 
@@ -1276,6 +1286,17 @@ def lipschitz(
 
     where = {"departure": (2.0, ""), "arrival": (2.0, "")}
 
+    # Every chunk's maxima, minima and argmins stay on the device until the
+    # last chunk and then come to the host in one transfer, where they are
+    # folded in the order and with the expressions the per-chunk
+    # reads used (Python max/min over the same values, so the same
+    # numbers, NaN handling included).  Each per-chunk float() was a device
+    # synchronisation inside the step, up to 45 a call at 40 levels.
+    chunk_maxima: list = []   # per chunk: spectral, frob, horizontal, vertical, balanced
+    chunk_folds: list = []    # per fold: (side, start, shape) beside its device min/argmin
+    fold_minima: list = []
+    fold_argmins: list = []
+
     def fold(dvdx, dvdy, dvdk, ds, c, side=None, start=0):
         c = dtype.type(c)
         if fused_norms:
@@ -1289,22 +1310,14 @@ def lipschitz(
         else:
             det = _fold_reference(
                 xp, (dvdx, dvdy, dvdk), ds, sph, cph, sla, cla, c)
-        out = float(xp.min(det))
-        if side is not None and out < where[side][0]:
-            # where the minimum sits: a measuring instrument for the
-            # refusal message, it changes no number the gate reads
-            flat = int(xp.argmin(det))
-            _, nr, nl = det.shape
-            kk, jj, ii = flat // (nr * nl), (flat // nl) % nr, flat % nl
-            lat_d = float(np.degrees(tables.lat_ext_host[jj + rows.start + 2]))
-            lon_d = float(np.degrees(ii * tables.dlam))
-            where[side] = (out, f"level {kk + start}, lat {lat_d:.2f}, "
-                                f"lon {lon_d:.2f}")
+        fold_minima.append(xp.min(det))
+        # where the minimum sits: a measuring instrument for the refusal
+        # message, it changes no number the gate reads (read on the host
+        # below only for a fold that lowers its side's minimum)
+        fold_argmins.append(xp.argmin(det))
+        chunk_folds.append((side, start, tuple(det.shape)))
         del det
-        return out
 
-    sm = fm = hm = vm = bm = 0.0
-    arrival = departure = 1.0
     for start in range(0, nlev, chunk):
         stop = min(start + chunk, nlev)
         dvdx, dvdy, dvdk, ds = derivatives(wind, start, stop, window)
@@ -1323,21 +1336,17 @@ def lipschitz(
         else:
             spectral, frob, horizontal, balanced = _norms_reference(
                 xp, (dvdx, dvdy, dvdk), ds, sph, cph, sla, cla, lref)
-        sm = max(sm, float(xp.max(spectral)))
-        fm = max(fm, float(xp.max(frob)))
-        hm = max(hm, float(xp.max(horizontal)))
-        vm = max(vm, float(xp.max(xp.abs(vertical_rate_derivative))))
-        bm = max(bm, float(xp.max(balanced)))
+        chunk_maxima.extend((
+            xp.max(spectral), xp.max(frob), xp.max(horizontal),
+            xp.max(xp.abs(vertical_rate_derivative)), xp.max(balanced)))
         del spectral, frob, horizontal, balanced, vertical_rate_derivative
 
         # The departure side reads the current wind wherever the search
         # puts the departure point, so the minimum over every grid point
         # bounds it whichever point that is.
-        departure = min(departure, fold(dvdx, dvdy, dvdk, ds, +half,
-                                        "departure", start))
+        fold(dvdx, dvdy, dvdk, ds, +half, "departure", start)
         if extrapolated is None:
-            arrival = min(arrival, fold(dvdx, dvdy, dvdk, ds, -half,
-                                        "arrival", start))
+            fold(dvdx, dvdy, dvdk, ds, -half, "arrival", start)
             del dvdx, dvdy, dvdk, ds
         else:
             # One chunk's derivatives at a time, so the peak is the one
@@ -1347,9 +1356,46 @@ def lipschitz(
             dvdx, dvdy, dvdk, ds = derivatives(
                 extrapolated, start, stop,
                 None if window is None else extrapolated_window)
-            arrival = min(arrival, fold(dvdx, dvdy, dvdk, ds, -half,
-                                        "arrival", start))
+            fold(dvdx, dvdy, dvdk, ds, -half, "arrival", start)
             del dvdx, dvdy, dvdk, ds
+
+    # One transfer for all of them (widened to float64 on the device, exact
+    # for these float32 extrema and for flat indices below 2**53); then the
+    # per-chunk folds in their original order.
+    nmax, nmin = len(chunk_maxima), len(fold_minima)
+    widened = xp.concatenate([
+        xp.stack(chunk_maxima + fold_minima).astype(np.float64),
+        xp.stack(fold_argmins).astype(np.float64),
+    ])
+    if hasattr(widened, "get"):
+        widened = widened.get()
+    read = np.asarray(widened).tolist()
+    maxima = read[:nmax]
+    minima = read[nmax:nmax + nmin]
+    argmins = [int(value) for value in read[nmax + nmin:]]
+    del chunk_maxima, fold_minima, fold_argmins, widened
+    sm = fm = hm = vm = bm = 0.0
+    for index in range(0, len(maxima), 5):
+        sm = max(sm, float(maxima[index]))
+        fm = max(fm, float(maxima[index + 1]))
+        hm = max(hm, float(maxima[index + 2]))
+        vm = max(vm, float(maxima[index + 3]))
+        bm = max(bm, float(maxima[index + 4]))
+    arrival = departure = 1.0
+    for (side, start, shape), out, flat in zip(chunk_folds, minima, argmins):
+        out = float(out)
+        if side is not None and out < where[side][0]:
+            flat = int(flat)
+            _, nr, nl = shape
+            kk, jj, ii = flat // (nr * nl), (flat // nl) % nr, flat % nl
+            lat_d = float(np.degrees(tables.lat_ext_host[jj + rows.start + 2]))
+            lon_d = float(np.degrees(ii * tables.dlam))
+            where[side] = (out, f"level {kk + start}, lat {lat_d:.2f}, "
+                                f"lon {lon_d:.2f}")
+        if side == "departure":
+            departure = min(departure, out)
+        else:
+            arrival = min(arrival, out)
 
     dt = float(dt_s)
     gated = max(hm, vm, bm)
@@ -1397,7 +1443,11 @@ def convergence(diagnostics: TrajectoryDiagnostics, limit_cells: float) -> None:
 
 #: The most iterations the departure-point search takes: the ceiling of
 #: ``[semilag] trajectory_iterations`` (options.py) and the count a step
-#: whose search missed the convergence test is retried at.
+#: whose search missed the convergence test is retried at.  Eight, as
+#: shipped: a ceiling of 16 (tried 2026-11-22) was a T1023
+#: dt = 600 s diagnostic whose 16-pass search still missed the test (0.1068
+#: of a cell against 0.01, the package's own receipt), and raising it moved
+#: the retry of every default run.
 MAXIMUM_TRAJECTORY_ITERATIONS = 8
 
 

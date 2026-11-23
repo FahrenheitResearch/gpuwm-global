@@ -11,7 +11,7 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _distribution_version
 
-__all__ = ["DISTRIBUTION_NAME", "IMPORT_NAME", "CONSOLE_SCRIPT", "__version__"]
+__all__ = ["DISTRIBUTION_NAME", "IMPORT_NAME", "CONSOLE_SCRIPT", "__version__", "version_line"]
 
 #: The name this package is published under.
 DISTRIBUTION_NAME = "gpuwm-global"
@@ -33,3 +33,21 @@ try:
 except PackageNotFoundError:  # pragma: no cover - an uninstalled source tree
     # Says so rather than inventing a number.
     __version__ = "0+unknown"
+
+
+def version_line() -> str:
+    """``gpuwm-global <release> (engine gpuwm <release>, Python <version>)``.
+
+    What ``gpuwm-global --version`` prints.  The engine's number is read
+    from installed metadata too, so asking needs neither the engine's
+    import nor a GPU stack; an engine that is not installed says so.
+    """
+
+    import platform
+
+    try:
+        engine = _distribution_version("gpuwm")
+    except PackageNotFoundError:
+        engine = "not installed"
+    return (f"{CONSOLE_SCRIPT} {__version__} (engine gpuwm {engine}, "
+            f"Python {platform.python_version()})")

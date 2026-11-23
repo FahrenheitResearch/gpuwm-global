@@ -173,6 +173,17 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
              "config hash it carries has to be this config's",
     )
     parser.add_argument(
+        "--member", type=int, default=None,
+        help="ensemble member number for the config's [stochastic] table: "
+             "with --ensemble-seed it keys every SPPT/SKEB pattern this "
+             "member draws (refused without an enabled [stochastic] table)",
+    )
+    parser.add_argument(
+        "--ensemble-seed", type=int, default=None, dest="ensemble_seed",
+        help="the ensemble's stochastic-physics seed (default: the "
+             "table's seed, 53)",
+    )
+    parser.add_argument(
         "--branch-from-other-config", action="store_true",
         dest="branch_from_other_config",
         help="with --restart: admit a checkpoint written under another "
@@ -1609,6 +1620,14 @@ def build_parser() -> argparse.ArgumentParser:
             "model, native ArWen CUDA physics adapter, and one-way regional parent bridge."
         ),
     )
+    # `--version` before a subcommand: the installed release, the engine it
+    # runs on and the Python, one line, without importing the model (the
+    # 0.3.0 console script had none and exited 2 on it).
+    from ._version import version_line
+
+    parser.add_argument(
+        "--version", action="version", version=version_line(),
+        help="print this release, the engine it runs on and the Python, and exit")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("pins", help="print the Level-5 arithmetic/coupling identity")
     sub.add_parser("physics-manifest", help="print admitted native physics adapters")
@@ -2037,8 +2056,25 @@ def _forcing_arguments(args) -> dict[str, object]:
     return out
 
 
+def _run_failure_sentence(exc: BaseException, receipt_written: bool) -> str:
+    """What ``status.json`` says about a run that did not finish.
+
+    A run that stopped before its first step -- a missing analysis, a
+    refusal in the cold start -- writes no receipt, and 0.3.0 still pointed
+    the reader at one "beside this file".  The sentence names the receipt
+    only when there is one, and otherwise carries the reason itself.
+    """
+
+    if receipt_written:
+        return "the run did not finish; its failure receipt is beside this file"
+    reason = f"{type(exc).__name__}: {exc}".strip()
+    return ("the run stopped before it wrote a receipt; "
+            f"{reason if reason else type(exc).__name__}")
+
+
 def _run(args: argparse.Namespace) -> int:
     loaded = _with_surface_series(args, load_config(args.config))
+    loaded = _with_member(args, loaded)
     # The orographic drag's cache, built (and its WPS_GEOG dataset staged)
     # BEFORE the card is priced: the shipped forecast days turn the drag on
     # from 0.2.3, and a land-surface cache built by an earlier release, or a
@@ -2075,7 +2111,7 @@ def _run(args: argparse.Namespace) -> int:
         line = (
             f"step={diag['step']} time={diag['time_s']:.0f}s "
             f"max_wind={diag['maximum_wind_m_s']:.3f}m/s "
-            f"water={diag['global_mean_total_water_kg_m2']:.6f}kg/m2"
+            f"total_water={diag['global_mean_total_water_kg_m2']:.6f}kg/m2"
         )
         print(line)
         status.step(int(diag["step"]), note=line)
@@ -2102,7 +2138,7 @@ def _run(args: argparse.Namespace) -> int:
             notice=lambda sentence: print(
                 f"{_door_name(args)}: {sentence}", flush=True),
         )
-    except BaseException:
+    except BaseException as exc:
         # The failure receipt carries the peak up to the death; an
         # out-of-memory run is exactly the one whose reader wants the
         # measured number on the console beside the traceback.
@@ -2111,11 +2147,10 @@ def _run(args: argparse.Namespace) -> int:
             failed = json.loads(receipt_path.read_text(encoding="utf-8"))
             row = failed.get("device_memory")
         except (OSError, ValueError):
-            row = None
+            failed, row = None, None
         if isinstance(row, dict):
             print(f"{_door_name(args)}: {device_peak_sentence(row)}")
-        status.failed("the run did not finish; its failure receipt is beside "
-                      "this file")
+        status.failed(_run_failure_sentence(exc, failed is not None))
         raise
     # The MEASURED peak, after the run; the line printed before the run
     # was the sizing model's prediction and says so.
@@ -2160,10 +2195,25 @@ def _statics(args: argparse.Namespace) -> int:
         return _orographic_statics(args, cfg, grid, door)
     default_out, _ = cache_paths(cfg.statics, grid)
     out = default_out if args.out is None else Path(args.out)
-    for path in (out, out.with_suffix(".json")):
-        if path.exists() and not args.overwrite:
+    if (out.exists() or out.with_suffix(".json").exists()) and not args.overwrite:
+        # Built already (by `go`, or an earlier `statics`): a cache that
+        # verifies against its own sidecar is the answer, not a refusal.
+        # 0.3.0 exited 1 here, so a reader who ran the README's quick start
+        # and then its stage-by-stage route met a failure at stage two.
+        from .statics import cache_problem
+
+        broken = cache_problem(out, grid)
+        if broken is not None:
             raise FileExistsError(
-                f"statics cache {path} exists; pass --overwrite to rebuild it")
+                f"statics cache {out} exists and does not verify ({broken}); "
+                "pass --overwrite to rebuild it")
+        print(f"{door}: statics cache {out} is already built and verifies "
+              "against its sidecar; nothing to do (--overwrite rebuilds it)")
+        if out == default_out:
+            from .physics.orographic_drag import prepare_orographic_statistics
+
+            prepare_orographic_statistics(cfg, grid)
+        return 0
     print(f"{door}: statics real T{grid.truncation} {grid.nlat}x{grid.nlon} "
           f"({'+'.join(cfg.statics.tokens())}) -> {out}")
     if out != default_out:
@@ -2331,7 +2381,7 @@ def _cycle(args: argparse.Namespace) -> int:
         print(
             f"step={diag['step']} time={diag['time_s']:.0f}s "
             f"max_wind={diag['maximum_wind_m_s']:.3f}m/s "
-            f"water={diag['global_mean_total_water_kg_m2']:.6f}kg/m2",
+            f"total_water={diag['global_mean_total_water_kg_m2']:.6f}kg/m2",
             flush=True,
         )
 
@@ -2418,7 +2468,7 @@ def _da_progress(door: str):
         print(
             f"step={diag['step']} time={diag['time_s']:.0f}s "
             f"max_wind={diag['maximum_wind_m_s']:.3f}m/s "
-            f"water={diag['global_mean_total_water_kg_m2']:.6f}kg/m2",
+            f"total_water={diag['global_mean_total_water_kg_m2']:.6f}kg/m2",
             flush=True,
         )
 
@@ -3061,14 +3111,78 @@ def exit_code_for(exc: BaseException) -> int:
     return EXIT_REFUSED
 
 
+def _card_out_of_memory(exc: BaseException) -> bool:
+    """Whether ``exc`` is the card running out of memory in a command the
+    door did not price (``device_memory.is_out_of_memory``)."""
+
+    try:
+        from .device_memory import is_out_of_memory
+    except Exception:  # pragma: no cover
+        return False
+    return is_out_of_memory(exc)
+
+
+def _card_reading() -> str:
+    """The card's name, total and free memory now, or a sentence saying
+    they could not be read."""
+
+    try:
+        import cupy
+
+        device = cupy.cuda.runtime.getDevice()
+        name = cupy.cuda.runtime.getDeviceProperties(device)["name"]
+        name = name.decode() if isinstance(name, bytes) else str(name)
+        free, total = cupy.cuda.runtime.memGetInfo()
+        return (f"the card is {name}, {total / 2 ** 30:.2f} GiB, with "
+                f"{free / 2 ** 30:.2f} GiB free now")
+    except Exception:  # noqa: BLE001 - the reading is a courtesy, not the verdict
+        return "the card's size could not be read"
+
+
+def card_out_of_memory_message(args: argparse.Namespace, exc: BaseException) -> str:
+    """The sentence for a card that ran out of memory in a command whose card
+    use is not priced before it starts.
+
+    THE BREAKAGE THIS PREVENTS, measured 2026-11-23 from a fresh account on
+    an RTX 5070 Ti (16 GB): the README's `da fresh ... --filter letkf
+    --members 32` ran 12 minutes and then left as a CuPy traceback
+    ("Out of memory allocating ... allocated so far: 15,747,409,920 bytes"),
+    with nothing that said which card it needs or what to change."""
+
+    first = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+    text = (f"the card ran out of memory ({type(exc).__name__}: {first}); "
+            f"{_card_reading()}.  This command's card use is not priced "
+            "before it starts: only `run`, `go`, `cycle` and `assimilate` "
+            "price the card and refuse a plan that will not fit.")
+    if getattr(args, "command", None) == "da":
+        members = getattr(args, "members", None)
+        held = (f"{members} members" if members is not None
+                else "the members the door defaulted to")
+        text += (
+            f"  `da` runs the ensemble members ({held} here) and the "
+            "control on the card.  Measured on a 16 GB card (RTX 5070 Ti, "
+            "2026-11-23): `da fresh --filter letkf` ran out of card in its "
+            "first hour with 16 members and with 32, while `--filter "
+            "successive-correction` ran there (the README's \"A fresh "
+            "global analysis\").  Run the ensemble filter on a larger card, "
+            "or the deterministic filter on this one.")
+    return text
+
+
 def _door(handler, args: argparse.Namespace) -> int:
     """One leg of `gpuwm-global`, under this door's refusal contract."""
 
     try:
         return handler(args)
-    except _DOOR_REFUSALS as exc:
-        print(f"{_door_name(args)}: {exc}", file=sys.stderr)
-        return exit_code_for(exc)
+    except Exception as exc:  # noqa: BLE001 - re-raised unless it is a refusal
+        if _card_out_of_memory(exc):
+            print(f"{_door_name(args)}: {card_out_of_memory_message(args, exc)}",
+                  file=sys.stderr)
+            return EXIT_DEVICE
+        if isinstance(exc, _DOOR_REFUSALS):
+            print(f"{_door_name(args)}: {exc}", file=sys.stderr)
+            return exit_code_for(exc)
+        raise
 
 
 def register_cli(subparsers) -> argparse.ArgumentParser:
@@ -3152,9 +3266,14 @@ def main(argv: list[str] | None = None) -> int:
     # resolves one.  It sets the engine's own per-binary variables, never
     # overwrites one the operator set, and `doctor` prints what it bound, so
     # a redirected binary is a stated fact rather than a discovered one.
+    from .accounts import bind_account_lock_root
     from .doors import bind_companion_doors
 
     bind_companion_doors()
+    # This account's own fetch lock folder (arwen_global.accounts): the
+    # engine's default is one folder shared by every account, and the first
+    # account to fetch owns it.  Never over a folder the operator named.
+    bind_account_lock_root()
     try:
         if args.command == "doctor":
             from .doctor import doctor
@@ -3384,11 +3503,38 @@ def main(argv: list[str] | None = None) -> int:
                 read_native_contract_candidate(args.input), indent=2, sort_keys=True
             ))
             return 0
-    except _REFUSALS as exc:
-        print(f"{_door_name(args)}: {exc}", file=sys.stderr)
-        return exit_code_for(exc)
+    except Exception as exc:  # noqa: BLE001 - re-raised unless it is a refusal
+        if _card_out_of_memory(exc):
+            print(f"{_door_name(args)}: {card_out_of_memory_message(args, exc)}",
+                  file=sys.stderr)
+            return EXIT_DEVICE
+        if isinstance(exc, _REFUSALS):
+            print(f"{_door_name(args)}: {exc}", file=sys.stderr)
+            return exit_code_for(exc)
+        raise
     raise AssertionError(args.command)
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _with_member(args: argparse.Namespace, cfg):
+    """``--member``/``--ensemble-seed`` into the [stochastic] table."""
+    member = getattr(args, "member", None)
+    seed = getattr(args, "ensemble_seed", None)
+    if member is None and seed is None:
+        return cfg
+    if getattr(cfg, "stochastic", None) is None:
+        raise SystemExit(
+            "--member/--ensemble-seed key the stochastic physics, and this "
+            "config has no enabled [stochastic] table; refused rather than "
+            "ignored")
+    from dataclasses import replace
+
+    changes = {}
+    if member is not None:
+        changes["member"] = int(member)
+    if seed is not None:
+        changes["seed"] = int(seed)
+    return replace(cfg, stochastic=replace(cfg.stochastic, **changes))

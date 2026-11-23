@@ -469,6 +469,47 @@ class HybridCoordinate:
             )
         return cls(a, b)
 
+
+    @classmethod
+    def ifs_class(
+        cls,
+        nlev: int = 80,
+        p_top_pa: float = 100.0,
+        *,
+        pure_pressure_above_pa: float = 7_500.0,
+        hybrid_exponent: float = 1.5,
+    ) -> "HybridCoordinate":
+        """ECMWF-IFS-inspired smooth high-vertical-resolution hybrid grid (default 80L)."""
+        n = int(nlev)
+        if n < 20:
+            raise ValueError("ifs_class coordinate requires at least 20 levels")
+        ps_ref = SURFACE_STRETCHED_REFERENCE_PS_PA
+        if not math.isfinite(p_top_pa) or not 0.0 < p_top_pa < pure_pressure_above_pa:
+            raise ValueError(
+                f"p_top_pa must lie in (0, {pure_pressure_above_pa:g}) Pa"
+            )
+        zeta_top = math.log(ps_ref / float(p_top_pa))
+        u = (np.arange(n, dtype=np.float64) + 0.5) / float(n)
+        w_pbl = 0.0026 + 0.048 * (1.0 / (1.0 + np.exp(-(u - 0.16) / 0.045)))
+        w_strat = 0.165 * (1.0 / (1.0 + np.exp(-(u - 0.72) / 0.060)))
+        w_jet_dip = 1.0 - 0.22 * np.exp(-((u - 0.50) / 0.13) ** 2)
+        dzeta = (w_pbl + w_strat) * w_jet_dip
+        dzeta *= zeta_top / float(np.sum(dzeta))
+        zeta_half = np.concatenate([[0.0], np.cumsum(dzeta)])
+        zeta_half[-1] = zeta_top
+        p_ref = ps_ref * _libm_exp(-zeta_half[::-1])
+        p_ref[0] = float(p_top_pa)
+        p_ref[-1] = ps_ref
+
+        p_bt = float(pure_pressure_above_pa)
+        x = np.clip((p_ref - p_bt) / (ps_ref - p_bt), 0.0, 1.0)
+        b = _libm_pow(x, float(hybrid_exponent))
+        a = p_ref - b * ps_ref
+        a = np.maximum(a, 0.0)
+        a[-1] = 0.0
+        b[-1] = 1.0
+        return cls(a, b)
+
     def thickest_layer_pa_between(
         self, p_top_pa: float, p_bottom_pa: float,
         reference_surface_pa: float = SURFACE_STRETCHED_REFERENCE_PS_PA,

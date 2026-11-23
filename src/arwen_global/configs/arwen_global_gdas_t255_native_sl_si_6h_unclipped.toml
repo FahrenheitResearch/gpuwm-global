@@ -62,12 +62,15 @@ p_top_pa = 100.0
 # wheel as well as from a checkout root.
 [initial]
 mode = "analysis"
-analysis_grib = "cases/gdas/gdas.t18z.pgrb2.0p25.f000"
+analysis_grib = "cases/baseline-2026090100/gdas.t00z.pgrb2.0p25.f000"
 analysis_mapping = "gdas-global"
 surface_water_kg_m2 = 500.0
 
-# start_time_utc matches the ingested GDAS cycle (2026-08-30 18Z per the
-# case archive's fetch-manifest), so the RRTMGP solar geometry runs on the
+# The analysis is the README forecast day's, GDAS 2026-09-01 00Z (from 0.4.0;
+# 0.3.0 read a 2026-08-30 18Z file no page fetched), which
+# `gpuwm-global fetch-analysis --cycle 2026-09-01T00 --out
+# cases/baseline-2026090100` writes.  start_time_utc matches that cycle
+# so the RRTMGP solar geometry runs on the
 # analysis instant.
 # radiation_interval_s follows the regional radt convention of one minute
 # per km of grid spacing: 52 km -> 52 min = 3120 s = 52 whole 60 s steps,
@@ -84,7 +87,7 @@ surface_water_kg_m2 = 500.0
 [physics]
 mode = "arwen-native"
 native_adapter_name = "arwen-cuda-column-suite-v1"
-native_adapter_options = { acknowledgement = "device-pending-arwen-native-physics-v1", start_time_utc = "2026-08-30T18:00:00Z", radiation = "rrtmgp", radiation_interval_s = 3000.0, radiation_column_chunk = 12500, radiation_validation_mode = "fused", surface_layer = "sfclay", sfclay_option = 1, land_surface = "noah", land_surface_interval_s = 300.0, pbl = "ysu", ysu_topdown_pblmix = 1, microphysics = "morrison", morr_rimed_ice = 1, dx_m = 52100.0 }
+native_adapter_options = { acknowledgement = "device-pending-arwen-native-physics-v1", start_time_utc = "2026-09-01T00:00:00Z", radiation = "rrtmgp", radiation_interval_s = 3000.0, radiation_column_chunk = 12500, radiation_validation_mode = "fused", surface_layer = "sfclay", sfclay_option = 1, land_surface = "noah", land_surface_interval_s = 300.0, pbl = "ysu", ysu_topdown_pblmix = 1, microphysics = "morrison", morr_rimed_ice = 1, dx_m = 52100.0 }
 
 # The semi-Lagrangian core's own drain (config.SEMILAG_DIFFUSION_ORDER,
 # MEASURED 2026-09-07 on the dry T255 ladder): order 16 at 12 min at the

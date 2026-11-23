@@ -206,7 +206,7 @@ def gf_kernel_capacity(nz: int) -> int:
 # GFWS_SLOTS; tests/test_gf_workspace.py re-derives them from the .cu source
 # and fails if either side moves alone.
 GFWS_SLOT_COUNT_COL = 90
-GFWS_SLOT_COUNT_DRV = 36
+GFWS_SLOT_COUNT_DRV = 37
 GFWS_SLOTS = GFWS_SLOT_COUNT_COL + GFWS_SLOT_COUNT_DRV
 
 #: Launch block, and the tile's granularity.  gf.cu indexes the workspace by
@@ -223,6 +223,16 @@ GF_BLOCK = 64
 #: blocks/SM, so this is a throughput choice, not a residency limit, and the
 #: query below only ever lowers it.
 GF_TILE_BLOCKS_PER_SM = 4
+
+#: Blocks per SM on a card with at least GF_TILE_LARGE_CARD_BYTES of memory.
+#: MEASURED 2026-11-16 on the kernel with the early rejections (replay of a
+#: captured T383 call, 663,552 columns): RTX PRO 6000 Server (188 SMs,
+#: 96 GiB) 53.4 ms at 2 blocks/SM, 42.6 at 4, 38.4 at 8; RTX 5070 Ti (70 SMs,
+#: shared card) 82-89 at 4, 78-79 at 6 and 8.  8 doubles the workspace
+#: (1.2 -> 2.4 GB on 188 SMs, 0.45 -> 0.9 GB on 70), which a 16 GB card's
+#: T383 fit cannot spare, so small cards keep 4.
+GF_TILE_BLOCKS_PER_SM_LARGE = 8
+GF_TILE_LARGE_CARD_BYTES = 48 * 2**30
 
 
 def gf_workspace_floats(nz: int, columns: int) -> int:
@@ -288,6 +298,11 @@ def gf_tile_columns(fn, ncol: int) -> int:
     sms = dev.attributes["MultiProcessorCount"]
     per_sm = GF_TILE_BLOCKS_PER_SM
     try:
+        if int(dev.mem_info[1]) >= GF_TILE_LARGE_CARD_BYTES:
+            per_sm = GF_TILE_BLOCKS_PER_SM_LARGE
+    except Exception:                              # noqa: BLE001
+        pass                                       # keep the small-card value
+    try:
         from cupy_backends.cuda.api import driver
 
         resident = driver.occupancyMaxActiveBlocksPerMultiprocessor(
@@ -318,8 +333,23 @@ class GrellFreitas:
                  shallow_blqe_to_cloud_base: bool = False,
                  shallow_depth_min_m: int = 0,
                  momentum_transport: bool = False, deep_experiment: int = 0,
-                 deep_physics: int = 0):
+                 deep_physics: int = 0, grid_entry: bool = True,
+                 column_order: bool = False):
         self._driver = None
+        #: Launch the engine entry (gf.cu gf_gfdrv_grid: fields read and
+        #: written in place) instead of packing columns for gf_gfdrv_stage.
+        #: Same body, same words; False keeps the packed path.
+        self.grid_entry = bool(grid_entry)
+        #: Run the columns in the order of the previous call's deep exit
+        #: codes (grid entry only).  Speed only: every column is computed
+        #: alone, so the order never reaches a result word.  Off by
+        #: default: once a rejected column leaves the deep routine at its
+        #: rejection (0.95 % of T383 columns convect deep) there is little
+        #: divergence left to remove, and the permuted reads cost more than
+        #: it saves (RTX 5070 Ti replay: 101 ms ordered, 94 natural).
+        self.column_order = bool(column_order)
+        #: The previous call's deep exit code per column, natural order.
+        self._order_key = None
         self.deep_experiment = int(deep_experiment)
         #: Bit set of CCPP deep-plume pieces (gf.cu GF_DEEP_PHYS); 0 = WRF.
         self.deep_physics = int(deep_physics)
@@ -411,6 +441,7 @@ class GrellFreitas:
         credit for memory the collector reclaims elsewhere.
         """
         self._driver = None
+        self._order_key = None
         return 0
 
     def __call__(self, *, atmosphere, fields, state, cfg):
@@ -492,6 +523,10 @@ class GrellFreitas:
                             shallow_blqe_to_cloud_base=self.shallow_blqe_to_cloud_base,
                             shallow_depth_min_m=self.shallow_depth_min_m, deep_experiment=self.deep_experiment,
                             deep_physics=self.deep_physics)
+        if self.grid_entry:
+            return self._call_grid(module, lanes, nz, ny, nx, clock_dt, ht, hfx,
+                                   qfx, xland, kpbl, dx_flat, ishallow,
+                                   clos_choice, state, cfg)
         fn = module.get_function("gf_gfdrv_stage")
         block = GF_BLOCK
         # Columns are packed in chunks of `column_chunk` (GF_COLUMN_CHUNK:
@@ -521,15 +556,46 @@ class GrellFreitas:
                      for name in CLOSURE_READING_SCALARS}
         reading_i = {name: cp.empty((ncol,), dtype=cp.int32)
                      for name in CLOSURE_READING_INTEGERS}
+        # One launch per direction per chunk where the lanes allow it
+        # (core.column_pack: 32-bit copies, so the blocks and the planes
+        # are the lane-by-lane path's bits); the lane-by-lane path stays
+        # for any lane that is not a C-contiguous float32 (nz, ny, nx).
+        from arwen_global.core import column_pack
+
+        in_lanes = [lanes[name] for name in _IN_LEV]
+        packed = column_pack.packable(cp, in_lanes, (nz, ny, nx))
+        if packed:
+            in_table = column_pack.pointer_table(cp, in_lanes)
+            lev_table = column_pack.pointer_table(
+                cp, [out[name] for name in out_names])
+            lev_index = column_pack.index_table(
+                cp, [_OUT_LEV.index(name) for name in out_names])
+            sca_planes = [raincv, *reading_f.values()]
+            sca_table = column_pack.pointer_table(cp, sca_planes)
+            sca_index = column_pack.index_table(
+                cp, [_OUT_SCA.index("raincv"),
+                     *(_OUT_SCA.index(name) for name in reading_f)])
+            isc_planes = [ierr_deep, downdraft_dry_exit, ktop_deep,
+                          kbcon_deep, *reading_i.values()]
+            isc_table = column_pack.pointer_table(cp, isc_planes)
+            isc_index = column_pack.index_table(
+                cp, [_OUT_ISCA.index("ierr_deep"),
+                     _OUT_ISCA.index("downdraft_dry_exit"),
+                     _OUT_ISCA.index("ktop_deep"), _OUT_ISCA.index("kbcon"),
+                     *(_OUT_ISCA.index(name) for name in reading_i)])
         for lo, hi in chunks:
             n = hi - lo
             lvin = cp.empty((n, len(_IN_LEV), nz), dtype=DTYPE)
-            for j, name in enumerate(_IN_LEV):
-                lane = lanes[name]
-                if lane is None:
-                    lvin[:, j, :] = DTYPE(0.0)
-                else:
-                    lvin[:, j, :] = cols(lane, lo, hi)
+            if packed:
+                column_pack.pack_lanes(cp, in_table, len(_IN_LEV), lvin,
+                                       lo=lo, n=n, ncol=ncol, nz=nz)
+            else:
+                for j, name in enumerate(_IN_LEV):
+                    lane = lanes[name]
+                    if lane is None:
+                        lvin[:, j, :] = DTYPE(0.0)
+                    else:
+                        lvin[:, j, :] = cols(lane, lo, hi)
             scin = cp.empty((n, 6), dtype=DTYPE)
             scin[:, 0] = ht[lo:hi]
             scin[:, 1] = hfx[lo:hi]
@@ -554,6 +620,16 @@ class GrellFreitas:
                     lev[t0:t1], sca[t0:t1], isc[t0:t1], ws,
                     np.int32(0),      # SHIPPED default: corrected k22 indexing
                     np.int32(t1 - t0), np.int32(nz)))
+            if packed:
+                column_pack.unpack_lanes(cp, lev, lev_index, lev_table,
+                                         len(out_names), lo=lo, n=n,
+                                         ncol=ncol, nz=nz)
+                column_pack.unpack_table(cp, sca, sca_index, sca_table,
+                                         len(sca_planes), lo=lo, n=n)
+                column_pack.unpack_table(cp, isc, isc_index, isc_table,
+                                         len(isc_planes), lo=lo, n=n)
+                del lvin, scin, iin, lev, sca, isc
+                continue
             for name in out_names:
                 out[name][:, lo:hi] = lev[:, _OUT_LEV.index(name), :].T
             raincv[lo:hi] = sca[:, _OUT_SCA.index("raincv")]
@@ -567,6 +643,93 @@ class GrellFreitas:
                 arr[lo:hi] = isc[:, _OUT_ISCA.index(name)]
             del lvin, scin, iin, lev, sca, isc
         del ws
+        return self._finish(out, raincv, ierr_deep, downdraft_dry_exit,
+                            ktop_deep, kbcon_deep, reading_f, reading_i,
+                            nz, ny, nx, state)
+
+    def _call_grid(self, module, lanes, nz, ny, nx, clock_dt, ht, hfx, qfx,
+                   xland, kpbl, dx_flat, ishallow, clos_choice, state, cfg):
+        """The engine entry (gf.cu gf_gfdrv_grid): the kernel reads the
+        (nz, ncol) fields in place and writes the output planes the result
+        needs, so nothing is packed or unpacked; with column_order the
+        columns run deep-first by the previous call's exit codes.  The body is the same
+        template instance as gf_gfdrv_stage's and every column is computed
+        alone (one thread, its own workspace lane), so the order moves time
+        and nothing else."""
+        import cupy as cp
+
+        ncol = ny * nx
+        fn = module.get_function("gf_gfdrv_grid")
+        block = GF_BLOCK
+        null = np.uint64(0)
+        keep = []
+
+        def arg(a, dtype=DTYPE):
+            if a is None:
+                return null
+            a = cp.ascontiguousarray(a, dtype=dtype)
+            keep.append(a)
+            return a
+
+        lane_args = []
+        for name in _IN_LEV:
+            lane = lanes[name]
+            if lane is not None and lane.size != nz * ncol:
+                raise ValueError(f"GF lane {name} has {lane.shape}, expected "
+                                 f"{(nz, ny, nx)}")
+            lane_args.append(arg(lane))
+        out_names = ("rthcuten", "rqvcuten", "rqccuten", "rqicuten")
+        if self.momentum_transport:
+            out_names = out_names + ("dudt", "dvdt")
+        dl = sorted(_OUT_LEV.index(name) for name in out_names)
+        lev_mask = 0
+        for i in dl:
+            lev_mask |= 1 << i
+        lev_out = cp.empty((len(dl), nz, ncol), dtype=DTYPE)
+        sca_out = cp.empty((len(_OUT_SCA), ncol), dtype=DTYPE)
+        isca_out = cp.empty((len(_OUT_ISCA), ncol), dtype=cp.int32)
+        key = self._order_key
+        perm = None
+        if self.column_order and key is not None and key.size == ncol:
+            # Deep columns first, each group in the globe's own order (the
+            # sort is stable): the rejected 99 % keep their neighbours, so
+            # the field reads stay coalesced.
+            perm = cp.argsort((key != 0).astype(cp.int8)).astype(
+                cp.int32, copy=False)
+        tile = gf_tile_columns(fn, min(int(ncol), int(self.column_chunk)))
+        ws = cp.empty(gf_workspace_floats(nz, tile), dtype=DTYPE)
+        scal = (arg(ht), arg(hfx), arg(qfx), arg(xland), arg(dx_flat),
+                arg(kpbl, cp.int32), DTYPE(clock_dt), DTYPE(cfg.dx),
+                ishallow, clos_choice)
+        for t0 in range(0, ncol, tile):
+            nt = min(tile, ncol - t0)
+            fn(((nt + block - 1) // block,), (block,),
+               (*lane_args, *scal, lev_out, np.uint32(lev_mask), sca_out,
+                isca_out, null if perm is None else perm, ws,
+                np.int32(0),      # SHIPPED default: corrected k22 indexing
+                np.int64(t0), np.int32(nt), np.int64(ncol), np.int32(nz)))
+        del ws, keep
+        out = {name: lev_out[dl.index(_OUT_LEV.index(name))]
+               for name in out_names}
+        ierr_deep = isca_out[_OUT_ISCA.index("ierr_deep")]
+        if self.column_order:
+            self._order_key = ierr_deep
+        return self._finish(
+            out, sca_out[_OUT_SCA.index("raincv")], ierr_deep,
+            isca_out[_OUT_ISCA.index("downdraft_dry_exit")],
+            isca_out[_OUT_ISCA.index("ktop_deep")],
+            isca_out[_OUT_ISCA.index("kbcon")],
+            {name: sca_out[_OUT_SCA.index(name)]
+             for name in CLOSURE_READING_SCALARS},
+            {name: isca_out[_OUT_ISCA.index(name)]
+             for name in CLOSURE_READING_INTEGERS},
+            nz, ny, nx, state)
+
+    def _finish(self, out, raincv, ierr_deep, downdraft_dry_exit, ktop_deep,
+                kbcon_deep, reading_f, reading_i, nz, ny, nx, state):
+        import cupy as cp
+
+        from arwen_global.core.physics import CumulusResult
 
         def grid(name):
             # (nz, ncol) -> (nz, ny, nx)

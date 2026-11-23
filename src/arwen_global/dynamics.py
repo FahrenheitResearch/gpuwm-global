@@ -70,8 +70,10 @@ from .longrun_gates import (
 
 #: Physics-namespace arrays on another grid than the atmosphere's (the
 #: dynamic ocean's, arwen_global.ocean_dyn.coupler.PREFIX): carried around
-#: the physics call, never cut into bands.
-PHYSICS_CARRIED_PREFIX = "ocean_dyn_"
+#: the physics call, never cut into bands.  The stochastic physics pattern
+#: state (arwen_global.stochastic.STATE_PREFIX) is carried the same way:
+#: spectral coefficients and a clock, not grid planes.
+PHYSICS_CARRIED_PREFIX = ("ocean_dyn_", "stochastic_")
 
 
 class SynthesisMemo:
@@ -614,8 +616,19 @@ class MoistHybridModel:
     #: Latitude rows exchanged across a card boundary for the meridional
     #: tracer sweep's deep halo.  Unread on one card.
     card_halo_rows: int = 16
+    #: Stochastic physics (arwen_global.stochastic.StochasticPhysics), or
+    #: None: the shipped run, which never reads it and whose arithmetic is
+    #: unchanged.  Enters no identity here: the config's [stochastic]
+    #: table carries it.
+    stochastic: object = None
 
     def __post_init__(self) -> None:
+        self._stochastic_call = None
+        self._step_dt_s = None
+        if self.stochastic is not None and self.physics is None:
+            raise ValueError(
+                "stochastic physics perturbs the physics tendencies and this "
+                "model runs no physics suite; it is refused rather than ignored")
         if self.mass_fixer_target not in MASS_FIXER_TARGETS:
             raise ValueError(
                 "mass_fixer_target must be one of "
@@ -1752,16 +1765,32 @@ class MoistHybridModel:
         )
 
     def cfl(self, state: MoistHybridState, dt_s: float) -> float:
+        return self.cfl_reading(state, dt_s)()
+
+    def cfl_reading(self, state: MoistHybridState, dt_s: float):
+        """:meth:`cfl` with its one device read deferred: the wind maximum
+        is reduced now and the returned callable reads it and forms the
+        number when called.  The semi-Lagrangian step, where the CFL is a
+        measurement and not a gate, reads it with the step's metrics, so
+        the step no longer synchronises between the first physics half and
+        the dynamics for it.  Same number."""
         # Only the wind bounds the advective CFL, so only the wind is
         # synthesized - a full grid_state here paid fifteen fields for two.
         xp = self.transform.backend.xp
         u, v = self._wind(state)
-        maximum = float(self.transform.backend.to_numpy(
-            _associative_over(
-                xp, "max", xp.sqrt(u * u + v * v), name="cfl_wind",
-                exchange=self.pipeline.exchange,
-            )
-        ))
+        pending = _associative_over(
+            xp, "max", xp.sqrt(u * u + v * v), name="cfl_wind",
+            exchange=self.pipeline.exchange,
+        )
+        del u, v
+
+        def read() -> float:
+            return self._cfl_from_maximum(
+                float(self.transform.backend.to_numpy(pending)), dt_s)
+
+        return read
+
+    def _cfl_from_maximum(self, maximum: float, dt_s: float) -> float:
         # The gravity wave counts against the explicit budget only for the
         # fraction the semi-implicit split leaves explicit (its fastest
         # treated mode times 1 - weight).  Under the external-only proxy
@@ -1946,9 +1975,14 @@ class MoistHybridModel:
                 strength = self.pressure_diffusion_strength
             elif name == "qv":
                 strength = self.water_diffusion_strength
+            # The background term's field choice is passed only when the
+            # term is on, so the shipped single-term call is unchanged.
+            extra = {}
+            if getattr(self.diffusion, "background_order", 0):
+                extra["background"] = self.diffusion.background_acts_on(name)
             fields.append(
                 self.diffusion.apply(
-                    getattr(state, name), self.transform, dt_s, strength=strength
+                    getattr(state, name), self.transform, dt_s, strength=strength, **extra
                 )
             )
         return state.with_fields(fields)
@@ -2273,7 +2307,15 @@ class MoistHybridModel:
         unchanged, and a negative lobe is paid by the layer next to it
         rather than by wherever the column holds most of its vapor.
         Returns the plane of water moved this way.
+
+        Under CuPy the sweep is one launch (core.column_borrow: one thread
+        per column, the same operations in the same order, the loop's
+        bits) where it was seven per (level, neighbour) pair.
         """
+        from .core import column_borrow
+
+        if column_borrow.fusable(xp, mass):
+            return column_borrow.borrow_from_neighbours(xp, mass)
         nlev = int(mass.shape[0])
         moved = xp.zeros(mass.shape[1:], dtype=mass.dtype)
         for k in range(nlev):
@@ -2386,6 +2428,55 @@ class MoistHybridModel:
             "level_loss_kg_m2": [float(v) for v in levels[1]],
             "neighbour_kg_m2": max(0.0, neighbour / GRAVITY_M_S2),
         }
+
+    def _fill_column_holes_record(self, accumulators, *, first=(), after=None):
+        """:meth:`_fill_column_holes_readings` and
+        :meth:`_fill_column_holes_ledger` in ONE host read, with the
+        caller's own device scalars beside them: ``first`` (taken before the
+        filler's totals) and ``after()`` (a callable returning more, run
+        after them), so every total is formed in the order the separate
+        reads formed it.  Each separate read was a synchronisation (four a
+        call, and one more for each caller scalar).  Same numbers.
+
+        Returns ``(readings, ledger, first_values, after_values)``.
+        """
+        xp = self.transform.backend.xp
+        cell = self.transform.backend.asarray(
+            self.transform.grid.quadrature_weights,
+            dtype=self.transform.backend.float_dtype,
+        )[:, None] / (2.0 * self.transform.grid.nlon)
+        first = list(first)
+        scalars = [
+            -accumulators["created"].total(cell),
+            -accumulators["unfillable"].total(cell),
+            accumulators["rescale"].total(),
+        ]
+        levels = self._level_water_mass_total(accumulators["levels"])
+        scalars.append(accumulators["neighbour"].total(cell))
+        extra = list(after()) if after is not None else []
+        flat = [xp.reshape(xp.asarray(value), (-1,))
+                for value in (*first, *scalars, *extra)]
+        flat.append(xp.reshape(levels, (-1,)))
+        dtype = np.result_type(*[np.dtype(value.dtype) for value in flat])
+        read = np.asarray(self.transform.backend.to_numpy(
+            xp.concatenate([value.astype(dtype, copy=False) for value in flat])))
+        nfirst, nextra = len(first), len(extra)
+        first_values = [float(v) for v in read[:nfirst]]
+        r = read[nfirst:nfirst + 4]
+        extra_values = [float(v) for v in read[nfirst + 4:nfirst + 4 + nextra]]
+        level_rows = np.asarray(
+            read[nfirst + 4 + nextra:].reshape(levels.shape), dtype=np.float64)
+        readings = (
+            max(0.0, float(r[0]) / GRAVITY_M_S2),
+            float(r[2]),
+            max(0.0, float(r[1]) / GRAVITY_M_S2),
+        )
+        ledger = {
+            "level_gain_kg_m2": [float(v) for v in level_rows[0]],
+            "level_loss_kg_m2": [float(v) for v in level_rows[1]],
+            "neighbour_kg_m2": max(0.0, float(r[3]) / GRAVITY_M_S2),
+        }
+        return readings, ledger, first_values, extra_values
 
     def _fill_column_holes(self, q, dp):
         """Column-local, conservative hole filling of a spectral water field.
@@ -2675,15 +2766,14 @@ class MoistHybridModel:
             waist.fill_band(rows.start, rows.stop, filled)
             del filled, g, dp
         del sources
-        negative_water = max(0.0, -float(host(minimum.total())))
-        created, max_fraction, unfillable = self._fill_column_holes_readings(
-            holes
-        )
-        ledger = self._fill_column_holes_ledger(holes)
+        # The vapour minimum, the filler's readings and ledger and the
+        # atmospheric water cross to the host in one read (five before).
+        ((created, max_fraction, unfillable), ledger, (vapour_minimum,),
+         (atmospheric_water,)) = self._fill_column_holes_record(
+            holes, first=(minimum.total(),),
+            after=lambda: (xp.sum(self._level_water_mass_total(water_rows)),))
+        negative_water = max(0.0, -vapour_minimum)
         del holes
-        atmospheric_water = float(host(xp.sum(
-            self._level_water_mass_total(water_rows)
-        )))
         del water_rows
         # The truncated basis still rings slightly below zero after the
         # projection of the filled field and that residual is TOLERATED:
@@ -3120,19 +3210,17 @@ class MoistHybridModel:
         """The exchange filler's readings of one call, once over the
         call's accumulators."""
         xp = self.transform.backend.xp
-        created, max_fraction, unfillable = self._fill_column_holes_readings(
-            ps.holes
-        )
+        # One host read for all of it (four before).
+        (created, max_fraction, unfillable), ledger, _, (atmospheric,) = (
+            self._fill_column_holes_record(
+                ps.holes,
+                after=lambda: (xp.sum(self._level_water_mass_total(ps.water_rows)),)))
         return {
             "water_kg_m2": created,
             "max_rescale": max_fraction,
             "unfillable_kg_m2": unfillable,
-            "ledger": self._fill_column_holes_ledger(ps.holes),
-            "atmospheric_water_kg_m2": float(
-                self.transform.backend.to_numpy(xp.sum(
-                    self._level_water_mass_total(ps.water_rows)
-                ))
-            ),
+            "ledger": ledger,
+            "atmospheric_water_kg_m2": atmospheric,
         }
 
     def _floor_tracer_bands(self, tracers, minima, maxima, *, what: str):
@@ -3568,6 +3656,25 @@ class MoistHybridModel:
             return self._sponge_only_physics_pass(bundle, dt_s)
         from .state import SURFACE_ARRAY_NAMES, PhysicsState, SurfaceState, _copy_json
 
+        if self.stochastic is not None and self._stochastic_call is None:
+            # One pattern state per call: advanced to this call's clock
+            # (the same clock returns the same pattern without a draw), read
+            # by the band loop below, and carried out in the namespace.
+            ctx = self.stochastic.begin(self, bundle, float(dt_s), self._step_dt_s)
+            self._stochastic_call = ctx
+            try:
+                out, info = self.apply_physics(bundle, dt_s)
+            finally:
+                self._stochastic_call = None
+            arrays = dict(out.physics_state.arrays)
+            arrays.update(ctx.state)
+            info = dict(info)
+            info["stochastic"] = ctx.record
+            return ArwenGlobalState(out.atmosphere, out.surface, PhysicsState(
+                schema=out.physics_state.schema, arrays=arrays,
+                metadata=out.physics_state.metadata)), info
+        stochastic = self._stochastic_call
+
         # The dynamic ocean's arrays live in the namespace (so checkpoints
         # carry them) but on the OCEAN grid: the suite never reads them and
         # the band loop must not cut them by atmosphere rows.  They are
@@ -3645,8 +3752,22 @@ class MoistHybridModel:
                 # than waiting for the next band to evict them.
                 self._band_values.clear()
                 self._band_tag = None
+            stochastic_inputs = None
+            if stochastic is not None:
+                # The band's state as the suite receives it: SPPT scales
+                # the suite's change of it, SKEB reads its wind sink.
+                stochastic_inputs = {
+                    name: xp.array(getattr(exchange, name), dtype=dtype, copy=True)
+                    for name in ("u", "v", "theta", "qv")
+                }
             with prof.section("suite"):
                 result = self.physics.step(exchange)
+            if stochastic is not None:
+                with prof.section("stochastic"):
+                    self.stochastic.perturb_band(
+                        stochastic, self, rows, stochastic_inputs, result,
+                        exchange, dt_s=dt)
+                del stochastic_inputs
             with prof.section("return"):
                 # The lid absorber acts on the physics result's grid winds
                 # before their analysis: arithmetically the suite-v7
@@ -3734,6 +3855,12 @@ class MoistHybridModel:
                 analyzed[start : start + piece.shape[0]] = piece
                 del piece
             del scalar_waists
+            if stochastic is not None:
+                with prof.section("stochastic"):
+                    zeta, theta_spec, record = self.stochastic.finish(
+                        stochastic, zeta, analyzed[0], dt_s=dt)
+                    analyzed = [theta_spec, analyzed[1]]
+                    stochastic.record.update(record)
             surface_arrays = out_surface.finish()
             physics_arrays = out_physics.finish()
             tracers = out_tracers.finish()
@@ -3897,6 +4024,10 @@ class MoistHybridModel:
         for _name, finite, minimum in tracer_folds:
             tracer_readings.append(finite.total())
             tracer_readings.append(minimum.total())
+        # The card is still working through the observer's and these
+        # guards' launches: the physics calls' deferred plane readings take
+        # their host turn here (step), not after the read below drains it.
+        self._resolve_deferred_readings()
         readings = host(xp.concatenate([
             xp.stack(spectral_finite).astype(xp.float64),
             xp.stack([
@@ -4080,7 +4211,40 @@ class MoistHybridModel:
         del pseudo, gap, dp_end, dp_start
         return end.with_grid_tracers(self._park_tracers(tracers)), metrics
 
+    def _resolve_deferred_readings(self) -> None:
+        """Run the physics suite's deferred plane readings (native_suite:
+        the host arithmetic of a call's grid-mean radiation readings),
+        called where the host would otherwise wait on the card."""
+        resolve = getattr(self.physics, "resolve_pending_readings", None)
+        if callable(resolve):
+            resolve()
+
     def step(self, bundle: ArwenGlobalState, dt_s: float):
+        """One model step (:meth:`_step`).  While it runs, a physics suite
+        that can defer its plane readings does: their copies start on the
+        stream at the end of each physics call and their host arithmetic
+        runs inside the next positivity repair, where the host waits on the
+        card anyway (and before this returns), on the same bytes.  Same
+        numbers in the same dicts; MEASURED 2026-11-16 at T383 on an RTX
+        PRO 6000 the immediate reads left the card idle 64 ms a step."""
+        physics = self.physics
+        if physics is None or not hasattr(physics, "resolve_pending_readings"):
+            return self._step(bundle, dt_s)
+        physics.defer_host_readings = True
+        try:
+            result = self._step(bundle, dt_s)
+        except BaseException:
+            physics.defer_host_readings = False
+            pending = getattr(getattr(physics, "adapter", physics),
+                              "_pending_host_readings", None)
+            if pending:
+                pending.clear()
+            raise
+        physics.defer_host_readings = False
+        physics.resolve_pending_readings()
+        return result
+
+    def _step(self, bundle: ArwenGlobalState, dt_s: float):
         # Every caller that steps a state (the forecast loop, the cycle,
         # the ensemble) gets the bookkeeping the model runs; the forecast
         # loop has already done this at its start and said so in the
@@ -4094,6 +4258,9 @@ class MoistHybridModel:
             # fallback would bake the first step's drift into the target.
             self.initialize_water_target(bundle)
         half = 0.5 * float(dt_s)
+        # The stochastic patterns are held one whole step (their update
+        # period for the SKEB energy budget); unread without them.
+        self._step_dt_s = float(dt_s)
         # The energy ledger's read-only marks around every operator
         # (insitu.energy); a no-op unless the observer samples this step.
         mark = None
@@ -4197,7 +4364,11 @@ class MoistHybridModel:
             # reference to a state this step holds to its end: no copy.
             self.hold_pre_physics(bundle.atmosphere)
         with prof.section("cfl"):
-            cfl = self.cfl(first.atmosphere, dt_s)
+            # On the semi-Lagrangian path the number is a measurement read
+            # with the step's metrics (cfl_reading); the Eulerian refusal
+            # below needs it now.
+            cfl_read = self.cfl_reading(first.atmosphere, dt_s)
+            cfl = None if semi_lagrangian else cfl_read()
         # G1.  The advective CFL is a REFUSAL on every Eulerian path and a
         # MEASUREMENT on the semi-Lagrangian one.  What it guards is the
         # explicit Eulerian advection, which the semi-Lagrangian core does
@@ -4363,6 +4534,9 @@ class MoistHybridModel:
             first_physics.get("exchange_fixer_ledger"),
             second_physics.get("exchange_fixer_ledger"),
         )
+        if cfl is None:
+            cfl = cfl_read()
+        del cfl_read
         metrics = {
             "spectral_cfl": float(cfl),
             "mass_fixer_log_offset": float(mass_offset),

@@ -435,10 +435,25 @@ def test_every_shipped_page_states_the_experiment_count_that_ships():
     release note has to decide which of the two is lying.
     """
 
+    import pathlib
+    import re
+
     from arwen_global import configs_dir
 
     expected = len(configs_dir.list_configs())
     stated = _stated_numbers(r"(\d+) (?:configured )?experiments")
+    # A changelog section older than the newest describes a release already
+    # published with the configs it had (0.3.0 shipped 61); rewriting it to
+    # today's count would make it wrong about what it shipped, as the door
+    # count's test says of the same file.  The newest section is held.
+    changelog = (pathlib.Path(__file__).resolve().parents[1]
+                 / "CHANGELOG.md").read_text(encoding="utf-8")
+    heads = [changelog.count(chr(10), 0, m.start()) + 1
+             for m in re.finditer(r"(?m)^## ", changelog)]
+    newest_end = heads[1] if len(heads) > 1 else None
+    stated = [row for row in stated
+              if row[0] != "CHANGELOG.md" or newest_end is None
+              or row[1] < newest_end]
     wrong = [f"{name}:{line}: {text}" for name, line, text, value in stated
              if value != expected]
     assert not wrong, (

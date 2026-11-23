@@ -57,9 +57,18 @@ class InsituOptions:
     # the four fields on the device (the reference suite's convective
     # adjustment and the native kernels update in place, so a
     # reference-holding capture would read zero change) - measured at 0.3%
-    # of a T63/40-level step on one CPU core (2026-09-01), so every step
-    # is the default.
-    tendencies_every: int = 1
+    # of a T63/40-level step on one CPU core (2026-09-01), and every step
+    # was the default then.  On the card it is not small: MEASURED
+    # 2026-11-16, T383 L40 native SL day from GDAS 2026-11-15 06Z on an RTX
+    # PRO 6000, 30 steps, the capture at every step cost 1.6 % of the step
+    # (0.998 s/step at every 10th step against 1.012 and 1.016 at every
+    # step; the whole ledger off read 0.970), and the forecast is the same
+    # bits either way.  So it samples every 10th step, the cadence of the
+    # spectra and of the flush: the post-mortem still has every component's
+    # change at that sampling, and the receipt's
+    # max_component_max_abs_change is the maximum over the sampled steps.
+    # No tripwire reads it.  ``tendencies_every = 1`` restores every step.
+    tendencies_every: int = 10
     # Per-operator total-energy ledger (insitu.energy): every
     # ``energy_every`` steps the atmosphere is marked around each operator
     # of the step and the per-level net change of kinetic, internal and

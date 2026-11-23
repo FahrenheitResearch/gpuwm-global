@@ -19,10 +19,9 @@ signal anywhere.
 So each staying file is pinned by path, size and SHA-256 at the engine version
 the decision was measured against, and `gpuwm-global doctor` hashes the
 installed engine's copies and reports each as proven or MOVED.  Moved is a
-warning naming the file, never a refusal: the version ceiling in the
-dependency pin is the refusal, and a package that stopped working because
-somebody's comment changed would be worse than one that says which file it no
-longer recognises.
+`doctor` gap naming the file and the engine the pins were taken at (from
+0.4.0), never a refusal of the run: the version ceiling in the dependency pin
+is the refusal.
 
 THE HASHES ARE NEVER TYPED.  They are read off the installed engine by this
 tool, which is why it exists at all.  The RATIONALE beside each row is typed,

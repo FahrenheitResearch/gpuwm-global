@@ -291,10 +291,10 @@ def test_the_day_at_the_former_chunk_is_pointed_at_the_measured_chunk():
 T255_DAY = str(_shipped_configs() / "arwen_global_gdas_t255_native_sl_si_24h.toml")
 
 
-def _t255_row():
+def _t255_row(nlev: int = 40):
     rows = [row for row in sizing.COMPLETED_PLAN_PEAKS
             if row["truncation"] == 255 and row["bands"] == 1
-            and not row["spill_slices"]]
+            and row["nlev"] == nlev and not row["spill_slices"]]
     assert len(rows) == 1
     return rows[0]
 
@@ -329,6 +329,32 @@ def test_the_t255_row_is_a_held_run_and_the_heaviest_one():
     assert row["pool_limit_end_bytes"] >= row["held_bytes"] >= row["peak_used_bytes"]
     assert row["card_bytes_measured"] > row["held_bytes"]
     assert "status pass" in row["run"] and row["step_s"] > 0
+
+
+@pytest.mark.parametrize("name", [
+    "arwen_global_gdas_t255_l80_satmedmf_scinocca_24h",
+    "arwen_global_gdas_t255_l80_ysu_scinocca_24h",
+])
+def test_the_80_level_days_are_admitted_on_a_16_gb_card_at_their_held_run(name):
+    # MEASURED 2026-11-23: with no 80-level calibration row the model asked
+    # 18.97 GiB of card for these days and the door refused them on a 16 GB
+    # card at every band count, while the day held 12.49 GiB live and took
+    # 15,018 MiB of card through `go`.  At the 15.24 GiB an empty 16 GB card
+    # reads free they now take one band with nothing parked, priced at the
+    # held run, the pool held from its live peak.
+    row = _t255_row(80)
+    assert "status pass" in row["run"] and row["step_s"] > 0
+    assert row["pool_limit_end_bytes"] >= row["held_bytes"] >= row["peak_used_bytes"]
+    cfg = load_config(str(_shipped_configs() / f"{name}.toml"))
+    estimate = dataclasses.replace(sizing.estimate_global_memory(cfg), backend="cupy")
+    assert estimate.nlev == 80
+    assert estimate.radiation_column_chunk == row["radiation_column_chunk"]
+    plan = sizing.plan_run_memory(cfg, int(15.24 * GIB), estimate)
+    assert plan.fits and plan.bands == 1 and plan.spill_slices == ()
+    assert plan.card_bytes == int(row["card_bytes_measured"])
+    assert plan.pool_limit_bytes == row["pool_limit_bytes"]
+    gate = sizing.run_memory_gate(cfg, probe={"free_bytes": int(15.24 * GIB)})
+    assert gate["refuse"] is False
 
 
 def test_the_shipped_day_on_an_empty_16_gb_card_runs_one_band_with_no_flag():

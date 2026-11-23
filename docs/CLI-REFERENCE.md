@@ -110,7 +110,7 @@ the tool after changing an option and commit what it writes.
 | `run_dir` (positional) | the output directory of `gpuwm-global run` (any truncation) |  |
 | `--out` `OUT` | directory the scorecard (scorecard.json, scorecard.txt), the door records and the fetched analyses land in |  |
 | `--hours` `HOURS` | the leads to score, in hours; default every checkpoint after the start |  |
-| `--label` `LABEL` | the model's row label (default woof-global-t<N>) |  |
+| `--label` `LABEL` | the model's row label (default arwen-global-t<N>) |  |
 | `--asos-record` `ASOS_RECORD` | a `rw_asos decode` record (gpuwm-obs.asos-surface.v2) covering the leads; default: fetch and decode one through rw_asos |  |
 | `--igra2-table` `IGRA2_TABLE` | a `rw_igra2 table` neutral table covering the leads; default: fetch and decode one through rw_igra2 |  |
 | `--reference` `LABEL=FILE` | an analysis already on disk, LABEL one of gfs, ifs; repeat per file | `[]` |
@@ -201,6 +201,8 @@ the tool after changing an option and commit what it writes.
 | `config` (positional) | ArWen Global experiment TOML (truncation, vertical coordinate, physics suite, gates, and [time] integrator: 'sl_si', the two-time-level semi-Lagrangian core, is the default at every truncation and steps 300 s when dt_s is omitted, with its own drain and gather (order 16 at 720 s, the six-point gather, off-centring 0.55) when those are omitted (at equal cost it grades five scorecard rows better, four worse and nine level against the Eulerian core, better at the surface on temperature and wind and worse on dewpoint and aloft, the rows named on the door page, at about a quarter of the wall per forecast day); 'imex_ssp3', the Eulerian IMEX pair, is selectable by name, its step bounded by the wind and set by a rule when dt_s is omitted (the largest whole step keeping the strongest analysis day on disk under 0.70 of the CFL gate: 90 s at T255, 60 s at T383, 40 s at T533), its ten-step identity pinned) |  |
 | `--outdir` `OUTDIR` | where the checkpoints and the self-hashed receipt are written (default out/arwen-global) | `out/arwen-global` |
 | `--restart` `RESTART` | continue from this checkpoint instead of the cold state; the config hash it carries has to be this config's |  |
+| `--member` `MEMBER` | ensemble member number for the config's [stochastic] table: with --ensemble-seed it keys every SPPT/SKEB pattern this member draws (refused without an enabled [stochastic] table) |  |
+| `--ensemble-seed` `ENSEMBLE_SEED` | the ensemble's stochastic-physics seed (default: the table's seed, 53) |  |
 | `--branch-from-other-config` | with --restart: admit a checkpoint written under another config hash, an exact twin that differs from its parent run by a deliberate config change; the receipt records both hashes under branch (default off: such a restart is refused) |  |
 | `--overwrite` | replace this run's own files in --outdir; without it an existing output is refused rather than half-rewritten |  |
 | `--until-s` `UNTIL_S` | stop the integration at this model time in seconds from the run's start instead of the config's duration_s (a cycling segment: the next segment restarts from the checkpoint this one ends on); the config identity is unchanged and the receipt records the segment end |  |
@@ -807,7 +809,7 @@ the tool after changing an option and commit what it writes.
 | `--size` `WxH` | picture size in pixels (default 1600x1000) | `1600x1000` |
 | `--nlat` `NLAT` | latitude points of the export grid (default 360) | `360` |
 | `--nlon` `NLON` | longitude points of the export grid (default 720) | `720` |
-| `--bbox` `('LAT_MIN', 'LAT_MAX', 'LON_MIN', 'LON_MAX')` | crop to a lat/lon window (degrees, lon in -180..180) |  |
+| `--bbox` `('LAT_MIN', 'LAT_MAX', 'LON_MIN', 'LON_MAX')` | crop to a lat/lon window at export (degrees, lon in -180..180); checkpoints and run directories only, tapes already exported are refused |  |
 | `--tapes-dir` `TAPES_DIR` | where the intermediate tapes are written (default: a directory under --outdir that is removed when the pictures are drawn) |  |
 | `--keep-tapes` | keep the exported tapes and their receipt |  |
 | `--overwrite` | replace tapes and pictures that already exist |  |

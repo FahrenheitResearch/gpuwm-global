@@ -1250,7 +1250,15 @@ def analysis_initial_state(cfg, transform, frame=None, statics=None,
 
         grib = Path(cfg.analysis_grib)
         if not grib.exists():
-            raise FileNotFoundError(f"analysis GRIB {grib} does not exist")
+            # Names the fetch that writes exactly this file (0.3.0 said only
+            # "does not exist", and the shipped 6 h day read a cycle no page
+            # fetched).
+            from .analysis_fetch import missing_analysis_remedy
+
+            options = getattr(cfg, "native_adapter_options", None) or {}
+            stated = (options.get("start_time_utc")
+                      if isinstance(options, dict) else None)
+            raise FileNotFoundError(missing_analysis_remedy(grib, stated))
         # The scratch is the run directory's, not the system temp's: the
         # decoder stages several GB of float64 frames and a quota-limited
         # tmpfs killed that with "Disk quota exceeded (os error 122)".  The

@@ -1,20 +1,21 @@
 # Where this package's model source comes from
 
-`src/arwen_global/` is not written here. It is cut from the model's own source
-tree, where the science work happens, and re-cut from a newer revision when
-something lands there. This file records which revision the package currently
-carries, so that "is that fix in the package?" is a question with an answer
-rather than a diff somebody has to take by eye.
+`src/arwen_global/` was first cut from the model's own source tree, and this
+repository is now where the model is developed. The last cut from that tree
+was taken on 2026-09-12, for 0.1.1. Every change since, through this release,
+was made in this repository and is listed in `CHANGELOG.md`; no later revision
+of the source tree has been cut in. This file records the revision of that
+last cut, because it is the merge base a re-cut starts from.
 
-## The revision this package carries
+## The revision of the last cut
 
 - Revision: `f6f1adaa3bda7a347c142544d4007cf14847db47`
 - Dated: 2026-09-12T12:22:29-07:00
 - Previous: `90d9baf6cb2afb00e8c230192930271c2cd101a8`, 2026-09-12T10:44:24-07:00, 3 commits earlier
 
-The same revision is stated in `pyproject.toml` beside the version, so a
-reader who has only an installed wheel's metadata can still name the source it
-was built from.
+The same revision is stated in `pyproject.toml` beside the version. It names
+the merge base, not everything the package carries: the package is that cut
+plus the changes in `CHANGELOG.md` from 0.1.1 on.
 
 The source tree is not public and its location is not recorded here: it is
 given to the re-cut script on the command line, or in

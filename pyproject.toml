@@ -6,7 +6,11 @@
 # `dist-info/licenses/`.  Below 77 the same source tree builds a wheel that
 # emits the old `License:` field and drops the licence files entirely, so a
 # correct tree produces an artefact that misstates its own licence.
-requires = ["setuptools>=77"]
+# The exact version is pinned, not only floored: the release's sealed files
+# were built with setuptools 84.2.1, and publish.yml rebuilds from the tag,
+# so a newer backend on the runner would write different WHEEL and METADATA
+# members into the bytes PyPI receives than the bytes that were checked.
+requires = ["setuptools==84.2.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -28,10 +32,11 @@ name = "gpuwm-global"
 # sedimentation repair in the carried microphysics kernel, both float64
 # mirrors, and the third-party notices 0.1.0 shipped without.
 #
-# The model source this package carries is cut from revision
-# f6f1adaa3bda7a347c142544d4007cf14847db47, dated 2026-09-12.  SOURCE.md says
-# what that means and how a re-cut is done.
-version = "0.3.0"
+# The last cut of the model source was taken from revision
+# f6f1adaa3bda7a347c142544d4007cf14847db47, dated 2026-09-12, for 0.1.1;
+# every change since was made in this repository.  SOURCE.md says what that
+# means and how a re-cut is done.
+version = "0.4.0"
 description = "ArWen Global: a GPU-native hydrostatic global spectral weather model with ensemble data assimilation"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -70,7 +75,7 @@ license-files = ["LICENSE", "NOTICE", "licenses/*"]
 # supersets of each other across minors.  `gpuwm/core/preflight.py` is 8,834
 # lines on the tree this package was carved from and 9,727 on the 2.7 line;
 # `gpuwm/core/rrtmgp.py` differs by 1,316 lines; `gpuwm/verify/npref.py` by
-# 491.  A package that imports 239 symbols across that boundary and states
+# 491.  A package that imports 244 symbols across that boundary and states
 # no ceiling is a package that will one day resolve an engine whose symbols
 # moved and fail at the first import of a forecast, after the install
 # reported success.  (The count rose from 78 on 2026-09-09, when the physics
@@ -103,6 +108,20 @@ license-files = ["LICENSE", "NOTICE", "licenses/*"]
 # tools/pin_engine_seam.py re-pinned 49 files at 3.0.3 (12 moved) after the
 # suite passed.  The ceiling is the next minor, unmeasured.
 #
+# MOVED TO 3.0.5 (2026-11-22), as 0.4.0.  `>=3.0.3,<3.1` already resolved
+# to 3.0.5 for every 0.3.0 install, an engine 0.3.0 was never proven on.
+# Measured against the published gpuwm 3.0.5: tools/measure_boundary.py
+# reads 244 symbols across 76 modules with 0 gaps (239 across 72 before the
+# 0.4.0 physics joined); 7 of the 49 seam files
+# moved against 3.0.3.  Five moved outside what this package reaches in
+# them (config, preflight, noahmp_runtime, rrtmg_legacy, mpas_column_batch);
+# kernel_compile_notice now caches the kernel-cache file count it prints;
+# in core/health_ledger a non-finite state now raises a FloatingPointError
+# subclass with a longer message.  None moves a number on the run path.
+# `gpuwm/core/constants.py` did not move; tools/pin_engine_seam.py
+# re-pinned all 49 at 3.0.5.  The floor is 3.0.5 because that is the
+# engine this release's proofs ran on.
+#
 # THE FLOOR IS 2.8.0, AND IT NAMES A BREAKAGE.  The carried radiation reads
 # its trace-gas and ozone table through `gpuwm.core.rrtmgp
 # .load_trace_climatology` and the RFMIP oracle fetches through
@@ -115,7 +134,7 @@ license-files = ["LICENSE", "NOTICE", "licenses/*"]
 # every proof of this release installed them from there.
 dependencies = [
     "numpy>=2.0",
-    "gpuwm>=3.0.3,<3.1",
+    "gpuwm>=3.0.5,<3.1",
     # DECLARED RATHER THAN INHERITED, for the same reason netCDF4 is, and the
     # reason is sharper here: the carried radiation driver calls
     # `data_assets.rrtmgp_data_dir()` at MODULE scope and resolves a member of
@@ -125,7 +144,7 @@ dependencies = [
     # engine's own `gpuwm-data==2.8.0`, which is exactly the transitive route
     # the line above refuses.  The range matches the engine pin: whatever
     # 2.8.x resolves, its companion resolves beside it.
-    "gpuwm-data>=3.0.3,<3.1",
+    "gpuwm-data>=3.0.5,<3.1",
     # DECLARED RATHER THAN INHERITED.  The carried radiation driver reads the
     # RRTMGP k-distribution files with `from netCDF4 import Dataset` at MODULE
     # scope, so importing the physics driver needs it, not merely running it.

@@ -18,7 +18,7 @@ the run notes; these are the parts a CPU checks in seconds:
 """
 from __future__ import annotations
 
-from test_arwen_global_gf_default_d import gf_0_2_4
+from test_arwen_global_gf_default_d import analysis_back, gf_0_2_4
 
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -232,7 +232,8 @@ def test_every_shipped_config_hash_is_the_one_v0_2_1_wrote():
             assert load_config(config_root() / name).config_hash != digest, name
         else:
             # pinned before the 0.2.5 Grell-Freitas default D: compared at 0.2.4's GF
-            assert gf_0_2_4(load_config(config_root() / name)).config_hash == digest, name
+            assert gf_0_2_4(analysis_back(load_config(config_root() / name),
+                                          name)).config_hash == digest, name
 
 
 def test_the_parser_refuses_dynamic_keys_without_the_mode(tmp_path):

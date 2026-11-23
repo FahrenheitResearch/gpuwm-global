@@ -66,7 +66,8 @@ include RELEASE-NOTES-0.2.3.md
 include RELEASE-NOTES-0.2.4.md
 include RELEASE-NOTES-0.2.5.md
 include RELEASE-NOTES-0.3.0.md
-# Which revision of the model's source this package carries.  A reader
+include RELEASE-NOTES-0.4.0.md
+# The revision of the last cut of the model's source (SOURCE.md).  A reader
 # of an sdist has the code and no way to place it without this.
 include SOURCE.md
 include pyproject.toml
@@ -96,6 +97,9 @@ global-exclude *.nc
 # (checkpoints, analyses, ensemble members) and wrong about exactly this one,
 # so it is named back in after the exclusion rather than by weakening it.
 include src/arwen_global/data/static-covariance-v1.npz
+# The second: WRF's aer_opt = 1 aerosol climatology that
+# radiation_aerosol = "tegen-wrf" reads, pinned by the receipt beside it.
+include src/arwen_global/data/aerosol-tegen-wrf.npz
 # The orographic drag's known answer: WRF v4.6.1's own gwdo words on 149
 # columns (tests/data/oracles/gwdo_kim/PROVENANCE.md).  Test input, not run
 # output, and the suite inside the sdist reads it.

@@ -1,5 +1,256 @@
 # Changelog
 
+## 0.4.0
+
+Needs `gpuwm>=3.0.5,<3.1` and `gpuwm-data>=3.0.5,<3.1` (0.3.0:
+`>=3.0.3`).  Proven against `gpuwm 3.0.5`: `tools/measure_boundary.py`
+reads 244 symbols across 76 modules with no gap, and all 49 engine seam
+files are pinned at 3.0.5.  The companion bundle carries ten Rust doors,
+unchanged (v0.1.3).
+
+New physics ships opt-in: an 80-level grid, the SA-TKE-EDMF boundary layer,
+non-orographic gravity-wave drag, TEMPO, WRF's aerosol climatology and
+stochastic physics, with two named 80-level days.  No default changed: the
+shipped forecast days run the physics 0.3.0 ran, and 63 experiments ship.
+
+### Changed
+
+- **The engine floor moves to gpuwm 3.0.5.**  `>=3.0.3,<3.1` already
+  resolved to 3.0.5 for a fresh 0.3.0 install, an engine 0.3.0 was not
+  proven on.
+- **The engine seam is re-pinned at 3.0.5.**  7 of the 49 files moved
+  against 3.0.3 (`config.py`, `core/preflight.py`, `core/health_ledger.py`,
+  `core/noahmp_runtime.py`, `core/rrtmg_legacy.py`,
+  `core/mpas_column_batch.py`, `kernel_compile_notice.py`); none moves a
+  number on this model's run path, and `core/constants.py` did not move.
+- **`doctor` reports a moved engine seam file as a gap**, naming the file
+  and the engine version to install.  On gpuwm 3.0.5, 0.3.0's `doctor`
+  listed seven moved files as notes and then printed "No gaps."
+- `SOURCE.md` says that this repository is where the model is developed:
+  the revision it names is the last cut from the source tree (0.1.1), not
+  the source of everything the package carries.
+
+### Added (all opt-in; no default changed)
+
+- `arwen_global_gdas_t255_l80_satmedmf_scinocca_24h`: the T255 day on 80
+  levels with the SA-TKE-EDMF boundary layer and the Scinocca drag, New
+  Tiedtke cumulus and the 5,000-column radiation chunk.
+  `arwen_global_gdas_t255_l80_ysu_scinocca_24h` is its twin with YSU.
+- `[vertical] coordinate = "ifs_class"`: 80 levels to a 1 hPa lid, an
+  analytic level formula.  The level cap is 114.
+- `pbl = "satmedmf"`: the SA-TKE-EDMF boundary layer in single precision,
+  compiled at run time from the engine's double-precision column.
+  `pbl = "satmedmf_fp64"` runs that column unchanged, the proof route.
+- `nonorographic_gwd = "scinocca"`: a non-orographic gravity-wave drag
+  written from Scinocca (2003), Warner and McIntyre (1999) and Orr et al.
+  (2010), bitwise to no model, through a fused CUDA kernel;
+  `ARWEN_NOGWD_CUDA=0` runs its CuPy reference.  Each column launches at its
+  own level.
+- `microphysics = "tempo"`: the engine's NCAR TEMPO v3.2.5, compiled with fused
+  multiply-add (fast numerics) and 128 threads a block.
+- `radiation_aerosol = "tegen-wrf"`: WRF's `aer_opt = 1` climatology,
+  carried in the package, in the default fused shortwave solver.
+- Stochastic physics (SPPT and SKEB), a `[stochastic]` table, and
+  `run --member` and `--ensemble-seed`.
+- `radiation_stride_lat` and `radiation_stride_lon` (radiation on a reduced
+  grid), a second background hyperdiffusion in `[diffusion]`, and the
+  Grell-Freitas `gf_deep_physics` bits 64, 128 and 256: off unless set.
+- A memory row for the T255 80-level day: the door admits it on a 16 GB card
+  (it refused it at every band count) and prices it at 15.10 GiB of card,
+  the heavier of its two measured days.
+- NOTICE records where each new scheme comes from and its licence.
+
+### Faster, with the same numbers
+
+- Kept cuFFT plans, fewer host syncs, batched radiation, lower launch
+  overhead, a faster Grell-Freitas kernel and fewer exchange copies.  The
+  default T255 day is unchanged bit for bit (below).
+- New Tiedtke and the single-precision boundary layer launch with tuned
+  settings; their results are unchanged bit for bit.
+
+### Fixed
+
+- **A second account on one machine can fetch.**  `gpuwm-global` sets
+  `GPUWM_FETCH_LOCK_ROOT` to the account's own `~/.gpuwm/locks` unless it is
+  already set, so its downloads no longer stop with `PermissionError` in a
+  lock folder another account made.  `doctor` reports a gap, naming
+  `gpuwm fetch-geog`, `gpuwm fetch` and the export, when the engine's shared
+  lock folder belongs to another account.
+- **`doctor` has a "this account" section:** the lock folder, the door
+  folder with `ARWEN_GLOBAL_DOOR_DIR`, and the engine's bridge folder, each
+  with what chose it.  A missing door names the folder it was looked for in.
+  The README has a section on several accounts sharing one machine.
+- **One quick start.**  The README and `docs/ARWEN_GLOBAL_QUICKSTART.md` run
+  one route on `arwen_global_gdas_t255_native_sl_si_24h` from the GDAS
+  2026-09-01 00Z analysis: `fetch-analysis`, `gpuwm fetch-geog`, then `go`
+  (or `statics`, `run` and `render`).  The old second step pointed
+  `--geog-root` at a folder nothing had made.
+- `fetch-analysis` names the shipped day that reads the file it fetched and
+  the commands that follow, `gpuwm fetch-geog` first when no archive is
+  staged.
+- `statics` over a cache that verifies exits 0 and says so; it exited 1,
+  so the stage-by-stage route after `go` failed at its second stage.  A
+  cache that does not verify is still refused.
+- The README and the quick-start page state what the first day needs,
+  measured from a clean install: card, host memory (about 18 GB while the
+  statics are built), disk (about 46 GB), time and network.
+- Quick-start and README statements that were not true are corrected: the
+  card the T255 day needs (the door prices it at 8.96 GiB), the largest
+  truncation run, the T255 wall time, the T799 price (45.96 GiB at its
+  lightest plan), and the 16 GB T533 row, which now names the two flags it
+  needs.
+- **`gpuwm-global --version`** prints the release, the engine and the
+  Python.
+- The two shipped `_6h` days read the same analysis as the 24 h day.  A
+  missing analysis names the `fetch-analysis` line that writes it, and
+  `status.json` names a failure receipt only when one was written.
+- `score`: the model row reads `arwen-global-t<N>` (it carried the
+  model's former name), each door call is printed and timed as it runs, and
+  the README gives its time and download.
+- Map source lines name the model grid ("T255 52.1 km grid") beside the
+  0.5° tape spacing; the tapes carry `ARWEN_TRUNCATION` and
+  `ARWEN_GRID_SPACING_KM`.
+- The console line says `total_water`: the global mean of every water store
+  the run books, not the atmosphere's alone.
+- README links and images are absolute, so they resolve on PyPI.
+- NOTICE carries the Copernicus notice for statics and starts built from
+  ERA5.
+- **Scores of filtered runs.**  The upper-air scorecard and `score` rebuilt
+  the model's surface without the run's `orography_filter_half_degree`, and
+  the shipped T533, T799 and T1023 configs filter (since 0.2.5).  Every
+  height those runs were scored at was off by the filter's change to the
+  surface: at T533 on a 1.5 degree grid, 22.7 m of 500 hPa height RMS over
+  the globe and 30.1 m north of 20N, up to 885 m at a point on the
+  scorecard's own grid (GDAS 2026-11-10 00Z).  The rebuild now reads the
+  filter from the run's receipt, and its cache name carries it.  T255 and
+  T383 runs, which do not filter, were not affected.
+- **`go` renders inside the card it was priced at.**  It exported the tapes
+  in the same process while the pool still held the forecast's cached
+  blocks, so the export grew the pool on top of them: the T383 day stayed
+  under its 14.27 GiB price for the whole forecast and then took 14,898 MiB
+  of card after its receipt was written.  `go` now hands those blocks back
+  first; the same day took 13,298 MiB at most, 9,882 MiB after its receipt
+  (RTX 5070 Ti, 2026-11-23).
+- `render --bbox` with tapes that are already exported is refused by name.
+  The crop is made at export, so the flag was dropped without a word and
+  the whole globe was drawn.
+- The README's price for the 48-level T255 day (13.03 GiB), which it gave
+  as the 40-level 8.96.
+- `docs/ARWEN_GLOBAL_ERA5.md` says the fetch prints the `[initial]` table
+  as comment lines with an absolute path, to be copied in without the `#`.
+- The Level-5 page's qualification command names the T255 day the
+  registration's evidence came from; it named the T3 smoke, which does not
+  run on a card (Known limits).
+- **A card that runs out of memory in a command the door does not price**
+  (`da fresh` among them) ends with one sentence and exit 4: the card, its
+  free memory and the remedy.  The README's 32-member `da fresh` ran 12
+  minutes on a 16 GB card and left a CuPy traceback; public 0.3.0 does the
+  same on the same card.  The README's "A fresh global analysis" now prints
+  a line measured to run on a 16 GB card (the deterministic filter on a
+  fixed three-hour window), names the statics the ensemble members need,
+  and states the card each figure came from.
+- The missing-statics refusals name the shipped day that builds the cache
+  for that truncation; they said "<this run's config>".
+- The manual's `export` example no longer passes a `--start-date` the
+  shipped day refuses, and says that maps drawn by `gpuwm render` carry
+  the engine's source line.
+- The README says `tools/` and `tests/` are in the source tree, not the
+  wheel, and that `gpuwm fetch-geog` takes no global config.
+- The build backend is pinned (setuptools 84.2.1), so the publish
+  workflow's rebuild from the tag writes the members that were checked.
+
+### Measured
+
+- **The shipped T255 day is unchanged.**  `gpuwm-global go
+  arwen_global_gdas_t255_native_sl_si_24h` (GDAS 2026-09-01 00Z, 24 h) from
+  a fresh install of this branch's wheel beside gpuwm 3.0.5 and gpuwm-hex
+  0.6.2 equals public 0.3.0's run in every array of all 9 checkpoints, with
+  0.3.0 on gpuwm 3.0.3 and on gpuwm 3.0.5 alike (RTX 4090, one card,
+  2026-11-22, each install's statics built by its own engine).  Only the
+  digest of the separately built orographic-statistics cache differs in the
+  metadata.
+- `doctor`, `--help`, `configs`, `fetch-bridges`, `fetch-doors` and the T3
+  moist smoke through `go` (run, export and 12 maps) ran on Windows 11,
+  Python 3.11, CPU only, beside gpuwm 3.0.5 (2026-11-22); `doctor` printed
+  "No gaps."
+
+- **And again with the physics package merged.**  The same day from a fresh
+  install of the merged tree's wheel (every new option off, as shipped)
+  equals 0.3.0's on gpuwm 3.0.3 in every array of all 9 checkpoints (RTX
+  4090, 2026-11-23); again only the orographic-statistics cache digest
+  differs in the metadata.
+- **The default day's step.**  The shipped T255 day through `run`, four
+  runs alternating on one RTX 5070 Ti with the card held alone and the
+  host running other work (2026-11-23, the step wall in each receipt):
+  this release 0.824 and 0.595 s a step, public 0.3.0 0.901 and 0.721.
+  Each pair was faster on this release (1.09 and 1.21 times), and the
+  host's other work moved each release by more than that between runs.
+- **The 80-level days**, GDAS 2026-09-01 00Z, through `go` by name on an
+  RTX 5070 Ti, alone, 2026-11-23: with SA-TKE-EDMF 1.313 s a step, 12.49 GiB
+  live at the allocator, 15,018 MiB on the card; with YSU 1.193 s a step,
+  9.54 GiB live, 12,730 MiB.  Both pass.  A second SA-TKE-EDMF day from an
+  installed wheel took 15,466 MiB, the pool raised to 14.05 GiB; the door
+  prices the pair at that heavier day.  Over the four SA-TKE-EDMF days
+  measured on that card the card held 15,012 to 15,466 MiB.
+- **The drag kernel.**  On T255 L80 columns (384 x 768 x 80, the test's
+  synthetic columns with a jet and critical levels) on an RTX 5070 Ti,
+  2026-11-23, 30 calls after 5 warm-ups: the fused kernel 1.68 ms a call,
+  its CuPy reference (`ARWEN_NOGWD_CUDA=0`) 121.5 ms.  The two agree to
+  float32 summation rounding (the largest difference 3.6e-5 of the largest
+  tendency), not bit for bit.
+- **Against observations, with the default kept.**  Two 5-day T255
+  forecasts of `arwen_global_gdas_t255_l80_satmedmf_scinocca_24h` and of
+  the default day, from GDAS 2026-09-22 and 2026-11-11 00Z, scored against
+  radiosondes (IGRA2) and surface stations (ASOS/METAR) by region: north of
+  20N, pooled over the two starts, the 80-level day had the lower error in
+  height, temperature and wind at 850, 500 and 250 hPa on days 1 to 4, and
+  in 2 m temperature on days 2 to 5.  Its 2 m dewpoint error was larger in every region on every day,
+  and its 500 and 250 hPa heights in the tropics were worse on days 2 to 5.
+  The configuration changes the levels, the boundary layer, the cumulus and
+  the drag at once, so none of this belongs to one scheme, and two dates
+  are a demonstration, not a measure of skill.  No default changed.
+
+### Known limits
+
+- **The 80-level days' rain.**  In the SA-TKE-EDMF day run 5 days from
+  2026-11-11 00Z, rain fell in regular streaks running roughly north-south
+  about 1 degree apart over the tropical and subtropical east Pacific (72
+  and 120 h), and light rain covered most of the subtropical oceans where
+  the 40-level default had none.  The light rain shows at 24 h from
+  2026-09-01 00Z with either boundary layer at 80 levels.
+- **Only the one-band 80-level plan is measured.**  A banded plan at 80
+  levels is priced by the memory model outside the level counts it was
+  fitted on (20, 40 and 48).  The door itself takes one band for these
+  days at every free figure in the README's table.
+- **The T3 smoke `arwen_global_level5_native_smoke` does not run on a
+  card**: it stops at its first radiation call after step 0, because the
+  five-level world's sunlit land skin (363.5 K) leaves RRTMGP's 355 K table
+  (RTX 5070 Ti, 2026-11-23).  It is a fixture for the CPU tests; the moist
+  smoke `arwen_global_moist_smoke` is the small run to try.
+- **The divergence record is of gpuwm 2.8.5.**  Against 3.0.5 the carried
+  physics differs from the engine's in 1,030 places no row of
+  `docs/CARRIED-PHYSICS-DIVERGENCE.md` covers yet, and 430 of its 963 rows
+  no longer match (`tools/fingerprint_engine_divergence.py` on this tree
+  against gpuwm 3.0.5, counted as the tests count, 2026-11-23); the two
+  tests that hold the record to an installed engine skip on 3.0.5.  What the carried physics reaches in the engine is pinned at 3.0.5
+  (the 49 seam files).
+- **Sea-level pressure over high ground** (Tibet and the Himalaya, the
+  Andes, Greenland, Antarctica) draws as a tangle of small closed contours,
+  already at hour 0: it comes from the engine's sea-level reduction, not
+  the forecast.
+- Map titles read "Δx 55.589 km", the 0.5° tape spacing; the source line
+  names the model grid.
+- **The aerosol is on when asked and off when not.**  The shipped T255 day
+  to 6 h on an RTX 5070 Ti (2026-11-23): with `radiation_aerosol` absent and
+  with `"none"` written, 0 of 135 checkpoint arrays differ; with
+  `"tegen-wrf"` the receipt names it, 119 of 135 differ, the global mean
+  surface downward shortwave falls 157.6 to 150.9 W m-2 at 6 h, and the step
+  costs 0.611 s against 0.602.
+- **Native qualification** on the default stack, Grell-Freitas included:
+  `native-qualify` on the shipped T255 day, RTX 5070 Ti, CuPy 14.2.0,
+  2026-11-23: both campaigns pass, the restarted day bit-exact with the
+  continuous one.  The registration is `experimental` on that evidence.
+
 ## 0.3.0
 
 ArWen Global on the 3.0 engine line.  Needs `gpuwm>=3.0.3,<3.1` and

@@ -14,6 +14,10 @@ from .cloud_radiation_options import (
     RADIATION_LIQUID_RADIUS_MODES,
 )
 
+#: radiation_aerosol's values; physics.aerosol_climatology holds the same
+#: tuple (kept literal here so the options stay import-light).
+AEROSOL_CLIMATOLOGIES = ("none", "tegen-wrf")
+
 
 # Option value -> the name the component order reports for the slot.
 CUMULUS_COMPONENTS = {"gf": "gf", "own": "arwen-massflux-v1", "ntiedtke": "ntiedtke"}
@@ -26,6 +30,13 @@ NTIEDTKE_FACTORS = {
     "ntiedtke_entrainment_factor": (0.25, 8.0),
     "ntiedtke_downdraft_factor": (0.1, 2.0),
 }
+
+#: The non-orographic drag's parameters: read only under nonorographic_gwd
+#: = "scinocca", so they leave the identity with the scheme.
+NOGWD_PARAMETERS = (
+    "nogwd_launch_flux_pa", "nogwd_launch_pa", "nogwd_cstar",
+    "nogwd_heat_booking", "nogwd_lat_profile",
+)
 
 # Morrison droplet-number modes: WRF's single NDCNST, or the declared
 # land/ocean departure (see NativePhysicsOptions.morrison_droplet_number).
@@ -78,6 +89,15 @@ class NativePhysicsOptions:
     # cosine ratio.  Joins the identity only when not "hold", so every
     # config hash and checkpoint written without it keeps its bytes.
     radiation_between: str = "hold"
+    # The radiation grid (arwen_global.physics.radiation_grid): RRTMGP on
+    # every radiation_stride_lat-th row and radiation_stride_lon-th
+    # longitude of the physics batch, its planes brought back to the model
+    # grid (the shortwave through the cosine of the solar zenith angle),
+    # as operational global models compute radiation on a coarser grid.
+    # 1 x 1 (default) is the model grid and leaves the identity, so every
+    # config hash and checkpoint written without it keeps its bytes.
+    radiation_stride_lat: int = 1
+    radiation_stride_lon: int = 1
     # The ozone the radiation reads (core.rrtmgp.OZONE_CLIMATOLOGIES):
     # "cam-zonal-monthly" (default, 2026-11-06), the CAM climatology WRF
     # and MPAS-A ship, by date, latitude and pressure; "rfmip-median", the
@@ -106,6 +126,11 @@ class NativePhysicsOptions:
     # Tiedtke 1996), a declared departure from WRF.  Joins the identity only
     # when not "none".
     radiation_cloud_inhomogeneity: str = "none"
+    # Aerosol in the shortwave (physics.aerosol_climatology).  "none"
+    # (default): gas and cloud only, WRF's aer_opt = 0.  "tegen-wrf": WRF's
+    # aer_opt = 1, the Tegen et al. 1997 monthly six-type climatology with
+    # RRTMG's ECMWF optics.  Joins the identity only when not "none".
+    radiation_aerosol: str = "none"
     surface_layer: str = "sfclay"
     sfclay_option: int = 1
     # Land thermal-roughness closure of the surface layer (sfclay.cu
@@ -327,6 +352,19 @@ class NativePhysicsOptions:
     # the control by day 20 (T127, one start); 8 raises GF rain and degrades
     # tropical Z500.  34 (= 2 + 32) is the default since 0.2.5 (D, above);
     # 0, 0.2.4's arithmetic, leaves the identity.
+    # Three more bits, experimental and off (fix/rain-character, measured
+    # against MRMS radar on the T127 cells of GDAS 2026-10-18 00Z, +6..+72 h,
+    # and on T255 72 h scorecards from 09-29 and 10-10 00Z):
+    #   64 over-water downdraft cap 1 (CCPP edtmax) and 128 over-water cap
+    #   0.4 (WRF at csum 0) leave the warm-ocean drizzle where it was (Hawaii
+    #   radar cells wet 16 / 16 % against 20 % for the default, inside the
+    #   re-run noise; the Guam box wetter, 58 / 56 % against 52 %) and cost
+    #   tropical T850 0.10-0.16 K RMSE and NH Z500 on 2/2 starts: not the
+    #   cause.  256 (dicycle for convection rooted in the boundary layer,
+    #   Bechtold et al. 2014) cuts CONUS land rain at 09-12 local time from
+    #   5.9 to 5.0 (x1e-3 mm/h, radar 3.1) with the scorecard level, but
+    #   leaves the wet-cell frequency at 09-12 and the evening deficit as they
+    #   were.
     gf_deep_physics: int = 34
     # Read only where cumulus="ntiedtke": True runs the New Tiedtke kernels
     # with classic Tiedtke's deep closure (the fixed 2400 s adjustment time
@@ -607,6 +645,19 @@ class NativePhysicsOptions:
     # identity only when not "none", so every earlier checkpoint keeps its
     # hash.
     orographic_drag: str = "none"
+    # Non-orographic gravity-wave drag (arwen_global.physics.
+    # nonorographic_gwd): "none" (the default) or "scinocca", a simplified
+    # spectral scheme written from Scinocca (2003), Warner and McIntyre
+    # (1999) and Orr et al. (2010): four azimuths, sixteen phase speeds,
+    # critical-level filtering and saturation, launched near 450 hPa.  It is
+    # not the IFS or CMAM code and not bitwise to either.  Joins the identity
+    # only when not "none", with its five parameters below.
+    nonorographic_gwd: str = "none"
+    nogwd_launch_flux_pa: float = 0.00375
+    nogwd_launch_pa: float = 45000.0
+    nogwd_cstar: float = 1.0
+    nogwd_heat_booking: bool = True
+    nogwd_lat_profile: str = "ifs"
 
     @classmethod
     def from_mapping(cls, raw: dict[str, object]) -> "NativePhysicsOptions":
@@ -707,9 +758,22 @@ class NativePhysicsOptions:
             # The held planes are the arithmetic every checkpoint before
             # the option carried.
             del payload["radiation_between"]
+        if (self.radiation_stride_lat, self.radiation_stride_lon) == (1, 1):
+            # The model grid: the arithmetic of every checkpoint before it.
+            del payload["radiation_stride_lat"]
+            del payload["radiation_stride_lon"]
         if self.orographic_drag == "none":
             # The arithmetic every checkpoint before the option carried.
             del payload["orographic_drag"]
+        if self.nonorographic_gwd == "none":
+            # No non-orographic drag is the arithmetic every checkpoint
+            # before the option carried, and its five parameters are not
+            # read: they join the identity only with the scheme, so every
+            # shipped config keeps its 0.3.0 hash (and every 0.3.0
+            # checkpoint its restart admission).
+            for name in NOGWD_PARAMETERS:
+                del payload[name]
+            del payload["nonorographic_gwd"]
         if self.snow_age_refresh == "any":
             # WRF's reset: the arithmetic of every checkpoint before it.
             del payload["snow_age_refresh"]
@@ -736,6 +800,8 @@ class NativePhysicsOptions:
             del payload["radiation_liquid_radius"]
         if self.radiation_cloud_inhomogeneity == "none":
             del payload["radiation_cloud_inhomogeneity"]
+        if self.radiation_aerosol == "none":
+            del payload["radiation_aerosol"]
         # A config that follows its analysis states no clock; the analysis
         # (initial.analysis_grib, in the identity) is what dates the run.
         if self.start_time_utc is None:
@@ -753,6 +819,10 @@ class NativePhysicsOptions:
     @property
     def orographic_drag_enabled(self) -> bool:
         return self.orographic_drag != "none"
+
+    @property
+    def nonorographic_gwd_enabled(self) -> bool:
+        return self.nonorographic_gwd != "none"
 
     @property
     def cumulus_enabled(self) -> bool:
@@ -846,8 +916,8 @@ class NativePhysicsOptions:
             "radiation": (self.radiation, "rrtmgp"),
             "surface_layer": (self.surface_layer, "sfclay"),
             "land_surface": (self.land_surface, "noah"),
-            "pbl": (self.pbl, "ysu"),
-            "microphysics": (self.microphysics, "morrison"),
+            "pbl": (self.pbl, self.pbl if self.pbl in {"ysu", "satmedmf", "satmedmf_fp32", "satmedmf_fp64"} else "ysu"),
+            "microphysics": (self.microphysics, self.microphysics if self.microphysics in {"morrison", "tempo"} else "morrison"),
         }
         for name, (actual, admitted) in required.items():
             if str(actual).lower() != admitted:
@@ -891,11 +961,14 @@ class NativePhysicsOptions:
             raise ValueError("gf_momentum_transport must be true or false")
         if isinstance(self.gf_deep_experiment, bool) or self.gf_deep_experiment not in (0, 2, 3, 4, 5, 6, 7, 8):
             raise ValueError("gf_deep_experiment must be 0 or 2 to 8")
-        # Only bits 1, 2, 4, 8 and 32 exist in gf.cu; any other bit compiled a
-        # kernel identical to the one without it under a different config hash.
+        # Only bits 1, 2, 4, 8, 32, 64, 128 and 256 exist in gf.cu; any other bit
+        # compiled a kernel identical to the one without it under a different
+        # config hash.  64 and 128 are two settings of one cap and exclude each other.
         if (isinstance(self.gf_deep_physics, bool) or not isinstance(self.gf_deep_physics, int)
-                or not 0 <= self.gf_deep_physics <= 47 or self.gf_deep_physics & 16):
-            raise ValueError("gf_deep_physics must be an integer bit set of 1, 2, 4, 8 and 32")
+                or not 0 <= self.gf_deep_physics <= 511 or self.gf_deep_physics & 16
+                or (self.gf_deep_physics & 192) == 192):
+            raise ValueError("gf_deep_physics must be an integer bit set of 1, 2, 4, 8, 32, 64, 128 and 256 "
+                             "(64 and 128 not together)")
         if not isinstance(self.snow_ageing, bool):
             raise ValueError("snow_ageing must be true or false")
         if self.snow_age_refresh not in {"any", "amount"}:
@@ -925,6 +998,8 @@ class NativePhysicsOptions:
                 or not isinstance(self.gf_shallow_depth_min_m, int)
                 or not 0 <= self.gf_shallow_depth_min_m <= 5000):
             raise ValueError("gf_shallow_depth_min_m must be a whole number of metres, 0..5000")
+        if self.nonorographic_gwd not in {"none", "scinocca"}:
+            raise ValueError(f"nonorographic_gwd must be none or scinocca, got {self.nonorographic_gwd!r}")
         if self.orographic_drag not in {"none", "kim-gwdo"}:
             raise ValueError(
                 "orographic_drag must be 'none' or 'kim-gwdo' (WRF gwd_opt = 1, "
@@ -935,6 +1010,9 @@ class NativePhysicsOptions:
         from .radiation_between import validate_mode
 
         validate_mode(self.radiation_between)
+        from .radiation_grid import validate_strides
+
+        validate_strides(self.radiation_stride_lat, self.radiation_stride_lon)
         if self.ghg_year not in {"start", "valid"}:
             raise ValueError(
                 f"ghg_year must be 'start' or 'valid', got {self.ghg_year!r}")
@@ -951,6 +1029,11 @@ class NativePhysicsOptions:
                 "radiation_cloud_inhomogeneity must be one of "
                 f"{sorted(CLOUD_INHOMOGENEITY_FACTORS)}, got "
                 f"{self.radiation_cloud_inhomogeneity!r}"
+            )
+        if self.radiation_aerosol not in AEROSOL_CLIMATOLOGIES:
+            raise ValueError(
+                "radiation_aerosol must be one of "
+                f"{sorted(AEROSOL_CLIMATOLOGIES)}, got {self.radiation_aerosol!r}"
             )
         if self.sfclay_option not in {1, 91}:
             raise ValueError("sfclay_option must be 1 or 91")

@@ -5,8 +5,12 @@ is the same as no door -- so this file holds the ROUTE together rather than
 any one command in it.  Four things have to agree, and each of them used to
 be free to move on its own:
 
-* ``configs/arwen_global_t255_quickstart.toml`` -- the experiment,
-* ``docs/ARWEN_GLOBAL_QUICKSTART.md`` -- the page that runs it,
+* ``configs/arwen_global_gdas_t255_native_sl_si_24h.toml`` -- the
+  experiment, the README's forecast day (from 0.4.0 the page and the README
+  run ONE quick start; 0.3.0 had two, on different configs, cycles and
+  physics),
+* ``docs/ARWEN_GLOBAL_QUICKSTART.md`` and ``README.md`` -- the pages that
+  run it,
 * :func:`arwen_global.analysis_fetch.gdas_fetch_epilogue` -- what the
   acquisition door says comes next, which is the only place a reader meets
   the route without having found the page first,
@@ -46,7 +50,11 @@ from arwen_global.analysis_initial import resolve_analysis_mapping
 from arwen_global.config import load_config
 
 ROOT = Path(__file__).resolve().parents[1]
-QUICKSTART_CONFIG = _shipped_configs() / "arwen_global_t255_quickstart.toml"
+QUICKSTART_CONFIG = _shipped_configs() / "arwen_global_gdas_t255_native_sl_si_24h.toml"
+#: The reference-physics T255 config, still shipped and still a whole day
+#: on a bare-id mapping and relative paths; no longer the route.
+REFERENCE_CONFIG = _shipped_configs() / "arwen_global_t255_quickstart.toml"
+README = ROOT / "README.md"
 # The page lives at the top of `docs/` in this distribution.  It was
 # `docs/public/` in the tree this file was carved from, where `docs/`
 # also held working records that were not for a reader; this repository
@@ -55,8 +63,8 @@ QUICKSTART_DOC = ROOT / "docs" / "ARWEN_GLOBAL_QUICKSTART.md"
 SMOKE_CONFIG = str(_shipped_configs() / "arwen_global_moist_smoke.toml")
 
 #: The cycle the shipped config is written against, and the one every
-#: documented command in the page spells.
-CYCLE = datetime(2026, 8, 30, 18)
+#: documented command in the pages spells.
+CYCLE = datetime(2026, 9, 1, 0)
 
 
 def _fenced_commands(path: Path) -> list[str]:
@@ -82,10 +90,12 @@ def _fenced_commands(path: Path) -> list[str]:
     return commands
 
 
-def test_the_quickstart_config_is_a_whole_t255_day() -> None:
+@pytest.mark.parametrize("config", [QUICKSTART_CONFIG, REFERENCE_CONFIG],
+                         ids=["native-day", "reference"])
+def test_the_quickstart_config_is_a_whole_t255_day(config) -> None:
     """The arithmetic the header claims is the arithmetic the loader reads."""
 
-    cfg = load_config(QUICKSTART_CONFIG)
+    cfg = load_config(config)
     assert cfg.truncation == 255
     assert cfg.vertical_coordinate == "surface_stretched"
     assert cfg.vertical.nlev == 40
@@ -103,7 +113,9 @@ def test_the_quickstart_config_is_a_whole_t255_day() -> None:
     assert int(steps // cadence) + 1 == 9
 
 
-def test_the_quickstart_config_runs_from_wherever_it_was_installed() -> None:
+@pytest.mark.parametrize("config", [QUICKSTART_CONFIG, REFERENCE_CONFIG],
+                         ids=["native-day", "reference"])
+def test_the_quickstart_config_runs_from_wherever_it_was_installed(config) -> None:
     """No path only this machine has, and no case name anywhere.
 
     A config that ships in the wheel and names ``C:/Users/<somebody>`` is a
@@ -113,7 +125,7 @@ def test_the_quickstart_config_runs_from_wherever_it_was_installed() -> None:
 
     from tools.check_case_token_leakage import CASE_TOKENS
 
-    text = QUICKSTART_CONFIG.read_text(encoding="utf-8")
+    text = config.read_text(encoding="utf-8")
     raw = tomllib.loads(text)
 
     def strings(node):
@@ -215,16 +227,30 @@ def test_the_fetch_hint_and_the_shipped_config_name_the_same_file() -> None:
         out=out, cycle=CYCLE, whole_globe_analysis=True)
     body = "\n".join(lines)
 
-    # The hint's TOML is TOML: it is pasted into a config file, so a
-    # Windows separator in it would be an invalid escape rather than a path.
+    # A file a shipped day reads: the hint names that day and the commands
+    # that run it, in order, rather than a config to write.
+    assert QUICKSTART_CONFIG.stem in analysis_fetch.shipped_configs_reading(
+        cfg.analysis_grib)
+    order = [body.index(f"gpuwm-global {door} {QUICKSTART_CONFIG.stem}")
+             for door in ("statics", "run")]
+    assert order == sorted(order), body
+    assert "gpuwm-global render out/day" in body
+
+    # A file no shipped experiment reads: the hint's [initial] block.  Its
+    # TOML is TOML: it is pasted into a config file, so a Windows separator
+    # in it would be an invalid escape rather than a path.
+    other = "\n".join(analysis_fetch.gdas_fetch_epilogue(
+        out=Path("data/somewhere-else"), cycle=CYCLE,
+        whole_globe_analysis=True))
     pasted = tomllib.loads("\n".join(
         line.split("#", 1)[1].strip()
-        for line in body.splitlines() if line.strip().startswith("#   ")))
+        for line in other.splitlines() if line.strip().startswith("#   ")))
     assert pasted["initial"] == {
         "mode": "analysis",
-        "analysis_grib": cfg.analysis_grib,
+        "analysis_grib": "data/somewhere-else/gdas.t00z.pgrb2.0p25.f000",
         "analysis_mapping": cfg.analysis_mapping,
     }
+    assert "start_time_utc" in other
 
     # The command it prints is this door, and the config it names is this
     # file -- both spelled from the same constants the hint is built from.
@@ -233,6 +259,9 @@ def test_the_fetch_hint_and_the_shipped_config_name_the_same_file() -> None:
     # by someone who has the repository.
     assert "gpuwm-global run" in body
     assert analysis_fetch.GDAS_GLOBAL_QUICKSTART_CONFIG in body
+    assert Path(analysis_fetch.GDAS_GLOBAL_QUICKSTART_OUT) == out
+    assert fetch.parse_cycle(analysis_fetch.GDAS_GLOBAL_QUICKSTART_CYCLE,
+                             "gdas") == CYCLE
     assert analysis_fetch.GDAS_GLOBAL_QUICKSTART_DOC in body
     assert (_shipped_configs()
             / f"{analysis_fetch.GDAS_GLOBAL_QUICKSTART_CONFIG}.toml") \
@@ -277,7 +306,9 @@ def test_a_cropped_fetch_does_not_print_a_next_step_that_refuses() -> None:
     assert "longitude ring" in cropped
 
 
-def test_the_documented_route_is_four_real_doors() -> None:
+@pytest.mark.parametrize("page", [QUICKSTART_DOC, README],
+                         ids=["quickstart", "readme"])
+def test_the_documented_route_is_real_doors(page) -> None:
     """Every command on the page resolves, and every flag on it exists."""
 
     sys.path.insert(0, str(ROOT / "tests"))
@@ -285,71 +316,135 @@ def test_the_documented_route_is_four_real_doors() -> None:
 
     known = doors()
     seen: list[str] = []
-    for command in _fenced_commands(QUICKSTART_DOC):
+    for command in _fenced_commands(page):
         resolved = resolve_door(command, known)
         if resolved is None:
             continue
         door, body = resolved
         assert door in known, \
-            f"{QUICKSTART_DOC.name} runs {door!r}, which no parser defines"
+            f"{page.name} runs {door!r}, which no parser defines"
         options = door_options(known[door])
         for flag in re.findall(r"(?<![\w-])(--[A-Za-z][\w-]*)", body):
             assert flag in options, \
                 f"{door} has no {flag}; the page prints `{body}`"
         seen.append(door)
 
-    # The steps the page is FOR, in the order it prints them.  The first is
-    # this package's own acquisition door: a published engine's `gpuwm fetch`
-    # ends a whole-globe GDAS fetch with a full stop about a REGIONAL route
-    # and says nothing about the model the reader installed, so the route's
-    # first step is a door of this package that binds the two non-default
-    # flags and prints what comes next.  The engine's spelling stays on the
-    # page right under it, and is still graded.
-    assert seen[:5] == [
-        "gpuwm-global fetch-analysis", "gpuwm fetch", "gpuwm-global run",
-        "gpuwm-global export", "gpuwm render",
-    ]
+    # The steps the route is FOR, in the order the pages print them: this
+    # package's acquisition door (it binds the engine fetch's two
+    # non-default flags and prints what follows; a published engine's own
+    # `gpuwm fetch` ends a whole-globe GDAS fetch pointing at the REGIONAL
+    # route), the engine's geography fetch, the statics, the run and the
+    # render, every one on the same shipped day.
+    if page == QUICKSTART_DOC:
+        route = [door for door in seen if door not in (
+            "gpuwm-global doctor", "gpuwm fetch-bridges",
+            "gpuwm-global fetch-doors")]
+        assert route[:5] == [
+            "gpuwm-global fetch-analysis", "gpuwm fetch-geog",
+            "gpuwm-global statics", "gpuwm-global run", "gpuwm-global render",
+        ], route
+    else:
+        first = seen.index("gpuwm-global fetch-analysis")
+        assert seen[first:first + 3] == [
+            "gpuwm-global fetch-analysis", "gpuwm fetch-geog", "gpuwm-global go",
+        ], seen
     # The sizing step is PROSE, not a fenced command, and that is deliberate.
     # It used to print `gpuwm check configs/<name>.toml`, which an installed
     # reader cannot run twice over: the path is a directory in a checkout they
     # do not have, and `gpuwm check` is the ENGINE's door, which does not
-    # resolve this package's shipped experiment names either, so rewriting the
-    # path as a bare name does not save the line (measured 2026-09-07 from the
-    # installed wheel).  `run` prices the card itself and refuses before it
-    # allocates, so the step is a paragraph saying that, and `gpuwm check` is
-    # named as taking a file.  A fenced `gpuwm check` on this page would be a
-    # line the reader cannot run, which is what this test exists to stop.
+    # resolve this package's shipped experiment names either.  `run` prices
+    # the card itself and refuses before it allocates.
     assert "gpuwm check" not in seen, (
-        "the quickstart prints a fenced `gpuwm check` line again; from an "
+        f"{page.name} prints a fenced `gpuwm check` line again; from an "
         "installed wheel that door resolves neither a checkout path nor a "
         "shipped experiment name")
-    body = QUICKSTART_DOC.read_text(encoding="utf-8")
-    assert "`gpuwm check`" in body, (
-        "the sizing paragraph no longer mentions the engine's check door")
+    # And no fenced bare `gpuwm fetch`: from a second account on a shared
+    # host its lock folder belongs to another account, and its next-step
+    # hint names the regional route (0.3.0's README step 1).
+    assert "gpuwm fetch" not in seen, page.name
+    if page == QUICKSTART_DOC:
+        body = page.read_text(encoding="utf-8")
+        assert "`gpuwm check`" in body, (
+            "the sizing paragraph no longer mentions the engine's check door")
+
+
+def test_every_route_command_names_the_one_shipped_day() -> None:
+    """One quick start: every fenced route line that names an experiment, in
+    the README and on the page, names the same one, and every fetch line
+    writes the folder it reads."""
+
+    folder = Path(load_config(QUICKSTART_CONFIG).analysis_grib).parent.as_posix()
+    for page in (QUICKSTART_DOC, README):
+        for command in _fenced_commands(page):
+            words = shlex.split(command, comments=True)
+            if (words[:2] in (["gpuwm-global", "statics"], ["gpuwm-global", "run"],
+                              ["gpuwm-global", "go"])
+                    and "smoke" not in command):
+                assert words[2] == QUICKSTART_CONFIG.stem, (page.name, command)
+            if words[:2] == ["gpuwm-global", "fetch-analysis"]:
+                assert "--cycle" in words and "--out" in words, command
+                assert words[words.index("--out") + 1] == folder, command
+
+
+def test_the_pages_do_not_send_a_reader_to_an_unstaged_geography() -> None:
+    """0.3.0's README step 2 sent a fresh machine to `--geog-root
+    ~/WPS_GEOG`, a folder nothing had made; `statics` exited 1.  The route
+    stages the archive with `gpuwm fetch-geog` before the first statics."""
+
+    for page in (QUICKSTART_DOC, README):
+        commands = _fenced_commands(page)
+        assert not any("--geog-root" in c for c in commands), page.name
+        first = next(i for i, c in enumerate(commands)
+                     if c.startswith(("gpuwm-global statics", "gpuwm-global go")))
+        assert any(c.startswith("gpuwm fetch-geog") for c in commands[:first]), \
+            page.name
 
 
 def test_the_documented_fetch_command_is_the_one_the_config_needs() -> None:
-    """The acquisition line parses, and its two non-default flags are there.
+    """The acquisition line parses, and it writes the file the day reads."""
 
-    ``--mode full-file`` and ``--hours 0`` are the whole reason this fetch
-    differs from every other GDAS fetch on the docs site, and dropping either
-    one produces bytes the global initializer refuses.
-    """
+    from arwen_global.cli import build_parser
 
-    parser = cli.build_parser()
+    parser = build_parser()
     fetch_line = next(
         command for command in _fenced_commands(QUICKSTART_DOC)
-        if command.startswith("gpuwm fetch "))
+        if command.startswith("gpuwm-global fetch-analysis "))
     args = parser.parse_args(shlex.split(fetch_line)[1:])
 
     assert args.source == "gdas"
-    assert args.hours == 0
-    assert args.mode == "full-file"
-    assert args.area is None and args.point is None
-
     cfg = load_config(QUICKSTART_CONFIG)
     assert Path(args.out) == Path(cfg.analysis_grib).parent
     assert fetch.parse_cycle(args.cycle, "gdas") == CYCLE
+    assert (Path(args.out) / analysis_fetch.ANALYSIS_OBJECT.format(
+        hour=CYCLE.hour)).as_posix() == cfg.analysis_grib
+
+
+def test_a_missing_analysis_names_the_fetch_that_writes_it() -> None:
+    """0.3.0 said only "analysis GRIB ... does not exist"."""
+
+    cfg = load_config(QUICKSTART_CONFIG)
+    sentence = analysis_fetch.missing_analysis_remedy(
+        cfg.analysis_grib, cfg.native_adapter_options.get("start_time_utc"))
+    assert ("gpuwm-global fetch-analysis --cycle 2026-09-01T00 "
+            "--out cases/baseline-2026090100") in sentence
+    unknown = analysis_fetch.missing_analysis_remedy(
+        "x/gdas.t18z.pgrb2.0p25.f000", None)
+    assert "--cycle YYYY-MM-DDT18 --out x" in unknown
+
+
+def test_the_six_hour_day_reads_the_analysis_the_route_fetches() -> None:
+    """0.3.0's shipped `_6h` config read a 2026-08-30 18Z file no page
+    fetched, so the cheap rehearsal of the day refused on a machine that had
+    followed the README."""
+
+    day = load_config(QUICKSTART_CONFIG)
+    for name in ("arwen_global_gdas_t255_native_sl_si_6h",
+                 "arwen_global_gdas_t255_native_sl_si_6h_unclipped"):
+        six = load_config(_shipped_configs() / f"{name}.toml")
+        assert six.analysis_grib == day.analysis_grib, name
+        assert six.native_adapter_options["start_time_utc"] == \
+            day.native_adapter_options["start_time_utc"], name
+        assert six.duration_s == 21600.0
 
 
 @requires_render_kernels

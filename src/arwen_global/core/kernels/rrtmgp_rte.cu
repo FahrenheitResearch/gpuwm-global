@@ -338,7 +338,9 @@ extern "C" __global__ void rrtmgp_sw_2stream(
     const float* fz_cld_tau, const float* fz_cld_ssa,
     const float* fz_cld_asy, const int* fz_gpt_bands,
     const unsigned char* fz_mask, int fz_nband,
-    int fz_have_mask, int fz_on) {
+    int fz_have_mask, int fz_on,
+    const float* fa_tau, const float* fa_ssa, const float* fa_asy,
+    int fa_on) {
   const int tid = blockDim.x * blockIdx.x + threadIdx.x;
   if (nlay > RRTMGP_MAX_LAYERS) return;
   const int col = tid / gpt_tile;
@@ -385,7 +387,43 @@ extern "C" __global__ void rrtmgp_sw_2stream(
     const int ilev_out = top_at_1 ? lay + 1 : lay;
     const int idx = (col * nlay + lay) * ngpt + gpt;
     float ts, ws, gs;
-    if (fz_on) {
+    if (fz_on && fa_on) {
+      // rrtmgp_finalize_cloud_aer_sw (physics/aerosol_climatology.py),
+      // replicated: gas + band aerosol + McICA-masked band cloud, summed in
+      // its order, then the total delta-scaled with the tail pinned as in
+      // the cloud-only branch below.  The aerosol shares the cloud's band
+      // index (both are this chunk's (ncol, nlay, nband) cubes).  With the
+      // aerosol off this branch is not taken and the cloud-only arithmetic
+      // is the one it always was.
+      const int fz_band = (col * nlay + lay) * fz_nband + fz_gpt_bands[gpt];
+      float fz_tc = fz_cld_tau[fz_band];
+      if (fz_have_mask) fz_tc = fz_tc * (float)fz_mask[idx];
+      const float fz_wc = fz_cld_ssa[fz_band];
+      const float fz_gc = fz_cld_asy[fz_band];
+      const float fa_ta = fa_tau[fz_band];
+      const float fa_wa = fa_ssa[fz_band];
+      const float fa_ga = fa_asy[fz_band];
+      const float fz_floor = 3.0f * 1.17549435e-38f;
+      const float fz_total_tau = __fadd_rn(__fadd_rn(tau[idx], fa_ta), fz_tc);
+      const float fz_gas_scatter = __fmul_rn(tau[idx], ssa[idx]);
+      const float fa_scatter = __fmul_rn(fa_ta, fa_wa);
+      const float fz_cloud_scatter = __fmul_rn(fz_tc, fz_wc);
+      const float fz_scatter = __fadd_rn(
+          __fadd_rn(fz_gas_scatter, fa_scatter), fz_cloud_scatter);
+      const float fz_total_ssa = __fdiv_rn(
+          fz_scatter, fmaxf(fz_floor, fz_total_tau));
+      const float fz_gscatter = __fadd_rn(
+          __fmul_rn(fa_scatter, fa_ga), __fmul_rn(fz_cloud_scatter, fz_gc));
+      const float fz_total_g = __fdiv_rn(
+          fz_gscatter, fmaxf(fz_floor, fz_scatter));
+      const float fz_f = __fmul_rn(fz_total_g, fz_total_g);
+      const float fz_omwf = __fmaf_rn(-fz_total_ssa, fz_f, 1.0f);
+      ts = __fmul_rn(fz_total_tau, fz_omwf);
+      ws = __fdiv_rn(__fmaf_rn(-fz_total_ssa, fz_f, fz_total_ssa),
+                     fmaxf(fz_floor, fz_omwf));
+      gs = __fdiv_rn(__fsub_rn(fz_total_g, fz_f),
+                     fmaxf(fz_floor, __fsub_rn(1.0f, fz_f)));
+    } else if (fz_on) {
       // rrtmgp_finalize_cloud_sw, replicated: `tau`/`ssa` here ARE
       // gas_tau/gas_ssa and `asym` is never read.  Each volatile line in
       // that kernel is one binary FP op, so an explicit __f*_rn intrinsic
@@ -409,11 +447,19 @@ extern "C" __global__ void rrtmgp_sw_2stream(
       const float fz_gscatter = __fadd_rn(fz_gas_g, fz_cloud_g);
       const float fz_total_g = __fdiv_rn(
           fz_gscatter, fmaxf(fz_floor, fz_scatter));
-      const float fz_f = fz_total_g * fz_total_g;
-      const float fz_wf = fz_total_ssa * fz_f;
-      ts = (1.0f - fz_wf) * fz_total_tau;
-      ws = (fz_total_ssa - fz_wf) / fmaxf(fz_floor, 1.0f - fz_wf);
-      gs = (fz_total_g - fz_f) / fmaxf(fz_floor, 1.0f - fz_f);
+      // PINNED to rrtmgp_finalize_cloud_sw's SASS (sm_120, nvcc/NVRTC
+      // default contraction, read 2026-11-16): wf is never rounded on its
+      // own -- ptxas folds `1 - ssa*f` and `ssa - ssa*f` into two FFMAs --
+      // and the three divisions are the IEEE ones.  Left bare here the
+      // tail contracted differently inside this kernel and moved the
+      // shortwave bits against the standalone finalize.
+      const float fz_f = __fmul_rn(fz_total_g, fz_total_g);
+      const float fz_omwf = __fmaf_rn(-fz_total_ssa, fz_f, 1.0f);
+      ts = __fmul_rn(fz_total_tau, fz_omwf);
+      ws = __fdiv_rn(__fmaf_rn(-fz_total_ssa, fz_f, fz_total_ssa),
+                     fmaxf(fz_floor, fz_omwf));
+      gs = __fdiv_rn(__fsub_rn(fz_total_g, fz_f),
+                     fmaxf(fz_floor, __fsub_rn(1.0f, fz_f)));
     } else {
       ts = tau[idx];
       ws = ssa[idx];

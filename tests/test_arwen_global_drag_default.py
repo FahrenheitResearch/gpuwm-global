@@ -39,6 +39,9 @@ DRAG_ON = {
     "arwen_global_gdas_t383_native_sl_si_24h",
     "arwen_global_gdas_t255_native_sl_si_24h_dayone",
     *HIRES_DRAG_0_2_5,
+    # 0.4.0's opt-in 80-level days carry the drag the default day carries.
+    "arwen_global_gdas_t255_l80_satmedmf_scinocca_24h",
+    "arwen_global_gdas_t255_l80_ysu_scinocca_24h",
 }
 
 

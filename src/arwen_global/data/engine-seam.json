@@ -2,7 +2,7 @@
   "schema": "gpuwm.arwen-global-engine-seam/v1",
   "engine": {
     "distribution": "gpuwm",
-    "version": "3.0.3"
+    "version": "3.0.5"
   },
   "files": [
     {
@@ -19,8 +19,8 @@
     },
     {
       "path": "gpuwm/config.py",
-      "size": 571636,
-      "sha256": "ea00a930732e8b2cff17b0a0ae80bc1f4083a2b347b12e27d9f02d5233d01625",
+      "size": 572010,
+      "sha256": "394cc2e661a0dc9fd2e57c78ddfd603412394e13b4da48b72a9803a6b14e62ea",
       "reached": "DEFAULT_COLUMN_CHUNK, radiation_enabled, radiation_scheme_ids, RunConfig and SASE_PBL_SCHEME.  RunConfig IS constructed in carried npref, twice, inside its reference-state builders; no door of this package and no test calls those.  Against the cut revision the file differs by 1,130 lines at gpuwm 2.7.3 (308 at 2.7.0), 105 of them inside RunConfig, and RunConfig's own 2.7.0-to-2.7.3 movement is comment text with no field, default or validation changed.  From 2.8.0 to 2.8.5 RunConfig flips moist_cq to True and appends regional fields with off defaults; the native suite hands its schemes a namespace, never a RunConfig, and the four functions it binds here are unchanged"
     },
     {
@@ -37,8 +37,8 @@
     },
     {
       "path": "gpuwm/core/preflight.py",
-      "size": 874972,
-      "sha256": "909548ff6a3bf248e2a80e00cf2d63e99787a00cc7d5d691afb72e2870c9f5de",
+      "size": 875331,
+      "sha256": "6804eb32021392043a1501e004dad997c3643eb7bffd119a30a82f39c490e89f",
       "reached": "EXTERNAL_MARGIN_BYTES, device_memory_probe_reason, device_memory_probe_subprocess and MEASURED_LOCAL_MEMORY_PROFILE, which carried ntiedtke reads for its SM count"
     },
     {
@@ -61,8 +61,8 @@
     },
     {
       "path": "gpuwm/core/health_ledger.py",
-      "size": 16833,
-      "sha256": "304a262480e27cef3f163150f30b37aa0cf0a0768f2a0bb79c8b5f62c41df3c2",
+      "size": 18379,
+      "sha256": "6c2e1151bff171375889aa88052cda0a44eda61e9b9166118868cb9e2d688083",
       "reached": "the validation-flag ledger carried ysu and carried rrtmgp read and write.  NOT gpuwm/core/health.py, which differs and is not reached"
     },
     {
@@ -157,8 +157,8 @@
     },
     {
       "path": "gpuwm/core/noahmp_runtime.py",
-      "size": 152328,
-      "sha256": "8a7aa7d7bcf8338a3f611e2165a960970ad90b2a8ed94659abb29e6443ba4825",
+      "size": 153820,
+      "sha256": "d5c1ae1678444138da038b5647142eeca6f85f9dc213088636e31bd74fa7d7a3",
       "reached": "the Noah-MP state and diagnostic inventories, its cold start and its step.  This model runs Noah, so they are bound at import and never called"
     },
     {
@@ -247,8 +247,8 @@
     },
     {
       "path": "gpuwm/core/rrtmg_legacy.py",
-      "size": 154831,
-      "sha256": "39a8c6b4edf60d67173cfcdc8972b77dde2804beabb5fb6918af496ecbde8c3d",
+      "size": 155116,
+      "sha256": "0f72333ead7b3b7599ec4a417c9465cd9ca0cd896743720eb2393a48f7bf07d4",
       "reached": "RRTMGLegacyRadiation, imported inside the radiation selector at ra_lw=ra_sw=4 with the legacy variant.  The native adapter admits radiation='rrtmgp' only, which is why its 177 differing lines at gpuwm 2.7.3 (157 at 2.7.0) are not this model's physics"
     },
     {
@@ -277,8 +277,8 @@
     },
     {
       "path": "gpuwm/core/mpas_column_batch.py",
-      "size": 87403,
-      "sha256": "56d924af792e154a0cc4f62d911e55eb5a349ac42392bfb6b707d30ddde539bb",
+      "size": 87453,
+      "sha256": "6b5e228dd99448d243806465b9215e68d468e055087049b58efdfc21ad22aefd",
       "reached": "run_mpas_column_batch, served through carried physics' module-level __getattr__ for the hexagonal line's column batch; no door of this package asks for that name"
     },
     {
@@ -295,8 +295,8 @@
     },
     {
       "path": "gpuwm/kernel_compile_notice.py",
-      "size": 18394,
-      "sha256": "260d414bcbccb4b9ffde6d2037666a7f78bd6e9304981167fcb629c763663ca1",
+      "size": 19384,
+      "sha256": "b7472ddc80980131216e9f9a8fb48d442ff97024e6b35d45647f82bdc16c26d1",
       "reached": "observe_module_compile, the context carried terrain_drag compiles its module inside, as the engine's own launcher does.  It prints and times a first compile and moves no number"
     }
   ]

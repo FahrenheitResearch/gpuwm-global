@@ -33,6 +33,32 @@ from .native_state import PersistentNativeState
 from ..profile import profiler_of
 
 
+def _planes_to_host(values) -> list:
+    """``to_host`` of every plane, device planes of one dtype and shape
+    stacked and read back in ONE transfer (each ``to_host`` of a device
+    plane was its own synchronisation).  Same host arrays, same bytes."""
+    out: list = [None] * len(values)
+    groups: dict[tuple, list[int]] = {}
+    for index, value in enumerate(values):
+        # Only C-contiguous planes stack: their host copy has the layout
+        # (and so the numpy summation order) the single read gave them.
+        if (type(value).__module__.split(".", 1)[0] == "cupy"
+                and value.flags.c_contiguous):
+            groups.setdefault((str(value.dtype), tuple(value.shape)), []).append(index)
+        else:
+            out[index] = to_host(value)
+    for indices in groups.values():
+        if len(indices) == 1:
+            out[indices[0]] = to_host(values[indices[0]])
+            continue
+        import cupy
+
+        stacked = cupy.stack([values[index] for index in indices]).get()
+        for position, index in enumerate(indices):
+            out[index] = stacked[position]
+    return out
+
+
 # WRF's physics order: radiation, surface layer, land surface, PBL, cumulus,
 # microphysics.  Grell-Freitas is the sixth native component (default on);
 # cumulus="ntiedtke" puts New Tiedtke in the same slot, cumulus="own" puts
@@ -375,14 +401,43 @@ class ArwenCudaColumnSuite:
         plane whatever the band count.
         """
 
-        def plane(value):
-            return np.asarray(to_host(value), dtype=np.float64)
+        return self._radiation_readings(
+            _planes_to_host(self._radiation_planes(surface, arrays)), metadata)
 
-        olr = plane(arrays["olr"])
-        gsw = plane(arrays["gsw"])
-        glw = plane(arrays["glw"])
-        emissivity = plane(surface.emissivity)
-        skin = plane(surface.temperature_k)
+    #: The plane-derived radiation readings, in the order the readings
+    #: dict carries them.
+    _RADIATION_PLANE_READINGS = (
+        "mean_outgoing_longwave_w_m2",
+        "mean_net_surface_radiation_w_m2",
+        "mean_toa_upward_shortwave_w_m2",
+        "mean_toa_downward_shortwave_w_m2",
+        "mean_surface_upward_longwave_w_m2",
+        "mean_total_cloud_cover",
+    )
+
+    @staticmethod
+    def _radiation_planes(surface, arrays) -> list:
+        return [
+            arrays["olr"], arrays["gsw"], arrays["glw"], surface.emissivity,
+            surface.temperature_k, arrays["swupt"], arrays["swdnt"],
+            arrays["lwupb"], arrays["cldfra_total"],
+        ]
+
+    @staticmethod
+    def _radiation_readings(host_planes, metadata) -> dict:
+        """The readings from the nine planes' host copies (in
+        :meth:`_radiation_planes` order), exactly as the immediate read
+        formed them."""
+        hosted = iter(host_planes)
+
+        def plane():
+            return np.asarray(next(hosted), dtype=np.float64)
+
+        olr = plane()
+        gsw = plane()
+        glw = plane()
+        emissivity = plane()
+        skin = plane()
         net_surface = (
             gsw + emissivity * glw
             - emissivity * STEFAN_BOLTZMANN * skin**4
@@ -396,14 +451,10 @@ class ArwenCudaColumnSuite:
             # radiation call's bounding record flattened under its field
             # names, so the run's diagnostics say how often the cloud
             # optics ran outside its tables.
-            "mean_toa_upward_shortwave_w_m2": float(
-                np.mean(plane(arrays["swupt"]))),
-            "mean_toa_downward_shortwave_w_m2": float(
-                np.mean(plane(arrays["swdnt"]))),
-            "mean_surface_upward_longwave_w_m2": float(
-                np.mean(plane(arrays["lwupb"]))),
-            "mean_total_cloud_cover": float(
-                np.mean(plane(arrays["cldfra_total"]))),
+            "mean_toa_upward_shortwave_w_m2": float(np.mean(plane())),
+            "mean_toa_downward_shortwave_w_m2": float(np.mean(plane())),
+            "mean_surface_upward_longwave_w_m2": float(np.mean(plane())),
+            "mean_total_cloud_cover": float(np.mean(plane())),
             "radiation_calls": float(metadata.get("radiation_calls", 0)),
         }
         bounding = metadata.get("radiation_size_bounding_last")
@@ -413,6 +464,112 @@ class ArwenCudaColumnSuite:
                 for key, value in bounding.items()
             })
         return readings
+
+    # -- readings whose host arithmetic is deferred -------------------------
+    #
+    # MEASURED 2026-11-16 (T383, RTX PRO 6000, nsys, steps 7-30): the card
+    # sat idle 64 ms a step after the call's plane reads, while the host
+    # copied the planes and walked them in numpy -- 6.5 % of the step.  The
+    # model's step (MoistHybridModel.step) sets ``defer_host_readings`` for
+    # its own calls: ``finish`` then snapshots the planes on the device,
+    # starts their copy into pinned host memory on the stream and returns
+    # the diagnostics with those readings' keys in place and their values
+    # pending; ``resolve_pending_readings`` (called by the step where the
+    # host would otherwise wait on the card, and always before it returns)
+    # waits for the copy and does the same numpy arithmetic on the same
+    # bytes, filling the same dict.  Same numbers; every other caller of
+    # ``finish`` takes the immediate path.
+
+    defer_host_readings = False
+
+    def _pending_readings(self):
+        pending = getattr(self, "_pending_host_readings", None)
+        if pending is None:
+            pending = []
+            self._pending_host_readings = pending
+        return pending
+
+    def resolve_pending_readings(self) -> None:
+        pending = self._pending_readings()
+        while pending:
+            pending.pop(0)()
+
+    @staticmethod
+    def _start_host_copy(values):
+        """Snapshot ``values`` (device planes) on the device, one stack
+        per dtype and shape, and start their copies into pinned host
+        memory on the current stream; returns ``fetch()`` giving each
+        plane's C-ordered host copy (the layout ``to_host`` gives it),
+        waiting for the copies.  None when a value is not a cupy array
+        (the caller then reads them at once)."""
+        if not values or any(
+                type(value).__module__.split(".", 1)[0] != "cupy"
+                for value in values):
+            return None
+        import cupy
+        import cupyx
+
+        groups: dict[tuple, list[int]] = {}
+        for index, value in enumerate(values):
+            groups.setdefault((str(value.dtype), tuple(value.shape)), []).append(index)
+        copies = []
+        for indices in groups.values():
+            stacked = cupy.stack([values[index] for index in indices])
+            host = cupyx.empty_pinned(stacked.shape, dtype=stacked.dtype)
+            stacked.get(out=host, blocking=False)
+            # ``stacked`` is kept with its copy so its device memory
+            # outlives the transfer (the stream orders any reuse after it
+            # anyway).
+            copies.append((indices, stacked, host))
+        done = cupy.cuda.Event(block=False, disable_timing=True)
+        done.record()
+
+        def fetch():
+            done.synchronize()
+            out = [None] * len(values)
+            for indices, _stacked, host in copies:
+                for position, index in enumerate(indices):
+                    out[index] = host[position]
+            return out
+
+        return fetch
+
+    def _defer_radiation_readings(self, diagnostics, surface, arrays, metadata):
+        """Put the radiation readings' keys into ``diagnostics`` in their
+        order and queue their values (note above); False when the planes
+        cannot be deferred, so the caller reads them at once."""
+        fetch = self._start_host_copy(self._radiation_planes(surface, arrays))
+        if fetch is None:
+            return False
+        bounding = metadata.get("radiation_size_bounding_last")
+        bounding_metadata = {
+            "radiation_calls": metadata.get("radiation_calls", 0),
+            "radiation_size_bounding_last":
+                dict(bounding) if isinstance(bounding, dict) else bounding,
+        }
+        placeholder = self._radiation_readings_shape(bounding_metadata)
+        for key, value in placeholder.items():
+            diagnostics[key] = value
+
+        def resolve():
+            diagnostics.update(
+                self._radiation_readings(fetch(), bounding_metadata))
+
+        self._pending_readings().append(resolve)
+        return True
+
+    def _radiation_readings_shape(self, metadata) -> dict:
+        """The readings dict's keys in order, the metadata-derived values
+        filled and the plane-derived ones None until resolved."""
+        shape = {name: None for name in self._RADIATION_PLANE_READINGS}
+        shape["radiation_calls"] = float(metadata.get("radiation_calls", 0))
+        bounding = metadata.get("radiation_size_bounding_last")
+        if isinstance(bounding, dict):
+            shape.update({
+                f"radiation_size_bounding_{key}": float(value)
+                for key, value in bounding.items()
+            })
+        return shape
 
     def _size_bounding_record(self, band_metadata, planes, metadata_in):
         """The radiation size-bounding record of a call whose radiation
@@ -437,21 +594,28 @@ class ArwenCudaColumnSuite:
             if name.endswith("fraction"):
                 continue
             last[name] = int(sum(int(r[name]) for r in records))
-        sums = {}
+        names: list[str] = []
         for part, whole in self._SIZE_BOUNDING_FRACTIONS.values():
             for name in (part, whole):
-                if name in sums:
+                if name in names:
                     continue
-                plane = planes.get(self._SIZE_BOUNDING_PLANE + name)
-                if plane is None:
+                if planes.get(self._SIZE_BOUNDING_PLANE + name) is None:
                     raise ValueError(
                         f"the radiation ran and no {name!r} path-sum plane "
                         "came back with the bands; the size-bounding record "
                         "cannot be formed over the globe without it"
                     )
-                sums[name] = np.float32(np.sum(
-                    np.asarray(to_host(plane), dtype=np.float32),
-                    dtype=np.float32))
+                names.append(name)
+        # The path-sum planes come to the host in one transfer per dtype
+        # and shape (one synchronisation each before); the same host
+        # arrays and the same numpy sums.
+        hosted = _planes_to_host(
+            [planes[self._SIZE_BOUNDING_PLANE + name] for name in names])
+        sums = {
+            name: np.float32(np.sum(
+                np.asarray(value, dtype=np.float32), dtype=np.float32))
+            for name, value in zip(names, hosted)
+        }
         for name, (part, whole) in self._SIZE_BOUNDING_FRACTIONS.items():
             if float(sums[whole]) > 0.0:
                 value = sums[part] / np.maximum(sums[whole], np.float32(1.0e-30))
@@ -783,16 +947,34 @@ class ArwenCudaColumnSuite:
             None if last is None else dict(last))
         metadata["radiation_size_bounding_sum"] = (
             None if total is None else dict(total))
-        diagnostics.update(self._radiation_diagnostics(
-            surface, physics_state.arrays, metadata))
+        defer = bool(self.defer_host_readings)
+        if not (defer and self._defer_radiation_readings(
+                diagnostics, surface, physics_state.arrays, metadata)):
+            diagnostics.update(self._radiation_diagnostics(
+                surface, physics_state.arrays, metadata))
         heating = planes.get(self._FLOOR_PLANE)
         if heating is not None:
             # The area mean over the whole globe, J/m2 this call.
-            weight = np.asarray(
-                to_host(planes[self._FLOOR_WEIGHT_PLANE]), dtype=np.float64)
-            diagnostics["mean_stratospheric_floor_heating_j_m2"] = float(
-                (np.asarray(to_host(heating), dtype=np.float64) * weight).sum()
-                / weight.sum())
+            # (Both planes in one transfer when they share a layout.)
+            pair = [planes[self._FLOOR_WEIGHT_PLANE], heating]
+
+            def floor_mean(host_pair):
+                weight = np.asarray(host_pair[0], dtype=np.float64)
+                return float(
+                    (np.asarray(host_pair[1], dtype=np.float64) * weight).sum()
+                    / weight.sum())
+
+            name = "mean_stratospheric_floor_heating_j_m2"
+            fetch = self._start_host_copy(pair) if defer else None
+            if fetch is None:
+                diagnostics[name] = floor_mean(_planes_to_host(pair))
+            else:
+                diagnostics[name] = None
+
+                def resolve(fetch=fetch, name=name):
+                    diagnostics[name] = floor_mean(fetch())
+
+                self._pending_readings().append(resolve)
         if self.observer is not None and hasattr(self.observer, "close_call"):
             self.observer.close_call(
                 self._xp if self._xp is not None else self._array_module())
