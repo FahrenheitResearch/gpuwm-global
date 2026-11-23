@@ -286,6 +286,100 @@ def test_scalar_tendency_and_tracer_flux_kernels_match_numpy_bitwise(tmp_path, d
     assert np.array_equal(out, scalar_tendency_reference(h, vert, s, dpt, dp))
 
 
+def _build_complex_split(tmp_path, spec, ctype):
+    """Compile a ``C z`` -> ``F re, F im`` kernel body into ``run(z, re, im, n)``.
+
+    CuPy hands the body a ``thrust::complex<F>``; the stand-in here is the
+    same two-member layout (numpy's complex layout) with the same
+    ``real()`` / ``imag()`` accessors, so the kernel's operation text is
+    compiled unchanged, as C++ because it calls member functions.
+    """
+    assert spec["in"] == "C z" and spec["out"] == "F re, F im", spec
+    source = "\n".join([
+        f"typedef {ctype} F;",
+        "struct C { F x, y; F real() const { return x; } F imag() const { return y; } };",
+        "#ifdef _WIN32",
+        "#define EXPORT __declspec(dllexport)",
+        "#else",
+        "#define EXPORT",
+        "#endif",
+        'extern "C" EXPORT void run(const C* z_arr, F* re_arr, F* im_arr, long long n) {',
+        "  for (long long i = 0; i < n; ++i) {",
+        "    const C z = z_arr[i];",
+        "    F re; F im;",
+        "    {",
+        spec["op"],
+        "    }",
+        "    re_arr[i] = re; im_arr[i] = im;",
+        "  }",
+        "}",
+    ])
+    stem = f"{spec['name']}_{ctype}"
+    src_path = tmp_path / f"{stem}.cpp"
+    lib_path = tmp_path / (f"{stem}.dll" if sys.platform == "win32" else f"{stem}.so")
+    src_path.write_text(source, encoding="utf-8")
+    subprocess.run(
+        [CLANG, "-O2", "-ffp-contract=off", "-shared", "-o", str(lib_path), str(src_path)],
+        check=True, capture_output=True,
+    )
+    return ctypes.CDLL(str(lib_path))
+
+
+@pytest.mark.parametrize("ctype,real,uint", [
+    ("double", np.float64, np.uint64),
+    ("float", np.float32, np.uint32),
+])
+def test_complex_split_kernel_matches_numpy_bitwise(tmp_path, ctype, real, uint):
+    """``arwen_complex_split`` is ``_batched_contract``'s numpy branch, bit for bit.
+
+    The device branch of ``SphericalHarmonicTransform._batched_contract``
+    takes this kernel when the complex operand is not C-contiguous; its
+    specification is the numpy branch beside it,
+    ``ascontiguousarray(stacked.real)`` and ``ascontiguousarray(stacked.imag)``
+    of ``stacked = moveaxis(values, -1, 0).reshape(M, -1, K)``.  The operand
+    here is built that way from a non-contiguous ``values``, and carries
+    signed zeros, infinities, the largest finite and a subnormal, and quiet
+    NaNs with payloads, because the kernel promises every bit pattern
+    arrives as it left.
+    """
+    cdtype = np.result_type(real, np.complex64)
+    rng = np.random.default_rng(17)
+    base = (rng.standard_normal((3, 9, 4, 5)) + 1j * rng.standard_normal((3, 9, 4, 5))).astype(cdtype)
+    values = base.transpose(0, 2, 1, 3)[..., ::2, :]     # (3, 4, 5, 5) strided view, not C-contiguous
+    assert not values.flags.c_contiguous
+    m_count, k = values.shape[-1], values.shape[-2]
+    stacked = np.moveaxis(values, -1, 0).reshape(m_count, -1, k).copy()
+    bits = stacked.view(uint).reshape(*stacked.shape, 2)
+    info = np.finfo(real)
+    special = np.array(
+        [0.0, -0.0, np.inf, -np.inf, info.max, info.smallest_subnormal], dtype=real
+    ).view(uint)
+    flat = bits.reshape(-1, 2)
+    flat[: special.size, 0] = special
+    flat[: special.size, 1] = special[::-1]
+    exponent = info.nexp + info.nmant
+    quiet = (uint((1 << (info.nexp + 1)) - 1) << uint(info.nmant - 1))  # exponent all ones, quiet bit set
+    payloads = np.array([quiet | uint(1), quiet | uint(0x2A), quiet | uint(1) << uint(exponent)], dtype=uint)
+    flat[special.size: special.size + payloads.size, 0] = payloads
+    flat[special.size: special.size + payloads.size, 1] = payloads[::-1]
+    assert np.isnan(stacked).any() and np.isinf(stacked).any()
+
+    want_re = np.ascontiguousarray(stacked.real)
+    want_im = np.ascontiguousarray(stacked.imag)
+
+    spec = _capture(fused.complex_split_kernel)
+    lib = _build_complex_split(tmp_path, spec, ctype)
+    z = np.ascontiguousarray(stacked)
+    re = np.empty(stacked.shape, dtype=real)
+    im = np.empty(stacked.shape, dtype=real)
+    lib.run(
+        z.ctypes.data_as(ctypes.c_void_p), re.ctypes.data_as(ctypes.c_void_p),
+        im.ctypes.data_as(ctypes.c_void_p), ctypes.c_longlong(z.size),
+    )
+    assert np.array_equal(re.view(uint), want_re.view(uint))
+    assert np.array_equal(im.view(uint), want_im.view(uint))
+
+
 @pytest.mark.parametrize("dtype,ctype", [(np.float64, "double"), (np.float32, "float")])
 def test_the_gpu_selftest_suites_pass_against_the_kernel_c(tmp_path, dtype, ctype):
     """The device gate's own adversarial data, judged before a card is booked.
@@ -352,6 +446,7 @@ def test_the_gpu_selftest_suites_pass_against_the_kernel_c(tmp_path, dtype, ctyp
 
 def test_every_fused_kernel_has_a_cpu_harness_case():
     covered = {
+        "arwen_complex_split",
         "arwen_rhs_vertical_flux_divergence_vanleer",
         "arwen_rhs_momentum_bernoulli",
         "arwen_rhs_tracer_flux",
